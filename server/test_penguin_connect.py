@@ -80,6 +80,17 @@ class PenguinConnectTests(unittest.TestCase):
     def test_default_gmail_scopes_include_full_mailbox_access(self):
         self.assertIn("https://mail.google.com/", penguin_connect.GMAIL_SCOPES)
 
+    def test_backfill_gmail_write_pause_defaults_for_backfill_and_zero_for_incremental(self):
+        pause_backfill = penguin_connect._sync_gmail_write_pause_seconds("backfill", verify_all=False)
+        pause_incremental = penguin_connect._sync_gmail_write_pause_seconds("incremental", verify_all=False)
+        self.assertGreaterEqual(pause_backfill, 0.0)
+        self.assertEqual(pause_incremental, 0.0)
+
+    def test_backfill_gmail_write_pause_uses_env_override(self):
+        with mock.patch.dict(os.environ, {"PENGUIN_CONNECT_BACKFILL_WRITE_PAUSE_SECONDS": "0.8"}, clear=False):
+            pause = penguin_connect._sync_gmail_write_pause_seconds("backfill", verify_all=False)
+        self.assertEqual(pause, 0.8)
+
     def test_build_gmail_service_uses_configured_http_timeout(self):
         token_json = {
             "token": "tok",
@@ -553,6 +564,20 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(parsed["From"], '"Kam (Shine Capital)" <owner+am-test@gmail.com>')
         self.assertEqual(parsed["Subject"], "iMessage · Kam (Shine Capital)")
 
+    def test_resolve_imessage_sender_prefers_contact_over_unresolved_push_name(self):
+        self.conn.execute(
+            """INSERT INTO contacts (first_name, last_name, organization, phone, phone_normalized, email, source_db)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            ("Kam", "(Shine Capital)", "", "+17144741613", "+17144741613", None, "test"),
+        )
+        conv = self._conversation_row()
+        sender_name, _subject_name = penguin_connect._resolve_imessage_sender_and_subject(
+            self.conn,
+            conv,
+            {"handle": "+17144741613", "push_name": "+17144741613"},
+        )
+        self.assertEqual(sender_name, "Kam (Shine Capital)")
+
     def test_imessage_sync_sets_nested_reply_headers(self):
         conv = self._conversation_row()
         msgs = [
@@ -790,6 +815,61 @@ class PenguinConnectTests(unittest.TestCase):
             metadata.get("rfc_references"),
             ["<mail-root@example.test>", "<mail-0@example.test>"],
         )
+
+    def test_gmail_attachments_forward_binary_to_imessage(self):
+        conv = self._conversation_row()
+        payload_data = base64.urlsafe_b64encode(b"see attachment").decode("utf-8").rstrip("=")
+        attachment_data = base64.urlsafe_b64encode(b"\x89PNG\r\n\x1a\nimg").decode("utf-8").rstrip("=")
+        full_msg = {
+            "id": "gmail-attach-bin-1",
+            "threadId": "thread-attach-bin-1",
+            "historyId": "h-attach-bin-1",
+            "labelIds": ["INBOX", "UNREAD"],
+            "internalDate": "1700000000000",
+            "snippet": "",
+            "payload": {
+                "mimeType": "multipart/mixed",
+                "headers": [
+                    {"name": "From", "value": "Owner <owner@gmail.com>"},
+                    {"name": "Subject", "value": "Photo"},
+                    {"name": "Message-ID", "value": "<attach-bin-1@example.test>"},
+                ],
+                "parts": [
+                    {"mimeType": "text/plain", "filename": "", "body": {"data": payload_data}},
+                    {
+                        "mimeType": "image/png",
+                        "filename": "photo.png",
+                        "body": {"attachmentId": "a-bin-1", "size": 12},
+                    },
+                ],
+            },
+        }
+        gmail_service = mock.Mock()
+        messages_api = gmail_service.users.return_value.messages.return_value
+        messages_api.get.return_value.execute.return_value = full_msg
+        messages_api.attachments.return_value.get.return_value.execute.return_value = {"data": attachment_data}
+
+        with mock.patch("penguin_connect._list_gmail_messages_to_alias", return_value=[{"id": "gmail-attach-bin-1"}]), mock.patch(
+            "penguin_connect.send_imessage", return_value=(True, None)
+        ) as mock_send:
+            result = penguin_connect._sync_conversation_gmail_to_imessage(
+                self.conn,
+                gmail_service,
+                conv,
+                gmail_email="owner@gmail.com",
+                allowed_senders=["owner@gmail.com"],
+                days=7,
+            )
+
+        self.assertEqual(result["email_to_imessage"], 1)
+        self.assertEqual(mock_send.call_args.args[1], "see attachment")
+        self.assertEqual(len(mock_send.call_args.kwargs.get("attachment_paths") or []), 1)
+        row = self.conn.execute(
+            "SELECT metadata FROM penguin_connect_messages WHERE conversation_id = ? AND provider_message_id = ?",
+            ("amc_test", "gmail:gmail-attach-bin-1"),
+        ).fetchone()
+        metadata = json.loads(row["metadata"] or "{}")
+        self.assertEqual(len(metadata.get("attachments_forwarded") or []), 1)
 
     def test_gmail_attachment_only_message_forwards_placeholder_to_imessage(self):
         conv = self._conversation_row()
@@ -1237,6 +1317,7 @@ class PenguinConnectTests(unittest.TestCase):
         metrics = penguin_connect.get_sync_metrics(self.conn)
         imsg = metrics["directions"]["imessage_to_gmail"]
         gsync = metrics["directions"]["gmail_to_imessage"]
+        queue = metrics["durable_queue"]
 
         self.assertEqual(imsg["retry_queue_count"], 1)
         self.assertEqual(imsg["failed_with_error_count"], 1)
@@ -1245,14 +1326,15 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(gsync["blocked_count"], 1)
         self.assertEqual(metrics["totals"]["retry_queue_count"], 1)
         self.assertEqual(metrics["totals"]["failed_permanent_count"], 1)
+        self.assertIn("queued", queue)
+        self.assertIn("leased", queue)
 
     def test_run_incremental_sync_maps_imessage_db_unreadable(self):
         conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript(SCHEMA)
         try:
             with mock.patch("db.get_connection", return_value=conn), mock.patch(
-                "penguin_connect._skip_until_initial_backfill",
-                return_value=None,
-            ), mock.patch(
                 "penguin_connect.sync_conversations",
                 side_effect=sqlite3.OperationalError("unable to open database file"),
             ):
@@ -1313,6 +1395,39 @@ class PenguinConnectTests(unittest.TestCase):
         ).fetchone()
         metadata = json.loads(row["metadata"] or "{}")
         self.assertEqual(metadata["delivery_status"], "failed_permanent")
+
+    def test_imessage_retry_queue_applies_gmail_write_pause(self):
+        self.conn.execute(
+            """INSERT INTO penguin_connect_messages
+               (conversation_id, provider, provider_message_id, direction, sender_email, sender_name, subject, body_text, message_timestamp, is_read, metadata)
+               VALUES (?, 'imessage', 'im-pause', 'imessage_to_email', ?, ?, ?, ?, ?, 1, ?)""",
+            (
+                "amc_test",
+                "owner+am-test@gmail.com",
+                "Tester",
+                "iMessage · Family Group",
+                "pending pause message",
+                "2026-03-04T10:30:00+00:00",
+                json.dumps({"delivery_status": "pending", "retry_count": 0, "max_retries": 3}),
+            ),
+        )
+        conv = self._conversation_row()
+        gmail_service = mock.Mock()
+        gmail_service.users.return_value.messages.return_value.import_.return_value.execute.return_value = {
+            "id": "gm-pause-1",
+            "threadId": "th-pause-1",
+        }
+
+        with mock.patch("penguin_connect._sleep_after_gmail_write") as mock_pause:
+            imported, _ = penguin_connect._retry_pending_imessage_to_gmail(
+                self.conn,
+                gmail_service,
+                conv,
+                gmail_write_pause_seconds=0.4,
+            )
+
+        self.assertEqual(imported, 1)
+        mock_pause.assert_called_once_with(0.4)
 
     def test_gmail_retry_queue_respects_next_retry(self):
         self.conn.execute(
@@ -1426,11 +1541,79 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(result["mode"], "incremental")
         mock_sync.assert_called_once()
 
+    def test_enqueue_sync_job_dedupes_incremental_jobs(self):
+        first = penguin_connect.enqueue_sync_job(
+            self.conn,
+            mode="incremental",
+            days=7,
+            hours=None,
+            verify_all=False,
+            dedupe=True,
+        )
+        second = penguin_connect.enqueue_sync_job(
+            self.conn,
+            mode="incremental",
+            days=7,
+            hours=None,
+            verify_all=False,
+            dedupe=True,
+        )
+
+        self.assertTrue(first["enqueued"])
+        self.assertFalse(second["enqueued"])
+        self.assertEqual(first["job_id"], second["job_id"])
+        self.assertEqual(penguin_connect._pending_sync_jobs_count(self.conn), 1)
+
+    def test_sync_job_worker_retries_then_succeeds(self):
+        penguin_connect.enqueue_sync_job(
+            self.conn,
+            mode="incremental",
+            days=7,
+            hours=None,
+            verify_all=False,
+            dedupe=True,
+        )
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PENGUIN_CONNECT_SYNC_JOB_RETRY_BASE_SECONDS": "1",
+                "PENGUIN_CONNECT_SYNC_JOB_RETRY_MAX_BACKOFF_SECONDS": "5",
+                "PENGUIN_CONNECT_SYNC_JOB_MAX_ATTEMPTS": "4",
+            },
+            clear=False,
+        ), mock.patch(
+            "penguin_connect.sync_conversations",
+            side_effect=[
+                {"success": False, "error": "database_busy_retry"},
+                {"success": True, "mode": "incremental", "selected_conversations": 0},
+            ],
+        ):
+            first = penguin_connect.run_sync_job_worker_once(self.conn, owner="test-worker")
+            self.assertFalse(first["success"])
+            self.assertTrue(first["queue_job_retry_scheduled"])
+            self.assertEqual(first["queue_job_status"], "queued")
+
+            self.conn.execute(
+                "UPDATE penguin_connect_jobs SET next_run_at = ? WHERE id = ?",
+                ("2000-01-01T00:00:00+00:00", first["queue_job_id"]),
+            )
+
+            second = penguin_connect.run_sync_job_worker_once(self.conn, owner="test-worker")
+            self.assertTrue(second["success"])
+            self.assertEqual(second["queue_job_status"], "succeeded")
+
+        row = self.conn.execute(
+            "SELECT status, attempt_count FROM penguin_connect_jobs WHERE id = ?",
+            (first["queue_job_id"],),
+        ).fetchone()
+        self.assertEqual(row["status"], "succeeded")
+        self.assertEqual(row["attempt_count"], 1)
+
     def test_incremental_sync_processes_one_recent_conversation_per_run(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
                (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
-                alias_email, status)
+               alias_email, status)
                VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
             (
                 "owner@gmail.com",

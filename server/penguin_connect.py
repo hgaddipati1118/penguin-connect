@@ -11,8 +11,10 @@ import mimetypes
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import subprocess
+import tempfile
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -43,6 +45,7 @@ DEFAULT_MESSAGE_ID_DOMAIN = "penguinconnect.local"
 MAX_REFERENCE_CHAIN = 20
 RFC_MESSAGE_ID_RE = re.compile(r"<[^<>\s]+>")
 DEFAULT_MAX_EMAIL_ATTACHMENT_BYTES = 20 * 1024 * 1024
+DEFAULT_MAX_IMESSAGE_ATTACHMENT_BYTES = 25 * 1024 * 1024
 MAX_QUOTED_CONTEXT_MESSAGES = 5
 MAX_QUOTED_CONTEXT_CHARS = 160
 THREAD_REPAIR_HEADER_VALUE = "thread_repair"
@@ -57,6 +60,14 @@ MAX_INCREMENTAL_ACTIVITY_WINDOW_MINUTES = 24 * 60
 DEFAULT_GMAIL_API_MAX_RETRIES = 3
 DEFAULT_GMAIL_API_MAX_BACKOFF_SECONDS = 30
 DEFAULT_GMAIL_RATE_LIMIT_PAUSE_SECONDS = 120
+DEFAULT_GMAIL_BACKFILL_WRITE_PAUSE_SECONDS = 0.15
+MAX_GMAIL_BACKFILL_WRITE_PAUSE_SECONDS = 5.0
+SYNC_JOB_TYPE = "sync_conversations"
+SYNC_JOB_QUEUE = "sync"
+DEFAULT_SYNC_JOB_MAX_ATTEMPTS = 12
+DEFAULT_SYNC_JOB_LEASE_SECONDS = 180
+DEFAULT_SYNC_JOB_RETRY_BASE_SECONDS = 30
+DEFAULT_SYNC_JOB_RETRY_MAX_BACKOFF_SECONDS = 1800
 FULL_IMESSAGE_SYNC_SINCE = datetime(2001, 1, 1, tzinfo=timezone.utc).isoformat()
 FULL_GMAIL_SYNC_SINCE = datetime(1970, 1, 1, tzinfo=timezone.utc).isoformat()
 _sync_runtime_lock = threading.Lock()
@@ -524,6 +535,64 @@ def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     except Exception:
         value = default
     return max(minimum, min(value, maximum))
+
+
+def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    raw = os.environ.get(name, "")
+    try:
+        value = float(raw)
+    except Exception:
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def _gmail_backfill_write_pause_seconds() -> float:
+    return _env_float(
+        "PENGUIN_CONNECT_BACKFILL_WRITE_PAUSE_SECONDS",
+        DEFAULT_GMAIL_BACKFILL_WRITE_PAUSE_SECONDS,
+        0.0,
+        MAX_GMAIL_BACKFILL_WRITE_PAUSE_SECONDS,
+    )
+
+
+def _sync_gmail_write_pause_seconds(mode: str, verify_all: bool) -> float:
+    normalized_mode = (mode or "").strip().lower()
+    if verify_all or normalized_mode in {"backfill", "startup_catchup"}:
+        return _gmail_backfill_write_pause_seconds()
+    return 0.0
+
+
+def _sleep_after_gmail_write(write_pause_seconds: float) -> None:
+    if write_pause_seconds <= 0:
+        return
+    time.sleep(write_pause_seconds)
+
+
+def _sync_job_max_attempts() -> int:
+    return _env_int("PENGUIN_CONNECT_SYNC_JOB_MAX_ATTEMPTS", DEFAULT_SYNC_JOB_MAX_ATTEMPTS, 1, 100)
+
+
+def _sync_job_lease_seconds() -> int:
+    return _env_int("PENGUIN_CONNECT_SYNC_JOB_LEASE_SECONDS", DEFAULT_SYNC_JOB_LEASE_SECONDS, 30, 24 * 3600)
+
+
+def _sync_job_retry_base_seconds() -> int:
+    return _env_int("PENGUIN_CONNECT_SYNC_JOB_RETRY_BASE_SECONDS", DEFAULT_SYNC_JOB_RETRY_BASE_SECONDS, 1, 3600)
+
+
+def _sync_job_retry_max_backoff_seconds() -> int:
+    return _env_int(
+        "PENGUIN_CONNECT_SYNC_JOB_RETRY_MAX_BACKOFF_SECONDS",
+        DEFAULT_SYNC_JOB_RETRY_MAX_BACKOFF_SECONDS,
+        1,
+        24 * 3600,
+    )
+
+
+def _sync_job_retry_backoff_seconds(attempt_count: int) -> int:
+    base = _sync_job_retry_base_seconds()
+    max_backoff = _sync_job_retry_max_backoff_seconds()
+    return min(max_backoff, base * (2 ** max(0, attempt_count - 1)))
 
 
 def _retry_base_seconds() -> int:
@@ -1221,6 +1290,354 @@ def _sync_runtime_finished(result: Optional[dict[str, Any]] = None, error: Optio
                 _sync_runtime["last_completed_at"] = finished_at
 
 
+def _default_sync_job_owner() -> str:
+    return f"pid:{os.getpid()}"
+
+
+def _sync_job_payload(mode: str, days: int, hours: Optional[int], verify_all: bool) -> dict[str, Any]:
+    normalized_mode = (mode or "incremental").strip().lower()
+    normalized_days = max(1, min(int(days or DEFAULT_BACKFILL_DAYS), 60))
+    normalized_hours = _normalize_sync_hours(hours)
+    return {
+        "mode": normalized_mode,
+        "days": normalized_days,
+        "hours": normalized_hours,
+        "verify_all": bool(verify_all),
+    }
+
+
+def _sync_job_dedupe_key(payload: dict[str, Any]) -> Optional[str]:
+    mode = (payload.get("mode") or "").strip().lower()
+    verify_all = bool(payload.get("verify_all"))
+    days = max(1, min(int(payload.get("days") or DEFAULT_BACKFILL_DAYS), 60))
+    hours = _normalize_sync_hours(payload.get("hours"))
+
+    if mode == "incremental":
+        return "sync:incremental"
+    if mode == "startup_catchup":
+        return "sync:startup_catchup"
+    if mode == "backfill":
+        if verify_all:
+            return "sync:backfill:verify_all"
+        if hours is not None:
+            return f"sync:backfill:hours:{hours}"
+        return f"sync:backfill:days:{days}"
+    return None
+
+
+def enqueue_sync_job(
+    conn: sqlite3.Connection,
+    *,
+    mode: str,
+    days: int,
+    hours: Optional[int],
+    verify_all: bool,
+    dedupe: bool = True,
+) -> dict[str, Any]:
+    payload = _sync_job_payload(mode, days, hours, verify_all)
+    dedupe_key = _sync_job_dedupe_key(payload) if dedupe else None
+    payload_json = json.dumps(payload, sort_keys=True)
+    now_iso = _now_iso()
+
+    try:
+        cursor = conn.execute(
+            """INSERT INTO penguin_connect_jobs
+               (job_type, queue_name, dedupe_key, payload_json, status, attempt_count, max_attempts, next_run_at, created_at, updated_at)
+               VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, ?, ?)""",
+            (
+                SYNC_JOB_TYPE,
+                SYNC_JOB_QUEUE,
+                dedupe_key,
+                payload_json,
+                _sync_job_max_attempts(),
+                now_iso,
+                now_iso,
+                now_iso,
+            ),
+        )
+        return {
+            "enqueued": True,
+            "job_id": cursor.lastrowid,
+            "dedupe_key": dedupe_key,
+            "payload": payload,
+        }
+    except sqlite3.IntegrityError:
+        if not dedupe_key:
+            raise
+        existing = conn.execute(
+            """SELECT id, status, attempt_count, next_run_at
+               FROM penguin_connect_jobs
+               WHERE dedupe_key = ?
+                 AND status IN ('queued', 'leased')
+               ORDER BY id DESC
+               LIMIT 1""",
+            (dedupe_key,),
+        ).fetchone()
+        if not existing:
+            raise
+        return {
+            "enqueued": False,
+            "job_id": existing["id"],
+            "dedupe_key": dedupe_key,
+            "job_status": existing["status"],
+            "attempt_count": int(existing["attempt_count"] or 0),
+            "next_run_at": existing["next_run_at"],
+            "payload": payload,
+        }
+
+
+def _recover_expired_sync_job_leases(conn: sqlite3.Connection) -> int:
+    now_iso = _now_iso()
+    cursor = conn.execute(
+        """UPDATE penguin_connect_jobs
+           SET status = 'queued',
+               lease_until = NULL,
+               lease_owner = NULL,
+               updated_at = ?
+           WHERE job_type = ?
+             AND status = 'leased'
+             AND lease_until IS NOT NULL
+             AND lease_until <= ?""",
+        (now_iso, SYNC_JOB_TYPE, now_iso),
+    )
+    return int(cursor.rowcount or 0)
+
+
+def _lease_next_sync_job(conn: sqlite3.Connection, owner: str) -> Optional[sqlite3.Row]:
+    _recover_expired_sync_job_leases(conn)
+    now_iso = _now_iso()
+    row = conn.execute(
+        """SELECT *
+           FROM penguin_connect_jobs
+           WHERE job_type = ?
+             AND status = 'queued'
+             AND next_run_at <= ?
+           ORDER BY next_run_at ASC, id ASC
+           LIMIT 1""",
+        (SYNC_JOB_TYPE, now_iso),
+    ).fetchone()
+    if not row:
+        return None
+
+    lease_until = (datetime.now(timezone.utc) + timedelta(seconds=_sync_job_lease_seconds())).isoformat()
+    updated = conn.execute(
+        """UPDATE penguin_connect_jobs
+           SET status = 'leased',
+               lease_owner = ?,
+               lease_until = ?,
+               started_at = COALESCE(started_at, ?),
+               updated_at = ?
+           WHERE id = ?
+             AND status = 'queued'""",
+        (owner, lease_until, now_iso, now_iso, row["id"]),
+    )
+    if updated.rowcount <= 0:
+        return None
+    return conn.execute("SELECT * FROM penguin_connect_jobs WHERE id = ?", (row["id"],)).fetchone()
+
+
+def _mark_sync_job_succeeded(conn: sqlite3.Connection, job_id: int, result: dict[str, Any]) -> None:
+    now_iso = _now_iso()
+    conn.execute(
+        """UPDATE penguin_connect_jobs
+           SET status = 'succeeded',
+               lease_until = NULL,
+               lease_owner = NULL,
+               last_error = NULL,
+               result_json = ?,
+               finished_at = ?,
+               updated_at = ?
+           WHERE id = ?""",
+        (json.dumps(result), now_iso, now_iso, job_id),
+    )
+
+
+def _mark_sync_job_failed(
+    conn: sqlite3.Connection,
+    job: sqlite3.Row,
+    *,
+    error_text: str,
+    result: Optional[dict[str, Any]] = None,
+    retry_after_seconds: Optional[int] = None,
+) -> dict[str, Any]:
+    now_dt = datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat()
+    attempt_count = int(job["attempt_count"] or 0) + 1
+    max_attempts = max(1, int(job["max_attempts"] or _sync_job_max_attempts()))
+    payload = json.loads(job["payload_json"] or "{}") if job["payload_json"] else {}
+    failure_result = dict(result or {})
+    failure_result.update(
+        {
+            "success": False,
+            "error": error_text,
+            "queue_job_id": int(job["id"]),
+            "queue_job_attempt": attempt_count,
+        }
+    )
+
+    if attempt_count >= max_attempts:
+        conn.execute(
+            """UPDATE penguin_connect_jobs
+               SET status = 'failed',
+                   attempt_count = ?,
+                   lease_until = NULL,
+                   lease_owner = NULL,
+                   last_error = ?,
+                   result_json = ?,
+                   finished_at = ?,
+                   updated_at = ?
+               WHERE id = ?""",
+            (attempt_count, error_text, json.dumps(failure_result), now_iso, now_iso, job["id"]),
+        )
+        failure_result["queue_job_status"] = "failed"
+        failure_result["queue_job_retry_scheduled"] = False
+        return failure_result
+
+    retry_seconds = int(retry_after_seconds or 0)
+    if retry_seconds <= 0:
+        retry_seconds = _sync_job_retry_backoff_seconds(attempt_count)
+    next_run_at = (now_dt + timedelta(seconds=retry_seconds)).isoformat()
+    conn.execute(
+        """UPDATE penguin_connect_jobs
+           SET status = 'queued',
+               attempt_count = ?,
+               lease_until = NULL,
+               lease_owner = NULL,
+               last_error = ?,
+               next_run_at = ?,
+               result_json = ?,
+               updated_at = ?
+           WHERE id = ?""",
+        (
+            attempt_count,
+            error_text,
+            next_run_at,
+            json.dumps(failure_result),
+            now_iso,
+            job["id"],
+        ),
+    )
+    failure_result.update(
+        {
+            "queue_job_status": "queued",
+            "queue_job_retry_scheduled": True,
+            "queue_job_next_run_at": next_run_at,
+            "queue_job_retry_after_seconds": retry_seconds,
+            "mode": payload.get("mode"),
+        }
+    )
+    return failure_result
+
+
+def _load_sync_job_payload(job: sqlite3.Row) -> dict[str, Any]:
+    try:
+        payload = json.loads(job["payload_json"] or "{}")
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return _sync_job_payload(
+        payload.get("mode", "incremental"),
+        payload.get("days", DEFAULT_BACKFILL_DAYS),
+        payload.get("hours"),
+        bool(payload.get("verify_all")),
+    )
+
+
+def run_sync_job_worker_once(conn: sqlite3.Connection, owner: Optional[str] = None) -> dict[str, Any]:
+    owner = (owner or "").strip() or _default_sync_job_owner()
+    job = _lease_next_sync_job(conn, owner)
+    if not job:
+        return {"success": True, "skipped": True, "reason": "queue_idle"}
+
+    payload = _load_sync_job_payload(job)
+    try:
+        result = sync_conversations(
+            conn,
+            mode=payload["mode"],
+            days=int(payload["days"]),
+            hours=payload.get("hours"),
+            verify_all=bool(payload.get("verify_all")),
+        )
+    except sqlite3.OperationalError as exc:
+        result = _map_sync_sqlite_error(exc)
+    except Exception as exc:
+        result = {"success": False, "error": str(exc).strip() or exc.__class__.__name__}
+
+    result = dict(result or {})
+    result["queue_job_id"] = int(job["id"])
+    result["queue_job_attempt"] = int(job["attempt_count"] or 0) + 1
+
+    if result.get("success"):
+        if result.get("skipped") and result.get("reason") == "gmail_rate_limited":
+            retry_after = result.get("retry_after_seconds")
+            queued = _mark_sync_job_failed(
+                conn,
+                job,
+                error_text="gmail_rate_limited",
+                result=result,
+                retry_after_seconds=retry_after,
+            )
+            if queued.get("queue_job_status") == "failed":
+                return queued
+            queued.pop("error", None)
+            queued.update(
+                {
+                    "success": True,
+                    "skipped": True,
+                    "reason": "gmail_rate_limited",
+                    "retry_after_seconds": queued.get("queue_job_retry_after_seconds", retry_after),
+                }
+            )
+            return queued
+        _mark_sync_job_succeeded(conn, int(job["id"]), result)
+        result["queue_job_status"] = "succeeded"
+        return result
+
+    error_text = (result.get("error") or "sync_failed").strip() or "sync_failed"
+    return _mark_sync_job_failed(conn, job, error_text=error_text, result=result)
+
+
+def _pending_sync_jobs_count(conn: sqlite3.Connection) -> int:
+    row = conn.execute(
+        """SELECT COUNT(*)
+           FROM penguin_connect_jobs
+           WHERE job_type = ?
+             AND status IN ('queued', 'leased')""",
+        (SYNC_JOB_TYPE,),
+    ).fetchone()
+    return int(row[0] if row else 0)
+
+
+def get_sync_queue_metrics(conn: sqlite3.Connection) -> dict[str, Any]:
+    rows = conn.execute(
+        """SELECT status, COUNT(*) AS count
+           FROM penguin_connect_jobs
+           WHERE job_type = ?
+           GROUP BY status""",
+        (SYNC_JOB_TYPE,),
+    ).fetchall()
+    counts = {row["status"]: int(row["count"] or 0) for row in rows}
+
+    next_row = conn.execute(
+        """SELECT next_run_at
+           FROM penguin_connect_jobs
+           WHERE job_type = ?
+             AND status = 'queued'
+           ORDER BY next_run_at ASC, id ASC
+           LIMIT 1""",
+        (SYNC_JOB_TYPE,),
+    ).fetchone()
+    next_run_at = next_row["next_run_at"] if next_row else None
+    return {
+        "queued": counts.get("queued", 0),
+        "leased": counts.get("leased", 0),
+        "succeeded": counts.get("succeeded", 0),
+        "failed": counts.get("failed", 0),
+        "next_run_at": next_run_at,
+    }
+
+
 def _build_gmail_service(gmail_email: str, keychain_service: Optional[str] = None):
     keychain_service = keychain_service or _keychain_service_name(gmail_email)
     raw = _read_keychain_secret(keychain_service, gmail_email)
@@ -1323,7 +1740,10 @@ def _resolve_imessage_sender_and_subject(
 ) -> tuple[str, str]:
     handle = (msg.get("handle") or "").strip()
     contact_name = _lookup_contact_name(conn, handle)
-    sender_name = (msg.get("push_name") or "").strip() or contact_name or handle or conv["display_name"] or "iMessage"
+    push_name = (msg.get("push_name") or "").strip()
+    if push_name and _looks_like_unresolved_handle(push_name):
+        push_name = ""
+    sender_name = contact_name or push_name or handle or conv["display_name"] or "iMessage"
 
     display_name = (conv["display_name"] or "").strip()
     if display_name and not _looks_like_unresolved_handle(display_name):
@@ -1586,15 +2006,20 @@ def _gmail_header_map(payload: dict[str, Any]) -> dict[str, str]:
     return out
 
 
-def _decode_gmail_data(data: str) -> str:
+def _decode_gmail_data_bytes(data: str) -> bytes:
     if not data:
-        return ""
+        return b""
+    if not isinstance(data, str):
+        return b""
     padding = "=" * (-len(data) % 4)
     try:
-        decoded = base64.urlsafe_b64decode((data + padding).encode("utf-8"))
-        return decoded.decode("utf-8", errors="replace")
+        return base64.urlsafe_b64decode((data + padding).encode("utf-8"))
     except Exception:
-        return ""
+        return b""
+
+
+def _decode_gmail_data(data: str) -> str:
+    return _decode_gmail_data_bytes(data).decode("utf-8", errors="replace")
 
 
 def _extract_gmail_plain_text(payload: dict[str, Any]) -> str:
@@ -1648,14 +2073,24 @@ def _load_imessage_attachment_for_email(attachment: dict[str, Any]) -> Optional[
     return filename, maintype, subtype, data
 
 
-def _extract_gmail_attachment_metadata(payload: dict[str, Any]) -> list[dict[str, Any]]:
+def _max_imessage_attachment_bytes() -> int:
+    return _env_int(
+        "PENGUIN_CONNECT_MAX_IMESSAGE_ATTACHMENT_BYTES",
+        DEFAULT_MAX_IMESSAGE_ATTACHMENT_BYTES,
+        1024,
+        100 * 1024 * 1024,
+    )
+
+
+def _extract_gmail_attachment_parts(payload: dict[str, Any]) -> list[dict[str, Any]]:
     attachments: list[dict[str, Any]] = []
 
     def walk(part: dict[str, Any]):
         body = part.get("body") or {}
         filename = (part.get("filename") or "").strip()
         attachment_id = (body.get("attachmentId") or "").strip()
-        if filename and attachment_id:
+        inline_data = (body.get("data") or "").strip()
+        if filename and (attachment_id or inline_data):
             size = body.get("size")
             try:
                 size_int = int(size) if size is not None else 0
@@ -1666,6 +2101,8 @@ def _extract_gmail_attachment_metadata(payload: dict[str, Any]) -> list[dict[str
                     "filename": filename,
                     "mime_type": (part.get("mimeType") or "").strip(),
                     "size": size_int,
+                    "attachment_id": attachment_id,
+                    "inline_data": inline_data,
                 }
             )
         for child in part.get("parts") or []:
@@ -1674,6 +2111,90 @@ def _extract_gmail_attachment_metadata(payload: dict[str, Any]) -> list[dict[str
 
     walk(payload or {})
     return attachments
+
+
+def _extract_gmail_attachment_metadata(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "filename": attachment.get("filename") or "attachment",
+            "mime_type": attachment.get("mime_type") or "",
+            "size": int(attachment.get("size") or 0),
+        }
+        for attachment in _extract_gmail_attachment_parts(payload)
+    ]
+
+
+def _safe_attachment_filename(filename: str, fallback_index: int) -> str:
+    candidate = Path((filename or "").strip()).name
+    if not candidate:
+        candidate = f"attachment-{fallback_index}"
+    safe = re.sub(r"[^A-Za-z0-9._ -]", "_", candidate).strip(" .")
+    if not safe:
+        safe = f"attachment-{fallback_index}"
+    return safe[:200]
+
+
+def _stage_gmail_attachments_for_imessage(
+    gmail_service,
+    gmail_message_id: str,
+    payload: dict[str, Any],
+) -> tuple[list[str], dict[str, Any], Optional[Path]]:
+    max_bytes = _max_imessage_attachment_bytes()
+    staged_dir = Path(tempfile.mkdtemp(prefix="penguinconnect-gmail-attachments-"))
+    staged_paths: list[str] = []
+    forwarded: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+
+    attachments = _extract_gmail_attachment_parts(payload)
+    for idx, attachment in enumerate(attachments, 1):
+        filename = attachment.get("filename") or f"attachment-{idx}"
+        mime_type = attachment.get("mime_type") or "application/octet-stream"
+        declared_size = int(attachment.get("size") or 0)
+        if declared_size > max_bytes:
+            skipped.append({"filename": filename, "reason": "size_limit", "size": declared_size})
+            continue
+
+        content = _decode_gmail_data_bytes(attachment.get("inline_data") or "")
+        if not content and attachment.get("attachment_id"):
+            try:
+                data = _gmail_execute(
+                    lambda attachment_id=attachment.get("attachment_id"), gmail_message_id=gmail_message_id: gmail_service.users()
+                    .messages()
+                    .attachments()
+                    .get(userId="me", messageId=gmail_message_id, id=attachment_id)
+                    .execute()
+                )
+            except Exception:
+                skipped.append({"filename": filename, "reason": "download_failed", "size": declared_size})
+                continue
+            content = _decode_gmail_data_bytes((data or {}).get("data") or "")
+
+        if not content:
+            skipped.append({"filename": filename, "reason": "missing_data", "size": declared_size})
+            continue
+        if len(content) > max_bytes:
+            skipped.append({"filename": filename, "reason": "size_limit", "size": len(content)})
+            continue
+
+        safe_name = _safe_attachment_filename(filename, idx)
+        out_path = staged_dir / safe_name
+        if out_path.exists():
+            stem = out_path.stem or f"attachment-{idx}"
+            suffix = out_path.suffix
+            out_path = staged_dir / f"{stem}-{idx}{suffix}"
+        try:
+            out_path.write_bytes(content)
+        except Exception:
+            skipped.append({"filename": filename, "reason": "write_failed", "size": len(content)})
+            continue
+
+        staged_paths.append(str(out_path))
+        forwarded.append({"filename": out_path.name, "mime_type": mime_type, "size": len(content)})
+
+    if not staged_paths:
+        shutil.rmtree(staged_dir, ignore_errors=True)
+        return [], {"forwarded": [], "skipped": skipped}, None
+    return staged_paths, {"forwarded": forwarded, "skipped": skipped}, staged_dir
 
 
 def _escape_applescript(value: str) -> str:
@@ -1694,32 +2215,51 @@ def _resolve_chat_guid(chat_identifier: str) -> Optional[str]:
     return None
 
 
-def send_imessage(chat_identifier: str, message_text: str) -> tuple[bool, Optional[str]]:
-    if not message_text.strip():
+def send_imessage(
+    chat_identifier: str,
+    message_text: str,
+    attachment_paths: Optional[list[str]] = None,
+) -> tuple[bool, Optional[str]]:
+    normalized_text = (message_text or "").strip()
+    valid_attachments: list[str] = []
+    for path in attachment_paths or []:
+        candidate = Path(path).expanduser()
+        if candidate.exists() and candidate.is_file():
+            valid_attachments.append(str(candidate))
+
+    if not normalized_text and not valid_attachments:
         return False, "empty_message"
 
     guid = _resolve_chat_guid(chat_identifier)
-    safe_msg = _escape_applescript(message_text)
+    send_lines: list[str] = []
 
     if guid:
         safe_guid = _escape_applescript(guid)
-        script = f'''
-        tell application "Messages"
-            send "{safe_msg}" to chat id "{safe_guid}"
-        end tell
-        '''
+        for path in valid_attachments:
+            safe_path = _escape_applescript(path)
+            send_lines.append(f'send (POSIX file "{safe_path}") to chat id "{safe_guid}"')
+        if normalized_text:
+            safe_msg = _escape_applescript(normalized_text)
+            send_lines.append(f'send "{safe_msg}" to chat id "{safe_guid}"')
+        script = "tell application \"Messages\"\n" + "\n".join(f"    {line}" for line in send_lines) + "\nend tell"
     else:
         safe_target = _escape_applescript(chat_identifier)
-        script = f'''
-        tell application "Messages"
-            set targetService to 1st service whose service type = iMessage
-            set targetBuddy to buddy "{safe_target}" of targetService
-            send "{safe_msg}" to targetBuddy
-        end tell
-        '''
+        script_lines = [
+            "tell application \"Messages\"",
+            "    set targetService to 1st service whose service type = iMessage",
+            f"    set targetBuddy to buddy \"{safe_target}\" of targetService",
+        ]
+        for path in valid_attachments:
+            safe_path = _escape_applescript(path)
+            script_lines.append(f'    send (POSIX file "{safe_path}") to targetBuddy')
+        if normalized_text:
+            safe_msg = _escape_applescript(normalized_text)
+            script_lines.append(f'    send "{safe_msg}" to targetBuddy')
+        script_lines.append("end tell")
+        script = "\n".join(script_lines)
 
     try:
-        result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=20)
+        result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=45)
         if result.returncode != 0:
             return False, (result.stderr or "failed_to_send_imessage").strip()
         return True, None
@@ -2136,6 +2676,7 @@ def _retry_pending_imessage_to_gmail(
     conn: sqlite3.Connection,
     gmail_service,
     conv: sqlite3.Row,
+    gmail_write_pause_seconds: float = 0.0,
 ) -> tuple[int, Optional[str]]:
     imported = 0
     now_dt = datetime.now(timezone.utc)
@@ -2223,6 +2764,7 @@ def _retry_pending_imessage_to_gmail(
                 unread,
                 in_reply_to,
             )
+            _sleep_after_gmail_write(gmail_write_pause_seconds)
             if import_error or not imported_data:
                 metadata = _mark_delivery_failure(metadata, "import_result", import_error or "gmail_import_failed", now_dt)
                 conn.execute(
@@ -2282,7 +2824,13 @@ def _sync_conversation_imessage_to_gmail(
         since = cutoff.isoformat()
 
     stored = 0
-    imported, thread_id = _retry_pending_imessage_to_gmail(conn, gmail_service, conv)
+    gmail_write_pause_seconds = _sync_gmail_write_pause_seconds(mode, verify_all)
+    imported, thread_id = _retry_pending_imessage_to_gmail(
+        conn,
+        gmail_service,
+        conv,
+        gmail_write_pause_seconds=gmail_write_pause_seconds,
+    )
     last_ts = state["last_imessage_ts"] if state else None
     thread_id = _resolve_canonical_gmail_thread_id(conn, conv["conversation_id"], thread_id or conv["gmail_thread_id"]) or thread_id
     parent_rfc_message_id, reference_chain = _load_conversation_rfc_context(
@@ -2391,6 +2939,7 @@ def _sync_conversation_imessage_to_gmail(
                 unread,
                 in_reply_to,
             )
+            _sleep_after_gmail_write(gmail_write_pause_seconds)
             if not import_error and imported_data:
                 imported += 1
                 gmail_msg_id = imported_data.get("id")
@@ -2440,7 +2989,11 @@ def _sync_conversation_imessage_to_gmail(
             None,
             None,
         )
-        return {"imessage_imported": 0, "gmail_imported": imported}
+        return {
+            "imessage_imported": 0,
+            "gmail_imported": imported,
+            "gmail_write_pause_seconds": gmail_write_pause_seconds,
+        }
 
     canonical_thread_id = _resolve_canonical_gmail_thread_id(conn, conv["conversation_id"], thread_id or conv["gmail_thread_id"])
     if canonical_thread_id and canonical_thread_id != conv["gmail_thread_id"]:
@@ -2454,7 +3007,11 @@ def _sync_conversation_imessage_to_gmail(
     if unread_count == 0:
         _mark_conversation_gmail_read(conn, gmail_service, conv["conversation_id"])
 
-    return {"imessage_imported": stored, "gmail_imported": imported}
+    return {
+        "imessage_imported": stored,
+        "gmail_imported": imported,
+        "gmail_write_pause_seconds": gmail_write_pause_seconds,
+    }
 
 
 def _mark_conversation_gmail_read(conn: sqlite3.Connection, gmail_service, conversation_id: str):
@@ -2630,6 +3187,7 @@ def _parse_sender_email(from_header: str) -> str:
 def _retry_pending_gmail_to_imessage(
     conn: sqlite3.Connection,
     conv: sqlite3.Row,
+    gmail_service=None,
 ) -> int:
     retried = 0
     now_dt = datetime.now(timezone.utc)
@@ -2669,10 +3227,56 @@ def _retry_pending_gmail_to_imessage(
                 continue
 
             body_text = (row["body_text"] or "").strip()
-            if not body_text:
+            attachment_paths: list[str] = []
+            staged_dir: Optional[Path] = None
+            attachment_meta = metadata.get("attachments") if isinstance(metadata.get("attachments"), list) else []
+            gmail_message_id = (
+                metadata.get("gmail_message_id")
+                or (row["provider_message_id"] or "").replace("gmail:", "", 1)
+            )
+
+            if gmail_service and gmail_message_id and attachment_meta:
+                try:
+                    full = _gmail_execute(
+                        lambda gmail_message_id=gmail_message_id: gmail_service.users().messages().get(
+                            userId="me",
+                            id=gmail_message_id,
+                            format="full",
+                        ).execute()
+                    )
+                    attachment_paths, attachment_delivery, staged_dir = _stage_gmail_attachments_for_imessage(
+                        gmail_service,
+                        gmail_message_id,
+                        full.get("payload") or {},
+                    )
+                    metadata["attachments_forwarded"] = attachment_delivery.get("forwarded", [])
+                    metadata["attachments_skipped"] = attachment_delivery.get("skipped", [])
+                except Exception:
+                    metadata["attachments_skipped"] = [{"reason": "download_failed"}]
+
+            if not body_text and not attachment_paths:
+                if attachment_meta:
+                    metadata = _mark_delivery_failure(
+                        metadata,
+                        "send_result",
+                        "gmail_attachment_download_failed",
+                        now_dt,
+                    )
+                    conn.execute(
+                        """UPDATE penguin_connect_messages
+                           SET metadata = ?
+                           WHERE conversation_id = ? AND provider_message_id = ?""",
+                        (json.dumps(metadata), conv["conversation_id"], row["provider_message_id"]),
+                    )
                 continue
 
-            ok, error = send_imessage(conv["imessage_chat_id"], body_text)
+            ok, error = send_imessage(
+                conv["imessage_chat_id"],
+                body_text,
+                attachment_paths=attachment_paths,
+            )
+            if staged_dir:
+                shutil.rmtree(staged_dir, ignore_errors=True)
             if ok:
                 metadata = _mark_delivery_success(metadata, "send_result", "imessage_ok")
             else:
@@ -2717,7 +3321,7 @@ def _sync_conversation_gmail_to_imessage(
         since = FULL_GMAIL_SYNC_SINCE
     else:
         since = (state["last_gmail_ts"] if state and state["last_gmail_ts"] else cutoff.isoformat())
-    converted = _retry_pending_gmail_to_imessage(conn, conv)
+    converted = _retry_pending_gmail_to_imessage(conn, conv, gmail_service=gmail_service)
     blocked = 0
     last_gmail_ts = state["last_gmail_ts"] if state else since
     history_id = state["last_gmail_history_id"] if state else None
@@ -2850,14 +3454,24 @@ def _sync_conversation_gmail_to_imessage(
             history_id = full.get("historyId") or history_id
             continue
 
+        attachment_paths: list[str] = []
+        attachment_delivery: dict[str, Any] = {"forwarded": [], "skipped": []}
+        staged_dir: Optional[Path] = None
+        if attachment_meta:
+            attachment_paths, attachment_delivery, staged_dir = _stage_gmail_attachments_for_imessage(
+                gmail_service,
+                message_id,
+                payload,
+            )
+
         body_text = _extract_gmail_plain_text(payload).strip()
         if not body_text:
             body_text = (full.get("snippet") or "").strip()
-        if not body_text and attachment_meta:
+        if not body_text and attachment_meta and not attachment_paths:
             preview = [a.get("filename") or a.get("mime_type") or "attachment" for a in attachment_meta[:3]]
             suffix = f" (+{len(attachment_meta) - 3} more)" if len(attachment_meta) > 3 else ""
             body_text = f"[Email attachment] {', '.join(preview)}{suffix}"
-        if not body_text:
+        if not body_text and not attachment_paths:
             conn.execute(
                 """INSERT OR IGNORE INTO penguin_connect_messages
                    (conversation_id, provider, provider_message_id, direction,
@@ -2884,6 +3498,8 @@ def _sync_conversation_gmail_to_imessage(
                             "rfc_in_reply_to": rfc_in_reply_to,
                             "rfc_references": rfc_references,
                             "attachments": attachment_meta,
+                            "attachments_forwarded": attachment_delivery.get("forwarded", []),
+                            "attachments_skipped": attachment_delivery.get("skipped", []),
                             "labels": label_ids,
                             "retry_count": 0,
                             "max_retries": _retry_max_retries(),
@@ -2905,7 +3521,13 @@ def _sync_conversation_gmail_to_imessage(
             rfc_references,
         )
         provider_message_id = f"gmail:{message_id}"
-        ok, error = send_imessage(conv["imessage_chat_id"], delivery_body_text)
+        ok, error = send_imessage(
+            conv["imessage_chat_id"],
+            delivery_body_text,
+            attachment_paths=attachment_paths,
+        )
+        if staged_dir:
+            shutil.rmtree(staged_dir, ignore_errors=True)
         meta = {
             "gmail_message_id": message_id,
             "gmail_thread_id": thread_id,
@@ -2913,6 +3535,8 @@ def _sync_conversation_gmail_to_imessage(
             "rfc_in_reply_to": rfc_in_reply_to,
             "rfc_references": rfc_references,
             "attachments": attachment_meta,
+            "attachments_forwarded": attachment_delivery.get("forwarded", []),
+            "attachments_skipped": attachment_delivery.get("skipped", []),
             "source_body_text": body_text,
             "quoted_context_count": quoted_context_count,
             "labels": label_ids,
@@ -3029,6 +3653,7 @@ def _sync_conversations_unlocked(
         "gmail_email": gmail_email,
         "primary_send_as": primary_send_as,
         "send_as_aliases": send_as_aliases,
+        "gmail_backfill_write_pause_seconds": _sync_gmail_write_pause_seconds(mode, verify_all),
         "discovered_conversations": selection["discovered_conversations"],
         "selected_conversations": selection["selected_conversations"],
         "selection_strategy": selection["selection_strategy"],
@@ -3242,6 +3867,7 @@ def get_sync_metrics(conn: sqlite3.Connection) -> dict[str, Any]:
             "max_backoff_seconds": _retry_max_backoff_seconds(),
             "max_retries": _retry_max_retries(),
         },
+        "durable_queue": get_sync_queue_metrics(conn),
         "directions": directions,
         "totals": {
             "retry_queue_count": (
@@ -3417,7 +4043,26 @@ def run_startup_catchup() -> dict[str, Any]:
     conn = get_connection()
     try:
         try:
-            result = sync_conversations(conn, mode="startup_catchup", days=DEFAULT_BACKFILL_DAYS)
+            enqueue_result = enqueue_sync_job(
+                conn,
+                mode="startup_catchup",
+                days=DEFAULT_BACKFILL_DAYS,
+                hours=None,
+                verify_all=False,
+                dedupe=True,
+            )
+            result = run_sync_job_worker_once(conn, owner="startup")
+            if result.get("reason") == "queue_idle" and not enqueue_result.get("enqueued"):
+                result = {
+                    "success": True,
+                    "mode": "startup_catchup",
+                    "skipped": True,
+                    "reason": "queue_busy",
+                    "queue_job_id": enqueue_result.get("job_id"),
+                }
+            result.setdefault("queue_job_id", enqueue_result.get("job_id"))
+            result["queue_enqueued"] = bool(enqueue_result.get("enqueued"))
+            result["queue_pending_jobs"] = _pending_sync_jobs_count(conn)
         except sqlite3.OperationalError as exc:
             return _map_sync_sqlite_error(exc)
         conn.commit()
@@ -3432,7 +4077,26 @@ def run_incremental_sync() -> dict[str, Any]:
     conn = get_connection()
     try:
         try:
-            result = sync_conversations(conn, mode="incremental", days=DEFAULT_BACKFILL_DAYS)
+            enqueue_result = enqueue_sync_job(
+                conn,
+                mode="incremental",
+                days=DEFAULT_BACKFILL_DAYS,
+                hours=None,
+                verify_all=False,
+                dedupe=True,
+            )
+            result = run_sync_job_worker_once(conn, owner="watcher")
+            if result.get("reason") == "queue_idle" and not enqueue_result.get("enqueued"):
+                result = {
+                    "success": True,
+                    "mode": "incremental",
+                    "skipped": True,
+                    "reason": "queue_busy",
+                    "queue_job_id": enqueue_result.get("job_id"),
+                }
+            result.setdefault("queue_job_id", enqueue_result.get("job_id"))
+            result["queue_enqueued"] = bool(enqueue_result.get("enqueued"))
+            result["queue_pending_jobs"] = _pending_sync_jobs_count(conn)
         except sqlite3.OperationalError as exc:
             return _map_sync_sqlite_error(exc)
         conn.commit()

@@ -104,12 +104,37 @@ CREATE TABLE IF NOT EXISTS penguin_connect_poll_state (
     updated_at TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS penguin_connect_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_type TEXT NOT NULL,
+    queue_name TEXT NOT NULL DEFAULT 'default',
+    dedupe_key TEXT,
+    payload_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 12,
+    next_run_at TEXT NOT NULL DEFAULT (datetime('now')),
+    lease_until TEXT,
+    lease_owner TEXT,
+    last_error TEXT,
+    result_json TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    started_at TEXT,
+    finished_at TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_conv_status ON penguin_connect_conversations(gmail_email, status);
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_alias_conv ON penguin_connect_aliases(conversation_id, status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_penguin_connect_alias_one_active
 ON penguin_connect_aliases(conversation_id) WHERE status = 'active';
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_msg_conv_ts ON penguin_connect_messages(conversation_id, message_timestamp);
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_msg_gmail ON penguin_connect_messages(gmail_message_id);
+CREATE INDEX IF NOT EXISTS idx_penguin_connect_jobs_ready ON penguin_connect_jobs(job_type, status, next_run_at, id);
+CREATE INDEX IF NOT EXISTS idx_penguin_connect_jobs_lease ON penguin_connect_jobs(job_type, status, lease_until);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_penguin_connect_jobs_active_dedupe
+ON penguin_connect_jobs(dedupe_key)
+WHERE dedupe_key IS NOT NULL AND status IN ('queued', 'leased');
 """
 
 
@@ -155,6 +180,9 @@ def init_db() -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_penguin_connect_sync_last_message ON penguin_connect_sync_state(last_message_ts)")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_penguin_connect_poll_rate_limit ON penguin_connect_poll_state(gmail_rate_limited_until)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_penguin_connect_jobs_finished ON penguin_connect_jobs(status, finished_at)"
     )
     conn.commit()
     conn.close()

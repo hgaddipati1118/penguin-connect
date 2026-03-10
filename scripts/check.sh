@@ -17,6 +17,7 @@ echo "[check] backend compile"
   "$ROOT_DIR/server/penguin_connect.py" \
   "$ROOT_DIR/scripts/penguin_connect_setup.py" \
   "$ROOT_DIR/scripts/penguin_connect_connect.py" \
+  "$ROOT_DIR/scripts/penguin_connect_backfill.py" \
   "$ROOT_DIR/scripts/penguin_connect_doctor.py" \
   "$ROOT_DIR/scripts/penguinconnect_create_inbox.py" \
   "$ROOT_DIR/scripts/import_contacts.py"

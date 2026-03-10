@@ -134,6 +134,12 @@ curl -s -X POST http://127.0.0.1:8888/penguin-connect/conversations/sync \
 ## Polling and Auto-Start
 
 - default polling: `PENGUIN_CONNECT_POLL_SECONDS=30`
+- backfill Gmail write pacing: `PENGUIN_CONNECT_BACKFILL_WRITE_PAUSE_SECONDS=0.15`
+- durable sync queue retries:
+  - `PENGUIN_CONNECT_SYNC_JOB_MAX_ATTEMPTS=12`
+  - `PENGUIN_CONNECT_SYNC_JOB_LEASE_SECONDS=180`
+  - `PENGUIN_CONNECT_SYNC_JOB_RETRY_BASE_SECONDS=30`
+  - `PENGUIN_CONNECT_SYNC_JOB_RETRY_MAX_BACKOFF_SECONDS=1800`
 - retry policy defaults:
   - `PENGUIN_CONNECT_RETRY_BASE_SECONDS=30`
   - `PENGUIN_CONNECT_RETRY_MAX_BACKOFF_SECONDS=900`
@@ -153,6 +159,7 @@ curl -s http://127.0.0.1:8888/penguin-connect/conversations/<conversation_id>/al
 curl -s -X POST http://127.0.0.1:8888/penguin-connect/conversations/sync \
   -H 'Content-Type: application/json' \
   -d '{"mode":"incremental"}' | jq
+./scripts/penguin_connect_backfill.py --max-attempts 20
 curl -s -X POST http://127.0.0.1:8888/penguin-connect/conversations/<conversation_id>/send \
   -H 'Content-Type: application/json' \
   -d '{"sender_email":"you@gmail.com","message":"hello"}' | jq

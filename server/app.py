@@ -69,9 +69,12 @@ async def lifespan(_app: FastAPI):
             result = penguinconnect_run_startup_catchup()
             if result.get("success"):
                 if result.get("skipped"):
-                    if result.get("reason") == "gmail_rate_limited":
+                    reason = result.get("reason")
+                    if reason == "gmail_rate_limited":
                         retry_after = result.get("retry_after_seconds")
                         print(f"[PenguinConnect] Startup catch-up paused for Gmail rate limits ({retry_after}s)")
+                    elif reason in {"queue_idle", "queue_busy"}:
+                        pass
                     else:
                         print("[PenguinConnect] Startup catch-up waiting for initial backfill")
                 else:

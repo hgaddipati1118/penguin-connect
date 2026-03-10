@@ -11,6 +11,7 @@ macOS-only local service that lets users sync and manage iMessage conversations 
   - iMessage -> Gmail inbox thread
   - Gmail replies to alias -> iMessage
 - Polling every 30 seconds by default
+- Durable local sync queue (SQLite): queued/leased jobs survive process pauses and resume with retries
 - Retry backoff + capped retries for failed deliveries
 - Startup gap fill + default 7-day backfill
 - Per-conversation destructive disconnect/reconnect
@@ -121,6 +122,27 @@ curl -sS -X POST http://127.0.0.1:8888/penguin-connect/conversations/sync \
 
 Use `{"mode":"backfill","verify_all":true}` for a manual full verification pass. That rescans every active conversation and verifies the bridge has imported every iMessage and Gmail message it can dedupe, without relying on the recent-activity window.
 
+For a controlled full backfill that automatically waits/retries when Gmail rate limits are hit:
+
+```bash
+./scripts/penguin_connect_backfill.py --max-attempts 20
+```
+
+You can tune pacing with:
+
+```bash
+PENGUIN_CONNECT_BACKFILL_WRITE_PAUSE_SECONDS=0.15
+```
+
+Durable queue settings (optional):
+
+```bash
+PENGUIN_CONNECT_SYNC_JOB_MAX_ATTEMPTS=12
+PENGUIN_CONNECT_SYNC_JOB_LEASE_SECONDS=180
+PENGUIN_CONNECT_SYNC_JOB_RETRY_BASE_SECONDS=30
+PENGUIN_CONNECT_SYNC_JOB_RETRY_MAX_BACKOFF_SECONDS=1800
+```
+
 If sync returns `{"detail":"imessage_db_unreadable"}`, Terminal does not have Full Disk Access yet.
 
 ## Useful Scripts
@@ -128,6 +150,8 @@ If sync returns `{"detail":"imessage_db_unreadable"}`, Terminal does not have Fu
 - `./scripts/penguin_connect_setup.py --gmail you@gmail.com`
 - `./scripts/penguin_connect_connect.py --gmail you@gmail.com`
 - `./scripts/penguin_connect_doctor.py`
+- `./scripts/penguin_connect_backfill.py --max-attempts 20`
+- `./scripts/penguin_connect_verify_contact_resolution.py --handle +15127436385 --all-active --limit 100`
 - `./scripts/import_contacts.py`
 - `./scripts/install_launchd_penguin_connect_bridge.sh`
 - `./scripts/check.sh`

@@ -55,6 +55,10 @@ def _penguin_connect_polling_loop() -> None:
                 _update_sync_status()
             elif result.get("skipped"):
                 err = result.get("reason") or "skipped"
+                if err in {"queue_idle", "queue_busy"}:
+                    _last_error_code = None
+                    _shutdown_event.wait(interval)
+                    continue
                 if _last_error_code != err:
                     if err == "gmail_rate_limited":
                         retry_after = result.get("retry_after_seconds")
