@@ -178,6 +178,16 @@ def _rebuild_conversations_table_for_provider_uniqueness(conn: sqlite3.Connectio
     try:
         conn.executescript(
             """
+            DROP TABLE IF EXISTS temp.penguin_connect_aliases__backup;
+            DROP TABLE IF EXISTS temp.penguin_connect_messages__backup;
+            DROP TABLE IF EXISTS temp.penguin_connect_sync_state__backup;
+            CREATE TEMP TABLE penguin_connect_aliases__backup AS
+            SELECT * FROM penguin_connect_aliases;
+            CREATE TEMP TABLE penguin_connect_messages__backup AS
+            SELECT * FROM penguin_connect_messages;
+            CREATE TEMP TABLE penguin_connect_sync_state__backup AS
+            SELECT * FROM penguin_connect_sync_state;
+
             DROP TABLE IF EXISTS penguin_connect_conversations__new;
             CREATE TABLE penguin_connect_conversations__new (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -232,6 +242,17 @@ def _rebuild_conversations_table_for_provider_uniqueness(conn: sqlite3.Connectio
 
             DROP TABLE penguin_connect_conversations;
             ALTER TABLE penguin_connect_conversations__new RENAME TO penguin_connect_conversations;
+
+            DELETE FROM penguin_connect_aliases;
+            INSERT INTO penguin_connect_aliases SELECT * FROM temp.penguin_connect_aliases__backup;
+            DELETE FROM penguin_connect_messages;
+            INSERT INTO penguin_connect_messages SELECT * FROM temp.penguin_connect_messages__backup;
+            DELETE FROM penguin_connect_sync_state;
+            INSERT INTO penguin_connect_sync_state SELECT * FROM temp.penguin_connect_sync_state__backup;
+
+            DROP TABLE temp.penguin_connect_aliases__backup;
+            DROP TABLE temp.penguin_connect_messages__backup;
+            DROP TABLE temp.penguin_connect_sync_state__backup;
             """
         )
     finally:
