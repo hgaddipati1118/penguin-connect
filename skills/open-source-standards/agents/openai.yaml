@@ -1,0 +1,4 @@
+interface:
+  display_name: "Open Source Standards"
+  short_description: "Commit, review, and contribution hygiene"
+  default_prompt: "Use $open-source-standards to prepare or review a repo change using solid open source commit, fix, and PR practices."
