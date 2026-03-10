@@ -1,0 +1,20 @@
+# Secrets
+.env
+client_secret.json
+google_client_secret.json
+
+# Python
+venv/
+*.pyc
+__pycache__/
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
