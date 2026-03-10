@@ -1,15 +1,26 @@
 # PenguinConnect
 
-macOS-only local service that lets users sync and manage iMessage conversations through Gmail threads.
+PenguinConnect is a local email-to-messaging bridge. It lets users manage messaging conversations through Gmail threads, with iMessage implemented today and WhatsApp or Telegram planned next.
+
+Current runtime is still macOS-only because the first source adapter is iMessage.
+
+## Current And Planned Channels
+
+- Current source adapter: iMessage
+- Planned next adapters: WhatsApp, Telegram
+- Shared inbox surface: Gmail threads plus per-conversation alias addresses
+- Architecture direction: one bridge core with provider adapters under `server/channels/`
 
 ## Key Behavior
 
 - Local runtime only (`127.0.0.1`)
 - `conversation_id` is the primary identity
+  - derived from Gmail account + messaging platform + source chat id
 - 1 alias email per conversation
 - Two-way sync:
   - iMessage -> Gmail inbox thread
   - Gmail replies to alias -> iMessage
+- Provider seam exists for future source adapters
 - Polling every 30 seconds by default
 - Durable local sync queue (SQLite): queued/leased jobs survive process pauses and resume with retries
 - Retry backoff + capped retries for failed deliveries
@@ -66,6 +77,8 @@ If OAuth fails with `redirect_uri_mismatch`, the setup scripts now print exact G
 1. Get Google OAuth Desktop client JSON.
 2. Connect Gmail (script auto-generates `token_json` and requests full Gmail scope, including `https://mail.google.com/`).
 3. Run doctor + startup sync.
+
+The current setup flow is iMessage-specific because that is the only implemented source adapter right now.
 
 Full click-by-click instructions: [`docs/PENGUIN_CONNECT.md`](./docs/PENGUIN_CONNECT.md)
 
@@ -160,6 +173,7 @@ If sync returns `{"detail":"imessage_db_unreadable"}`, Terminal does not have Fu
 
 ```text
 server/   FastAPI app + local DB + bridge engine
+server/channels/  messaging-provider adapters (iMessage today)
 scripts/  setup, OAuth connect, doctor, launchd, operations
 docs/     setup and operational documentation
 ```

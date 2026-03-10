@@ -1,6 +1,10 @@
 # PenguinConnect (Mac Local Bridge)
 
-PenguinConnect bridges iMessage conversations to a user's Gmail inbox using per-conversation alias addresses.
+PenguinConnect bridges messaging conversations to a user's Gmail inbox using per-conversation alias addresses.
+
+Current implemented source adapter: iMessage.
+
+Planned next source adapters: WhatsApp and Telegram.
 
 This bridge is macOS local-only and runs on `127.0.0.1`.
 
@@ -26,10 +30,10 @@ Optional flags:
 
 ## What the Bridge Does
 
-- Creates deterministic `conversation_id` per iMessage chat.
+- Creates deterministic `conversation_id` values from Gmail account + source provider + source chat id.
 - Assigns one active alias email per conversation.
 - Imports iMessage messages into Gmail inbox threads.
-- Polls Gmail for replies to alias addresses and sends those replies to iMessage.
+- Polls Gmail for replies to alias addresses and sends those replies back to the source provider.
 - Applies sender gate:
   - connected Gmail primary address, or
   - verified Gmail send-as alias for same inbox.

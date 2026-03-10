@@ -16,15 +16,13 @@ Use this file to understand what PenguinConnect already does for iMessage before
 
 ### Source adapter behavior
 
+- `server/channels/imessage.py`
+- `IMessageChannelAdapter`: current provider adapter boundary for iMessage-specific discovery, send, unread-count, and sender-label logic
+
 - `server/browse_sources.py`
 - `browse_imessage_chats`: discover iMessage chats and participants from `chat.db`
 - `list_recent_imessage_chat_activity`: drive incremental and backfill selection from recent source activity
 - `fetch_imessage_messages`: load text and supported attachments from the source history
-
-- `server/penguin_connect.py`
-- `send_imessage`: deliver text and attachments back to the Messages app through AppleScript
-- `_resolve_imessage_sender_and_subject`: normalize sender and display labels for Gmail
-- `_get_imessage_unread_count`: preserve read or unread semantics when mirroring into Gmail
 
 ### Gmail account and sender trust
 
@@ -35,7 +33,7 @@ Use this file to understand what PenguinConnect already does for iMessage before
 
 ### Conversation discovery and identity
 
-- `deterministic_conversation_id`: derive a stable conversation identifier from normalized Gmail address and provider chat id
+- `deterministic_conversation_id`: derive a stable conversation identifier from normalized Gmail address, provider key, and provider chat id
 - `_create_alias_email`: derive deterministic or fresh alias local parts from the conversation id
 - `_ensure_active_alias`: enforce one active alias row per active conversation
 - `ensure_conversations_discovered`: pull source conversations into `penguin_connect_conversations` and attach aliases
@@ -67,7 +65,7 @@ Use this file to understand what PenguinConnect already does for iMessage before
 
 - `contacts`: display-name resolution cache
 - `penguin_connect_accounts`: connected Gmail account and verified send-as addresses
-- `penguin_connect_conversations`: one row per active or disconnected source conversation
+- `penguin_connect_conversations`: one row per active or disconnected source conversation, now tagged with `source_provider`
 - `penguin_connect_aliases`: alias lifecycle with one active alias per conversation
 - `penguin_connect_messages`: deduped source and Gmail messages plus delivery metadata
 - `penguin_connect_sync_state`: per-conversation source and Gmail cursors plus bootstrap marker

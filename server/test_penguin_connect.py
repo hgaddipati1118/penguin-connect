@@ -23,6 +23,11 @@ class PenguinConnectTests(unittest.TestCase):
     def setUp(self):
         with penguin_connect._sync_runtime_lock:
             penguin_connect._sync_runtime = penguin_connect._new_sync_runtime_state()
+        self.send_imessage_patcher = mock.patch(
+            "penguin_connect.send_imessage",
+            side_effect=AssertionError("Tests must mock send_imessage explicitly"),
+        )
+        self.send_imessage_patcher.start()
         self.conn = sqlite3.connect(":memory:")
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
@@ -51,6 +56,7 @@ class PenguinConnectTests(unittest.TestCase):
         )
 
     def tearDown(self):
+        self.send_imessage_patcher.stop()
         self.conn.close()
 
     def _conversation_row(self):
@@ -63,8 +69,10 @@ class PenguinConnectTests(unittest.TestCase):
         one = penguin_connect.deterministic_conversation_id("Owner@Gmail.com", "chat-A")
         two = penguin_connect.deterministic_conversation_id("owner@gmail.com", "chat-A")
         three = penguin_connect.deterministic_conversation_id("owner@gmail.com", "chat-B")
+        four = penguin_connect.deterministic_conversation_id("owner@gmail.com", "chat-A", "telegram")
         self.assertEqual(one, two)
         self.assertNotEqual(one, three)
+        self.assertNotEqual(one, four)
 
     def test_sync_window_cutoff_prefers_hours_override(self):
         class FixedDateTime(datetime):
@@ -406,6 +414,8 @@ class PenguinConnectTests(unittest.TestCase):
         mock_discover.assert_not_called()
         self.assertTrue(result["connected"])
         self.assertEqual(len(result["conversations"]), 1)
+        self.assertEqual(result["conversations"][0]["source_provider"], "imessage")
+        self.assertEqual(result["conversations"][0]["source_chat_id"], "chat-123")
 
     def test_list_conversations_discovers_when_cache_empty(self):
         self.conn.execute("DELETE FROM penguin_connect_conversations WHERE gmail_email = ?", ("owner@gmail.com",))
@@ -493,6 +503,20 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(second_msg["Message-ID"], "<second@example.test>")
         self.assertEqual(second_msg["In-Reply-To"], "<first@example.test>")
         self.assertEqual(second_msg["References"], "<root@example.test> <first@example.test>")
+
+    def test_build_import_email_sets_provider_header_and_subject_prefix(self):
+        raw = penguin_connect._build_import_email(
+            "amc_test",
+            "owner+am-test@gmail.com",
+            "owner@gmail.com",
+            "Family Group",
+            {"text": "hello", "timestamp": "2026-03-04T09:00:00+00:00", "attachments": []},
+            source_provider="telegram",
+        )
+
+        parsed = BytesParser(policy=policy.default).parsebytes(base64.urlsafe_b64decode(raw))
+        self.assertEqual(parsed["Subject"], "Telegram · Family Group")
+        self.assertEqual(parsed["X-PenguinConnect-Source-Provider"], "telegram")
 
     def test_build_import_email_attaches_local_imessage_attachments(self):
         with tempfile.TemporaryDirectory() as tmp:

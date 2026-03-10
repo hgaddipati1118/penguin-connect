@@ -5,8 +5,9 @@ Use this file when designing the refactor from one source provider to many.
 ## iMessage-specific pressure points
 
 - Schema:
+- `penguin_connect_conversations.source_provider`
 - `penguin_connect_conversations.imessage_chat_id`
-- unique key on `(gmail_email, imessage_chat_id)`
+- legacy chat-id column name still exists even though new conversation ids are provider-aware
 - sync-state column names such as `last_imessage_ts`
 
 - Direction and status naming:
@@ -32,8 +33,8 @@ Use this file when designing the refactor from one source provider to many.
 
 1. Extract a provider adapter layer.
 
-- Create a channel module boundary such as `server/channels/base.py` and `server/channels/imessage.py`.
-- Move provider discovery, fetch, send, unread-state, and display-name logic behind that adapter.
+- `server/channels/base.py` and `server/channels/imessage.py` now exist.
+- Continue moving provider discovery, fetch, send, unread-state, and display-name logic behind that adapter boundary instead of back into `server/penguin_connect.py`.
 
 2. Define normalized provider contracts.
 

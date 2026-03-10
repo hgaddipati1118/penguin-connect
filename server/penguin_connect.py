@@ -1,4 +1,4 @@
-"""Local macOS PenguinConnect bridge: iMessage <-> Gmail (conversation-centric)."""
+"""Local macOS PenguinConnect bridge: messaging channels <-> Gmail (conversation-centric)."""
 
 from __future__ import annotations
 
@@ -23,9 +23,7 @@ from email.parser import BytesParser
 from pathlib import Path
 from typing import Any, Optional
 
-from browse_sources import browse_imessage_chats, fetch_imessage_messages, list_recent_imessage_chat_activity
-
-IMESSAGE_DB = Path.home() / "Library" / "Messages" / "chat.db"
+from channels import get_channel_adapter
 
 DEFAULT_BACKFILL_DAYS = 7
 SYNC_MODES = {"startup_catchup", "backfill", "incremental"}
@@ -72,6 +70,7 @@ FULL_IMESSAGE_SYNC_SINCE = datetime(2001, 1, 1, tzinfo=timezone.utc).isoformat()
 FULL_GMAIL_SYNC_SINCE = datetime(1970, 1, 1, tzinfo=timezone.utc).isoformat()
 _sync_runtime_lock = threading.Lock()
 _UNSET = object()
+_IMESSAGE_CHANNEL = get_channel_adapter("imessage")
 
 
 class _GmailRetryableError(RuntimeError):
@@ -109,6 +108,117 @@ def _now_iso() -> str:
 
 def _normalize_email(value: Optional[str]) -> str:
     return (value or "").strip().lower()
+
+
+def _normalize_source_provider(value: Optional[str]) -> str:
+    return (value or "imessage").strip().lower() or "imessage"
+
+
+def _source_provider_label(source_provider: Optional[str]) -> str:
+    normalized = _normalize_source_provider(source_provider)
+    try:
+        adapter = get_channel_adapter(normalized)
+    except KeyError:
+        adapter = None
+    if adapter:
+        label = getattr(adapter, "provider_label", "")
+        if label:
+            return label
+    if normalized == "whatsapp":
+        return "WhatsApp"
+    if normalized == "telegram":
+        return "Telegram"
+    return normalized.replace("_", " ").replace("-", " ").title() or "Messaging"
+
+
+def _conversation_source_provider(conv: sqlite3.Row | dict[str, Any]) -> str:
+    try:
+        return _normalize_source_provider(conv["source_provider"])
+    except Exception:
+        return "imessage"
+
+
+def _conversation_source_chat_id(conv: sqlite3.Row | dict[str, Any]) -> str:
+    for key in ("source_chat_id", "imessage_chat_id"):
+        try:
+            value = (conv[key] or "").strip()
+        except Exception:
+            value = ""
+        if value:
+            return value
+    return ""
+
+
+def _source_adapter_for_provider(source_provider: Optional[str]):
+    return get_channel_adapter(_normalize_source_provider(source_provider))
+
+
+def _source_adapter_for_conversation(conv: sqlite3.Row | dict[str, Any]):
+    return _source_adapter_for_provider(_conversation_source_provider(conv))
+
+
+def _provider_subject(source_provider: Optional[str], display_name: Optional[str]) -> str:
+    return f"{_source_provider_label(source_provider)} · {(display_name or '').strip() or 'Conversation'}"
+
+
+def _strip_provider_subject(subject: Optional[str], source_provider: Optional[str]) -> str:
+    normalized_subject = (subject or "").strip()
+    prefix = f"{_source_provider_label(source_provider)} · "
+    if normalized_subject.startswith(prefix):
+        return normalized_subject[len(prefix) :].strip()
+    return normalized_subject
+
+
+def _send_to_source_conversation(
+    conv: sqlite3.Row | dict[str, Any],
+    message_text: str,
+    *,
+    attachment_paths: Optional[list[str]] = None,
+) -> tuple[bool, Optional[str]]:
+    source_provider = _conversation_source_provider(conv)
+    source_chat_id = _conversation_source_chat_id(conv)
+    if source_provider == "imessage":
+        return send_imessage(source_chat_id, message_text, attachment_paths=attachment_paths)
+    adapter = _source_adapter_for_provider(source_provider)
+    return adapter.send_message(source_chat_id, message_text, attachment_paths=attachment_paths)
+
+
+def browse_imessage_chats(search=None, limit=100):
+    return _IMESSAGE_CHANNEL.list_conversations(search=search, limit=limit)
+
+
+def list_recent_imessage_chat_activity(since, limit=500):
+    return _IMESSAGE_CHANNEL.list_recent_activity(since, limit=limit)
+
+
+def fetch_imessage_messages(chat_id, limit=50, since=None):
+    return _IMESSAGE_CHANNEL.fetch_messages(chat_id, limit=limit, since=since)
+
+
+def send_imessage(
+    chat_identifier: str,
+    message_text: str,
+    attachment_paths: Optional[list[str]] = None,
+) -> tuple[bool, Optional[str]]:
+    return _IMESSAGE_CHANNEL.send_message(chat_identifier, message_text, attachment_paths=attachment_paths)
+
+
+def _get_imessage_unread_count(chat_identifier: str) -> Optional[int]:
+    return _IMESSAGE_CHANNEL.get_unread_count(chat_identifier)
+
+
+def _resolve_imessage_sender_and_subject(
+    conn: sqlite3.Connection,
+    conv: sqlite3.Row,
+    msg: dict[str, Any],
+) -> tuple[str, str]:
+    return _IMESSAGE_CHANNEL.resolve_sender_and_subject(
+        conn,
+        conv,
+        msg,
+        lookup_contact_name=_lookup_contact_name,
+        looks_like_unresolved_handle=_looks_like_unresolved_handle,
+    )
 
 
 def _normalize_sync_hours(hours: Optional[int]) -> Optional[int]:
@@ -702,7 +812,8 @@ def _delivery_status(direction: str, gmail_message_id: Optional[str], metadata: 
     if direction == "imessage_to_email":
         return "delivered" if gmail_message_id else "pending"
     if direction == "email_to_imessage":
-        return "delivered" if metadata.get("send_result") == "imessage_ok" else "pending"
+        send_result = (metadata.get("send_result") or "").strip().lower()
+        return "delivered" if send_result.endswith("_ok") else "pending"
     return "pending"
 
 
@@ -1121,9 +1232,67 @@ def _looks_like_unresolved_handle(value: str) -> bool:
     return not any(ch.isalpha() for ch in candidate)
 
 
-def deterministic_conversation_id(gmail_email: str, imessage_chat_id: str) -> str:
-    payload = f"{_normalize_email(gmail_email)}::{imessage_chat_id}".encode("utf-8")
+def deterministic_conversation_id(
+    gmail_email: str,
+    source_chat_id: str,
+    source_provider: str = "imessage",
+) -> str:
+    normalized_provider = _normalize_source_provider(source_provider)
+    payload = f"{_normalize_email(gmail_email)}::{normalized_provider}::{source_chat_id}".encode("utf-8")
     return f"amc_{hashlib.sha256(payload).hexdigest()}"
+
+
+def _legacy_conversation_id(gmail_email: str, source_chat_id: str) -> str:
+    payload = f"{_normalize_email(gmail_email)}::{source_chat_id}".encode("utf-8")
+    return f"amc_{hashlib.sha256(payload).hexdigest()}"
+
+
+def _migrate_conversation_id(conn: sqlite3.Connection, old_id: str, new_id: str, source_provider: str) -> None:
+    if not old_id or not new_id or old_id == new_id:
+        return
+    temporary_provider = f"legacy-migrating:{old_id}"
+    conn.execute(
+        "UPDATE penguin_connect_conversations SET source_provider = ? WHERE conversation_id = ?",
+        (temporary_provider, old_id),
+    )
+    conn.execute(
+        """INSERT INTO penguin_connect_conversations (
+               gmail_email,
+               source_provider,
+               conversation_id,
+               imessage_chat_id,
+               display_name,
+               chat_type,
+               participants,
+               alias_email,
+               status,
+               gmail_thread_id,
+               last_synced_at,
+               created_at,
+               updated_at
+           )
+           SELECT
+               gmail_email,
+               ?,
+               ?,
+               imessage_chat_id,
+               display_name,
+               chat_type,
+               participants,
+               alias_email,
+               status,
+               gmail_thread_id,
+               last_synced_at,
+               created_at,
+               updated_at
+           FROM penguin_connect_conversations
+           WHERE conversation_id = ?""",
+        (source_provider, new_id, old_id),
+    )
+    conn.execute("UPDATE penguin_connect_aliases SET conversation_id = ? WHERE conversation_id = ?", (new_id, old_id))
+    conn.execute("UPDATE penguin_connect_messages SET conversation_id = ? WHERE conversation_id = ?", (new_id, old_id))
+    conn.execute("UPDATE penguin_connect_sync_state SET conversation_id = ? WHERE conversation_id = ?", (new_id, old_id))
+    conn.execute("DELETE FROM penguin_connect_conversations WHERE conversation_id = ?", (old_id,))
 
 
 def _keychain_service_name(gmail_email: str) -> str:
@@ -1733,29 +1902,6 @@ def _resolve_display_name(conn: sqlite3.Connection, chat_name: str, participants
     return ", ".join(resolved[:3]) + f" +{len(resolved) - 3}"
 
 
-def _resolve_imessage_sender_and_subject(
-    conn: sqlite3.Connection,
-    conv: sqlite3.Row,
-    msg: dict[str, Any],
-) -> tuple[str, str]:
-    handle = (msg.get("handle") or "").strip()
-    contact_name = _lookup_contact_name(conn, handle)
-    push_name = (msg.get("push_name") or "").strip()
-    if push_name and _looks_like_unresolved_handle(push_name):
-        push_name = ""
-    sender_name = contact_name or push_name or handle or conv["display_name"] or "iMessage"
-
-    display_name = (conv["display_name"] or "").strip()
-    if display_name and not _looks_like_unresolved_handle(display_name):
-        subject_name = display_name
-    elif (conv["chat_type"] or "").strip().lower() == "dm":
-        subject_name = contact_name or display_name or handle or "Conversation"
-    else:
-        subject_name = display_name or "Conversation"
-
-    return sender_name, subject_name
-
-
 def _create_alias_email(gmail_email: str, conversation_id: str, fresh: bool) -> tuple[str, str]:
     local, domain = gmail_email.split("@", 1)
     base = conversation_id[4:16]
@@ -1806,6 +1952,7 @@ def _ensure_active_alias(conn: sqlite3.Connection, gmail_email: str, conversatio
 def ensure_conversations_discovered(conn: sqlite3.Connection, gmail_email: str) -> int:
     max_chats = int(os.environ.get("PENGUIN_CONNECT_CHAT_DISCOVERY_LIMIT", "500"))
     discovered = browse_imessage_chats(limit=max_chats)
+    source_provider = _IMESSAGE_CHANNEL.provider
     if not discovered.get("available"):
         return 0
 
@@ -1814,28 +1961,41 @@ def ensure_conversations_discovered(conn: sqlite3.Connection, gmail_email: str) 
         chat_id = chat.get("chat_id")
         if not chat_id:
             continue
-        conversation_id = deterministic_conversation_id(gmail_email, chat_id)
+        conversation_id = deterministic_conversation_id(gmail_email, chat_id, source_provider)
+        legacy_conversation_id = _legacy_conversation_id(gmail_email, chat_id)
         participants = chat.get("participants") or []
         display_name = _resolve_display_name(conn, chat.get("name") or "", participants)
 
         existing = conn.execute(
-            "SELECT status FROM penguin_connect_conversations WHERE conversation_id = ?",
-            (conversation_id,),
+            """SELECT conversation_id, status
+               FROM penguin_connect_conversations
+               WHERE conversation_id IN (?, ?)
+               ORDER BY CASE WHEN conversation_id = ? THEN 0 ELSE 1 END
+               LIMIT 1""",
+            (conversation_id, legacy_conversation_id, conversation_id),
         ).fetchone()
+        if existing and existing["conversation_id"] == legacy_conversation_id and legacy_conversation_id != conversation_id:
+            _migrate_conversation_id(conn, legacy_conversation_id, conversation_id, source_provider)
+            existing = conn.execute(
+                "SELECT conversation_id, status FROM penguin_connect_conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
         status = existing["status"] if existing else "active"
 
         conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type,
+               (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type,
                 participants, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                ON CONFLICT(conversation_id) DO UPDATE SET
+                 source_provider = excluded.source_provider,
                  display_name = excluded.display_name,
                  chat_type = excluded.chat_type,
                  participants = excluded.participants,
                  updated_at = datetime('now')""",
             (
                 gmail_email,
+                source_provider,
                 conversation_id,
                 chat_id,
                 display_name,
@@ -1878,7 +2038,7 @@ def list_conversations(conn: sqlite3.Connection) -> dict[str, Any]:
             raise
 
     rows = conn.execute(
-        """SELECT c.conversation_id, c.imessage_chat_id, c.display_name, c.chat_type,
+        """SELECT c.conversation_id, c.source_provider, c.imessage_chat_id, c.display_name, c.chat_type,
                   c.participants, c.alias_email, c.status, c.gmail_thread_id,
                   c.last_synced_at, c.updated_at,
                   s.last_imessage_ts, s.last_gmail_ts, s.last_message_ts, s.initial_sync_completed_at
@@ -1899,6 +2059,8 @@ def list_conversations(conn: sqlite3.Connection) -> dict[str, Any]:
         conversations.append(
             {
                 "conversation_id": row["conversation_id"],
+                "source_provider": row["source_provider"] or "imessage",
+                "source_chat_id": row["imessage_chat_id"],
                 "imessage_chat_id": row["imessage_chat_id"],
                 "display_name": row["display_name"],
                 "chat_type": row["chat_type"],
@@ -1946,7 +2108,7 @@ def get_conversation_alias(conn: sqlite3.Connection, conversation_id: str) -> di
 
 def get_conversation_messages(conn: sqlite3.Connection, conversation_id: str, limit: int = 200) -> dict[str, Any]:
     conv = conn.execute(
-        "SELECT conversation_id, display_name, status FROM penguin_connect_conversations WHERE conversation_id = ?",
+        "SELECT conversation_id, source_provider, display_name, status FROM penguin_connect_conversations WHERE conversation_id = ?",
         (conversation_id,),
     ).fetchone()
     if not conv:
@@ -1990,6 +2152,7 @@ def get_conversation_messages(conn: sqlite3.Connection, conversation_id: str, li
     return {
         "found": True,
         "conversation_id": conv["conversation_id"],
+        "source_provider": conv["source_provider"] or "imessage",
         "display_name": conv["display_name"],
         "status": conv["status"],
         "messages": messages,
@@ -2197,99 +2360,12 @@ def _stage_gmail_attachments_for_imessage(
     return staged_paths, {"forwarded": forwarded, "skipped": skipped}, staged_dir
 
 
-def _escape_applescript(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-
-
-def _resolve_chat_guid(chat_identifier: str) -> Optional[str]:
-    if not IMESSAGE_DB.exists():
-        return None
-    try:
-        conn = sqlite3.connect(f"file:{IMESSAGE_DB}?mode=ro", uri=True)
-        row = conn.execute("SELECT guid FROM chat WHERE chat_identifier = ?", (chat_identifier,)).fetchone()
-        conn.close()
-        if row:
-            return row[0]
-    except Exception:
-        return None
-    return None
-
-
-def send_imessage(
-    chat_identifier: str,
-    message_text: str,
-    attachment_paths: Optional[list[str]] = None,
-) -> tuple[bool, Optional[str]]:
-    normalized_text = (message_text or "").strip()
-    valid_attachments: list[str] = []
-    for path in attachment_paths or []:
-        candidate = Path(path).expanduser()
-        if candidate.exists() and candidate.is_file():
-            valid_attachments.append(str(candidate))
-
-    if not normalized_text and not valid_attachments:
-        return False, "empty_message"
-
-    guid = _resolve_chat_guid(chat_identifier)
-    send_lines: list[str] = []
-
-    if guid:
-        safe_guid = _escape_applescript(guid)
-        for path in valid_attachments:
-            safe_path = _escape_applescript(path)
-            send_lines.append(f'send (POSIX file "{safe_path}") to chat id "{safe_guid}"')
-        if normalized_text:
-            safe_msg = _escape_applescript(normalized_text)
-            send_lines.append(f'send "{safe_msg}" to chat id "{safe_guid}"')
-        script = "tell application \"Messages\"\n" + "\n".join(f"    {line}" for line in send_lines) + "\nend tell"
-    else:
-        safe_target = _escape_applescript(chat_identifier)
-        script_lines = [
-            "tell application \"Messages\"",
-            "    set targetService to 1st service whose service type = iMessage",
-            f"    set targetBuddy to buddy \"{safe_target}\" of targetService",
-        ]
-        for path in valid_attachments:
-            safe_path = _escape_applescript(path)
-            script_lines.append(f'    send (POSIX file "{safe_path}") to targetBuddy')
-        if normalized_text:
-            safe_msg = _escape_applescript(normalized_text)
-            script_lines.append(f'    send "{safe_msg}" to targetBuddy')
-        script_lines.append("end tell")
-        script = "\n".join(script_lines)
-
-    try:
-        result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=45)
-        if result.returncode != 0:
-            return False, (result.stderr or "failed_to_send_imessage").strip()
-        return True, None
-    except Exception as exc:
-        return False, str(exc)
-
-
 def _provider_message_id_for_imessage(msg: dict[str, Any]) -> str:
     native_id = (msg.get("native_message_id") or "").strip()
     if native_id:
         return f"imessage:{native_id}"
     payload = f"{msg.get('timestamp')}::{msg.get('is_from_me')}::{msg.get('text') or ''}"
     return f"imessage:{hashlib.sha1(payload.encode('utf-8')).hexdigest()}"
-
-
-def _get_imessage_unread_count(chat_identifier: str) -> Optional[int]:
-    if not IMESSAGE_DB.exists():
-        return None
-    try:
-        conn = sqlite3.connect(f"file:{IMESSAGE_DB}?mode=ro", uri=True)
-        row = conn.execute(
-            "SELECT unread_count FROM chat WHERE chat_identifier = ? LIMIT 1",
-            (chat_identifier,),
-        ).fetchone()
-        conn.close()
-        if row is not None and row[0] is not None:
-            return int(row[0])
-    except Exception:
-        return None
-    return None
 
 
 def _build_import_email(
@@ -2304,14 +2380,16 @@ def _build_import_email(
     rfc_message_id: Optional[str] = None,
     in_reply_to: Optional[str] = None,
     references: Optional[list[str]] = None,
+    source_provider: str = "imessage",
 ) -> str:
-    sender_name = sender_name_override or msg.get("push_name") or msg.get("handle") or display_name or "iMessage"
-    subject = f"iMessage · {subject_display_name or display_name or 'Conversation'}"
+    provider_label = _source_provider_label(source_provider)
+    sender_name = sender_name_override or msg.get("push_name") or msg.get("handle") or display_name or provider_label
+    subject = _provider_subject(source_provider, subject_display_name or display_name)
     body_lines = [msg.get("text") or ""]
     attachments = msg.get("attachments") or []
     if attachments:
         body_lines.append("")
-        body_lines.append(f"[{len(attachments)} attachment(s) in iMessage]")
+        body_lines.append(f"[{len(attachments)} attachment(s) in {provider_label}]")
 
     email_msg = EmailMessage()
     email_msg["From"] = email.utils.formataddr((sender_name, alias_email))
@@ -2319,6 +2397,7 @@ def _build_import_email(
     email_msg["Subject"] = subject
     email_msg["Reply-To"] = alias_email
     email_msg["X-PenguinConnect-Conversation-ID"] = conversation_id
+    email_msg["X-PenguinConnect-Source-Provider"] = _normalize_source_provider(source_provider)
     email_msg[PENGUINCONNECT_HEADER] = "imessage_to_email"
     normalized_msg_id = _normalize_rfc_message_id(rfc_message_id)
     if normalized_msg_id:
@@ -2334,7 +2413,7 @@ def _build_import_email(
     if ts:
         email_msg["Date"] = email.utils.format_datetime(ts)
 
-    email_msg.set_content("\n".join(body_lines).strip() or "(empty iMessage)")
+    email_msg.set_content("\n".join(body_lines).strip() or f"(empty {provider_label})")
     attached_count = 0
     for attachment in attachments:
         if not isinstance(attachment, dict):
@@ -2732,7 +2811,8 @@ def _retry_pending_imessage_to_gmail(
                 "push_name": row["sender_name"] or conv["display_name"] or "iMessage",
                 "attachments": metadata.get("attachments"),
             }
-            subject_name = (row["subject"] or "").replace("iMessage · ", "", 1).strip() or conv["display_name"] or "Conversation"
+            source_provider = _conversation_source_provider(conv)
+            subject_name = _strip_provider_subject(row["subject"], source_provider) or conv["display_name"] or "Conversation"
             rfc_message_id = _normalize_rfc_message_id(metadata.get("rfc_message_id")) or _build_bridge_rfc_message_id(
                 conv["conversation_id"], row["provider_message_id"]
             )
@@ -2756,6 +2836,7 @@ def _retry_pending_imessage_to_gmail(
                 rfc_message_id=rfc_message_id,
                 in_reply_to=in_reply_to,
                 references=references,
+                source_provider=source_provider,
             )
             imported_data, import_error, recovered_thread_id = _import_message_to_gmail_with_thread_recovery(
                 gmail_service,
@@ -2874,6 +2955,7 @@ def _sync_conversation_imessage_to_gmail(
                 continue
 
             is_from_me = 1 if msg.get("is_from_me") else 0
+            source_provider = _conversation_source_provider(conv)
             unread = False
             if not is_from_me:
                 if unread_count is None:
@@ -2908,7 +2990,7 @@ def _sync_conversation_imessage_to_gmail(
                     provider_id,
                     conv["alias_email"],
                     sender_name,
-                    f"iMessage · {subject_name}",
+                    _provider_subject(source_provider, subject_name),
                     text[:20000],
                     ts,
                     0 if unread else 1,
@@ -2931,6 +3013,7 @@ def _sync_conversation_imessage_to_gmail(
                 rfc_message_id=rfc_message_id,
                 in_reply_to=in_reply_to,
                 references=references,
+                source_provider=source_provider,
             )
             imported_data, import_error, recovered_thread_id = _import_message_to_gmail_with_thread_recovery(
                 gmail_service,
@@ -3270,17 +3353,26 @@ def _retry_pending_gmail_to_imessage(
                     )
                 continue
 
-            ok, error = send_imessage(
-                conv["imessage_chat_id"],
+            ok, error = _send_to_source_conversation(
+                conv,
                 body_text,
                 attachment_paths=attachment_paths,
             )
             if staged_dir:
                 shutil.rmtree(staged_dir, ignore_errors=True)
             if ok:
-                metadata = _mark_delivery_success(metadata, "send_result", "imessage_ok")
+                metadata = _mark_delivery_success(
+                    metadata,
+                    "send_result",
+                    f"{_conversation_source_provider(conv)}_ok",
+                )
             else:
-                metadata = _mark_delivery_failure(metadata, "send_result", error or "imessage_failed", now_dt)
+                metadata = _mark_delivery_failure(
+                    metadata,
+                    "send_result",
+                    error or f"{_conversation_source_provider(conv)}_failed",
+                    now_dt,
+                )
             conn.execute(
                 """UPDATE penguin_connect_messages
                    SET metadata = ?
@@ -3521,8 +3613,8 @@ def _sync_conversation_gmail_to_imessage(
             rfc_references,
         )
         provider_message_id = f"gmail:{message_id}"
-        ok, error = send_imessage(
-            conv["imessage_chat_id"],
+        ok, error = _send_to_source_conversation(
+            conv,
             delivery_body_text,
             attachment_paths=attachment_paths,
         )
@@ -3544,11 +3636,17 @@ def _sync_conversation_gmail_to_imessage(
             "max_retries": _retry_max_retries(),
             "delivery_status": "pending",
         }
+        source_provider = _conversation_source_provider(conv)
         if ok:
-            meta = _mark_delivery_success(meta, "send_result", "imessage_ok")
+            meta = _mark_delivery_success(meta, "send_result", f"{source_provider}_ok")
             converted += 1
         else:
-            meta = _mark_delivery_failure(meta, "send_result", error or "imessage_failed", datetime.now(timezone.utc))
+            meta = _mark_delivery_failure(
+                meta,
+                "send_result",
+                error or f"{source_provider}_failed",
+                datetime.now(timezone.utc),
+            )
 
         conn.execute(
             """INSERT OR IGNORE INTO penguin_connect_messages
@@ -3980,10 +4078,11 @@ def send_manual_message(
             "status_code": 403,
         }
 
+    source_provider = _conversation_source_provider(conv)
     provider_id = f"manual:{hashlib.sha1(f'{sender_email}:{_now_iso()}:{body_text}'.encode('utf-8')).hexdigest()}"
-    ok, err = send_imessage(conv["imessage_chat_id"], body_text)
+    ok, err = _send_to_source_conversation(conv, body_text)
     if not ok:
-        return {"success": False, "error": err or "failed_to_send_imessage"}
+        return {"success": False, "error": err or f"failed_to_send_{source_provider}"}
 
     conn.execute(
         """INSERT OR IGNORE INTO penguin_connect_messages
@@ -3996,13 +4095,13 @@ def send_manual_message(
             provider_id,
             _normalize_email(sender_email),
             sender_email,
-            f"iMessage · {conv['display_name'] or 'Conversation'}",
+            _provider_subject(source_provider, conv["display_name"] or "Conversation"),
             body_text[:20000],
             _now_iso(),
             json.dumps(
                 {
                     "security_gate": "passed",
-                    "dispatch": "imessage",
+                    "dispatch": source_provider,
                 }
             ),
         ),
