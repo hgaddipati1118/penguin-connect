@@ -662,6 +662,18 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def _max_iso_value(existing: Optional[str], candidate: Optional[str]) -> Optional[str]:
+    existing_dt = _parse_iso(existing)
+    candidate_dt = _parse_iso(candidate)
+    if existing_dt and candidate_dt:
+        return existing if existing_dt >= candidate_dt else candidate
+    if candidate_dt:
+        return candidate
+    if existing_dt:
+        return existing
+    return candidate or existing
+
+
 def _iso_from_gmail_internal_date(value: Optional[str]) -> str:
     if not value:
         return _now_iso()
@@ -779,6 +791,15 @@ def _load_metadata(raw_value: Optional[str]) -> dict[str, Any]:
         return {}
 
 
+def _record_value(record: Any, key: str, default: Any = None) -> Any:
+    if isinstance(record, dict):
+        return record.get(key, default)
+    try:
+        return record[key]
+    except Exception:
+        return default
+
+
 def _metadata_int(metadata: dict[str, Any], key: str, default: int) -> int:
     try:
         return int(metadata.get(key))
@@ -839,6 +860,22 @@ def _mark_delivery_failure(metadata: dict[str, Any], result_key: str, error: str
         metadata["delivery_status"] = "pending"
         metadata["next_retry_at"] = (now_dt + timedelta(seconds=_retry_backoff_seconds(retry_count))).isoformat()
 
+    return metadata
+
+
+def _mark_delivery_failed_permanent(
+    metadata: dict[str, Any],
+    result_key: str,
+    error: str,
+    now_dt: datetime,
+) -> dict[str, Any]:
+    metadata = _apply_retry_defaults(metadata)
+    metadata["delivery_status"] = "failed_permanent"
+    metadata["next_retry_at"] = None
+    metadata["last_retry_at"] = now_dt.isoformat()
+    metadata["first_failed_at"] = metadata.get("first_failed_at") or now_dt.isoformat()
+    metadata["last_error"] = (error or "delivery_failed").strip()
+    metadata[result_key] = metadata["last_error"]
     return metadata
 
 
@@ -3782,6 +3819,65 @@ def _maybe_send_gmail_delivery_error_notice(
     return metadata
 
 
+def _latest_synced_source_message_ts(conn: sqlite3.Connection, conversation_id: str) -> Optional[str]:
+    state = conn.execute(
+        "SELECT last_imessage_ts FROM penguin_connect_sync_state WHERE conversation_id = ?",
+        (conversation_id,),
+    ).fetchone()
+    latest = state["last_imessage_ts"] if state else None
+    row = conn.execute(
+        """SELECT message_timestamp
+           FROM penguin_connect_messages
+           WHERE conversation_id = ?
+             AND direction = 'imessage_to_email'
+             AND message_timestamp IS NOT NULL
+           ORDER BY message_timestamp DESC
+           LIMIT 1""",
+        (conversation_id,),
+    ).fetchone()
+    if row:
+        latest = _max_iso_value(latest, row["message_timestamp"])
+    return latest
+
+
+def _fail_stale_gmail_to_source_delivery(
+    conn: sqlite3.Connection,
+    conv: sqlite3.Row | dict[str, Any],
+    row: sqlite3.Row | dict[str, Any],
+    metadata: dict[str, Any],
+    *,
+    message_ts: str,
+    gmail_service=None,
+    log_event: str,
+) -> tuple[bool, dict[str, Any]]:
+    latest_source_ts = _latest_synced_source_message_ts(conn, conv["conversation_id"])
+    latest_dt = _parse_iso(latest_source_ts)
+    message_dt = _parse_iso(message_ts)
+    if not latest_dt or not message_dt or latest_dt <= message_dt:
+        return False, metadata
+
+    now_dt = datetime.now(timezone.utc)
+    error = "newer_source_message_synced"
+    metadata = _mark_delivery_failed_permanent(metadata, "send_result", error, now_dt)
+    metadata["reason"] = error
+    metadata["stale_gmail_message_timestamp"] = message_ts
+    metadata["newer_source_message_timestamp"] = latest_source_ts
+    metadata = _maybe_send_gmail_delivery_error_notice(conn, gmail_service, conv, row, metadata)
+    log_action(
+        log_event,
+        success=False,
+        error=error,
+        provider_message_id=_record_value(row, "provider_message_id"),
+        gmail_message_id=metadata.get("gmail_message_id") or _record_value(row, "gmail_message_id"),
+        gmail_thread_id=metadata.get("gmail_thread_id") or _record_value(row, "gmail_thread_id"),
+        stale_gmail_message_timestamp=message_ts,
+        newer_source_message_timestamp=latest_source_ts,
+        **_conversation_log_fields(conv),
+        **message_fingerprint(_record_value(row, "body_text") or ""),
+    )
+    return True, metadata
+
+
 def _retry_pending_gmail_to_imessage(
     conn: sqlite3.Connection,
     conv: sqlite3.Row,
@@ -3795,7 +3891,8 @@ def _retry_pending_gmail_to_imessage(
 
     while processed < 500:
         rows = conn.execute(
-            """SELECT id, provider_message_id, gmail_message_id, gmail_thread_id, subject, body_text, metadata
+            """SELECT id, provider_message_id, gmail_message_id, gmail_thread_id, subject, body_text,
+                      message_timestamp, metadata
                FROM penguin_connect_messages
                WHERE conversation_id = ?
                  AND provider = 'gmail'
@@ -3826,6 +3923,24 @@ def _retry_pending_gmail_to_imessage(
 
             if not _should_attempt_delivery_retry(metadata, now_dt):
                 metadata = _maybe_send_gmail_delivery_error_notice(conn, gmail_service, conv, row, metadata)
+                conn.execute(
+                    """UPDATE penguin_connect_messages
+                       SET metadata = ?
+                       WHERE conversation_id = ? AND provider_message_id = ?""",
+                    (json.dumps(metadata), conv["conversation_id"], row["provider_message_id"]),
+                )
+                continue
+
+            is_stale, metadata = _fail_stale_gmail_to_source_delivery(
+                conn,
+                conv,
+                row,
+                metadata,
+                message_ts=row["message_timestamp"],
+                gmail_service=gmail_service,
+                log_event="gmail_to_imessage_retry_result",
+            )
+            if is_stale:
                 conn.execute(
                     """UPDATE penguin_connect_messages
                        SET metadata = ?
@@ -4127,13 +4242,6 @@ def _sync_conversation_gmail_to_imessage(
         attachment_paths: list[str] = []
         attachment_delivery: dict[str, Any] = {"forwarded": [], "skipped": []}
         staged_dir: Optional[Path] = None
-        if attachment_meta:
-            attachment_paths, attachment_delivery, staged_dir = _stage_gmail_attachments_for_imessage(
-                gmail_service,
-                message_id,
-                payload,
-            )
-
         plain_body_text, html_body_text = _extract_gmail_body_variants(payload)
         parsed_body = extract_latest_email_text(
             plain_text=plain_body_text,
@@ -4206,11 +4314,33 @@ def _sync_conversation_gmail_to_imessage(
             last_gmail_ts = max(last_gmail_ts or message_ts, message_ts)
             history_id = full.get("historyId") or history_id
             continue
-        if not body_text and attachment_meta and not attachment_paths:
+        if not body_text and attachment_meta:
             preview = [a.get("filename") or a.get("mime_type") or "attachment" for a in attachment_meta[:3]]
             suffix = f" (+{len(attachment_meta) - 3} more)" if len(attachment_meta) > 3 else ""
             body_text = f"[Email attachment] {', '.join(preview)}{suffix}"
-        if not body_text and not attachment_paths:
+        meta = {
+            "gmail_message_id": message_id,
+            "gmail_thread_id": thread_id,
+            "rfc_message_id": rfc_message_id,
+            "rfc_in_reply_to": rfc_in_reply_to,
+            "rfc_references": rfc_references,
+            "attachments": attachment_meta,
+            "attachments_forwarded": [],
+            "attachments_skipped": [],
+            "source_body_text": body_text,
+            "source_body_text_raw": raw_text_source,
+            "source_body_html_raw": raw_html_source,
+            "gmail_body_source": parsed_body.source,
+            "gmail_quoted_content_removed": parsed_body.quoted_content_removed,
+            "gmail_signature_removed": parsed_body.signature_removed,
+            "gmail_body_safe_for_send": parsed_body.safe_for_send,
+            "gmail_body_safety_flags": list(parsed_body.safety_flags),
+            "labels": label_ids,
+            "retry_count": 0,
+            "max_retries": _gmail_to_source_max_retries(),
+            "delivery_status": "pending",
+        }
+        if not body_text:
             log_action(
                 "gmail_to_imessage_message",
                 success=False,
@@ -4238,24 +4368,11 @@ def _sync_conversation_gmail_to_imessage(
                     0 if "UNREAD" in label_ids else 1,
                     json.dumps(
                         {
+                            **meta,
                             "ignored": True,
                             "delivery_status": "ignored",
                             "reason": "empty_email_body",
-                            "gmail_message_id": message_id,
-                            "gmail_thread_id": thread_id,
-                            "rfc_message_id": rfc_message_id,
-                            "rfc_in_reply_to": rfc_in_reply_to,
-                            "rfc_references": rfc_references,
-                            "attachments": attachment_meta,
-                            "attachments_forwarded": attachment_delivery.get("forwarded", []),
-                            "attachments_skipped": attachment_delivery.get("skipped", []),
-                            "source_body_text_raw": raw_text_source,
-                            "source_body_html_raw": raw_html_source,
-                            "labels": label_ids,
-                            "gmail_body_safe_for_send": parsed_body.safe_for_send,
-                            "gmail_body_safety_flags": list(parsed_body.safety_flags),
-                            "retry_count": 0,
-                            "max_retries": _gmail_to_source_max_retries(),
+                            "source_body_text": "",
                         }
                     ),
                     message_id,
@@ -4267,6 +4384,57 @@ def _sync_conversation_gmail_to_imessage(
             continue
 
         provider_message_id = f"gmail:{message_id}"
+        stale_row = {
+            "provider_message_id": provider_message_id,
+            "gmail_message_id": message_id,
+            "gmail_thread_id": thread_id,
+            "subject": headers.get("subject") or "",
+            "body_text": body_text,
+            "message_timestamp": message_ts,
+        }
+        is_stale, meta = _fail_stale_gmail_to_source_delivery(
+            conn,
+            conv,
+            stale_row,
+            meta,
+            message_ts=message_ts,
+            gmail_service=gmail_service,
+            log_event="gmail_to_imessage_message",
+        )
+        if is_stale:
+            conn.execute(
+                """INSERT OR IGNORE INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction,
+                    sender_email, sender_name, subject, body_text, message_timestamp,
+                    is_read, metadata, gmail_message_id, gmail_thread_id)
+                   VALUES (?, 'gmail', ?, 'email_to_imessage', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    conv["conversation_id"],
+                    provider_message_id,
+                    sender,
+                    from_header,
+                    headers.get("subject") or "",
+                    body_text[:20000],
+                    message_ts,
+                    0 if "UNREAD" in label_ids else 1,
+                    json.dumps(meta),
+                    message_id,
+                    thread_id,
+                ),
+            )
+            last_gmail_ts = max(last_gmail_ts or message_ts, message_ts)
+            history_id = full.get("historyId") or history_id
+            continue
+
+        if attachment_meta:
+            attachment_paths, attachment_delivery, staged_dir = _stage_gmail_attachments_for_imessage(
+                gmail_service,
+                message_id,
+                payload,
+            )
+            meta["attachments_forwarded"] = attachment_delivery.get("forwarded", [])
+            meta["attachments_skipped"] = attachment_delivery.get("skipped", [])
+
         ok, error = _send_to_source_conversation(
             conv,
             body_text,
@@ -4283,28 +4451,6 @@ def _sync_conversation_gmail_to_imessage(
         )
         if staged_dir:
             shutil.rmtree(staged_dir, ignore_errors=True)
-        meta = {
-            "gmail_message_id": message_id,
-            "gmail_thread_id": thread_id,
-            "rfc_message_id": rfc_message_id,
-            "rfc_in_reply_to": rfc_in_reply_to,
-            "rfc_references": rfc_references,
-            "attachments": attachment_meta,
-            "attachments_forwarded": attachment_delivery.get("forwarded", []),
-            "attachments_skipped": attachment_delivery.get("skipped", []),
-            "source_body_text": body_text,
-            "source_body_text_raw": raw_text_source,
-            "source_body_html_raw": raw_html_source,
-            "gmail_body_source": parsed_body.source,
-            "gmail_quoted_content_removed": parsed_body.quoted_content_removed,
-            "gmail_signature_removed": parsed_body.signature_removed,
-            "gmail_body_safe_for_send": parsed_body.safe_for_send,
-            "gmail_body_safety_flags": list(parsed_body.safety_flags),
-            "labels": label_ids,
-            "retry_count": 0,
-            "max_retries": _gmail_to_source_max_retries(),
-            "delivery_status": "pending",
-        }
         source_provider = _conversation_source_provider(conv)
         log_action(
             "gmail_to_imessage_message",

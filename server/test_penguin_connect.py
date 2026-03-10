@@ -1213,6 +1213,65 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(metadata["error_notice_gmail_thread_id"], "thread-failed-1")
         self.assertIsNotNone(metadata["error_notice_sent_at"])
 
+    def test_gmail_retry_queue_fails_stale_pending_message_when_source_advanced(self):
+        conv = self._conversation_row()
+        self.conn.execute(
+            """INSERT INTO penguin_connect_sync_state
+               (conversation_id, last_imessage_ts, last_gmail_ts, last_synced_at, updated_at)
+               VALUES (?, ?, ?, datetime('now'), datetime('now'))""",
+            (
+                "amc_test",
+                "2026-03-10T10:30:00+00:00",
+                "2026-03-10T10:30:00+00:00",
+            ),
+        )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_messages
+               (conversation_id, provider, provider_message_id, gmail_message_id, gmail_thread_id, direction,
+                sender_email, subject, body_text, message_timestamp, is_read, metadata)
+               VALUES (?, 'gmail', 'gmail:stale-1', 'stale-1', 'thread-stale-1', 'email_to_imessage',
+                       ?, ?, ?, ?, 1, ?)""",
+            (
+                "amc_test",
+                "owner@gmail.com",
+                "Status",
+                "late email reply",
+                "2026-03-10T10:00:00+00:00",
+                json.dumps(
+                    {
+                        "delivery_status": "pending",
+                        "retry_count": 0,
+                        "max_retries": 3,
+                        "gmail_message_id": "stale-1",
+                        "gmail_thread_id": "thread-stale-1",
+                        "rfc_message_id": "<stale-1@example.test>",
+                    }
+                ),
+            ),
+        )
+        gmail_service = mock.Mock()
+
+        with mock.patch("penguin_connect.send_imessage", return_value=(True, None)) as mock_send, mock.patch(
+            "penguin_connect._import_message_to_gmail_with_thread_recovery",
+            return_value=({"id": "notice-stale-1", "threadId": "thread-stale-1"}, None, None),
+        ) as mock_notice:
+            retried = penguin_connect._retry_pending_gmail_to_imessage(self.conn, conv, gmail_service=gmail_service)
+
+        self.assertEqual(retried, 0)
+        mock_send.assert_not_called()
+        mock_notice.assert_called_once()
+        row = self.conn.execute(
+            "SELECT metadata FROM penguin_connect_messages WHERE conversation_id = ? AND provider_message_id = ?",
+            ("amc_test", "gmail:stale-1"),
+        ).fetchone()
+        metadata = json.loads(row["metadata"] or "{}")
+        self.assertEqual(metadata["delivery_status"], "failed_permanent")
+        self.assertEqual(metadata["reason"], "newer_source_message_synced")
+        self.assertEqual(metadata["stale_gmail_message_timestamp"], "2026-03-10T10:00:00+00:00")
+        self.assertEqual(metadata["newer_source_message_timestamp"], "2026-03-10T10:30:00+00:00")
+        self.assertEqual(metadata["error_notice_gmail_message_id"], "notice-stale-1")
+        self.assertEqual(metadata["error_notice_gmail_thread_id"], "thread-stale-1")
+
     def test_gmail_sync_persists_rfc_thread_headers(self):
         conv = self._conversation_row()
         payload_data = base64.urlsafe_b64encode(b"hello from gmail").decode("utf-8").rstrip("=")
@@ -1261,6 +1320,86 @@ class PenguinConnectTests(unittest.TestCase):
             metadata.get("rfc_references"),
             ["<mail-root@example.test>", "<mail-0@example.test>"],
         )
+
+    def test_gmail_sync_fails_stale_email_when_newer_source_message_exists(self):
+        conv = self._conversation_row()
+        self.conn.execute(
+            """INSERT INTO penguin_connect_sync_state
+               (conversation_id, last_imessage_ts, last_gmail_ts, last_synced_at, updated_at)
+               VALUES (?, ?, ?, datetime('now'), datetime('now'))""",
+            (
+                "amc_test",
+                "2026-03-10T10:30:00+00:00",
+                "2026-03-10T10:30:00+00:00",
+            ),
+        )
+        payload_data = base64.urlsafe_b64encode(b"reply while server was down").decode("utf-8").rstrip("=")
+        full_msg = {
+            "id": "gmail-stale-sync-1",
+            "threadId": "thread-stale-sync-1",
+            "historyId": "h-stale-sync-1",
+            "labelIds": ["INBOX", "UNREAD"],
+            "internalDate": "1741600800000",
+            "snippet": "reply while server was down",
+            "payload": {
+                "mimeType": "multipart/mixed",
+                "headers": [
+                    {"name": "From", "value": "Owner <owner@gmail.com>"},
+                    {"name": "Subject", "value": "Status"},
+                    {"name": "Message-ID", "value": "<stale-sync-1@example.test>"},
+                ],
+                "parts": [
+                    {"mimeType": "text/plain", "filename": "", "body": {"data": payload_data}},
+                    {
+                        "mimeType": "image/png",
+                        "filename": "photo.png",
+                        "body": {"attachmentId": "a-stale-sync-1", "size": 12},
+                    },
+                ],
+            },
+        }
+        gmail_service = mock.Mock()
+        gmail_service.users.return_value.messages.return_value.get.return_value.execute.return_value = full_msg
+
+        with mock.patch("penguin_connect._list_gmail_messages_to_alias", return_value=[{"id": "gmail-stale-sync-1"}]), mock.patch(
+            "penguin_connect.send_imessage", return_value=(True, None)
+        ) as mock_send, mock.patch(
+            "penguin_connect._stage_gmail_attachments_for_imessage"
+        ) as mock_stage, mock.patch(
+            "penguin_connect._import_message_to_gmail_with_thread_recovery",
+            return_value=({"id": "notice-stale-sync-1", "threadId": "thread-stale-sync-1"}, None, None),
+        ) as mock_notice:
+            result = penguin_connect._sync_conversation_gmail_to_imessage(
+                self.conn,
+                gmail_service,
+                conv,
+                gmail_email="owner@gmail.com",
+                allowed_senders=["owner@gmail.com"],
+                days=7,
+            )
+
+        self.assertEqual(result["email_to_imessage"], 0)
+        mock_send.assert_not_called()
+        mock_stage.assert_not_called()
+        mock_notice.assert_called_once()
+        stored = self.conn.execute(
+            """SELECT body_text, metadata
+               FROM penguin_connect_messages
+               WHERE conversation_id = ? AND provider_message_id = ?""",
+            ("amc_test", "gmail:gmail-stale-sync-1"),
+        ).fetchone()
+        metadata = json.loads(stored["metadata"] or "{}")
+        self.assertEqual(stored["body_text"], "reply while server was down")
+        self.assertEqual(metadata["delivery_status"], "failed_permanent")
+        self.assertEqual(metadata["reason"], "newer_source_message_synced")
+        self.assertEqual(metadata["newer_source_message_timestamp"], "2026-03-10T10:30:00+00:00")
+        self.assertEqual(
+            metadata["stale_gmail_message_timestamp"],
+            penguin_connect._iso_from_gmail_internal_date("1741600800000"),
+        )
+        self.assertEqual(metadata["attachments"][0]["filename"], "photo.png")
+        self.assertEqual(metadata["attachments_forwarded"], [])
+        self.assertEqual(metadata["attachments_skipped"], [])
 
     def test_gmail_attachments_forward_binary_to_imessage(self):
         conv = self._conversation_row()
@@ -1384,7 +1523,7 @@ class PenguinConnectTests(unittest.TestCase):
                 "Alice",
                 "Root message",
                 "2026-03-04T08:00:00+00:00",
-                json.dumps({"rfc_message_id": "<root@example.test>"}),
+                json.dumps({"rfc_message_id": "<root@example.test>", "send_result": "imessage_ok", "delivery_status": "delivered"}),
                 "gmail-root",
                 "thread-main",
             ),
@@ -1458,7 +1597,7 @@ class PenguinConnectTests(unittest.TestCase):
                 "Alice",
                 "Root message",
                 "2026-03-04T08:00:00+00:00",
-                json.dumps({"rfc_message_id": root_message_id}),
+                json.dumps({"rfc_message_id": root_message_id, "send_result": "imessage_ok", "delivery_status": "delivered"}),
                 "gmail-root",
                 "thread-main",
             ),
@@ -1618,7 +1757,7 @@ class PenguinConnectTests(unittest.TestCase):
                 "Alice",
                 "Root context",
                 "2026-03-04T08:00:00+00:00",
-                json.dumps({"rfc_message_id": "<root@example.test>"}),
+                json.dumps({"rfc_message_id": "<root@example.test>", "send_result": "imessage_ok", "delivery_status": "delivered"}),
                 "gmail-root",
                 "thread-main",
             ),
@@ -1647,12 +1786,13 @@ class PenguinConnectTests(unittest.TestCase):
         )
         conv = self._conversation_row()
         payload_data = base64.urlsafe_b64encode(b"Latest nested reply").decode("utf-8").rstrip("=")
+        leaf_internal_date = str(int(datetime(2026, 3, 4, 9, 0, tzinfo=timezone.utc).timestamp() * 1000))
         full_msg = {
             "id": "gmail-leaf",
             "threadId": "thread-main",
             "historyId": "h-leaf",
             "labelIds": ["INBOX", "UNREAD"],
-            "internalDate": "1700007200000",
+            "internalDate": leaf_internal_date,
             "snippet": "Latest nested reply",
             "payload": {
                 "mimeType": "text/plain",
