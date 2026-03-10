@@ -168,6 +168,54 @@ def _load_message_metadata(raw_value: str | None) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _parse_iso_value(value: str | None) -> datetime | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _max_iso_value(*values: str | None) -> str | None:
+    candidates = [(parsed, value) for value in values if value for parsed in [_parse_iso_value(value)] if parsed]
+    if candidates:
+        return max(candidates, key=lambda item: item[0])[1]
+    for value in values:
+        raw = (value or "").strip()
+        if raw:
+            return raw
+    return None
+
+
+def _min_iso_value(*values: str | None) -> str | None:
+    candidates = [(parsed, value) for value in values if value for parsed in [_parse_iso_value(value)] if parsed]
+    if candidates:
+        return min(candidates, key=lambda item: item[0])[1]
+    for value in values:
+        raw = (value or "").strip()
+        if raw:
+            return raw
+    return None
+
+
+def _merge_history_ids(*values: str | None) -> str | None:
+    present = [(value or "").strip() for value in values if (value or "").strip()]
+    if not present:
+        return None
+    numeric: list[tuple[int, str]] = []
+    for value in present:
+        try:
+            numeric.append((int(value), value))
+        except Exception:
+            return present[0]
+    return max(numeric, key=lambda item: item[0])[1]
+
+
 def _message_delivery_status(metadata: dict) -> str:
     return (metadata.get("delivery_status") or "pending").strip().lower() or "pending"
 
@@ -441,6 +489,121 @@ def _resolve_apple_messages_route_for_conversation(
         messages_conn.close()
 
 
+def _merge_conversation_into_existing_target(
+    conn: sqlite3.Connection,
+    source_id: str,
+    target_id: str,
+) -> None:
+    if not source_id or not target_id or source_id == target_id:
+        return
+
+    source_row = conn.execute(
+        """SELECT gmail_thread_id, alias_email, status
+           FROM penguin_connect_conversations
+           WHERE conversation_id = ? LIMIT 1""",
+        (source_id,),
+    ).fetchone()
+    if not source_row:
+        return
+
+    target_active_alias = conn.execute(
+        """SELECT 1
+           FROM penguin_connect_aliases
+           WHERE conversation_id = ? AND status = 'active'
+           LIMIT 1""",
+        (target_id,),
+    ).fetchone()
+    if target_active_alias:
+        conn.execute(
+            """UPDATE penguin_connect_aliases
+               SET status = 'disconnected',
+                   disconnected_at = COALESCE(disconnected_at, datetime('now'))
+               WHERE conversation_id = ? AND status = 'active'""",
+            (source_id,),
+        )
+    conn.execute("UPDATE penguin_connect_aliases SET conversation_id = ? WHERE conversation_id = ?", (target_id, source_id))
+    conn.execute("UPDATE OR IGNORE penguin_connect_messages SET conversation_id = ? WHERE conversation_id = ?", (target_id, source_id))
+    conn.execute("DELETE FROM penguin_connect_messages WHERE conversation_id = ?", (source_id,))
+
+    source_state = conn.execute(
+        """SELECT last_imessage_ts, last_gmail_ts, last_message_ts, last_gmail_history_id,
+                  initial_sync_completed_at
+           FROM penguin_connect_sync_state
+           WHERE conversation_id = ?""",
+        (source_id,),
+    ).fetchone()
+    target_state = conn.execute(
+        """SELECT last_imessage_ts, last_gmail_ts, last_message_ts, last_gmail_history_id,
+                  initial_sync_completed_at
+           FROM penguin_connect_sync_state
+           WHERE conversation_id = ?""",
+        (target_id,),
+    ).fetchone()
+    if source_state:
+        merged_last_imessage = _max_iso_value(
+            target_state["last_imessage_ts"] if target_state else None,
+            source_state["last_imessage_ts"],
+        )
+        merged_last_gmail = _max_iso_value(
+            target_state["last_gmail_ts"] if target_state else None,
+            source_state["last_gmail_ts"],
+        )
+        merged_last_message = _max_iso_value(
+            target_state["last_message_ts"] if target_state else None,
+            source_state["last_message_ts"],
+        )
+        merged_history_id = _merge_history_ids(
+            target_state["last_gmail_history_id"] if target_state else None,
+            source_state["last_gmail_history_id"],
+        )
+        merged_initial_sync_completed_at = _min_iso_value(
+            target_state["initial_sync_completed_at"] if target_state else None,
+            source_state["initial_sync_completed_at"],
+        )
+        conn.execute(
+            """INSERT INTO penguin_connect_sync_state
+               (conversation_id, last_imessage_ts, last_gmail_ts, last_message_ts,
+                last_gmail_history_id, initial_sync_completed_at, last_synced_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+               ON CONFLICT(conversation_id) DO UPDATE SET
+                 last_imessage_ts = excluded.last_imessage_ts,
+                 last_gmail_ts = excluded.last_gmail_ts,
+                 last_message_ts = excluded.last_message_ts,
+                 last_gmail_history_id = excluded.last_gmail_history_id,
+                 initial_sync_completed_at = excluded.initial_sync_completed_at,
+                 last_synced_at = datetime('now'),
+                 updated_at = datetime('now')""",
+            (
+                target_id,
+                merged_last_imessage,
+                merged_last_gmail,
+                merged_last_message,
+                merged_history_id,
+                merged_initial_sync_completed_at,
+            ),
+        )
+        conn.execute("DELETE FROM penguin_connect_sync_state WHERE conversation_id = ?", (source_id,))
+
+    conn.execute(
+        """UPDATE penguin_connect_conversations
+           SET gmail_thread_id = COALESCE(gmail_thread_id, ?),
+               alias_email = COALESCE(alias_email, ?),
+               status = CASE
+                 WHEN status = 'active' OR ? = 'active' THEN 'active'
+                 ELSE status
+               END,
+               updated_at = datetime('now')
+           WHERE conversation_id = ?""",
+        (
+            source_row["gmail_thread_id"],
+            source_row["alias_email"],
+            source_row["status"],
+            target_id,
+        ),
+    )
+    conn.execute("DELETE FROM penguin_connect_conversations WHERE conversation_id = ?", (source_id,))
+
+
 def _has_provider_aware_conversation_uniqueness(conn: sqlite3.Connection) -> bool:
     for row in conn.execute("PRAGMA index_list(penguin_connect_conversations)").fetchall():
         if not row["unique"]:
@@ -672,7 +835,8 @@ def _migrate_apple_messages_conversation_routes(conn: sqlite3.Connection) -> int
             (target_conversation_id,),
         ).fetchone()
         if existing_target and existing_target["conversation_id"] != old_id:
-            # Leave collisions alone instead of merging aliases/threads implicitly.
+            _merge_conversation_into_existing_target(conn, old_id, target_conversation_id)
+            migrated += 1
             continue
 
         temporary_provider = f"route-migrating:{old_id}"
