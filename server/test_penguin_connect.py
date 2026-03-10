@@ -541,6 +541,85 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual([row["source_provider"] for row in rows], ["imessage", "sms"])
         self.assertEqual([row["display_name"] for row in rows], ["Family Group", "Family Group"])
 
+    def test_discovery_uses_explicit_group_room_name_when_meaningful(self):
+        self.conn.execute("DELETE FROM penguin_connect_conversations WHERE gmail_email = ?", ("owner@gmail.com",))
+        chats = [
+            {
+                "chat_id": "iMessage;+;project-phoenix",
+                "chat_guid": "iMessage;+;project-phoenix",
+                "chat_identifier": "chat-project-phoenix",
+                "name": "+15127436385, +14155550101",
+                "source_display_name": "",
+                "room_name": "Project Phoenix",
+                "chat_type": "group",
+                "participants": ["+15127436385", "+14155550101"],
+                "message_count": 3,
+                "last_message_at": "2026-03-08T10:00:00+00:00",
+                "last_message_preview": "hi",
+                "service": "iMessage",
+                "source_provider": "imessage",
+            },
+        ]
+
+        with mock.patch("penguin_connect.browse_imessage_chats", return_value={"available": True, "chats": chats}):
+            penguin_connect.ensure_conversations_discovered(self.conn, "owner@gmail.com")
+
+        row = self.conn.execute(
+            "SELECT display_name FROM penguin_connect_conversations WHERE gmail_email = ?",
+            ("owner@gmail.com",),
+        ).fetchone()
+        self.assertEqual(row["display_name"], "Project Phoenix")
+
+    def test_discovery_preserves_existing_group_name_when_source_title_missing(self):
+        self.conn.execute("DELETE FROM penguin_connect_conversations WHERE gmail_email = ?", ("owner@gmail.com",))
+        conversation_id = penguin_connect.deterministic_conversation_id(
+            "owner@gmail.com",
+            "iMessage;+;chat944619608734041334",
+            "imessage",
+        )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_conversations
+               (gmail_email, source_provider, conversation_id, imessage_chat_id, imessage_chat_identifier,
+                imessage_service_name, display_name, chat_type, participants, alias_email, status)
+               VALUES (?, 'imessage', ?, ?, ?, ?, ?, 'group', ?, ?, 'active')""",
+            (
+                "owner@gmail.com",
+                conversation_id,
+                "iMessage;+;chat944619608734041334",
+                "chat944619608734041334",
+                "iMessage",
+                "Dev <> Slashy",
+                json.dumps(["+19544595315", "+15127436385"]),
+                "owner+am-devslashy@gmail.com",
+            ),
+        )
+        chats = [
+            {
+                "chat_id": "iMessage;+;chat944619608734041334",
+                "chat_guid": "iMessage;+;chat944619608734041334",
+                "chat_identifier": "chat944619608734041334",
+                "name": "+19544595315, +15127436385",
+                "source_display_name": "",
+                "room_name": "",
+                "chat_type": "group",
+                "participants": ["+19544595315", "+15127436385"],
+                "message_count": 6,
+                "last_message_at": "2026-03-10T10:00:00+00:00",
+                "last_message_preview": "hi",
+                "service": "iMessage",
+                "source_provider": "imessage",
+            },
+        ]
+
+        with mock.patch("penguin_connect.browse_imessage_chats", return_value={"available": True, "chats": chats}):
+            penguin_connect.ensure_conversations_discovered(self.conn, "owner@gmail.com")
+
+        row = self.conn.execute(
+            "SELECT display_name FROM penguin_connect_conversations WHERE conversation_id = ?",
+            (conversation_id,),
+        ).fetchone()
+        self.assertEqual(row["display_name"], "Dev <> Slashy")
+
     def test_discovery_self_heals_existing_row_that_matches_unique_route_key(self):
         self.conn.execute("DELETE FROM penguin_connect_conversations WHERE gmail_email = ?", ("owner@gmail.com",))
         self.conn.execute(

@@ -1354,7 +1354,8 @@ def _load_conversations_by_ids(conn: sqlite3.Connection, conversation_ids: set[s
     placeholders = ",".join("?" for _ in ids)
     return conn.execute(
         f"""SELECT conversation_id, status, source_provider, imessage_chat_id,
-                   imessage_chat_identifier, imessage_service_name, gmail_thread_id, chat_type, updated_at
+                   imessage_chat_identifier, imessage_service_name, gmail_thread_id,
+                   display_name, chat_type, updated_at
               FROM penguin_connect_conversations
              WHERE conversation_id IN ({placeholders})""",
         ids,
@@ -2066,10 +2067,7 @@ def _sender_allowed(sender_email: str, gmail_email: str, send_as_aliases: list[s
     return sender in allowed
 
 
-def _resolve_display_name(conn: sqlite3.Connection, chat_name: str, participants: list[str]) -> str:
-    if chat_name and not _looks_like_unresolved_handle(chat_name):
-        return chat_name
-
+def _participant_display_name(conn: sqlite3.Connection, participants: list[str]) -> str:
     resolved: list[str] = []
     for participant in participants or []:
         p = (participant or "").strip()
@@ -2078,12 +2076,56 @@ def _resolve_display_name(conn: sqlite3.Connection, chat_name: str, participants
         resolved.append(_lookup_contact_name(conn, p) or p)
 
     if not resolved:
-        return chat_name or "iMessage Conversation"
+        return ""
     if len(resolved) == 1:
         return resolved[0]
     if len(resolved) <= 3:
         return ", ".join(resolved)
     return ", ".join(resolved[:3]) + f" +{len(resolved) - 3}"
+
+
+def _normalize_source_chat_name(chat_name: str, *, chat_identifier: str = "", chat_id: str = "") -> str:
+    candidate = (chat_name or "").strip()
+    if not candidate:
+        return ""
+    if candidate in {(chat_identifier or "").strip(), (chat_id or "").strip()}:
+        return ""
+    if _looks_like_unresolved_handle(candidate):
+        return ""
+    return candidate
+
+
+def _resolve_display_name(
+    conn: sqlite3.Connection,
+    chat_name: str,
+    participants: list[str],
+    *,
+    chat_type: str = "group",
+    existing_display_name: str = "",
+    chat_identifier: str = "",
+    chat_id: str = "",
+) -> str:
+    source_name = _normalize_source_chat_name(
+        chat_name,
+        chat_identifier=chat_identifier,
+        chat_id=chat_id,
+    )
+    if source_name:
+        return source_name
+
+    participant_name = _participant_display_name(conn, participants)
+    if (chat_type or "").strip().lower() == "group":
+        existing_name = _normalize_source_chat_name(existing_display_name)
+        if existing_name and existing_name != participant_name:
+            return existing_name
+
+    if participant_name:
+        return participant_name
+    if existing_display_name:
+        return existing_display_name
+    if chat_name:
+        return chat_name
+    return "iMessage Conversation"
 
 
 def _create_alias_email(gmail_email: str, conversation_id: str, fresh: bool) -> tuple[str, str]:
@@ -2183,7 +2225,6 @@ def ensure_conversations_discovered(
         service_name = (active_chat.get("service") or "").strip()
         legacy_chat_id = (active_chat.get("chat_identifier") or chat_id).strip()
         participants = active_chat.get("participants") or []
-        display_name = _resolve_display_name(conn, active_chat.get("name") or "", participants)
         chat_type = active_chat.get("chat_type") or "group"
         conversation_source_key = thread_key if source_provider == "apple_messages" else chat_id
         conversation_id = deterministic_conversation_id(gmail_email, conversation_source_key, source_provider)
@@ -2244,6 +2285,24 @@ def ensure_conversations_discovered(
 
         statuses = [(row["status"] or "").strip().lower() for row in existing_rows]
         status = "active" if "active" in statuses or not statuses else existing_rows[0]["status"]
+        if any(key in active_chat for key in ("source_display_name", "room_name", "display_name")):
+            explicit_source_name = (
+                active_chat.get("source_display_name")
+                or active_chat.get("room_name")
+                or active_chat.get("display_name")
+                or ""
+            )
+        else:
+            explicit_source_name = active_chat.get("name") or ""
+        display_name = _resolve_display_name(
+            conn,
+            explicit_source_name,
+            participants,
+            chat_type=chat_type,
+            existing_display_name=primary_row["display_name"] if primary_row else "",
+            chat_identifier=legacy_chat_id,
+            chat_id=chat_id,
+        )
 
         conn.execute(
             """INSERT INTO penguin_connect_conversations

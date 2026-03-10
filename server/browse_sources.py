@@ -71,9 +71,31 @@ def _looks_like_chat_guid(chat_key):
     return len(parts) == 3 and all(parts)
 
 
+def _preferred_source_chat_title(display_name, room_name, chat_identifier="", chat_guid=""):
+    banned = {
+        (chat_identifier or "").strip(),
+        (chat_guid or "").strip(),
+    }
+    for candidate in (display_name, room_name):
+        title = (candidate or "").strip()
+        if title and title not in banned:
+            return title
+    return ""
+
+
+def _chat_room_name_expr(conn):
+    try:
+        columns = conn.execute("PRAGMA table_info(chat)").fetchall()
+    except Exception:
+        columns = []
+    has_room_name = any((col[1] or "").strip().lower() == "room_name" for col in columns if len(col) > 1)
+    return "c.room_name" if has_room_name else "''"
+
+
 def _allowed_service_rows(cur, match_column, match_value, allowed_services=None):
     services = tuple(allowed_services or APPLE_MESSAGES_SERVICES)
     placeholders = ",".join("?" for _ in services)
+    room_name_expr = _chat_room_name_expr(cur.connection)
     rows = cur.execute(
         f"""
         SELECT
@@ -81,6 +103,7 @@ def _allowed_service_rows(cur, match_column, match_value, allowed_services=None)
             c.guid,
             c.chat_identifier,
             c.display_name,
+            {room_name_expr},
             c.service_name,
             c.is_archived,
             MAX(m.date) AS last_msg_date
@@ -96,9 +119,9 @@ def _allowed_service_rows(cur, match_column, match_value, allowed_services=None)
     rows = sorted(
         rows,
         key=lambda row: (
-            _service_rank(row[4]),
-            int(row[5] or 0),
-            -(int(row[6] or 0)),
+            _service_rank(row[5]),
+            int(row[6] or 0),
+            -(int(row[7] or 0)),
             -(int(row[0] or 0)),
         ),
     )
@@ -121,12 +144,13 @@ def resolve_apple_messages_chat(chat_key, allowed_services=None):
             rows = _allowed_service_rows(cur, "chat_identifier", chat_key, allowed_services=allowed_services)
         if not rows:
             return None
-        rowid, guid, chat_identifier, display_name, service_name, is_archived, last_msg_date = rows[0]
+        rowid, guid, chat_identifier, display_name, room_name, service_name, is_archived, last_msg_date = rows[0]
         return {
             "rowid": rowid,
             "guid": guid,
             "chat_identifier": chat_identifier,
             "display_name": display_name,
+            "room_name": room_name,
             "service_name": service_name,
             "is_archived": bool(is_archived),
             "last_message_at": _apple_ts_to_iso(last_msg_date),
@@ -160,7 +184,7 @@ def list_apple_messages_chat_routes(chat_key, allowed_services=None):
 
         seen_guids = set()
         out = []
-        for rowid, guid, chat_identifier, display_name, service_name, is_archived, last_msg_date in routes:
+        for rowid, guid, chat_identifier, display_name, room_name, service_name, is_archived, last_msg_date in routes:
             if not guid or guid in seen_guids:
                 continue
             seen_guids.add(guid)
@@ -171,6 +195,7 @@ def list_apple_messages_chat_routes(chat_key, allowed_services=None):
                     "chat_id": guid,
                     "chat_identifier": chat_identifier,
                     "display_name": display_name,
+                    "room_name": room_name,
                     "service_name": service_name,
                     "is_archived": bool(is_archived),
                     "last_message_at": _apple_ts_to_iso(last_msg_date),
@@ -191,6 +216,7 @@ def browse_imessage_chats(search=None, limit=100):
         cur = conn.cursor()
         params = []
         limit_clause = ""
+        room_name_expr = _chat_room_name_expr(conn)
         if limit is not None:
             safe_limit = max(1, min(int(limit or 100), 100000))
             limit_clause = "LIMIT ?"
@@ -202,6 +228,7 @@ def browse_imessage_chats(search=None, limit=100):
                 c.guid,
                 c.chat_identifier,
                 c.display_name,
+                {room_name_expr},
                 c.service_name,
                 COUNT(DISTINCT cmj.message_id) as msg_count,
                 MAX(m.date) as last_msg_date
@@ -221,7 +248,7 @@ def browse_imessage_chats(search=None, limit=100):
 
         chats = []
         for row in raw_chats:
-            chat_rowid, chat_guid, chat_identifier, display_name, service, msg_count, last_date = row
+            chat_rowid, chat_guid, chat_identifier, display_name, room_name, service, msg_count, last_date = row
 
             cur.execute(
                 """
@@ -235,7 +262,7 @@ def browse_imessage_chats(search=None, limit=100):
 
             is_group = len(participants) > 1
             chat_type = "group" if is_group else "dm"
-            name = display_name or ""
+            name = _preferred_source_chat_title(display_name, room_name, chat_identifier, chat_guid)
             if not name and participants:
                 name = ", ".join(participants[:3])
                 if len(participants) > 3:
@@ -275,6 +302,8 @@ def browse_imessage_chats(search=None, limit=100):
                     "chat_guid": chat_guid,
                     "chat_identifier": chat_identifier,
                     "name": name,
+                    "source_display_name": (display_name or "").strip(),
+                    "room_name": (room_name or "").strip(),
                     "chat_type": chat_type,
                     "participants": participants,
                     "message_count": msg_count,
