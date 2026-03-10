@@ -397,6 +397,16 @@ def _resolve_apple_messages_route_for_conversation(
                     "source_provider": str(candidate["source_provider"] or ""),
                 }
 
+        active_candidates = [candidate for candidate in candidates if (candidate.get("last_message_at") or "").strip()]
+        if len(active_candidates) == 1:
+            candidate = active_candidates[0]
+            return {
+                "guid": str(candidate["guid"] or ""),
+                "chat_identifier": str(candidate["chat_identifier"] or ""),
+                "service_name": str(candidate["service_name"] or ""),
+                "source_provider": str(candidate["source_provider"] or ""),
+            }
+
         observed_timestamps = _load_conversation_import_timestamps(conn, conversation_row["conversation_id"])
         if observed_timestamps:
             scored_candidates: list[tuple[int, dict[str, str | int | None]]] = []

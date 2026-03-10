@@ -553,6 +553,93 @@ class SyncIntegrationTests(unittest.TestCase):
         self.assertEqual(conv["imessage_service_name"], "SMS")
         self.assertEqual(moved_message["conversation_id"], new_id)
 
+    def test_init_db_resolves_ambiguous_apple_messages_identifier_when_only_one_route_has_activity(self):
+        conn = db.get_connection()
+        conn.close()
+
+        legacy_schema = (
+            db.SCHEMA.replace("    imessage_chat_identifier TEXT,\n", "")
+            .replace("    imessage_service_name TEXT,\n", "")
+        )
+        old_id = penguin_connect.deterministic_conversation_id("owner@gmail.com", "chat-group-shared", "imessage")
+        new_id = penguin_connect.deterministic_conversation_id("owner@gmail.com", "SMS;+;chat-group-shared", "sms")
+
+        sms_ts = int(4_000_000_000)
+        apple_messages_db = Path(self.tmpdir.name) / "messages-chat-single-active-route.db"
+        messages_conn = sqlite3.connect(str(apple_messages_db))
+        try:
+            messages_conn.executescript(
+                """
+                CREATE TABLE chat (
+                    ROWID INTEGER PRIMARY KEY,
+                    guid TEXT,
+                    chat_identifier TEXT,
+                    display_name TEXT,
+                    service_name TEXT,
+                    is_archived INTEGER DEFAULT 0
+                );
+                CREATE TABLE message (
+                    ROWID INTEGER PRIMARY KEY,
+                    date INTEGER
+                );
+                CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
+                """
+            )
+            messages_conn.execute(
+                "INSERT INTO chat(ROWID, guid, chat_identifier, display_name, service_name, is_archived) VALUES (1, ?, ?, 'Legacy Group', 'iMessage', 0)",
+                ("iMessage;+;chat-group-shared", "chat-group-shared"),
+            )
+            messages_conn.execute(
+                "INSERT INTO chat(ROWID, guid, chat_identifier, display_name, service_name, is_archived) VALUES (2, ?, ?, 'Legacy Group', 'SMS', 0)",
+                ("SMS;+;chat-group-shared", "chat-group-shared"),
+            )
+            messages_conn.execute("INSERT INTO message(ROWID, date) VALUES (1, ?)", (sms_ts,))
+            messages_conn.execute("INSERT INTO chat_message_join(chat_id, message_id) VALUES (2, 1)")
+            messages_conn.commit()
+        finally:
+            messages_conn.close()
+        db.APPLE_MESSAGES_DB = apple_messages_db
+
+        raw_conn = sqlite3.connect(str(db.DB_PATH))
+        try:
+            raw_conn.executescript(legacy_schema)
+            raw_conn.execute(
+                """INSERT INTO penguin_connect_conversations
+                   (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants, alias_email, status)
+                   VALUES (?, 'imessage', ?, ?, ?, 'group', ?, ?, 'active')""",
+                (
+                    "owner@gmail.com",
+                    old_id,
+                    "chat-group-shared",
+                    "Legacy Group",
+                    '["+15127436385","+14155550101"]',
+                    "owner+am-group@gmail.com",
+                ),
+            )
+            raw_conn.commit()
+        finally:
+            raw_conn.close()
+
+        db.init_db()
+
+        migrated_conn = db.get_connection()
+        try:
+            conv = migrated_conn.execute(
+                """SELECT conversation_id, source_provider, imessage_chat_id, imessage_chat_identifier, imessage_service_name
+                   FROM penguin_connect_conversations
+                   WHERE conversation_id = ?""",
+                (new_id,),
+            ).fetchone()
+        finally:
+            migrated_conn.close()
+
+        self.assertIsNotNone(conv)
+        self.assertEqual(conv["conversation_id"], new_id)
+        self.assertEqual(conv["source_provider"], "sms")
+        self.assertEqual(conv["imessage_chat_id"], "SMS;+;chat-group-shared")
+        self.assertEqual(conv["imessage_chat_identifier"], "chat-group-shared")
+        self.assertEqual(conv["imessage_service_name"], "SMS")
+
 
 if __name__ == "__main__":
     unittest.main()
