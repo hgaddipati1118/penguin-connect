@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Setup and operations guide
+    url: https://github.com/hgaddipati1118/penguin-connect/blob/main/docs/PENGUIN_CONNECT.md
+    about: Read the setup and troubleshooting guide before filing environment or installation issues.
+  - name: Contributing guide
+    url: https://github.com/hgaddipati1118/penguin-connect/blob/main/CONTRIBUTING.md
+    about: Review contribution, verification, and PR expectations for this repository.
+  - name: Security reporting
+    url: https://github.com/hgaddipati1118/penguin-connect/security
+    about: Use private reporting when available for vulnerabilities or privacy-sensitive bugs.

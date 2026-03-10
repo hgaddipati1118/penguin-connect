@@ -1,0 +1,57 @@
+name: Feature request
+description: Suggest a focused improvement for PenguinConnect.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For large architecture changes, provider expansions, or multi-channel
+        refactors, include the user problem first and keep the scope focused.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user or operator problem are you trying to solve?
+      placeholder: It is hard to tell when startup catch-up skipped a conversation because the route became ambiguous.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Describe the smallest useful improvement.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional, but useful for larger requests.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Apple Messages adapter
+        - Gmail bridge flow
+        - Setup and tooling
+        - Docs and contributor experience
+        - Future provider integration
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Privacy or safety impact
+      description: Note any effect on local-only guarantees, logs, secrets, or message content handling.
+      placeholder: No privacy impact expected beyond existing alias metadata.
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I checked existing issues and docs before filing this request.
+          required: true
