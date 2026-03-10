@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 IMESSAGE_DB = os.path.expanduser("~/Library/Messages/chat.db")
 APPLE_EPOCH = datetime(2001, 1, 1, tzinfo=timezone.utc)
+APPLE_MESSAGES_SERVICES = ("iMessage", "SMS", "RCS")
 
 
 def _apple_ts_to_iso(ts):
@@ -46,6 +47,141 @@ def _extract_text_from_attributed_body(blob):
         return None
 
 
+def _service_to_provider(service_name):
+    normalized = (service_name or "").strip().lower()
+    if normalized in {"imessage", "sms", "rcs"}:
+        return normalized
+    return "imessage"
+
+
+def _service_rank(service_name):
+    normalized = (service_name or "").strip().lower()
+    if normalized == "imessage":
+        return 0
+    if normalized == "rcs":
+        return 1
+    if normalized == "sms":
+        return 2
+    return 3
+
+
+def _looks_like_chat_guid(chat_key):
+    value = (chat_key or "").strip()
+    parts = value.split(";")
+    return len(parts) == 3 and all(parts)
+
+
+def _allowed_service_rows(cur, match_column, match_value, allowed_services=None):
+    services = tuple(allowed_services or APPLE_MESSAGES_SERVICES)
+    placeholders = ",".join("?" for _ in services)
+    rows = cur.execute(
+        f"""
+        SELECT
+            c.ROWID,
+            c.guid,
+            c.chat_identifier,
+            c.display_name,
+            c.service_name,
+            c.is_archived,
+            MAX(m.date) AS last_msg_date
+        FROM chat c
+        LEFT JOIN chat_message_join cmj ON cmj.chat_id = c.ROWID
+        LEFT JOIN message m ON m.ROWID = cmj.message_id
+        WHERE c.{match_column} = ?
+          AND c.service_name IN ({placeholders})
+        GROUP BY c.ROWID
+        """,
+        (match_value, *services),
+    ).fetchall()
+    rows = sorted(
+        rows,
+        key=lambda row: (
+            _service_rank(row[4]),
+            int(row[5] or 0),
+            -(int(row[6] or 0)),
+            -(int(row[0] or 0)),
+        ),
+    )
+    return rows
+
+
+def resolve_apple_messages_chat(chat_key, allowed_services=None):
+    if not chat_key or not os.path.exists(IMESSAGE_DB):
+        return None
+
+    conn = sqlite3.connect(f"file:{IMESSAGE_DB}?mode=ro", uri=True)
+    try:
+        cur = conn.cursor()
+        rows = []
+        matched_by_guid = False
+        if _looks_like_chat_guid(chat_key):
+            rows = _allowed_service_rows(cur, "guid", chat_key, allowed_services=allowed_services)
+            matched_by_guid = bool(rows)
+        if not rows:
+            rows = _allowed_service_rows(cur, "chat_identifier", chat_key, allowed_services=allowed_services)
+        if not rows:
+            return None
+        rowid, guid, chat_identifier, display_name, service_name, is_archived, last_msg_date = rows[0]
+        return {
+            "rowid": rowid,
+            "guid": guid,
+            "chat_identifier": chat_identifier,
+            "display_name": display_name,
+            "service_name": service_name,
+            "is_archived": bool(is_archived),
+            "last_message_at": _apple_ts_to_iso(last_msg_date),
+            "source_provider": _service_to_provider(service_name),
+            "ambiguous": not matched_by_guid and len(rows) > 1,
+        }
+    finally:
+        conn.close()
+
+
+def list_apple_messages_chat_routes(chat_key, allowed_services=None):
+    if not chat_key or not os.path.exists(IMESSAGE_DB):
+        return []
+
+    conn = sqlite3.connect(f"file:{IMESSAGE_DB}?mode=ro", uri=True)
+    try:
+        cur = conn.cursor()
+        routes = []
+        lookup_key = chat_key
+        if _looks_like_chat_guid(chat_key):
+            exact_rows = _allowed_service_rows(cur, "guid", chat_key, allowed_services=allowed_services)
+            if exact_rows:
+                lookup_key = exact_rows[0][2] or chat_key
+                routes.extend(exact_rows)
+
+        identifier_rows = _allowed_service_rows(cur, "chat_identifier", lookup_key, allowed_services=allowed_services)
+        if identifier_rows:
+            routes = identifier_rows
+        if not routes:
+            return []
+
+        seen_guids = set()
+        out = []
+        for rowid, guid, chat_identifier, display_name, service_name, is_archived, last_msg_date in routes:
+            if not guid or guid in seen_guids:
+                continue
+            seen_guids.add(guid)
+            out.append(
+                {
+                    "rowid": rowid,
+                    "guid": guid,
+                    "chat_id": guid,
+                    "chat_identifier": chat_identifier,
+                    "display_name": display_name,
+                    "service_name": service_name,
+                    "is_archived": bool(is_archived),
+                    "last_message_at": _apple_ts_to_iso(last_msg_date),
+                    "source_provider": _service_to_provider(service_name),
+                }
+            )
+        return out
+    finally:
+        conn.close()
+
+
 def browse_imessage_chats(search=None, limit=100):
     if not os.path.exists(IMESSAGE_DB):
         return {"available": False, "reason": "chat.db not found"}
@@ -53,10 +189,17 @@ def browse_imessage_chats(search=None, limit=100):
     conn = sqlite3.connect(f"file:{IMESSAGE_DB}?mode=ro", uri=True)
     try:
         cur = conn.cursor()
+        params = []
+        limit_clause = ""
+        if limit is not None:
+            safe_limit = max(1, min(int(limit or 100), 100000))
+            limit_clause = "LIMIT ?"
+            params.append(safe_limit)
         cur.execute(
-            """
+            f"""
             SELECT
                 c.ROWID,
+                c.guid,
                 c.chat_identifier,
                 c.display_name,
                 c.service_name,
@@ -65,18 +208,20 @@ def browse_imessage_chats(search=None, limit=100):
             FROM chat c
             LEFT JOIN chat_message_join cmj ON cmj.chat_id = c.ROWID
             LEFT JOIN message m ON m.ROWID = cmj.message_id
+            WHERE c.guid IS NOT NULL
+              AND c.service_name IN ('iMessage', 'SMS', 'RCS')
             GROUP BY c.ROWID
             HAVING msg_count > 0
             ORDER BY last_msg_date DESC
-            LIMIT ?
+            {limit_clause}
             """,
-            (limit,),
+            params,
         )
         raw_chats = cur.fetchall()
 
         chats = []
         for row in raw_chats:
-            chat_rowid, chat_id, display_name, service, msg_count, last_date = row
+            chat_rowid, chat_guid, chat_identifier, display_name, service, msg_count, last_date = row
 
             cur.execute(
                 """
@@ -96,11 +241,11 @@ def browse_imessage_chats(search=None, limit=100):
                 if len(participants) > 3:
                     name += f" +{len(participants) - 3}"
             if not name:
-                name = chat_id or "iMessage Conversation"
+                name = chat_identifier or chat_guid or "Apple Messages Conversation"
 
             if search:
                 s = search.lower()
-                searchable = f"{name} {chat_id} {' '.join(participants)}".lower()
+                searchable = f"{name} {chat_identifier} {chat_guid} {' '.join(participants)}".lower()
                 if s not in searchable:
                     continue
 
@@ -126,8 +271,9 @@ def browse_imessage_chats(search=None, limit=100):
 
             chats.append(
                 {
-                    "chat_id": chat_id,
-                    "chat_identifier": chat_id,
+                    "chat_id": chat_guid,
+                    "chat_guid": chat_guid,
+                    "chat_identifier": chat_identifier,
                     "name": name,
                     "chat_type": chat_type,
                     "participants": participants,
@@ -135,6 +281,7 @@ def browse_imessage_chats(search=None, limit=100):
                     "last_message_at": _apple_ts_to_iso(last_date),
                     "last_message_preview": last_msg,
                     "service": service or "iMessage",
+                    "source_provider": _service_to_provider(service),
                 }
             )
 
@@ -160,7 +307,9 @@ def list_recent_imessage_chat_activity(since, limit=500):
         cur.execute(
             """
             SELECT
+                c.guid,
                 c.chat_identifier,
+                c.service_name,
                 MIN(m.date) AS first_msg_date,
                 MAX(m.date) AS last_msg_date,
                 COUNT(DISTINCT m.ROWID) AS msg_count
@@ -168,12 +317,14 @@ def list_recent_imessage_chat_activity(since, limit=500):
             JOIN chat_message_join cmj ON cmj.chat_id = c.ROWID
             JOIN message m ON m.ROWID = cmj.message_id
             LEFT JOIN message_attachment_join maj ON maj.message_id = m.ROWID
-            WHERE c.chat_identifier IS NOT NULL
+            WHERE c.guid IS NOT NULL
+              AND c.chat_identifier IS NOT NULL
+              AND c.service_name IN ('iMessage', 'SMS', 'RCS')
               AND m.date > ?
               AND ((m.text IS NOT NULL AND m.text != '')
                    OR m.attributedBody IS NOT NULL
                    OR maj.attachment_id IS NOT NULL)
-            GROUP BY c.ROWID, c.chat_identifier
+            GROUP BY c.ROWID, c.guid, c.chat_identifier, c.service_name
             ORDER BY first_msg_date ASC, c.ROWID ASC
             LIMIT ?
             """,
@@ -181,12 +332,16 @@ def list_recent_imessage_chat_activity(since, limit=500):
         )
 
         chats = []
-        for chat_id, first_date, last_date, msg_count in cur.fetchall():
-            if not chat_id:
+        for chat_guid, chat_identifier, service_name, first_date, last_date, msg_count in cur.fetchall():
+            if not chat_guid:
                 continue
             chats.append(
                 {
-                    "chat_id": chat_id,
+                    "chat_id": chat_guid,
+                    "chat_guid": chat_guid,
+                    "chat_identifier": chat_identifier,
+                    "service": service_name or "iMessage",
+                    "source_provider": _service_to_provider(service_name),
                     "first_message_at": _apple_ts_to_iso(first_date),
                     "last_message_at": _apple_ts_to_iso(last_date),
                     "message_count": msg_count or 0,
@@ -201,9 +356,15 @@ def list_recent_imessage_chat_activity(since, limit=500):
 
 
 def _resolve_imessage_rowid(cur, chat_identifier):
-    row = cur.execute("SELECT ROWID FROM chat WHERE chat_identifier = ?", (chat_identifier,)).fetchone()
-    if row:
-        return row[0]
+    if _looks_like_chat_guid(chat_identifier):
+        row = _allowed_service_rows(cur, "guid", chat_identifier, allowed_services=APPLE_MESSAGES_SERVICES)
+        if row:
+            return row[0][0]
+    row = _allowed_service_rows(cur, "chat_identifier", chat_identifier, allowed_services=APPLE_MESSAGES_SERVICES)
+    if len(row) == 1:
+        return row[0][0]
+    if len(row) > 1:
+        return None
     try:
         rowid = int(chat_identifier)
         row = cur.execute("SELECT ROWID FROM chat WHERE ROWID = ?", (rowid,)).fetchone()

@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from action_log import action_log_path, log_action
 from penguin_connect import (
     connect_gmail_account as penguinconnect_connect_gmail_account,
     disconnect_conversation as penguinconnect_disconnect_conversation,
@@ -26,6 +27,7 @@ from penguin_connect import (
     sync_conversations as penguinconnect_sync_conversations,
 )
 from db import DB_PATH, get_connection, init_db
+from startup_checks import StartupReadinessError, assert_startup_ready
 from watcher import get_sync_status, start_watchers, stop_watchers
 
 class PenguinConnectGmailConnectRequest(BaseModel):
@@ -62,11 +64,27 @@ def _apply_runtime_sync_status(sync_status: dict) -> dict:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
+    conn = get_connection()
+    try:
+        assert_startup_ready(conn)
+    except StartupReadinessError as exc:
+        print(f"[PenguinConnect] Startup preflight failed: {exc}")
+        raise
+    finally:
+        conn.close()
+
     start_watchers()
+    log_action(
+        "server_start",
+        db_path=str(DB_PATH),
+        action_log_path=str(action_log_path()),
+        poll_seconds=_poll_seconds(),
+    )
 
     def _run_startup_sync() -> None:
         try:
             result = penguinconnect_run_startup_catchup()
+            log_action("startup_catchup_result", result=result)
             if result.get("success"):
                 if result.get("skipped"):
                     reason = result.get("reason")
@@ -82,6 +100,7 @@ async def lifespan(_app: FastAPI):
             elif result.get("error") != "gmail_not_connected":
                 print(f"[PenguinConnect] Startup catch-up warning: {result.get('error')}")
         except Exception as exc:
+            log_action("startup_catchup_exception", error=str(exc).strip() or exc.__class__.__name__)
             print(f"[PenguinConnect] Startup catch-up failed: {exc}")
 
     threading.Thread(target=_run_startup_sync, daemon=True, name="penguinconnect-startup-catchup").start()
@@ -94,6 +113,7 @@ async def lifespan(_app: FastAPI):
     except Exception:
         pass
 
+    log_action("server_shutdown")
     print("[PenguinConnect] Shutting down")
 
 app = FastAPI(title="PenguinConnect", version="1.0.0", lifespan=lifespan)
@@ -192,6 +212,12 @@ def connect_penguinconnect_gmail(req: PenguinConnectGmailConnectRequest):
     conn = get_connection()
     try:
         result = penguinconnect_connect_gmail_account(conn, req.gmail_email, req.token_json)
+        log_action(
+            "api_connect_gmail",
+            gmail_email=req.gmail_email,
+            success=bool(result.get("success")),
+            error=result.get("error"),
+        )
         if not result.get("success"):
             raise HTTPException(status_code=400, detail=result.get("error", "failed_to_connect_gmail"))
         conn.commit()
@@ -255,6 +281,18 @@ def sync_penguinconnect_conversations(req: PenguinConnectSyncRequest):
             hours=req.hours,
             verify_all=req.verify_all,
         )
+        log_action(
+            "api_sync_request",
+            mode=req.mode,
+            days=req.days or 7,
+            hours=req.hours,
+            verify_all=bool(req.verify_all),
+            success=bool(result.get("success")),
+            skipped=bool(result.get("skipped")),
+            reason=result.get("reason"),
+            error=result.get("error"),
+            queue_job_id=result.get("queue_job_id"),
+        )
         if not result.get("success"):
             err = result.get("error")
             if err == "invalid_mode":
@@ -277,6 +315,12 @@ def disconnect_penguinconnect_conversation(conversation_id: str):
     conn = get_connection()
     try:
         result = penguinconnect_disconnect_conversation(conn, conversation_id)
+        log_action(
+            "api_disconnect_conversation",
+            conversation_id=conversation_id,
+            success=bool(result.get("success")),
+            error=result.get("error"),
+        )
         if not result.get("success"):
             raise HTTPException(status_code=404, detail=result.get("error", "conversation_not_found"))
         conn.commit()
@@ -292,6 +336,12 @@ def reconnect_penguinconnect_conversation(conversation_id: str):
     conn = get_connection()
     try:
         result = penguinconnect_reconnect_conversation(conn, conversation_id)
+        log_action(
+            "api_reconnect_conversation",
+            conversation_id=conversation_id,
+            success=bool(result.get("success")),
+            error=result.get("error"),
+        )
         if not result.get("success"):
             raise HTTPException(status_code=404, detail=result.get("error", "conversation_not_found"))
         conn.commit()
@@ -311,6 +361,13 @@ def send_penguinconnect_conversation_message(conversation_id: str, req: PenguinC
             conversation_id=conversation_id,
             sender_email=req.sender_email,
             body_text=req.message,
+        )
+        log_action(
+            "api_manual_send_request",
+            conversation_id=conversation_id,
+            sender_email=req.sender_email,
+            success=bool(result.get("success")),
+            error=result.get("error"),
         )
         if not result.get("success"):
             if result.get("error") == "sender_not_connected_gmail":

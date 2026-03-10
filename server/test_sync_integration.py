@@ -1,9 +1,11 @@
+import json
 import os
 import sqlite3
 import tempfile
 import threading
 import time
 import unittest
+from datetime import timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -22,6 +24,7 @@ class SyncIntegrationTests(unittest.TestCase):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.old_db_path = db.DB_PATH
         self.old_data_dir = db.DATA_DIR
+        self.old_apple_messages_db = db.APPLE_MESSAGES_DB
         db.DATA_DIR = Path(self.tmpdir.name)
         db.DB_PATH = Path(self.tmpdir.name) / "cache.db"
         db.init_db()
@@ -34,6 +37,7 @@ class SyncIntegrationTests(unittest.TestCase):
         self.send_imessage_patcher.stop()
         db.DB_PATH = self.old_db_path
         db.DATA_DIR = self.old_data_dir
+        db.APPLE_MESSAGES_DB = self.old_apple_messages_db
         self.tmpdir.cleanup()
 
     def test_watcher_and_manual_sync_are_serialized(self):
@@ -163,6 +167,107 @@ class SyncIntegrationTests(unittest.TestCase):
         self.assertEqual(row["initial_sync_completed_at"], "2026-03-04 10:05:00")
         self.assertEqual(row["last_message_ts"], "2026-03-04T10:00:00+00:00")
 
+    def test_init_db_backfills_pending_gmail_delivery_bodies_to_latest_text(self):
+        conn = db.get_connection()
+        conn.execute(
+            """INSERT INTO penguin_connect_conversations
+               (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+                alias_email, status)
+               VALUES (?, 'apple_messages', ?, ?, ?, 'dm', ?, ?, 'active')""",
+            (
+                "owner@gmail.com",
+                "amc_pending",
+                "RCS;-;+15127436385",
+                "Taylor",
+                '["+15127436385"]',
+                "owner+am-pending@gmail.com",
+            ),
+        )
+        conn.execute(
+            """INSERT INTO penguin_connect_messages
+               (conversation_id, provider, provider_message_id, direction, body_text, message_timestamp, metadata)
+               VALUES (?, 'gmail', 'gmail:pending', 'email_to_imessage', ?, '2026-03-10T10:00:00+00:00', ?)""",
+            (
+                "amc_pending",
+                "Latest reply\n\nQuoted context:\n> Alice: Older line",
+                json.dumps(
+                    {
+                        "delivery_status": "pending",
+                        "source_body_text": "Latest reply\n\nOn Tue, Mar 10, 2026 at 10:00 AM Alice <alice@example.com> wrote:\n> Older line",
+                        "quoted_context_count": 1,
+                    }
+                ),
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        db.init_db()
+
+        migrated_conn = db.get_connection()
+        try:
+            row = migrated_conn.execute(
+                "SELECT body_text, metadata FROM penguin_connect_messages WHERE provider_message_id = 'gmail:pending'"
+            ).fetchone()
+        finally:
+            migrated_conn.close()
+
+        self.assertEqual(row["body_text"], "Latest reply")
+        metadata = json.loads(row["metadata"] or "{}")
+        self.assertEqual(metadata["source_body_text"], "Latest reply")
+        self.assertEqual(metadata["gmail_body_source"], "plain")
+        self.assertTrue(metadata["gmail_quoted_content_removed"])
+        self.assertNotIn("quoted_context_count", metadata)
+
+    def test_init_db_backfills_historical_gmail_delivery_bodies_when_parser_improves(self):
+        conn = db.get_connection()
+        conn.execute(
+            """INSERT INTO penguin_connect_conversations
+               (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+                alias_email, status)
+               VALUES (?, 'imessage', ?, ?, ?, 'dm', ?, ?, 'active')""",
+            (
+                "owner@gmail.com",
+                "amc_historical",
+                "iMessage;+;chat36804801746842713",
+                "Julian",
+                '["+15127436385"]',
+                "owner+am-historical@gmail.com",
+            ),
+        )
+        conn.execute(
+            """INSERT INTO penguin_connect_messages
+               (conversation_id, provider, provider_message_id, direction, body_text, message_timestamp, metadata)
+               VALUES (?, 'gmail', 'gmail:historical', 'email_to_imessage', ?, '2026-03-10T10:00:00+00:00', ?)""",
+            (
+                "amc_historical",
+                "Haha, that&#39;s a feature!\n\nThomas Lentine\nFounder\n973-555-0101",
+                json.dumps(
+                    {
+                        "delivery_status": "delivered",
+                        "source_body_text": "Haha, that&#39;s a feature!\n\nThomas Lentine\nFounder\n973-555-0101",
+                    }
+                ),
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        db.init_db()
+
+        migrated_conn = db.get_connection()
+        try:
+            row = migrated_conn.execute(
+                "SELECT body_text, metadata FROM penguin_connect_messages WHERE provider_message_id = 'gmail:historical'"
+            ).fetchone()
+        finally:
+            migrated_conn.close()
+
+        self.assertEqual(row["body_text"], "Haha, that's a feature!")
+        metadata = json.loads(row["metadata"] or "{}")
+        self.assertEqual(metadata["source_body_text"], "Haha, that's a feature!")
+        self.assertTrue(metadata["gmail_signature_removed"])
+
     def test_init_db_migrates_legacy_conversation_ids_to_provider_aware_ids(self):
         conn = db.get_connection()
         conn.close()
@@ -244,6 +349,209 @@ class SyncIntegrationTests(unittest.TestCase):
         self.assertEqual(message["conversation_id"], new_id)
         self.assertEqual(sync_state["conversation_id"], new_id)
         self.assertNotEqual(old_id, new_id)
+
+    def test_init_db_migrates_apple_messages_routes_to_guid_and_service_provider(self):
+        conn = db.get_connection()
+        conn.close()
+
+        legacy_schema = (
+            db.SCHEMA.replace("    imessage_chat_identifier TEXT,\n", "")
+            .replace("    imessage_service_name TEXT,\n", "")
+        )
+        old_id = penguin_connect.deterministic_conversation_id("owner@gmail.com", "chat-legacy", "imessage")
+        new_id = penguin_connect.deterministic_conversation_id("owner@gmail.com", "SMS;+;chat-legacy-guid", "sms")
+
+        apple_messages_db = Path(self.tmpdir.name) / "messages-chat.db"
+        messages_conn = sqlite3.connect(str(apple_messages_db))
+        try:
+            messages_conn.executescript(
+                """
+                CREATE TABLE chat (
+                    ROWID INTEGER PRIMARY KEY,
+                    guid TEXT,
+                    chat_identifier TEXT,
+                    display_name TEXT,
+                    service_name TEXT,
+                    is_archived INTEGER DEFAULT 0
+                );
+                CREATE TABLE message (
+                    ROWID INTEGER PRIMARY KEY,
+                    date INTEGER
+                );
+                CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
+                """
+            )
+            messages_conn.execute(
+                "INSERT INTO chat(ROWID, guid, chat_identifier, display_name, service_name, is_archived) VALUES (1, ?, ?, '', 'SMS', 0)",
+                ("SMS;+;chat-legacy-guid", "chat-legacy"),
+            )
+            messages_conn.execute("INSERT INTO message(ROWID, date) VALUES (1, 1000)")
+            messages_conn.execute("INSERT INTO chat_message_join(chat_id, message_id) VALUES (1, 1)")
+            messages_conn.commit()
+        finally:
+            messages_conn.close()
+        db.APPLE_MESSAGES_DB = apple_messages_db
+
+        raw_conn = sqlite3.connect(str(db.DB_PATH))
+        try:
+            raw_conn.executescript(legacy_schema)
+            raw_conn.execute(
+                """INSERT INTO penguin_connect_conversations
+                   (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants, alias_email, status)
+                   VALUES (?, 'imessage', ?, ?, ?, 'dm', '[]', ?, 'active')""",
+                ("owner@gmail.com", old_id, "chat-legacy", "Legacy Chat", "owner+am-legacy@gmail.com"),
+            )
+            raw_conn.execute(
+                """INSERT INTO penguin_connect_aliases
+                   (conversation_id, alias_email, alias_local_part, status)
+                   VALUES (?, ?, ?, 'active')""",
+                (old_id, "owner+am-legacy@gmail.com", "owner+am-legacy"),
+            )
+            raw_conn.execute(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction, body_text, message_timestamp)
+                   VALUES (?, 'gmail', 'gmail:legacy-1', 'email_to_imessage', 'hello', '2026-03-04T10:00:00+00:00')""",
+                (old_id,),
+            )
+            raw_conn.execute(
+                """INSERT INTO penguin_connect_sync_state
+                   (conversation_id, last_imessage_ts, last_gmail_ts, last_synced_at, updated_at)
+                   VALUES (?, NULL, '2026-03-04T10:00:00+00:00', '2026-03-04 10:05:00', '2026-03-04 10:05:00')""",
+                (old_id,),
+            )
+            raw_conn.commit()
+        finally:
+            raw_conn.close()
+
+        db.init_db()
+
+        migrated_conn = db.get_connection()
+        try:
+            conv = migrated_conn.execute(
+                """SELECT conversation_id, source_provider, imessage_chat_id, imessage_chat_identifier, imessage_service_name
+                   FROM penguin_connect_conversations
+                   WHERE conversation_id = ?""",
+                (new_id,),
+            ).fetchone()
+            alias = migrated_conn.execute(
+                "SELECT conversation_id FROM penguin_connect_aliases WHERE alias_email = ?",
+                ("owner+am-legacy@gmail.com",),
+            ).fetchone()
+            message = migrated_conn.execute(
+                "SELECT conversation_id FROM penguin_connect_messages WHERE provider_message_id = ?",
+                ("gmail:legacy-1",),
+            ).fetchone()
+            sync_state = migrated_conn.execute(
+                "SELECT conversation_id FROM penguin_connect_sync_state WHERE conversation_id = ?",
+                (new_id,),
+            ).fetchone()
+        finally:
+            migrated_conn.close()
+
+        self.assertIsNotNone(conv)
+        self.assertEqual(conv["conversation_id"], new_id)
+        self.assertEqual(conv["source_provider"], "sms")
+        self.assertEqual(conv["imessage_chat_id"], "SMS;+;chat-legacy-guid")
+        self.assertEqual(conv["imessage_chat_identifier"], "chat-legacy")
+        self.assertEqual(conv["imessage_service_name"], "SMS")
+        self.assertEqual(alias["conversation_id"], new_id)
+        self.assertEqual(message["conversation_id"], new_id)
+        self.assertEqual(sync_state["conversation_id"], new_id)
+
+    def test_init_db_resolves_ambiguous_apple_messages_identifier_by_timestamp_overlap(self):
+        conn = db.get_connection()
+        conn.close()
+
+        legacy_schema = (
+            db.SCHEMA.replace("    imessage_chat_identifier TEXT,\n", "")
+            .replace("    imessage_service_name TEXT,\n", "")
+        )
+        old_id = penguin_connect.deterministic_conversation_id("owner@gmail.com", "chat-shared", "imessage")
+        new_id = penguin_connect.deterministic_conversation_id("owner@gmail.com", "SMS;+;chat-shared", "sms")
+
+        sms_ts = int(3_000_000_000)
+        imessage_ts = int(1_000_000_000)
+        sms_iso = (db.APPLE_MESSAGES_EPOCH + timedelta(seconds=sms_ts / 1_000_000_000)).isoformat()
+
+        apple_messages_db = Path(self.tmpdir.name) / "messages-chat-ambiguous.db"
+        messages_conn = sqlite3.connect(str(apple_messages_db))
+        try:
+            messages_conn.executescript(
+                """
+                CREATE TABLE chat (
+                    ROWID INTEGER PRIMARY KEY,
+                    guid TEXT,
+                    chat_identifier TEXT,
+                    display_name TEXT,
+                    service_name TEXT,
+                    is_archived INTEGER DEFAULT 0
+                );
+                CREATE TABLE message (
+                    ROWID INTEGER PRIMARY KEY,
+                    date INTEGER
+                );
+                CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
+                """
+            )
+            messages_conn.execute(
+                "INSERT INTO chat(ROWID, guid, chat_identifier, display_name, service_name, is_archived) VALUES (1, ?, ?, '', 'iMessage', 0)",
+                ("iMessage;+;chat-shared", "chat-shared"),
+            )
+            messages_conn.execute(
+                "INSERT INTO chat(ROWID, guid, chat_identifier, display_name, service_name, is_archived) VALUES (2, ?, ?, '', 'SMS', 0)",
+                ("SMS;+;chat-shared", "chat-shared"),
+            )
+            messages_conn.execute("INSERT INTO message(ROWID, date) VALUES (1, ?)", (imessage_ts,))
+            messages_conn.execute("INSERT INTO message(ROWID, date) VALUES (2, ?)", (sms_ts,))
+            messages_conn.execute("INSERT INTO chat_message_join(chat_id, message_id) VALUES (1, 1)")
+            messages_conn.execute("INSERT INTO chat_message_join(chat_id, message_id) VALUES (2, 2)")
+            messages_conn.commit()
+        finally:
+            messages_conn.close()
+        db.APPLE_MESSAGES_DB = apple_messages_db
+
+        raw_conn = sqlite3.connect(str(db.DB_PATH))
+        try:
+            raw_conn.executescript(legacy_schema)
+            raw_conn.execute(
+                """INSERT INTO penguin_connect_conversations
+                   (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants, alias_email, status)
+                   VALUES (?, 'imessage', ?, ?, ?, 'dm', '[]', ?, 'active')""",
+                ("owner@gmail.com", old_id, "chat-shared", "Legacy Shared Chat", "owner+am-shared@gmail.com"),
+            )
+            raw_conn.execute(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction, body_text, message_timestamp)
+                   VALUES (?, 'imessage', 'imessage:legacy-1', 'imessage_to_email', 'hello', ?)""",
+                (old_id, sms_iso),
+            )
+            raw_conn.commit()
+        finally:
+            raw_conn.close()
+
+        db.init_db()
+
+        migrated_conn = db.get_connection()
+        try:
+            conv = migrated_conn.execute(
+                """SELECT conversation_id, source_provider, imessage_chat_id, imessage_chat_identifier, imessage_service_name
+                   FROM penguin_connect_conversations
+                   WHERE conversation_id = ?""",
+                (new_id,),
+            ).fetchone()
+            moved_message = migrated_conn.execute(
+                "SELECT conversation_id FROM penguin_connect_messages WHERE provider_message_id = 'imessage:legacy-1'"
+            ).fetchone()
+        finally:
+            migrated_conn.close()
+
+        self.assertIsNotNone(conv)
+        self.assertEqual(conv["conversation_id"], new_id)
+        self.assertEqual(conv["source_provider"], "sms")
+        self.assertEqual(conv["imessage_chat_id"], "SMS;+;chat-shared")
+        self.assertEqual(conv["imessage_chat_identifier"], "chat-shared")
+        self.assertEqual(conv["imessage_service_name"], "SMS")
+        self.assertEqual(moved_message["conversation_id"], new_id)
 
 
 if __name__ == "__main__":

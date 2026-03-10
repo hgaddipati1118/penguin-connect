@@ -2,7 +2,7 @@
 
 Use this file when designing the refactor from one source provider to many.
 
-## iMessage-specific pressure points
+## Apple-Messages-specific pressure points
 
 - Schema:
 - `penguin_connect_conversations.source_provider`
@@ -23,10 +23,17 @@ Use this file when designing the refactor from one source provider to many.
 - `send_imessage`
 - `_resolve_imessage_sender_and_subject`
 - `_get_imessage_unread_count`
+- Apple Messages route safety:
+- `chat.guid` is the exact route key for sends
+- `chat_identifier` can collide across `iMessage`, `SMS`, and `RCS`
+- ambiguous route resolution must fail closed
+- Apple Messages direct messages may share one logical thread across transport types, while group chats stay distinct
+- unified Apple Messages DMs need source sync across sibling transport routes, not just the currently active route
 
 - Product text and metadata:
 - subject prefix `iMessage · ...`
 - metadata keys like `imessage_chat_id`
+- quoted-content parsing should live in a shared utility and deliver only net-new reply text back to chat
 - setup and doctor guidance tied to `chat.db`, AppleScript, Terminal.app, and Full Disk Access
 
 ## Recommended abstractions before provider two
@@ -90,11 +97,11 @@ Use this file when designing the refactor from one source provider to many.
 
 ## Suggested implementation order
 
-1. Extract the current iMessage code into an adapter without changing behavior.
+1. Extract the current Apple Messages code into an adapter without changing behavior.
 2. Migrate schema and naming to provider-neutral fields.
 3. Route sync orchestration through the adapter boundary.
 4. Update scripts, doctor checks, and docs so provider requirements are explicit instead of implicit.
-5. Add the second provider only after the first four steps pass with the existing iMessage test suite.
+5. Add the second provider only after the first four steps pass with the existing Apple Messages test suite.
 
 ## New-provider checklist
 

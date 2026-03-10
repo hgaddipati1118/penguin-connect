@@ -7,29 +7,18 @@ import subprocess
 from pathlib import Path
 from typing import Any, Optional
 
-from browse_sources import browse_imessage_chats, fetch_imessage_messages, list_recent_imessage_chat_activity
+import browse_sources
+from browse_sources import (
+    browse_imessage_chats,
+    fetch_imessage_messages,
+    list_recent_imessage_chat_activity,
+    resolve_apple_messages_chat,
+)
 
 from .base import LookupContactName, LooksLikeUnresolvedHandle
 
-IMESSAGE_DB = Path.home() / "Library" / "Messages" / "chat.db"
-
-
 def _escape_applescript(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-
-
-def _resolve_chat_guid(chat_identifier: str) -> Optional[str]:
-    if not IMESSAGE_DB.exists():
-        return None
-    try:
-        conn = sqlite3.connect(f"file:{IMESSAGE_DB}?mode=ro", uri=True)
-        row = conn.execute("SELECT guid FROM chat WHERE chat_identifier = ?", (chat_identifier,)).fetchone()
-        conn.close()
-        if row:
-            return row[0]
-    except Exception:
-        return None
-    return None
 
 
 class IMessageChannelAdapter:
@@ -61,33 +50,26 @@ class IMessageChannelAdapter:
         if not normalized_text and not valid_attachments:
             return False, "empty_message"
 
-        guid = _resolve_chat_guid(chat_identifier)
-        send_lines: list[str] = []
+        route = resolve_apple_messages_chat(chat_identifier)
+        if route and route.get("ambiguous"):
+            return False, "unsafe_chat_route_ambiguous"
+        guid = (route or {}).get("guid")
+        if not guid:
+            return False, "unsafe_chat_route_unresolved"
 
-        if guid:
-            safe_guid = _escape_applescript(guid)
-            for path in valid_attachments:
-                safe_path = _escape_applescript(path)
-                send_lines.append(f'send (POSIX file "{safe_path}") to chat id "{safe_guid}"')
-            if normalized_text:
-                safe_msg = _escape_applescript(normalized_text)
-                send_lines.append(f'send "{safe_msg}" to chat id "{safe_guid}"')
-            script = "tell application \"Messages\"\n" + "\n".join(f"    {line}" for line in send_lines) + "\nend tell"
-        else:
-            safe_target = _escape_applescript(chat_identifier)
-            script_lines = [
-                "tell application \"Messages\"",
-                "    set targetService to 1st service whose service type = iMessage",
-                f"    set targetBuddy to buddy \"{safe_target}\" of targetService",
-            ]
-            for path in valid_attachments:
-                safe_path = _escape_applescript(path)
-                script_lines.append(f'    send (POSIX file "{safe_path}") to targetBuddy')
-            if normalized_text:
-                safe_msg = _escape_applescript(normalized_text)
-                script_lines.append(f'    send "{safe_msg}" to targetBuddy')
-            script_lines.append("end tell")
-            script = "\n".join(script_lines)
+        safe_guid = _escape_applescript(guid)
+        script_lines = [
+            'tell application "Messages"',
+            f'    set targetChat to chat id "{safe_guid}"',
+        ]
+        for path in valid_attachments:
+            safe_path = _escape_applescript(path)
+            script_lines.append(f'    send (POSIX file "{safe_path}") to targetChat')
+        if normalized_text:
+            safe_msg = _escape_applescript(normalized_text)
+            script_lines.append(f'    send "{safe_msg}" to targetChat')
+        script_lines.append("end tell")
+        script = "\n".join(script_lines)
 
         try:
             result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=45)
@@ -98,14 +80,15 @@ class IMessageChannelAdapter:
             return False, str(exc)
 
     def get_unread_count(self, chat_identifier: str) -> Optional[int]:
-        if not IMESSAGE_DB.exists():
+        route = resolve_apple_messages_chat(chat_identifier)
+        if not route or route.get("ambiguous"):
+            return None
+        db_path = Path(browse_sources.IMESSAGE_DB)
+        if not db_path.exists():
             return None
         try:
-            conn = sqlite3.connect(f"file:{IMESSAGE_DB}?mode=ro", uri=True)
-            row = conn.execute(
-                "SELECT unread_count FROM chat WHERE chat_identifier = ? LIMIT 1",
-                (chat_identifier,),
-            ).fetchone()
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            row = conn.execute("SELECT unread_count FROM chat WHERE guid = ? LIMIT 1", (route["guid"],)).fetchone()
             conn.close()
             if row is not None and row[0] is not None:
                 return int(row[0])

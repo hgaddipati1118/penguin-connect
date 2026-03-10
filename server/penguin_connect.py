@@ -23,7 +23,13 @@ from email.parser import BytesParser
 from pathlib import Path
 from typing import Any, Optional
 
+from action_log import log_action, message_fingerprint
+from browse_sources import (
+    list_apple_messages_chat_routes as _list_apple_messages_chat_routes,
+    resolve_apple_messages_chat as _resolve_apple_messages_chat_route,
+)
 from channels import get_channel_adapter
+from quoted_content import extract_latest_email_text
 
 DEFAULT_BACKFILL_DAYS = 7
 SYNC_MODES = {"startup_catchup", "backfill", "incremental"}
@@ -39,14 +45,14 @@ _sync_lock = threading.Lock()
 DEFAULT_RETRY_BASE_SECONDS = 30
 DEFAULT_RETRY_MAX_BACKOFF_SECONDS = 900
 DEFAULT_MAX_RETRIES = 8
+DEFAULT_GMAIL_TO_SOURCE_MAX_RETRIES = 3
 DEFAULT_MESSAGE_ID_DOMAIN = "penguinconnect.local"
 MAX_REFERENCE_CHAIN = 20
 RFC_MESSAGE_ID_RE = re.compile(r"<[^<>\s]+>")
 DEFAULT_MAX_EMAIL_ATTACHMENT_BYTES = 20 * 1024 * 1024
 DEFAULT_MAX_IMESSAGE_ATTACHMENT_BYTES = 25 * 1024 * 1024
-MAX_QUOTED_CONTEXT_MESSAGES = 5
-MAX_QUOTED_CONTEXT_CHARS = 160
 THREAD_REPAIR_HEADER_VALUE = "thread_repair"
+DELIVERY_ERROR_HEADER_VALUE = "delivery_error_notice"
 MAX_SYNC_WINDOW_HOURS = 24 * 60
 DEFAULT_GMAIL_HTTP_TIMEOUT_SECONDS = 60
 MIN_GMAIL_HTTP_TIMEOUT_SECONDS = 5
@@ -70,6 +76,7 @@ FULL_IMESSAGE_SYNC_SINCE = datetime(2001, 1, 1, tzinfo=timezone.utc).isoformat()
 FULL_GMAIL_SYNC_SINCE = datetime(1970, 1, 1, tzinfo=timezone.utc).isoformat()
 _sync_runtime_lock = threading.Lock()
 _UNSET = object()
+_USE_DEFAULT_DISCOVERY_LIMIT = object()
 _IMESSAGE_CHANNEL = get_channel_adapter("imessage")
 
 
@@ -122,8 +129,12 @@ def _source_provider_label(source_provider: Optional[str]) -> str:
         adapter = None
     if adapter:
         label = getattr(adapter, "provider_label", "")
-        if label:
+        if label and normalized == getattr(adapter, "provider", normalized):
             return label
+    if normalized == "sms":
+        return "SMS"
+    if normalized == "rcs":
+        return "RCS"
     if normalized == "whatsapp":
         return "WhatsApp"
     if normalized == "telegram":
@@ -157,6 +168,17 @@ def _source_adapter_for_conversation(conv: sqlite3.Row | dict[str, Any]):
     return _source_adapter_for_provider(_conversation_source_provider(conv))
 
 
+def _conversation_log_fields(conv: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    return {
+        "conversation_id": (conv["conversation_id"] or "").strip(),
+        "display_name": (conv["display_name"] or "").strip(),
+        "source_provider": _conversation_source_provider(conv),
+        "source_chat_id": _conversation_source_chat_id(conv),
+        "chat_type": (conv["chat_type"] or "").strip().lower() or None,
+        "conversation_gmail_thread_id": (conv["gmail_thread_id"] or "").strip() or None,
+    }
+
+
 def _provider_subject(source_provider: Optional[str], display_name: Optional[str]) -> str:
     return f"{_source_provider_label(source_provider)} · {(display_name or '').strip() or 'Conversation'}"
 
@@ -174,13 +196,25 @@ def _send_to_source_conversation(
     message_text: str,
     *,
     attachment_paths: Optional[list[str]] = None,
+    action_context: Optional[dict[str, Any]] = None,
 ) -> tuple[bool, Optional[str]]:
     source_provider = _conversation_source_provider(conv)
     source_chat_id = _conversation_source_chat_id(conv)
+    base_fields = {
+        **_conversation_log_fields(conv),
+        **message_fingerprint(message_text),
+        "attachment_count": len(attachment_paths or []),
+    }
+    if action_context:
+        base_fields.update(action_context)
+    log_action("source_send_attempt", **base_fields)
     if source_provider == "imessage":
-        return send_imessage(source_chat_id, message_text, attachment_paths=attachment_paths)
-    adapter = _source_adapter_for_provider(source_provider)
-    return adapter.send_message(source_chat_id, message_text, attachment_paths=attachment_paths)
+        ok, error = send_imessage(source_chat_id, message_text, attachment_paths=attachment_paths)
+    else:
+        adapter = _source_adapter_for_provider(source_provider)
+        ok, error = adapter.send_message(source_chat_id, message_text, attachment_paths=attachment_paths)
+    log_action("source_send_result", ok=ok, error=error, **base_fields)
+    return ok, error
 
 
 def browse_imessage_chats(search=None, limit=100):
@@ -717,6 +751,15 @@ def _retry_max_retries() -> int:
     return _env_int("PENGUIN_CONNECT_MAX_RETRIES", DEFAULT_MAX_RETRIES, 1, 50)
 
 
+def _gmail_to_source_max_retries() -> int:
+    return _env_int(
+        "PENGUIN_CONNECT_GMAIL_TO_SOURCE_MAX_RETRIES",
+        DEFAULT_GMAIL_TO_SOURCE_MAX_RETRIES,
+        1,
+        10,
+    )
+
+
 def _gmail_http_timeout_seconds() -> int:
     return _env_int(
         "PENGUIN_CONNECT_GMAIL_HTTP_TIMEOUT_SECONDS",
@@ -1052,93 +1095,6 @@ def _load_conversation_rfc_context(
     return first_match(rows)
 
 
-def _quote_preview(text: str) -> str:
-    normalized = " ".join((text or "").split())
-    if len(normalized) <= MAX_QUOTED_CONTEXT_CHARS:
-        return normalized
-    return normalized[: MAX_QUOTED_CONTEXT_CHARS - 3].rstrip() + "..."
-
-
-def _quote_sender_label(row: dict[str, Any]) -> str:
-    sender_name = (row.get("sender_name") or "").strip()
-    if sender_name:
-        parsed_name, _ = email.utils.parseaddr(sender_name)
-        return (parsed_name or sender_name).strip()
-    sender_email = (row.get("sender_email") or "").strip()
-    if sender_email:
-        return sender_email
-    return "Unknown"
-
-
-def _build_reply_quote_lines(
-    conn: sqlite3.Connection,
-    conversation_id: str,
-    rfc_in_reply_to: Optional[str],
-    rfc_references: list[str],
-) -> list[str]:
-    rows = _load_conversation_rfc_rows(conn, conversation_id, limit=500)
-    index: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        metadata = _load_metadata(row["metadata"])
-        row_data = {
-            "sender_name": row["sender_name"],
-            "sender_email": row["sender_email"],
-            "body_text": row["body_text"] or "",
-            "rfc_in_reply_to": _normalize_rfc_message_id(metadata.get("rfc_in_reply_to")),
-        }
-        for key in ("rfc_message_id", "repaired_from_rfc_message_id"):
-            message_id = _normalize_rfc_message_id(metadata.get(key))
-            if not message_id or message_id in index:
-                continue
-            index[message_id] = row_data
-
-    chain: list[dict[str, Any]] = []
-    visited: set[str] = set()
-    current = _normalize_rfc_message_id(rfc_in_reply_to)
-    while current and current not in visited and len(chain) < MAX_QUOTED_CONTEXT_MESSAGES:
-        visited.add(current)
-        row = index.get(current)
-        if not row:
-            break
-        chain.append(row)
-        current = row.get("rfc_in_reply_to")
-
-    if not chain:
-        for current in reversed(_normalize_rfc_message_id_list(rfc_references)):
-            if current in visited:
-                continue
-            row = index.get(current)
-            if not row:
-                continue
-            visited.add(current)
-            chain.append(row)
-            if len(chain) >= MAX_QUOTED_CONTEXT_MESSAGES:
-                break
-
-    lines: list[str] = []
-    for row in reversed(chain):
-        preview = _quote_preview(row.get("body_text") or "")
-        if not preview:
-            continue
-        lines.append(f"> {_quote_sender_label(row)}: {preview}")
-    return lines
-
-
-def _compose_imessage_delivery_body(
-    conn: sqlite3.Connection,
-    conversation_id: str,
-    body_text: str,
-    rfc_in_reply_to: Optional[str],
-    rfc_references: list[str],
-) -> tuple[str, int]:
-    base_body = (body_text or "").strip()
-    quote_lines = _build_reply_quote_lines(conn, conversation_id, rfc_in_reply_to, rfc_references)
-    if not quote_lines:
-        return base_body, 0
-    if base_body:
-        return f"{base_body}\n\nQuoted context:\n" + "\n".join(quote_lines), len(quote_lines)
-    return "Quoted context:\n" + "\n".join(quote_lines), len(quote_lines)
-
 def _resolve_gmail_thread_by_rfc_message_id(gmail_service, parent_rfc_message_id: Optional[str]) -> Optional[str]:
     normalized = _normalize_rfc_message_id(parent_rfc_message_id)
     if not normalized:
@@ -1261,6 +1217,8 @@ def _migrate_conversation_id(conn: sqlite3.Connection, old_id: str, new_id: str,
                source_provider,
                conversation_id,
                imessage_chat_id,
+               imessage_chat_identifier,
+               imessage_service_name,
                display_name,
                chat_type,
                participants,
@@ -1276,6 +1234,8 @@ def _migrate_conversation_id(conn: sqlite3.Connection, old_id: str, new_id: str,
                ?,
                ?,
                imessage_chat_id,
+               imessage_chat_identifier,
+               imessage_service_name,
                display_name,
                chat_type,
                participants,
@@ -1293,6 +1253,177 @@ def _migrate_conversation_id(conn: sqlite3.Connection, old_id: str, new_id: str,
     conn.execute("UPDATE penguin_connect_messages SET conversation_id = ? WHERE conversation_id = ?", (new_id, old_id))
     conn.execute("UPDATE penguin_connect_sync_state SET conversation_id = ? WHERE conversation_id = ?", (new_id, old_id))
     conn.execute("DELETE FROM penguin_connect_conversations WHERE conversation_id = ?", (old_id,))
+
+
+def _apple_messages_route_rank(service_name: str) -> int:
+    normalized = (service_name or "").strip().lower()
+    if normalized == "imessage":
+        return 0
+    if normalized == "rcs":
+        return 1
+    if normalized == "sms":
+        return 2
+    return 3
+
+
+def _normalize_apple_messages_thread_participant(value: str) -> str:
+    participant = (value or "").strip()
+    if not participant:
+        return ""
+    if "@" in participant and not participant.startswith("+"):
+        return participant.lower()
+    phone_key = _normalize_phone(participant)
+    return phone_key or participant.lower()
+
+
+def _apple_messages_thread_key(chat: dict[str, Any]) -> str:
+    chat_type = (chat.get("chat_type") or "").strip().lower()
+    if chat_type == "dm":
+        participants = chat.get("participants") or []
+        for participant in participants:
+            normalized = _normalize_apple_messages_thread_participant(participant)
+            if normalized:
+                return f"dm:{normalized}"
+        normalized = _normalize_apple_messages_thread_participant(chat.get("chat_identifier") or "")
+        if normalized:
+            return f"dm:{normalized}"
+    chat_id = (chat.get("chat_id") or chat.get("chat_identifier") or "").strip()
+    return f"chat:{chat_id}"
+
+
+def _apple_messages_conversation_provider(chat: dict[str, Any]) -> str:
+    chat_type = (chat.get("chat_type") or "").strip().lower()
+    if chat_type == "dm":
+        return "apple_messages"
+    return _normalize_source_provider(chat.get("source_provider") or _IMESSAGE_CHANNEL.provider)
+
+
+def _select_active_apple_messages_chat(chats: list[dict[str, Any]]) -> dict[str, Any]:
+    return sorted(
+        chats,
+        key=lambda chat: (
+            _recent_activity_sort_value(chat.get("last_message_at")),
+            -_apple_messages_route_rank(chat.get("service") or chat.get("source_provider") or ""),
+            chat.get("chat_id") or "",
+        ),
+        reverse=True,
+    )[0]
+
+
+def _load_conversations_by_ids(conn: sqlite3.Connection, conversation_ids: set[str]) -> list[sqlite3.Row]:
+    ids = [conversation_id for conversation_id in conversation_ids if conversation_id]
+    if not ids:
+        return []
+    placeholders = ",".join("?" for _ in ids)
+    return conn.execute(
+        f"""SELECT conversation_id, status, source_provider, imessage_chat_id,
+                   imessage_chat_identifier, imessage_service_name, gmail_thread_id, chat_type, updated_at
+              FROM penguin_connect_conversations
+             WHERE conversation_id IN ({placeholders})""",
+        ids,
+    ).fetchall()
+
+
+def _merge_sync_state_into_target(conn: sqlite3.Connection, source_id: str, target_id: str) -> None:
+    source_state = conn.execute(
+        """SELECT last_imessage_ts, last_gmail_ts, last_gmail_history_id, initial_sync_completed_at
+           FROM penguin_connect_sync_state
+           WHERE conversation_id = ?""",
+        (source_id,),
+    ).fetchone()
+    if not source_state:
+        return
+
+    _upsert_sync_state(
+        conn,
+        target_id,
+        source_state["last_imessage_ts"],
+        source_state["last_gmail_ts"],
+        source_state["last_gmail_history_id"],
+    )
+    if source_state["initial_sync_completed_at"]:
+        conn.execute(
+            """UPDATE penguin_connect_sync_state
+               SET initial_sync_completed_at = CASE
+                 WHEN initial_sync_completed_at IS NULL THEN ?
+                 WHEN initial_sync_completed_at <= ? THEN initial_sync_completed_at
+                 ELSE ?
+               END
+               WHERE conversation_id = ?""",
+            (
+                source_state["initial_sync_completed_at"],
+                source_state["initial_sync_completed_at"],
+                source_state["initial_sync_completed_at"],
+                target_id,
+            ),
+        )
+
+
+def _merge_conversation_into_target(conn: sqlite3.Connection, source_id: str, target_id: str) -> None:
+    if not source_id or not target_id or source_id == target_id:
+        return
+
+    source_row = conn.execute(
+        "SELECT gmail_thread_id, status FROM penguin_connect_conversations WHERE conversation_id = ? LIMIT 1",
+        (source_id,),
+    ).fetchone()
+    if not source_row:
+        return
+
+    target_active_alias = _get_active_alias(conn, target_id)
+    if target_active_alias:
+        conn.execute(
+            """UPDATE penguin_connect_aliases
+               SET status = 'disconnected',
+                   disconnected_at = COALESCE(disconnected_at, datetime('now'))
+               WHERE conversation_id = ? AND status = 'active'""",
+            (source_id,),
+        )
+    conn.execute("UPDATE penguin_connect_aliases SET conversation_id = ? WHERE conversation_id = ?", (target_id, source_id))
+    conn.execute("UPDATE OR IGNORE penguin_connect_messages SET conversation_id = ? WHERE conversation_id = ?", (target_id, source_id))
+    _merge_sync_state_into_target(conn, source_id, target_id)
+    if source_row["gmail_thread_id"]:
+        conn.execute(
+            """UPDATE penguin_connect_conversations
+               SET gmail_thread_id = COALESCE(gmail_thread_id, ?)
+               WHERE conversation_id = ?""",
+            (source_row["gmail_thread_id"], target_id),
+        )
+    if (source_row["status"] or "").strip().lower() == "active":
+        conn.execute(
+            "UPDATE penguin_connect_conversations SET status = 'active' WHERE conversation_id = ?",
+            (target_id,),
+        )
+    conn.execute("DELETE FROM penguin_connect_conversations WHERE conversation_id = ?", (source_id,))
+
+
+def _conversation_row_matches_apple_messages_chat(
+    row: sqlite3.Row,
+    *,
+    chat_id: str,
+    legacy_chat_id: str,
+    service_name: str,
+    source_provider: str,
+    allow_dm_unified: bool,
+) -> bool:
+    existing_chat_id = (row["imessage_chat_id"] or "").strip()
+    existing_identifier = (row["imessage_chat_identifier"] or "").strip() or existing_chat_id
+    existing_service_name = (row["imessage_service_name"] or "").strip()
+    existing_provider = _normalize_source_provider(row["source_provider"] or "imessage")
+    existing_chat_type = (row["chat_type"] or "").strip().lower()
+
+    if existing_chat_id == chat_id:
+        return True
+    if allow_dm_unified and existing_chat_type == "dm" and existing_identifier == legacy_chat_id:
+        return True
+    if existing_service_name and service_name and existing_service_name == service_name and existing_identifier == legacy_chat_id:
+        return True
+    if existing_provider in {"sms", "rcs"} and existing_provider == source_provider and existing_identifier == legacy_chat_id:
+        return True
+    if existing_identifier == legacy_chat_id and legacy_chat_id:
+        existing_route = _resolve_apple_messages_chat_route(legacy_chat_id)
+        return bool(existing_route and not existing_route.get("ambiguous") and existing_route.get("guid") == chat_id)
+    return False
 
 
 def _keychain_service_name(gmail_email: str) -> str:
@@ -1340,11 +1471,18 @@ def _write_keychain_secret(service: str, account: str, secret: str) -> bool:
 def connect_gmail_account(conn: sqlite3.Connection, gmail_email: str, token_json: dict[str, Any]) -> dict[str, Any]:
     gmail_email = _normalize_email(gmail_email)
     if "@" not in gmail_email:
+        log_action("gmail_connect_result", gmail_email=gmail_email, success=False, error="invalid_gmail_email")
         return {"success": False, "error": "invalid_gmail_email"}
 
     required = ["token", "refresh_token", "client_id", "client_secret"]
     missing = [k for k in required if not token_json.get(k)]
     if missing:
+        log_action(
+            "gmail_connect_result",
+            gmail_email=gmail_email,
+            success=False,
+            error=f"missing_token_fields:{','.join(missing)}",
+        )
         return {"success": False, "error": f"missing_token_fields:{','.join(missing)}"}
 
     payload = {
@@ -1358,6 +1496,7 @@ def connect_gmail_account(conn: sqlite3.Connection, gmail_email: str, token_json
     }
     service_name = _keychain_service_name(gmail_email)
     if not _write_keychain_secret(service_name, gmail_email, json.dumps(payload)):
+        log_action("gmail_connect_result", gmail_email=gmail_email, success=False, error="failed_to_store_keychain_token")
         return {"success": False, "error": "failed_to_store_keychain_token"}
 
     conn.execute(
@@ -1377,13 +1516,21 @@ def connect_gmail_account(conn: sqlite3.Connection, gmail_email: str, token_json
     if service and not err:
         send_as, primary = _refresh_send_as_aliases(conn, service, gmail_email)
 
-    return {
+    result = {
         "success": True,
         "gmail_email": gmail_email,
         "keychain_service": service_name,
         "primary_send_as": primary,
         "send_as_aliases": send_as,
     }
+    log_action(
+        "gmail_connect_result",
+        gmail_email=gmail_email,
+        success=True,
+        primary_send_as=primary,
+        send_as_alias_count=len(send_as),
+    )
+    return result
 
 
 def get_connected_account(conn: sqlite3.Connection) -> Optional[sqlite3.Row]:
@@ -1949,61 +2096,160 @@ def _ensure_active_alias(conn: sqlite3.Connection, gmail_email: str, conversatio
     return _get_active_alias(conn, conversation_id)
 
 
-def ensure_conversations_discovered(conn: sqlite3.Connection, gmail_email: str) -> int:
-    max_chats = int(os.environ.get("PENGUIN_CONNECT_CHAT_DISCOVERY_LIMIT", "500"))
-    discovered = browse_imessage_chats(limit=max_chats)
-    source_provider = _IMESSAGE_CHANNEL.provider
+def ensure_conversations_discovered(
+    conn: sqlite3.Connection,
+    gmail_email: str,
+    *,
+    max_chats: int | None | object = _USE_DEFAULT_DISCOVERY_LIMIT,
+) -> int:
+    if max_chats is _USE_DEFAULT_DISCOVERY_LIMIT:
+        discovery_limit: int | None = int(os.environ.get("PENGUIN_CONNECT_CHAT_DISCOVERY_LIMIT", "500"))
+    else:
+        discovery_limit = None if max_chats is None else int(max_chats)
+    log_action(
+        "conversation_discovery_started",
+        gmail_email=gmail_email,
+        discovery_limit=discovery_limit if discovery_limit is not None else "all",
+    )
+    discovered = browse_imessage_chats(limit=discovery_limit)
     if not discovered.get("available"):
+        log_action(
+            "conversation_discovery_result",
+            gmail_email=gmail_email,
+            success=False,
+            discovered_count=0,
+            reason=discovered.get("reason") or "not_available",
+        )
         return 0
 
-    count = 0
+    grouped_chats: dict[str, list[dict[str, Any]]] = {}
+    ordered_thread_keys: list[str] = []
     for chat in discovered.get("chats", []):
-        chat_id = chat.get("chat_id")
+        chat_id = (chat.get("chat_id") or "").strip()
         if not chat_id:
             continue
-        conversation_id = deterministic_conversation_id(gmail_email, chat_id, source_provider)
-        legacy_conversation_id = _legacy_conversation_id(gmail_email, chat_id)
-        participants = chat.get("participants") or []
-        display_name = _resolve_display_name(conn, chat.get("name") or "", participants)
+        thread_key = _apple_messages_thread_key(chat)
+        if thread_key not in grouped_chats:
+            ordered_thread_keys.append(thread_key)
+            grouped_chats[thread_key] = []
+        grouped_chats[thread_key].append(chat)
 
-        existing = conn.execute(
-            """SELECT conversation_id, status
+    count = 0
+    for thread_key in ordered_thread_keys:
+        thread_chats = grouped_chats[thread_key]
+        active_chat = _select_active_apple_messages_chat(thread_chats)
+        chat_id = (active_chat.get("chat_id") or "").strip()
+        if not chat_id:
+            continue
+
+        source_provider = _apple_messages_conversation_provider(active_chat)
+        service_name = (active_chat.get("service") or "").strip()
+        legacy_chat_id = (active_chat.get("chat_identifier") or chat_id).strip()
+        participants = active_chat.get("participants") or []
+        display_name = _resolve_display_name(conn, active_chat.get("name") or "", participants)
+        chat_type = active_chat.get("chat_type") or "group"
+        conversation_source_key = thread_key if source_provider == "apple_messages" else chat_id
+        conversation_id = deterministic_conversation_id(gmail_email, conversation_source_key, source_provider)
+
+        candidate_ids = {conversation_id}
+        for thread_chat in thread_chats:
+            route_chat_id = (thread_chat.get("chat_id") or "").strip()
+            if not route_chat_id:
+                continue
+            route_provider = _normalize_source_provider(thread_chat.get("source_provider") or _IMESSAGE_CHANNEL.provider)
+            route_identifier = (thread_chat.get("chat_identifier") or route_chat_id).strip()
+            candidate_ids.add(deterministic_conversation_id(gmail_email, route_chat_id, route_provider))
+            candidate_ids.add(deterministic_conversation_id(gmail_email, route_identifier, "imessage"))
+            candidate_ids.add(_legacy_conversation_id(gmail_email, route_identifier))
+
+        existing_rows = _load_conversations_by_ids(conn, candidate_ids)
+        existing_by_id = {row["conversation_id"]: row for row in existing_rows}
+        unique_key_row = conn.execute(
+            """SELECT *
                FROM penguin_connect_conversations
-               WHERE conversation_id IN (?, ?)
-               ORDER BY CASE WHEN conversation_id = ? THEN 0 ELSE 1 END
+               WHERE gmail_email = ? AND source_provider = ? AND imessage_chat_id = ?
                LIMIT 1""",
-            (conversation_id, legacy_conversation_id, conversation_id),
+            (gmail_email, source_provider, chat_id),
         ).fetchone()
-        if existing and existing["conversation_id"] == legacy_conversation_id and legacy_conversation_id != conversation_id:
-            _migrate_conversation_id(conn, legacy_conversation_id, conversation_id, source_provider)
-            existing = conn.execute(
-                "SELECT conversation_id, status FROM penguin_connect_conversations WHERE conversation_id = ?",
-                (conversation_id,),
-            ).fetchone()
-        status = existing["status"] if existing else "active"
+        if unique_key_row and unique_key_row["conversation_id"] not in existing_by_id:
+            existing_rows.append(unique_key_row)
+            existing_by_id[unique_key_row["conversation_id"]] = unique_key_row
+        active_route_conversation_id = deterministic_conversation_id(
+            gmail_email,
+            chat_id,
+            _normalize_source_provider(active_chat.get("source_provider") or _IMESSAGE_CHANNEL.provider),
+        )
+
+        primary_row = existing_by_id.get(conversation_id) or existing_by_id.get(active_route_conversation_id)
+        if primary_row is None and existing_rows:
+            active_rows = [row for row in existing_rows if (row["status"] or "").strip().lower() == "active"]
+            primary_row = sorted(
+                active_rows or existing_rows,
+                key=lambda row: (
+                    row["updated_at"] or "",
+                    row["conversation_id"],
+                ),
+                reverse=True,
+            )[0]
+
+        if primary_row and primary_row["conversation_id"] != conversation_id and conversation_id not in existing_by_id:
+            if _conversation_row_matches_apple_messages_chat(
+                primary_row,
+                chat_id=chat_id,
+                legacy_chat_id=legacy_chat_id,
+                service_name=service_name,
+                source_provider=source_provider,
+                allow_dm_unified=source_provider == "apple_messages",
+            ):
+                _migrate_conversation_id(conn, primary_row["conversation_id"], conversation_id, source_provider)
+                existing_rows = _load_conversations_by_ids(conn, candidate_ids | {conversation_id})
+                existing_by_id = {row["conversation_id"]: row for row in existing_rows}
+
+        statuses = [(row["status"] or "").strip().lower() for row in existing_rows]
+        status = "active" if "active" in statuses or not statuses else existing_rows[0]["status"]
 
         conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type,
-                participants, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+               (gmail_email, source_provider, conversation_id, imessage_chat_id, imessage_chat_identifier,
+                imessage_service_name, display_name, chat_type, participants, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                ON CONFLICT(conversation_id) DO UPDATE SET
                  source_provider = excluded.source_provider,
+                 imessage_chat_id = excluded.imessage_chat_id,
+                 imessage_chat_identifier = excluded.imessage_chat_identifier,
+                 imessage_service_name = excluded.imessage_service_name,
                  display_name = excluded.display_name,
                  chat_type = excluded.chat_type,
                  participants = excluded.participants,
+                 status = excluded.status,
                  updated_at = datetime('now')""",
             (
                 gmail_email,
                 source_provider,
                 conversation_id,
                 chat_id,
+                legacy_chat_id,
+                service_name,
                 display_name,
-                chat.get("chat_type") or "group",
+                chat_type,
                 json.dumps(participants),
                 status,
             ),
         )
+
+        for existing_row in existing_rows:
+            if existing_row["conversation_id"] == conversation_id:
+                continue
+            if source_provider != "apple_messages" and not _conversation_row_matches_apple_messages_chat(
+                existing_row,
+                chat_id=chat_id,
+                legacy_chat_id=legacy_chat_id,
+                service_name=service_name,
+                source_provider=source_provider,
+                allow_dm_unified=False,
+            ):
+                continue
+            _merge_conversation_into_target(conn, existing_row["conversation_id"], conversation_id)
 
         if status == "active":
             alias_row = _ensure_active_alias(conn, gmail_email, conversation_id, fresh=False)
@@ -2013,7 +2259,46 @@ def ensure_conversations_discovered(conn: sqlite3.Connection, gmail_email: str) 
             )
         count += 1
 
+    log_action(
+        "conversation_discovery_result",
+        gmail_email=gmail_email,
+        success=True,
+        discovered_count=count,
+        source_chat_count=len(discovered.get("chats", [])),
+        grouped_thread_count=len(grouped_chats),
+    )
     return count
+
+
+def self_heal_conversation_cache(conn: sqlite3.Connection, gmail_email: str) -> dict[str, Any]:
+    log_action("conversation_self_heal_sweep_started", gmail_email=gmail_email)
+    before_count = conn.execute(
+        "SELECT COUNT(*) FROM penguin_connect_conversations WHERE gmail_email = ?",
+        (gmail_email,),
+    ).fetchone()[0]
+    discovered = ensure_conversations_discovered(conn, gmail_email, max_chats=None)
+    after_count = conn.execute(
+        "SELECT COUNT(*) FROM penguin_connect_conversations WHERE gmail_email = ?",
+        (gmail_email,),
+    ).fetchone()[0]
+    unresolved_legacy_rows = conn.execute(
+        """SELECT COUNT(*)
+           FROM penguin_connect_conversations
+           WHERE gmail_email = ?
+             AND source_provider IN ('imessage', 'sms', 'rcs')
+             AND (imessage_chat_id IS NULL OR instr(imessage_chat_id, ';') = 0)""",
+        (gmail_email,),
+    ).fetchone()[0]
+    result = {
+        "success": True,
+        "gmail_email": gmail_email,
+        "before_count": int(before_count or 0),
+        "after_count": int(after_count or 0),
+        "swept_conversations": int(discovered or 0),
+        "legacy_non_guid_rows_remaining": int(unresolved_legacy_rows or 0),
+    }
+    log_action("conversation_self_heal_sweep_result", **result)
+    return result
 
 
 def list_conversations(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -2038,7 +2323,8 @@ def list_conversations(conn: sqlite3.Connection) -> dict[str, Any]:
             raise
 
     rows = conn.execute(
-        """SELECT c.conversation_id, c.source_provider, c.imessage_chat_id, c.display_name, c.chat_type,
+        """SELECT c.conversation_id, c.source_provider, c.imessage_chat_id, c.imessage_chat_identifier,
+                  c.imessage_service_name, c.display_name, c.chat_type,
                   c.participants, c.alias_email, c.status, c.gmail_thread_id,
                   c.last_synced_at, c.updated_at,
                   s.last_imessage_ts, s.last_gmail_ts, s.last_message_ts, s.initial_sync_completed_at
@@ -2062,6 +2348,8 @@ def list_conversations(conn: sqlite3.Connection) -> dict[str, Any]:
                 "source_provider": row["source_provider"] or "imessage",
                 "source_chat_id": row["imessage_chat_id"],
                 "imessage_chat_id": row["imessage_chat_id"],
+                "imessage_chat_identifier": row["imessage_chat_identifier"],
+                "imessage_service_name": row["imessage_service_name"],
                 "display_name": row["display_name"],
                 "chat_type": row["chat_type"],
                 "participants": participants,
@@ -2185,18 +2473,29 @@ def _decode_gmail_data(data: str) -> str:
     return _decode_gmail_data_bytes(data).decode("utf-8", errors="replace")
 
 
-def _extract_gmail_plain_text(payload: dict[str, Any]) -> str:
-    mime = payload.get("mimeType") or ""
-    body = payload.get("body") or {}
+def _extract_gmail_body_variants(payload: dict[str, Any]) -> tuple[str, str]:
+    plain_text = ""
+    html_text = ""
 
-    if mime.startswith("text/plain"):
-        return _decode_gmail_data(body.get("data") or "")
+    def visit(part: dict[str, Any]) -> None:
+        nonlocal plain_text, html_text
 
-    for part in payload.get("parts") or []:
-        text = _extract_gmail_plain_text(part)
-        if text.strip():
-            return text
-    return ""
+        mime = part.get("mimeType") or ""
+        body = part.get("body") or {}
+        data = body.get("data") or ""
+        if data:
+            if mime.startswith("text/plain") and not plain_text:
+                plain_text = _decode_gmail_data(data)
+            elif mime.startswith("text/html") and not html_text:
+                html_text = _decode_gmail_data(data)
+
+        for child in part.get("parts") or []:
+            if plain_text and html_text:
+                break
+            visit(child)
+
+    visit(payload or {})
+    return plain_text, html_text
 
 
 def _max_email_attachment_bytes() -> int:
@@ -2430,6 +2729,48 @@ def _build_import_email(
 
     raw = base64.urlsafe_b64encode(email_msg.as_bytes()).decode("utf-8")
     return raw
+
+
+def _build_gmail_delivery_error_email(
+    conv: sqlite3.Row | dict[str, Any],
+    row: sqlite3.Row | dict[str, Any],
+    metadata: dict[str, Any],
+) -> tuple[str, str]:
+    failed_body = (row["body_text"] or "").strip()
+    attachments = metadata.get("attachments") if isinstance(metadata.get("attachments"), list) else []
+    body_lines = [
+        "Following message ran into errors sending:",
+        "",
+        failed_body or "(empty message)",
+    ]
+    if attachments:
+        body_lines.extend(["", f"[{len(attachments)} attachment(s) may not have been delivered]"])
+
+    notice_rfc_message_id = _build_bridge_rfc_message_id(
+        conv["conversation_id"],
+        f"{row['provider_message_id']}:delivery-error",
+    )
+    in_reply_to = _normalize_rfc_message_id(metadata.get("rfc_message_id"))
+    references = _normalize_rfc_message_id_list(metadata.get("rfc_references") or [])
+    if in_reply_to:
+        references = _append_reference_id(references, in_reply_to)
+
+    email_msg = EmailMessage()
+    email_msg["From"] = email.utils.formataddr(("PENGUIN_CONNECT", conv["alias_email"]))
+    email_msg["To"] = conv["gmail_email"]
+    email_msg["Subject"] = (row["subject"] or _provider_subject(_conversation_source_provider(conv), conv["display_name"])).strip()
+    email_msg["Reply-To"] = conv["alias_email"]
+    email_msg["X-PenguinConnect-Conversation-ID"] = conv["conversation_id"]
+    email_msg["X-PenguinConnect-Source-Provider"] = _normalize_source_provider(_conversation_source_provider(conv))
+    email_msg[PENGUINCONNECT_HEADER] = DELIVERY_ERROR_HEADER_VALUE
+    email_msg["Message-ID"] = notice_rfc_message_id
+    if in_reply_to:
+        email_msg["In-Reply-To"] = in_reply_to
+    if references:
+        email_msg["References"] = " ".join(references)
+    email_msg.set_content("\n".join(body_lines))
+    raw = base64.urlsafe_b64encode(email_msg.as_bytes()).decode("utf-8")
+    return raw, notice_rfc_message_id
 
 
 def _import_message_to_gmail(gmail_service, raw_message: str, gmail_thread_id: Optional[str], unread: bool):
@@ -2854,6 +3195,16 @@ def _retry_pending_imessage_to_gmail(
                        WHERE conversation_id = ? AND provider_message_id = ?""",
                     (json.dumps(metadata), conv["conversation_id"], row["provider_message_id"]),
                 )
+                log_action(
+                    "imessage_to_gmail_retry_result",
+                    success=False,
+                    error=import_error or "gmail_import_failed",
+                    provider_message_id=row["provider_message_id"],
+                    source_message_timestamp=row["message_timestamp"],
+                    gmail_thread_id=row["gmail_thread_id"] or thread_id,
+                    **_conversation_log_fields(conv),
+                    **message_fingerprint(row["body_text"] or ""),
+                )
             else:
                 imported += 1
                 gmail_msg_id = imported_data.get("id")
@@ -2867,6 +3218,16 @@ def _retry_pending_imessage_to_gmail(
                 )
                 parent_rfc_message_id = rfc_message_id
                 reference_chain = _append_reference_id(references, rfc_message_id)
+                log_action(
+                    "imessage_to_gmail_retry_result",
+                    success=True,
+                    provider_message_id=row["provider_message_id"],
+                    gmail_message_id=gmail_msg_id,
+                    gmail_thread_id=thread_id,
+                    source_message_timestamp=row["message_timestamp"],
+                    **_conversation_log_fields(conv),
+                    **message_fingerprint(row["body_text"] or ""),
+                )
 
             processed += 1
             if processed >= 500:
@@ -2876,6 +3237,75 @@ def _retry_pending_imessage_to_gmail(
             break
 
     return imported, thread_id
+
+def _apple_messages_chat_routes_for_conversation(conv: sqlite3.Row | dict[str, Any]) -> list[str]:
+    active_chat_id = (conv["imessage_chat_id"] or "").strip()
+    if not active_chat_id:
+        return []
+
+    source_provider = _conversation_source_provider(conv)
+    chat_type = (conv["chat_type"] or "").strip().lower()
+    if source_provider != "apple_messages" or chat_type != "dm":
+        return [active_chat_id]
+
+    routes = _list_apple_messages_chat_routes(active_chat_id)
+    ordered_routes: list[str] = []
+    seen: set[str] = set()
+
+    def add_route(chat_id: str) -> None:
+        normalized = (chat_id or "").strip()
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        ordered_routes.append(normalized)
+
+    add_route(active_chat_id)
+    for route in routes:
+        add_route((route.get("guid") or route.get("chat_id") or "").strip())
+    return ordered_routes
+
+
+def _fetch_apple_messages_messages_for_conversation(
+    conv: sqlite3.Row | dict[str, Any],
+    *,
+    limit: int,
+    since: Optional[str],
+) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(int(limit or 50), 1000))
+    route_ids = _apple_messages_chat_routes_for_conversation(conv)
+    if not route_ids:
+        return []
+
+    merged: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for chat_id in route_ids:
+        for message in fetch_imessage_messages(chat_id, limit=safe_limit, since=since):
+            routed_message = dict(message)
+            routed_message["chat_id"] = chat_id
+            provider_message_id = _provider_message_id_for_imessage(routed_message)
+            if provider_message_id in seen_ids:
+                continue
+            seen_ids.add(provider_message_id)
+            merged.append(routed_message)
+
+    merged.sort(key=lambda message: message.get("timestamp") or "")
+    if len(merged) > safe_limit:
+        merged = merged[:safe_limit]
+    return merged
+
+
+def _get_apple_messages_unread_count_for_conversation(conv: sqlite3.Row | dict[str, Any]) -> Optional[int]:
+    route_ids = _apple_messages_chat_routes_for_conversation(conv)
+    if not route_ids:
+        return None
+
+    total = 0
+    for chat_id in route_ids:
+        count = _get_imessage_unread_count(chat_id)
+        if count is None:
+            return None
+        total += max(0, int(count))
+    return total
 
 
 def _sync_conversation_imessage_to_gmail(
@@ -2921,10 +3351,10 @@ def _sync_conversation_imessage_to_gmail(
     next_since = since
     batch_size = 500
     saw_messages = False
-    unread_count = _get_imessage_unread_count(conv["imessage_chat_id"])
+    unread_count = _get_apple_messages_unread_count_for_conversation(conv)
 
     while True:
-        messages = fetch_imessage_messages(conv["imessage_chat_id"], limit=batch_size, since=next_since)
+        messages = _fetch_apple_messages_messages_for_conversation(conv, limit=batch_size, since=next_since)
         if not messages:
             break
         saw_messages = True
@@ -2968,7 +3398,7 @@ def _sync_conversation_imessage_to_gmail(
             references = _append_reference_id(list(reference_chain), in_reply_to)
 
             metadata = {
-                "imessage_chat_id": conv["imessage_chat_id"],
+                "imessage_chat_id": msg.get("chat_id") or conv["imessage_chat_id"],
                 "native_message_id": msg.get("native_message_id"),
                 "is_from_me": bool(is_from_me),
                 "attachments": msg.get("attachments"),
@@ -3036,6 +3466,19 @@ def _sync_conversation_imessage_to_gmail(
                 )
                 parent_rfc_message_id = rfc_message_id
                 reference_chain = _append_reference_id(references, rfc_message_id)
+                log_action(
+                    "imessage_to_gmail_message",
+                    success=True,
+                    provider_message_id=provider_id,
+                    gmail_message_id=gmail_msg_id,
+                    gmail_thread_id=thread_id,
+                    source_message_timestamp=ts,
+                    is_from_me=bool(is_from_me),
+                    unread=bool(unread),
+                    attachment_count=len(msg.get("attachments") or []),
+                    **_conversation_log_fields(conv),
+                    **message_fingerprint(text),
+                )
             else:
                 metadata = _mark_delivery_failure(
                     metadata,
@@ -3048,6 +3491,18 @@ def _sync_conversation_imessage_to_gmail(
                        SET metadata = ?
                        WHERE conversation_id = ? AND provider_message_id = ?""",
                     (json.dumps(metadata), conv["conversation_id"], provider_id),
+                )
+                log_action(
+                    "imessage_to_gmail_message",
+                    success=False,
+                    error=import_error or "gmail_import_failed",
+                    provider_message_id=provider_id,
+                    gmail_thread_id=thread_id,
+                    source_message_timestamp=ts,
+                    is_from_me=bool(is_from_me),
+                    attachment_count=len(msg.get("attachments") or []),
+                    **_conversation_log_fields(conv),
+                    **message_fingerprint(text),
                 )
 
             last_ts = max(last_ts or ts, ts)
@@ -3267,6 +3722,66 @@ def _parse_sender_email(from_header: str) -> str:
     return _normalize_email(addr)
 
 
+def _maybe_send_gmail_delivery_error_notice(
+    conn: sqlite3.Connection,
+    gmail_service,
+    conv: sqlite3.Row | dict[str, Any],
+    row: sqlite3.Row | dict[str, Any],
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    if not gmail_service:
+        return metadata
+    if _delivery_status("email_to_imessage", None, metadata) != "failed_permanent":
+        return metadata
+    if metadata.get("error_notice_sent_at"):
+        return metadata
+
+    thread_id = (
+        metadata.get("error_notice_gmail_thread_id")
+        or metadata.get("gmail_thread_id")
+        or row["gmail_thread_id"]
+        or conv["gmail_thread_id"]
+    )
+    raw_email, notice_rfc_message_id = _build_gmail_delivery_error_email(conv, row, metadata)
+    imported_data, import_error, recovered_thread_id = _import_message_to_gmail_with_thread_recovery(
+        gmail_service,
+        raw_email,
+        thread_id,
+        True,
+        _normalize_rfc_message_id(metadata.get("rfc_message_id")),
+    )
+    if import_error or not imported_data:
+        metadata["error_notice_last_error"] = import_error or "delivery_error_notice_failed"
+        log_action(
+            "gmail_to_imessage_error_notice",
+            success=False,
+            error=metadata["error_notice_last_error"],
+            provider_message_id=row["provider_message_id"],
+            gmail_message_id=metadata.get("gmail_message_id") or row["gmail_message_id"],
+            gmail_thread_id=thread_id,
+            **_conversation_log_fields(conv),
+            **message_fingerprint(row["body_text"] or ""),
+        )
+        return metadata
+
+    metadata["error_notice_sent_at"] = _now_iso()
+    metadata["error_notice_last_error"] = None
+    metadata["error_notice_gmail_message_id"] = imported_data.get("id")
+    metadata["error_notice_gmail_thread_id"] = recovered_thread_id or imported_data.get("threadId") or thread_id
+    metadata["error_notice_rfc_message_id"] = notice_rfc_message_id
+    log_action(
+        "gmail_to_imessage_error_notice",
+        success=True,
+        provider_message_id=row["provider_message_id"],
+        gmail_message_id=metadata.get("gmail_message_id") or row["gmail_message_id"],
+        gmail_thread_id=metadata["error_notice_gmail_thread_id"],
+        error_notice_gmail_message_id=metadata["error_notice_gmail_message_id"],
+        **_conversation_log_fields(conv),
+        **message_fingerprint(row["body_text"] or ""),
+    )
+    return metadata
+
+
 def _retry_pending_gmail_to_imessage(
     conn: sqlite3.Connection,
     conv: sqlite3.Row,
@@ -3280,7 +3795,7 @@ def _retry_pending_gmail_to_imessage(
 
     while processed < 500:
         rows = conn.execute(
-            """SELECT id, provider_message_id, body_text, metadata
+            """SELECT id, provider_message_id, gmail_message_id, gmail_thread_id, subject, body_text, metadata
                FROM penguin_connect_messages
                WHERE conversation_id = ?
                  AND provider = 'gmail'
@@ -3297,10 +3812,20 @@ def _retry_pending_gmail_to_imessage(
             last_id = row["id"]
             metadata = _load_metadata(row["metadata"])
             status = _delivery_status("email_to_imessage", None, metadata)
-            if status in {"delivered", "blocked", "ignored", "failed_permanent"}:
+            if status == "failed_permanent":
+                metadata = _maybe_send_gmail_delivery_error_notice(conn, gmail_service, conv, row, metadata)
+                conn.execute(
+                    """UPDATE penguin_connect_messages
+                       SET metadata = ?
+                       WHERE conversation_id = ? AND provider_message_id = ?""",
+                    (json.dumps(metadata), conv["conversation_id"], row["provider_message_id"]),
+                )
+                continue
+            if status in {"delivered", "blocked", "ignored"}:
                 continue
 
             if not _should_attempt_delivery_retry(metadata, now_dt):
+                metadata = _maybe_send_gmail_delivery_error_notice(conn, gmail_service, conv, row, metadata)
                 conn.execute(
                     """UPDATE penguin_connect_messages
                        SET metadata = ?
@@ -3345,11 +3870,21 @@ def _retry_pending_gmail_to_imessage(
                         "gmail_attachment_download_failed",
                         now_dt,
                     )
+                    metadata = _maybe_send_gmail_delivery_error_notice(conn, gmail_service, conv, row, metadata)
                     conn.execute(
                         """UPDATE penguin_connect_messages
                            SET metadata = ?
                            WHERE conversation_id = ? AND provider_message_id = ?""",
                         (json.dumps(metadata), conv["conversation_id"], row["provider_message_id"]),
+                    )
+                    log_action(
+                        "gmail_to_imessage_retry_result",
+                        success=False,
+                        error="gmail_attachment_download_failed",
+                        provider_message_id=row["provider_message_id"],
+                        gmail_message_id=gmail_message_id,
+                        attachment_count=len(attachment_meta),
+                        **_conversation_log_fields(conv),
                     )
                 continue
 
@@ -3357,6 +3892,11 @@ def _retry_pending_gmail_to_imessage(
                 conv,
                 body_text,
                 attachment_paths=attachment_paths,
+                action_context={
+                    "action": "gmail_to_source_retry",
+                    "provider_message_id": row["provider_message_id"],
+                    "gmail_message_id": gmail_message_id,
+                },
             )
             if staged_dir:
                 shutil.rmtree(staged_dir, ignore_errors=True)
@@ -3373,11 +3913,22 @@ def _retry_pending_gmail_to_imessage(
                     error or f"{_conversation_source_provider(conv)}_failed",
                     now_dt,
                 )
+                metadata = _maybe_send_gmail_delivery_error_notice(conn, gmail_service, conv, row, metadata)
             conn.execute(
                 """UPDATE penguin_connect_messages
                    SET metadata = ?
                    WHERE conversation_id = ? AND provider_message_id = ?""",
                 (json.dumps(metadata), conv["conversation_id"], row["provider_message_id"]),
+            )
+            log_action(
+                "gmail_to_imessage_retry_result",
+                success=ok,
+                error=None if ok else (error or f"{_conversation_source_provider(conv)}_failed"),
+                provider_message_id=row["provider_message_id"],
+                gmail_message_id=gmail_message_id,
+                attachment_count=len(attachment_paths),
+                **_conversation_log_fields(conv),
+                **message_fingerprint(body_text),
             )
             if ok:
                 retried += 1
@@ -3466,6 +4017,16 @@ def _sync_conversation_gmail_to_imessage(
 
         if not _sender_allowed(sender, gmail_email, allowed_senders):
             blocked += 1
+            log_action(
+                "gmail_to_imessage_message",
+                success=False,
+                blocked=True,
+                error="sender_not_connected_gmail",
+                gmail_message_id=message_id,
+                gmail_thread_id=thread_id,
+                sender_email=sender,
+                **_conversation_log_fields(conv),
+            )
             conn.execute(
                 """INSERT OR IGNORE INTO penguin_connect_messages
                    (conversation_id, provider, provider_message_id, direction,
@@ -3493,7 +4054,7 @@ def _sync_conversation_gmail_to_imessage(
                             "attachments": attachment_meta,
                             "labels": label_ids,
                             "retry_count": 0,
-                            "max_retries": _retry_max_retries(),
+                            "max_retries": _gmail_to_source_max_retries(),
                         }
                     ),
                     message_id,
@@ -3506,7 +4067,20 @@ def _sync_conversation_gmail_to_imessage(
 
         # Ignore bridge-generated inbound imports.
         bridge_header = (headers.get(PENGUINCONNECT_HEADER.lower()) or "").strip()
-        if bridge_header in {"imessage_to_email", THREAD_REPAIR_HEADER_VALUE}:
+        if bridge_header in {"imessage_to_email", THREAD_REPAIR_HEADER_VALUE, DELIVERY_ERROR_HEADER_VALUE}:
+            log_action(
+                "gmail_to_imessage_message",
+                success=False,
+                ignored=True,
+                reason=(
+                    "bridge_generated_message"
+                    if bridge_header == "imessage_to_email"
+                    else ("thread_repair_clone" if bridge_header == THREAD_REPAIR_HEADER_VALUE else "delivery_error_notice")
+                ),
+                gmail_message_id=message_id,
+                gmail_thread_id=thread_id,
+                **_conversation_log_fields(conv),
+            )
             conn.execute(
                 """INSERT OR IGNORE INTO penguin_connect_messages
                    (conversation_id, provider, provider_message_id, direction,
@@ -3526,7 +4100,11 @@ def _sync_conversation_gmail_to_imessage(
                         {
                             "ignored": True,
                             "delivery_status": "ignored",
-                            "reason": "bridge_generated_message" if bridge_header == "imessage_to_email" else "thread_repair_clone",
+                            "reason": (
+                                "bridge_generated_message"
+                                if bridge_header == "imessage_to_email"
+                                else ("thread_repair_clone" if bridge_header == THREAD_REPAIR_HEADER_VALUE else "delivery_error_notice")
+                            ),
                             "gmail_message_id": message_id,
                             "gmail_thread_id": thread_id,
                             "rfc_message_id": rfc_message_id,
@@ -3535,7 +4113,7 @@ def _sync_conversation_gmail_to_imessage(
                             "attachments": attachment_meta,
                             "labels": label_ids,
                             "retry_count": 0,
-                            "max_retries": _retry_max_retries(),
+                            "max_retries": _gmail_to_source_max_retries(),
                         }
                     ),
                     message_id,
@@ -3556,14 +4134,93 @@ def _sync_conversation_gmail_to_imessage(
                 payload,
             )
 
-        body_text = _extract_gmail_plain_text(payload).strip()
-        if not body_text:
-            body_text = (full.get("snippet") or "").strip()
+        plain_body_text, html_body_text = _extract_gmail_body_variants(payload)
+        parsed_body = extract_latest_email_text(
+            plain_text=plain_body_text,
+            html_text=html_body_text,
+            snippet=full.get("snippet") or "",
+        )
+        raw_text_source = plain_body_text or ((full.get("snippet") or "") if parsed_body.source == "snippet" else "")
+        raw_html_source = html_body_text or ""
+        body_text = parsed_body.text
+        if body_text and not parsed_body.safe_for_send:
+            log_action(
+                "gmail_to_imessage_message",
+                success=False,
+                ignored=True,
+                reason="ambiguous_email_body",
+                gmail_message_id=message_id,
+                gmail_thread_id=thread_id,
+                gmail_body_source=parsed_body.source,
+                gmail_body_safety_flags=list(parsed_body.safety_flags),
+                attachment_count=len(attachment_meta),
+                sender_email=sender,
+                **_conversation_log_fields(conv),
+                **message_fingerprint(body_text),
+            )
+            conn.execute(
+                """INSERT OR IGNORE INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction,
+                    sender_email, sender_name, subject, body_text, message_timestamp,
+                    is_read, metadata, gmail_message_id, gmail_thread_id)
+                   VALUES (?, 'gmail', ?, 'email_to_imessage', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    conv["conversation_id"],
+                    f"gmail:{message_id}",
+                    sender,
+                    from_header,
+                    headers.get("subject") or "",
+                    body_text[:20000],
+                    message_ts,
+                    0 if "UNREAD" in label_ids else 1,
+                    json.dumps(
+                        {
+                            "ignored": True,
+                            "delivery_status": "ignored",
+                            "reason": "ambiguous_email_body",
+                            "gmail_message_id": message_id,
+                            "gmail_thread_id": thread_id,
+                            "rfc_message_id": rfc_message_id,
+                            "rfc_in_reply_to": rfc_in_reply_to,
+                            "rfc_references": rfc_references,
+                            "attachments": attachment_meta,
+                            "attachments_forwarded": attachment_delivery.get("forwarded", []),
+                            "attachments_skipped": attachment_delivery.get("skipped", []),
+                            "source_body_text": body_text,
+                            "source_body_text_raw": raw_text_source,
+                            "source_body_html_raw": raw_html_source,
+                            "gmail_body_source": parsed_body.source,
+                            "gmail_quoted_content_removed": parsed_body.quoted_content_removed,
+                            "gmail_signature_removed": parsed_body.signature_removed,
+                            "gmail_body_safe_for_send": parsed_body.safe_for_send,
+                            "gmail_body_safety_flags": list(parsed_body.safety_flags),
+                            "labels": label_ids,
+                            "retry_count": 0,
+                            "max_retries": _gmail_to_source_max_retries(),
+                        }
+                    ),
+                    message_id,
+                    thread_id,
+                ),
+            )
+            last_gmail_ts = max(last_gmail_ts or message_ts, message_ts)
+            history_id = full.get("historyId") or history_id
+            continue
         if not body_text and attachment_meta and not attachment_paths:
             preview = [a.get("filename") or a.get("mime_type") or "attachment" for a in attachment_meta[:3]]
             suffix = f" (+{len(attachment_meta) - 3} more)" if len(attachment_meta) > 3 else ""
             body_text = f"[Email attachment] {', '.join(preview)}{suffix}"
         if not body_text and not attachment_paths:
+            log_action(
+                "gmail_to_imessage_message",
+                success=False,
+                ignored=True,
+                reason="empty_email_body",
+                gmail_message_id=message_id,
+                gmail_thread_id=thread_id,
+                attachment_count=len(attachment_meta),
+                **_conversation_log_fields(conv),
+            )
             conn.execute(
                 """INSERT OR IGNORE INTO penguin_connect_messages
                    (conversation_id, provider, provider_message_id, direction,
@@ -3592,9 +4249,13 @@ def _sync_conversation_gmail_to_imessage(
                             "attachments": attachment_meta,
                             "attachments_forwarded": attachment_delivery.get("forwarded", []),
                             "attachments_skipped": attachment_delivery.get("skipped", []),
+                            "source_body_text_raw": raw_text_source,
+                            "source_body_html_raw": raw_html_source,
                             "labels": label_ids,
+                            "gmail_body_safe_for_send": parsed_body.safe_for_send,
+                            "gmail_body_safety_flags": list(parsed_body.safety_flags),
                             "retry_count": 0,
-                            "max_retries": _retry_max_retries(),
+                            "max_retries": _gmail_to_source_max_retries(),
                         }
                     ),
                     message_id,
@@ -3605,18 +4266,20 @@ def _sync_conversation_gmail_to_imessage(
             history_id = full.get("historyId") or history_id
             continue
 
-        delivery_body_text, quoted_context_count = _compose_imessage_delivery_body(
-            conn,
-            conv["conversation_id"],
-            body_text,
-            rfc_in_reply_to,
-            rfc_references,
-        )
         provider_message_id = f"gmail:{message_id}"
         ok, error = _send_to_source_conversation(
             conv,
-            delivery_body_text,
+            body_text,
             attachment_paths=attachment_paths,
+            action_context={
+                "action": "gmail_to_source_sync",
+                "provider_message_id": provider_message_id,
+                "gmail_message_id": message_id,
+                "gmail_thread_id": thread_id,
+                "gmail_body_source": parsed_body.source,
+                "gmail_quoted_content_removed": parsed_body.quoted_content_removed,
+                "gmail_signature_removed": parsed_body.signature_removed,
+            },
         )
         if staged_dir:
             shutil.rmtree(staged_dir, ignore_errors=True)
@@ -3630,13 +4293,36 @@ def _sync_conversation_gmail_to_imessage(
             "attachments_forwarded": attachment_delivery.get("forwarded", []),
             "attachments_skipped": attachment_delivery.get("skipped", []),
             "source_body_text": body_text,
-            "quoted_context_count": quoted_context_count,
+            "source_body_text_raw": raw_text_source,
+            "source_body_html_raw": raw_html_source,
+            "gmail_body_source": parsed_body.source,
+            "gmail_quoted_content_removed": parsed_body.quoted_content_removed,
+            "gmail_signature_removed": parsed_body.signature_removed,
+            "gmail_body_safe_for_send": parsed_body.safe_for_send,
+            "gmail_body_safety_flags": list(parsed_body.safety_flags),
             "labels": label_ids,
             "retry_count": 0,
-            "max_retries": _retry_max_retries(),
+            "max_retries": _gmail_to_source_max_retries(),
             "delivery_status": "pending",
         }
         source_provider = _conversation_source_provider(conv)
+        log_action(
+            "gmail_to_imessage_message",
+            success=ok,
+            error=None if ok else (error or f"{source_provider}_failed"),
+            gmail_message_id=message_id,
+            gmail_thread_id=thread_id,
+            provider_message_id=provider_message_id,
+            gmail_body_source=parsed_body.source,
+            gmail_quoted_content_removed=parsed_body.quoted_content_removed,
+            gmail_signature_removed=parsed_body.signature_removed,
+            gmail_body_safe_for_send=parsed_body.safe_for_send,
+            gmail_body_safety_flags=list(parsed_body.safety_flags),
+            attachment_count=len(attachment_paths),
+            sender_email=sender,
+            **_conversation_log_fields(conv),
+            **message_fingerprint(body_text),
+        )
         if ok:
             meta = _mark_delivery_success(meta, "send_result", f"{source_provider}_ok")
             converted += 1
@@ -3646,6 +4332,19 @@ def _sync_conversation_gmail_to_imessage(
                 "send_result",
                 error or f"{source_provider}_failed",
                 datetime.now(timezone.utc),
+            )
+            meta = _maybe_send_gmail_delivery_error_notice(
+                conn,
+                gmail_service,
+                conv,
+                {
+                    "provider_message_id": provider_message_id,
+                    "gmail_message_id": message_id,
+                    "gmail_thread_id": thread_id,
+                    "subject": headers.get("subject") or "",
+                    "body_text": body_text,
+                },
+                meta,
             )
 
         conn.execute(
@@ -3660,7 +4359,7 @@ def _sync_conversation_gmail_to_imessage(
                 sender,
                 from_header,
                 headers.get("subject") or "",
-                delivery_body_text[:20000],
+                body_text[:20000],
                 message_ts,
                 0 if "UNREAD" in label_ids else 1,
                 json.dumps(meta),
@@ -3703,7 +4402,12 @@ def _sync_conversations_unlocked(
         return {"success": False, "error": "gmail_not_connected"}
 
     gmail_email = account["gmail_email"]
-    ensure_conversations_discovered(conn, gmail_email)
+    if mode in {"backfill", "startup_catchup"}:
+        sweep_result = self_heal_conversation_cache(conn, gmail_email)
+        conn.commit()
+    else:
+        ensure_conversations_discovered(conn, gmail_email)
+        sweep_result = None
 
     gmail_service, err = _build_gmail_service(gmail_email, account["keychain_service"])
     if err or not gmail_service:
@@ -3765,6 +4469,8 @@ def _sync_conversations_unlocked(
         stats["selection_cutoff"] = selection["selection_cutoff"]
     if selection.get("selection_reason"):
         stats["selection_reason"] = selection["selection_reason"]
+    if sweep_result:
+        stats["self_heal_sweep"] = sweep_result
     for key in (
         "queued_conversations",
         "selection_limit",
@@ -3781,12 +4487,29 @@ def _sync_conversations_unlocked(
     stats["failed_conversations"] = 0
     stats["conversation_errors"] = []
     _sync_runtime_started(mode, selection)
+    log_action(
+        "sync_run_started",
+        mode=mode,
+        days=days,
+        hours=hours,
+        verify_all=bool(verify_all),
+        gmail_email=gmail_email,
+        selected_conversations=len(conversations),
+        selection=selection,
+    )
 
     try:
         total = len(conversations)
         for index, conv in enumerate(conversations, start=1):
             display = conv["display_name"] or conv["conversation_id"]
             print(f"[PenguinConnect] Sync {mode} {index}/{total}: {display}")
+            log_action(
+                "sync_conversation_started",
+                mode=mode,
+                index=index,
+                total=total,
+                **_conversation_log_fields(conv),
+            )
             _sync_runtime_progress(index - 1, conv)
             try:
                 imsg = _sync_conversation_imessage_to_gmail(
@@ -3836,6 +4559,19 @@ def _sync_conversations_unlocked(
                     f"email_to_imessage={gsync.get('email_to_imessage', 0)} "
                     f"repairs={repaired}"
                 )
+                log_action(
+                    "sync_conversation_result",
+                    mode=mode,
+                    index=index,
+                    total=total,
+                    success=True,
+                    imessage_imported=imsg.get("imessage_imported", 0),
+                    gmail_imported=imsg.get("gmail_imported", 0),
+                    email_to_imessage=gsync.get("email_to_imessage", 0),
+                    blocked_sender_count=gsync.get("blocked_sender_count", 0),
+                    gmail_thread_repairs=repaired,
+                    **_conversation_log_fields(conv),
+                )
             except _GmailRetryableError as exc:
                 conn.rollback()
                 paused_until = _set_gmail_rate_limit_pause(conn, gmail_email, exc.retry_after_seconds)
@@ -3846,6 +4582,16 @@ def _sync_conversations_unlocked(
                         "retry_after_seconds": exc.retry_after_seconds,
                         "rate_limited_until": paused_until,
                     }
+                )
+                log_action(
+                    "sync_run_result",
+                    mode=mode,
+                    success=True,
+                    skipped=True,
+                    reason="gmail_rate_limited",
+                    retry_after_seconds=exc.retry_after_seconds,
+                    rate_limited_until=paused_until,
+                    stats=stats,
                 )
                 _sync_runtime_finished(result=stats)
                 return stats
@@ -3864,13 +4610,24 @@ def _sync_conversations_unlocked(
                     }
                 )
                 print(f"[PenguinConnect] Sync {mode} {index}/{total} failed for {display}: {error}")
+                log_action(
+                    "sync_conversation_result",
+                    mode=mode,
+                    index=index,
+                    total=total,
+                    success=False,
+                    error=error,
+                    **_conversation_log_fields(conv),
+                )
             finally:
                 _sync_runtime_progress(index, None)
     except Exception as exc:
+        log_action("sync_run_result", mode=mode, success=False, error=str(exc).strip() or exc.__class__.__name__)
         _sync_runtime_finished(error=str(exc).strip() or exc.__class__.__name__)
         raise
 
     _clear_gmail_rate_limit_pause(conn, gmail_email)
+    log_action("sync_run_result", mode=mode, success=True, stats=stats)
     _sync_runtime_finished(result=stats)
     return stats
 
@@ -3986,10 +4743,11 @@ def get_sync_metrics(conn: sqlite3.Connection) -> dict[str, Any]:
 
 def disconnect_conversation(conn: sqlite3.Connection, conversation_id: str) -> dict[str, Any]:
     conv = conn.execute(
-        "SELECT conversation_id FROM penguin_connect_conversations WHERE conversation_id = ?",
+        "SELECT * FROM penguin_connect_conversations WHERE conversation_id = ?",
         (conversation_id,),
     ).fetchone()
     if not conv:
+        log_action("conversation_disconnect_result", conversation_id=conversation_id, success=False, error="conversation_not_found")
         return {"success": False, "error": "conversation_not_found"}
 
     conn.execute(
@@ -4008,12 +4766,14 @@ def disconnect_conversation(conn: sqlite3.Connection, conversation_id: str) -> d
            WHERE conversation_id = ?""",
         (conversation_id,),
     )
-    return {
+    result = {
         "success": True,
         "conversation_id": conversation_id,
         "messages_deleted": deleted_messages,
         "status": "disconnected",
     }
+    log_action("conversation_disconnect_result", success=True, messages_deleted=deleted_messages, **_conversation_log_fields(conv))
+    return result
 
 
 def reconnect_conversation(conn: sqlite3.Connection, conversation_id: str) -> dict[str, Any]:
@@ -4022,6 +4782,7 @@ def reconnect_conversation(conn: sqlite3.Connection, conversation_id: str) -> di
         (conversation_id,),
     ).fetchone()
     if not conv:
+        log_action("conversation_reconnect_result", conversation_id=conversation_id, success=False, error="conversation_not_found")
         return {"success": False, "error": "conversation_not_found"}
 
     alias_row = _ensure_active_alias(conn, conv["gmail_email"], conversation_id, fresh=True)
@@ -4035,12 +4796,19 @@ def reconnect_conversation(conn: sqlite3.Connection, conversation_id: str) -> di
         (alias_row["alias_email"], conversation_id),
     )
 
-    return {
+    result = {
         "success": True,
         "conversation_id": conversation_id,
         "alias_email": alias_row["alias_email"],
         "status": "active",
     }
+    log_action(
+        "conversation_reconnect_result",
+        success=True,
+        alias_email=alias_row["alias_email"],
+        **_conversation_log_fields(conv),
+    )
+    return result
 
 
 def send_manual_message(
@@ -4054,8 +4822,10 @@ def send_manual_message(
         (conversation_id,),
     ).fetchone()
     if not conv:
+        log_action("manual_send_result", conversation_id=conversation_id, success=False, error="conversation_not_found")
         return {"success": False, "error": "conversation_not_found"}
     if conv["status"] != "active":
+        log_action("manual_send_result", success=False, error="conversation_disconnected", **_conversation_log_fields(conv))
         return {"success": False, "error": "conversation_disconnected"}
 
     account = conn.execute(
@@ -4063,6 +4833,7 @@ def send_manual_message(
         (conv["gmail_email"],),
     ).fetchone()
     if not account:
+        log_action("manual_send_result", success=False, error="gmail_not_connected", **_conversation_log_fields(conv))
         return {"success": False, "error": "gmail_not_connected"}
 
     send_as = []
@@ -4072,6 +4843,13 @@ def send_manual_message(
         send_as = []
 
     if not _sender_allowed(sender_email, conv["gmail_email"], send_as):
+        log_action(
+            "manual_send_result",
+            success=False,
+            error="sender_not_connected_gmail",
+            sender_email=_normalize_email(sender_email),
+            **_conversation_log_fields(conv),
+        )
         return {
             "success": False,
             "error": "sender_not_connected_gmail",
@@ -4080,8 +4858,25 @@ def send_manual_message(
 
     source_provider = _conversation_source_provider(conv)
     provider_id = f"manual:{hashlib.sha1(f'{sender_email}:{_now_iso()}:{body_text}'.encode('utf-8')).hexdigest()}"
-    ok, err = _send_to_source_conversation(conv, body_text)
+    ok, err = _send_to_source_conversation(
+        conv,
+        body_text,
+        action_context={
+            "action": "manual_send",
+            "provider_message_id": provider_id,
+            "sender_email": _normalize_email(sender_email),
+        },
+    )
     if not ok:
+        log_action(
+            "manual_send_result",
+            success=False,
+            error=err or f"failed_to_send_{source_provider}",
+            sender_email=_normalize_email(sender_email),
+            provider_message_id=provider_id,
+            **_conversation_log_fields(conv),
+            **message_fingerprint(body_text),
+        )
         return {"success": False, "error": err or f"failed_to_send_{source_provider}"}
 
     conn.execute(
@@ -4106,7 +4901,16 @@ def send_manual_message(
             ),
         ),
     )
-    return {"success": True, "conversation_id": conversation_id}
+    result = {"success": True, "conversation_id": conversation_id}
+    log_action(
+        "manual_send_result",
+        success=True,
+        sender_email=_normalize_email(sender_email),
+        provider_message_id=provider_id,
+        **_conversation_log_fields(conv),
+        **message_fingerprint(body_text),
+    )
+    return result
 
 
 def _map_sync_sqlite_error(exc: sqlite3.OperationalError) -> dict[str, Any]:
@@ -4163,8 +4967,11 @@ def run_startup_catchup() -> dict[str, Any]:
             result["queue_enqueued"] = bool(enqueue_result.get("enqueued"))
             result["queue_pending_jobs"] = _pending_sync_jobs_count(conn)
         except sqlite3.OperationalError as exc:
-            return _map_sync_sqlite_error(exc)
+            mapped = _map_sync_sqlite_error(exc)
+            log_action("startup_catchup_result", result=mapped)
+            return mapped
         conn.commit()
+        log_action("startup_catchup_result", result=result)
         return result
     finally:
         conn.close()
@@ -4197,8 +5004,11 @@ def run_incremental_sync() -> dict[str, Any]:
             result["queue_enqueued"] = bool(enqueue_result.get("enqueued"))
             result["queue_pending_jobs"] = _pending_sync_jobs_count(conn)
         except sqlite3.OperationalError as exc:
-            return _map_sync_sqlite_error(exc)
+            mapped = _map_sync_sqlite_error(exc)
+            log_action("incremental_sync_result", result=mapped)
+            return mapped
         conn.commit()
+        log_action("incremental_sync_result", result=result)
         return result
     finally:
         conn.close()

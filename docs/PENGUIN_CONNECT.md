@@ -2,7 +2,7 @@
 
 PenguinConnect bridges messaging conversations to a user's Gmail inbox using per-conversation alias addresses.
 
-Current implemented source adapter: iMessage.
+Current implemented source adapter: Apple Messages (`iMessage`, `SMS`, `RCS`).
 
 Planned next source adapters: WhatsApp and Telegram.
 
@@ -11,7 +11,7 @@ This bridge is macOS local-only and runs on `127.0.0.1`.
 ## Fast Path: Guided Setup CLI
 
 ```bash
-cd /path/to/penguinconnect
+cd /path/to/penguin-connect
 ./scripts/penguin_connect_setup.py --gmail you@gmail.com
 ```
 
@@ -32,8 +32,14 @@ Optional flags:
 
 - Creates deterministic `conversation_id` values from Gmail account + source provider + source chat id.
 - Assigns one active alias email per conversation.
-- Imports iMessage messages into Gmail inbox threads.
+- Imports Apple Messages conversations into Gmail inbox threads.
+- Collapses Apple Messages direct messages across `iMessage`, `RCS`, and `SMS` into one logical conversation.
+- Reads sibling Apple Messages DM routes during source-to-Gmail sync so route changes between `iMessage`, `RCS`, and `SMS` do not silently drop messages.
+- Keeps Apple Messages group chats separate and uses the group title when one exists.
 - Polls Gmail for replies to alias addresses and sends those replies back to the source provider.
+- Sends only the latest non-quoted Gmail reply text back to Apple Messages; it does not append synthetic quoted context.
+- Retries Gmail-to-Apple-Messages delivery up to 3 times. If the final attempt still fails, the bridge posts a `PENGUIN_CONNECT` reply into the Gmail thread containing the failed message body.
+- Startup catch-up and backfill run a full self-heal sweep across all Apple Messages chats before syncing so legacy cache rows are migrated into the current canonical thread format.
 - Applies sender gate:
   - connected Gmail primary address, or
   - verified Gmail send-as alias for same inbox.
@@ -54,7 +60,7 @@ Important:
 Install backend deps if needed:
 
 ```bash
-cd /path/to/penguinconnect/server
+cd /path/to/penguin-connect/server
 python3 -m venv venv
 venv/bin/pip install -r requirements.txt
 ```
@@ -83,9 +89,11 @@ Place the JSON in one of:
 Start backend first:
 
 ```bash
-cd /path/to/penguinconnect
+cd /path/to/penguin-connect
 ./scripts/run_penguin_connect_bridge.sh
 ```
+
+Normal startup now fails fast if Apple Messages access is missing or Gmail has not been connected yet. For first-time setup only, the guided setup flow starts the bridge with a temporary bootstrap override so you can complete Gmail OAuth.
 
 Run Gmail connect helper:
 
@@ -139,6 +147,10 @@ curl -s -X POST http://127.0.0.1:8888/penguin-connect/conversations/sync \
 
 - default polling: `PENGUIN_CONNECT_POLL_SECONDS=30`
 - backfill Gmail write pacing: `PENGUIN_CONNECT_BACKFILL_WRITE_PAUSE_SECONDS=0.15`
+- action log:
+  - `PENGUIN_CONNECT_ACTION_LOG_PATH`
+  - `PENGUIN_CONNECT_ACTION_LOG_MAX_BYTES`
+  - `PENGUIN_CONNECT_ACTION_LOG_BACKUPS`
 - durable sync queue retries:
   - `PENGUIN_CONNECT_SYNC_JOB_MAX_ATTEMPTS=12`
   - `PENGUIN_CONNECT_SYNC_JOB_LEASE_SECONDS=180`
@@ -164,9 +176,40 @@ curl -s -X POST http://127.0.0.1:8888/penguin-connect/conversations/sync \
   -H 'Content-Type: application/json' \
   -d '{"mode":"incremental"}' | jq
 ./scripts/penguin_connect_backfill.py --max-attempts 20
+./scripts/penguin_connect_audit_quote_parsing.py --limit 100
 curl -s -X POST http://127.0.0.1:8888/penguin-connect/conversations/<conversation_id>/send \
   -H 'Content-Type: application/json' \
   -d '{"sender_email":"you@gmail.com","message":"hello"}' | jq
+```
+
+## Action Log
+
+PenguinConnect writes operational events to a local JSONL action log for debugging and incident review.
+
+- default path: `~/penguinconnect-local-bridge-data/actions.jsonl`
+- stores identifiers, timestamps, statuses, and message fingerprints
+- does not store raw message text
+
+Use this when you need to answer whether the bridge sent, skipped, retried, or rejected a message.
+
+## Quote Parsing Audit
+
+To evaluate whether Gmail replies are being reduced to net-new content correctly:
+
+```bash
+./scripts/penguin_connect_audit_quote_parsing.py --limit 100
+```
+
+Machine-readable output:
+
+```bash
+./scripts/penguin_connect_audit_quote_parsing.py --limit 100 --json
+```
+
+Rewrite cached Gmail-to-chat bodies from the live Gmail message when the parser now does a better job:
+
+```bash
+./scripts/penguin_connect_audit_quote_parsing.py --limit 100 --rewrite-db
 ```
 
 ## Troubleshooting

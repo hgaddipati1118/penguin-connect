@@ -1,4 +1,4 @@
 interface:
   display_name: "Messaging Channel Integration"
   short_description: "Blueprint for adding new chat providers"
-  default_prompt: "Use $messaging-channel-integration to map PenguinConnect's iMessage bridge architecture onto a new provider such as WhatsApp or Telegram."
+  default_prompt: "Use $messaging-channel-integration to map PenguinConnect's Apple Messages bridge architecture onto a new provider such as WhatsApp or Telegram while preserving provider-aware IDs and fail-closed routing."

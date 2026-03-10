@@ -1,11 +1,11 @@
 ---
 name: messaging-channel-integration
-description: Blueprint for extending PenguinConnect beyond iMessage by reusing and generalizing the current bridge architecture. Use when Codex is planning or implementing WhatsApp, Telegram, or other messaging-channel integrations; extracting provider adapters; changing schema for multi-provider support; or mapping tests, sync flows, and ops scripts from the existing iMessage implementation onto a new provider.
+description: Blueprint for extending PenguinConnect beyond the current Apple Messages adapter by reusing and generalizing the bridge architecture. Use when Codex is planning or implementing WhatsApp, Telegram, or other messaging-channel integrations; extracting provider adapters; changing schema for multi-provider support; or mapping tests, sync flows, and ops scripts from the existing Apple Messages implementation onto a new provider.
 ---
 
 # Messaging Channel Integration
 
-Use this skill to treat the current iMessage bridge as the source of truth for future channel integrations without copy-pasting more provider-specific logic into the monolith.
+Use this skill to treat the current Apple Messages bridge as the source of truth for future channel integrations without copy-pasting more provider-specific logic into the monolith.
 
 Read `references/imessage-architecture.md` first for the current system map.
 
@@ -17,19 +17,21 @@ Read `references/multi-channel-plan.md` when designing WhatsApp, Telegram, or an
 - Do not add a second provider by copy-pasting more iMessage-style branches into `server/penguin_connect.py`.
 - Extract provider adapters and keep Gmail bridge logic shared where possible.
 - Keep provider capabilities explicit: conversation discovery, recent-activity detection, history fetch/backfill, outbound send, attachment handling, sender and display-name normalization, unread or read-state hints, and provider auth or session storage.
+- Keep the quoted-content parser shared: delivery to chat should send only net-new text, and provider adapters should not invent their own reply-chain formatting.
 
 ## Workflow
 
-1. Map the current iMessage implementation.
+1. Map the current Apple Messages implementation.
 - Use `references/imessage-architecture.md` to locate the current discovery, send, sync, API, script, schema, and test surfaces.
 
 2. Identify generalization pressure points before writing new provider code.
-- Start with iMessage-specific schema fields, direction names, metadata keys, docs, and setup assumptions.
+- Start with Apple-Messages-specific schema fields, direction names, metadata keys, docs, and setup assumptions.
 - Use `references/multi-channel-plan.md` to plan migrations and abstraction boundaries.
 
 3. Design the new provider as an adapter, not a fork.
 - Implement equivalents for conversation discovery, recent activity, message fetch, outbound send, attachment staging, and sender-label resolution.
 - Keep Gmail alias routing, RFC threading, durable queueing, rate-limit handling, and metrics shared when possible.
+- Preserve the current fail-closed rule: do not send when route resolution is ambiguous or unresolved.
 
 4. Preserve idempotency and directionality.
 - Generate stable `provider_message_id` values for the new provider.

@@ -6,6 +6,8 @@ import os
 import threading
 from datetime import datetime, timezone
 
+from action_log import log_action
+
 _sync_status = {
     "penguin_connect": {
         "last_sync": None,
@@ -49,7 +51,16 @@ def _penguin_connect_polling_loop() -> None:
         try:
             from penguin_connect import run_incremental_sync
 
+            log_action("watcher_poll_tick", interval_seconds=interval)
             result = run_incremental_sync()
+            log_action(
+                "watcher_poll_result",
+                success=bool(result.get("success")),
+                skipped=bool(result.get("skipped")),
+                reason=result.get("reason"),
+                error=result.get("error"),
+                queue_job_id=result.get("queue_job_id"),
+            )
             if result.get("success") and not result.get("skipped"):
                 _last_error_code = None
                 _update_sync_status()
@@ -83,6 +94,7 @@ def _penguin_connect_polling_loop() -> None:
                     print(f"[Watcher] PenguinConnect incremental sync warning: {err}")
                 _last_error_code = err
         except Exception as exc:
+            log_action("watcher_poll_exception", error=str(exc).strip() or exc.__class__.__name__)
             print(f"[Watcher] PenguinConnect polling error: {exc}")
 
         _shutdown_event.wait(interval)
@@ -101,6 +113,7 @@ def start_watchers() -> None:
     with _status_lock:
         _sync_status["penguin_connect"]["polling"] = True
 
+    log_action("watcher_started", poll_interval_seconds=_poll_interval_seconds())
     print("[Watcher] PenguinConnect: polling every PENGUIN_CONNECT_POLL_SECONDS")
 
 
@@ -118,6 +131,7 @@ def stop_watchers() -> None:
     with _status_lock:
         _sync_status["penguin_connect"]["polling"] = False
 
+    log_action("watcher_stopped")
     print("[Watcher] Stopped")
 
 

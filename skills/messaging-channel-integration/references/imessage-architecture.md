@@ -1,6 +1,6 @@
-# iMessage Architecture Map
+# Apple Messages Architecture Map
 
-Use this file to understand what PenguinConnect already does for iMessage before generalizing it to WhatsApp, Telegram, or another provider.
+Use this file to understand what PenguinConnect already does for the Apple Messages adapter before generalizing it to WhatsApp, Telegram, or another provider.
 
 ## End-to-end flow
 
@@ -17,12 +17,14 @@ Use this file to understand what PenguinConnect already does for iMessage before
 ### Source adapter behavior
 
 - `server/channels/imessage.py`
-- `IMessageChannelAdapter`: current provider adapter boundary for iMessage-specific discovery, send, unread-count, and sender-label logic
+- `IMessageChannelAdapter`: current Apple Messages adapter boundary for discovery, send, unread-count, and sender-label logic across `iMessage`, `SMS`, and `RCS`
 
 - `server/browse_sources.py`
-- `browse_imessage_chats`: discover iMessage chats and participants from `chat.db`
+- `browse_imessage_chats`: discover Apple Messages chats and participants from `chat.db`
 - `list_recent_imessage_chat_activity`: drive incremental and backfill selection from recent source activity
 - `fetch_imessage_messages`: load text and supported attachments from the source history
+- Apple Messages route identity is `chat.guid`; `chat_identifier` is only a legacy lookup hint and must not be trusted for sends when ambiguous.
+- Direct-message threads are unified at discovery time under the `apple_messages` provider, while group chats stay route-specific.
 
 ### Gmail account and sender trust
 
@@ -41,13 +43,13 @@ Use this file to understand what PenguinConnect already does for iMessage before
 ### Shared bridge logic
 
 - `_select_conversations_for_sync`: choose which conversations to process in incremental, startup, backfill, and verify-all modes
-- `_sync_conversation_imessage_to_gmail`: source-to-Gmail import path
-- `_sync_conversation_gmail_to_imessage`: Gmail-to-source reply path
+- `_sync_conversation_imessage_to_gmail`: Apple-Messages-to-Gmail import path
+- `_sync_conversation_gmail_to_imessage`: Gmail-to-Apple-Messages reply path
 - `_retry_pending_imessage_to_gmail` and `_retry_pending_gmail_to_imessage`: durable delivery recovery
 - `_build_import_email`: generate Gmail-importable MIME with RFC threading headers
 - `_import_message_to_gmail_with_thread_recovery`: import into Gmail and recover when thread ids are stale
 - `_repair_split_gmail_messages`: reconcile split Gmail threads back to one canonical thread
-- `_compose_imessage_delivery_body`: add quoted reply context when sending Gmail replies back to the source
+- `server/quoted_content.py`: shared net-new-text extraction for Gmail replies before chat delivery
 - `_upsert_sync_state`: persist monotonic sync cursors
 - `enqueue_sync_job` and `run_sync_job_worker_once`: durable queued sync execution
 - `sync_conversations`: single-flight orchestration over all selected conversations
@@ -65,7 +67,8 @@ Use this file to understand what PenguinConnect already does for iMessage before
 
 - `contacts`: display-name resolution cache
 - `penguin_connect_accounts`: connected Gmail account and verified send-as addresses
-- `penguin_connect_conversations`: one row per active or disconnected source conversation, now tagged with `source_provider`
+- `penguin_connect_conversations`: one row per active or disconnected source conversation, tagged with `source_provider` and storing Apple Messages route metadata
+- Apple Messages DMs can keep one logical conversation id even when the active delivery route changes from `iMessage` to `RCS` or `SMS`
 - `penguin_connect_aliases`: alias lifecycle with one active alias per conversation
 - `penguin_connect_messages`: deduped source and Gmail messages plus delivery metadata
 - `penguin_connect_sync_state`: per-conversation source and Gmail cursors plus bootstrap marker
@@ -75,6 +78,7 @@ Use this file to understand what PenguinConnect already does for iMessage before
 ## Invariants future providers must preserve
 
 - `conversation_id` is the canonical join key across tables and API routes.
+- Apple Messages sends must use exact route identity and fail closed if the route is ambiguous.
 - One active alias maps to one active conversation.
 - The sender gate blocks Gmail replies from untrusted senders.
 - Bridge-generated Gmail messages are ignored on the Gmail-to-source path.
@@ -102,7 +106,7 @@ Use this file to understand what PenguinConnect already does for iMessage before
 - split-thread repair
 
 - Attachments and rendering:
-- iMessage attachment import into Gmail
+- Apple Messages attachment import into Gmail
 - Gmail attachment download and forward to source
 - placeholder bodies for attachment-only Gmail messages
 - quoted reply context for Gmail replies

@@ -74,6 +74,23 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertNotEqual(one, three)
         self.assertNotEqual(one, four)
 
+    def test_send_to_source_conversation_logs_attempt_and_result(self):
+        conv = self._conversation_row()
+
+        with mock.patch("penguin_connect.log_action") as mock_log, mock.patch(
+            "penguin_connect.send_imessage",
+            return_value=(True, None),
+        ):
+            ok, error = penguin_connect._send_to_source_conversation(conv, "hello there")
+
+        self.assertTrue(ok)
+        self.assertIsNone(error)
+        self.assertEqual([call.args[0] for call in mock_log.call_args_list], ["source_send_attempt", "source_send_result"])
+        second_call = mock_log.call_args_list[1]
+        self.assertTrue(second_call.kwargs["ok"])
+        self.assertEqual(second_call.kwargs["body_length"], len("hello there"))
+        self.assertNotIn("hello there", json.dumps(second_call.kwargs))
+
     def test_sync_window_cutoff_prefers_hours_override(self):
         class FixedDateTime(datetime):
             @classmethod
@@ -426,6 +443,342 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertTrue(result["connected"])
         self.assertEqual(result["conversations"], [])
 
+    def test_discovery_unifies_apple_messages_dm_routes_by_participant(self):
+        self.conn.execute("DELETE FROM penguin_connect_conversations WHERE gmail_email = ?", ("owner@gmail.com",))
+        chats = [
+            {
+                "chat_id": "SMS;-;+15127436385",
+                "chat_guid": "SMS;-;+15127436385",
+                "chat_identifier": "+15127436385",
+                "name": "+15127436385",
+                "chat_type": "dm",
+                "participants": ["+15127436385"],
+                "message_count": 3,
+                "last_message_at": "2026-03-08T10:00:00+00:00",
+                "last_message_preview": "older sms",
+                "service": "SMS",
+                "source_provider": "sms",
+            },
+            {
+                "chat_id": "RCS;-;+15127436385",
+                "chat_guid": "RCS;-;+15127436385",
+                "chat_identifier": "+15127436385",
+                "name": "+15127436385",
+                "chat_type": "dm",
+                "participants": ["+15127436385"],
+                "message_count": 4,
+                "last_message_at": "2026-03-09T10:00:00+00:00",
+                "last_message_preview": "newer rcs",
+                "service": "RCS",
+                "source_provider": "rcs",
+            },
+        ]
+
+        with mock.patch("penguin_connect.browse_imessage_chats", return_value={"available": True, "chats": chats}):
+            discovered = penguin_connect.ensure_conversations_discovered(self.conn, "owner@gmail.com")
+
+        rows = self.conn.execute(
+            """SELECT conversation_id, source_provider, imessage_chat_id, imessage_chat_identifier,
+                      imessage_service_name, status
+               FROM penguin_connect_conversations"""
+        ).fetchall()
+        expected_conversation_id = penguin_connect.deterministic_conversation_id(
+            "owner@gmail.com",
+            "dm:5127436385",
+            "apple_messages",
+        )
+
+        self.assertEqual(discovered, 1)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["conversation_id"], expected_conversation_id)
+        self.assertEqual(rows[0]["source_provider"], "apple_messages")
+        self.assertEqual(rows[0]["imessage_chat_id"], "RCS;-;+15127436385")
+        self.assertEqual(rows[0]["imessage_chat_identifier"], "+15127436385")
+        self.assertEqual(rows[0]["imessage_service_name"], "RCS")
+        self.assertEqual(rows[0]["status"], "active")
+
+    def test_discovery_keeps_group_chats_separate(self):
+        self.conn.execute("DELETE FROM penguin_connect_conversations WHERE gmail_email = ?", ("owner@gmail.com",))
+        chats = [
+            {
+                "chat_id": "iMessage;-;family-group",
+                "chat_guid": "iMessage;-;family-group",
+                "chat_identifier": "family-group",
+                "name": "Family Group",
+                "chat_type": "group",
+                "participants": ["+15127436385", "+14155550101"],
+                "message_count": 3,
+                "last_message_at": "2026-03-08T10:00:00+00:00",
+                "last_message_preview": "hi",
+                "service": "iMessage",
+                "source_provider": "imessage",
+            },
+            {
+                "chat_id": "SMS;-;family-group",
+                "chat_guid": "SMS;-;family-group",
+                "chat_identifier": "family-group",
+                "name": "Family Group",
+                "chat_type": "group",
+                "participants": ["+15127436385", "+14155550101"],
+                "message_count": 2,
+                "last_message_at": "2026-03-09T10:00:00+00:00",
+                "last_message_preview": "hi",
+                "service": "SMS",
+                "source_provider": "sms",
+            },
+        ]
+
+        with mock.patch("penguin_connect.browse_imessage_chats", return_value={"available": True, "chats": chats}):
+            discovered = penguin_connect.ensure_conversations_discovered(self.conn, "owner@gmail.com")
+
+        rows = self.conn.execute(
+            """SELECT source_provider, display_name, imessage_chat_id
+               FROM penguin_connect_conversations
+               ORDER BY source_provider, imessage_chat_id"""
+        ).fetchall()
+
+        self.assertEqual(discovered, 2)
+        self.assertEqual([row["source_provider"] for row in rows], ["imessage", "sms"])
+        self.assertEqual([row["display_name"] for row in rows], ["Family Group", "Family Group"])
+
+    def test_discovery_self_heals_existing_row_that_matches_unique_route_key(self):
+        self.conn.execute("DELETE FROM penguin_connect_conversations WHERE gmail_email = ?", ("owner@gmail.com",))
+        self.conn.execute(
+            """INSERT INTO penguin_connect_conversations
+               (gmail_email, source_provider, conversation_id, imessage_chat_id, imessage_chat_identifier,
+                imessage_service_name, display_name, chat_type, participants, alias_email, status)
+               VALUES (?, 'apple_messages', ?, ?, ?, ?, ?, 'dm', ?, ?, 'active')""",
+            (
+                "owner@gmail.com",
+                "amc_old_route_id",
+                "RCS;-;+15127436385",
+                "+15127436385",
+                "RCS",
+                "Taylor",
+                '["+15127436385"]',
+                "owner+am-old-route@gmail.com",
+            ),
+        )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_aliases
+               (conversation_id, alias_email, alias_local_part, status)
+               VALUES (?, ?, ?, 'active')""",
+            ("amc_old_route_id", "owner+am-old-route@gmail.com", "owner+am-old-route"),
+        )
+        chats = [
+            {
+                "chat_id": "RCS;-;+15127436385",
+                "chat_guid": "RCS;-;+15127436385",
+                "chat_identifier": "+15127436385",
+                "name": "+15127436385",
+                "chat_type": "dm",
+                "participants": ["+15127436385"],
+                "message_count": 4,
+                "last_message_at": "2026-03-09T10:00:00+00:00",
+                "last_message_preview": "newer rcs",
+                "service": "RCS",
+                "source_provider": "rcs",
+            },
+        ]
+
+        with mock.patch("penguin_connect.browse_imessage_chats", return_value={"available": True, "chats": chats}):
+            discovered = penguin_connect.ensure_conversations_discovered(self.conn, "owner@gmail.com")
+
+        expected_conversation_id = penguin_connect.deterministic_conversation_id(
+            "owner@gmail.com",
+            "dm:5127436385",
+            "apple_messages",
+        )
+        row = self.conn.execute(
+            """SELECT conversation_id, source_provider, imessage_chat_id, alias_email
+               FROM penguin_connect_conversations
+               WHERE gmail_email = ?""",
+            ("owner@gmail.com",),
+        ).fetchone()
+        alias_row = self.conn.execute(
+            "SELECT conversation_id, alias_email FROM penguin_connect_aliases WHERE alias_email = ?",
+            ("owner+am-old-route@gmail.com",),
+        ).fetchone()
+
+        self.assertEqual(discovered, 1)
+        self.assertEqual(row["conversation_id"], expected_conversation_id)
+        self.assertEqual(row["source_provider"], "apple_messages")
+        self.assertEqual(row["imessage_chat_id"], "RCS;-;+15127436385")
+        self.assertEqual(alias_row["conversation_id"], expected_conversation_id)
+
+    def test_self_heal_sweep_processes_rows_outside_default_discovery_window(self):
+        self.conn.execute("DELETE FROM penguin_connect_conversations WHERE gmail_email = ?", ("owner@gmail.com",))
+        legacy_conversation_id = penguin_connect._legacy_conversation_id("owner@gmail.com", "+15127436385")
+        self.conn.execute(
+            """INSERT INTO penguin_connect_conversations
+               (gmail_email, source_provider, conversation_id, imessage_chat_id, imessage_chat_identifier,
+                imessage_service_name, display_name, chat_type, participants, alias_email, status)
+               VALUES (?, 'imessage', ?, ?, ?, ?, ?, 'dm', ?, ?, 'active')""",
+            (
+                "owner@gmail.com",
+                legacy_conversation_id,
+                "+15127436385",
+                "+15127436385",
+                "RCS",
+                "Taylor",
+                '["+15127436385"]',
+                "owner+am-legacy@gmail.com",
+            ),
+        )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_aliases
+               (conversation_id, alias_email, alias_local_part, status)
+               VALUES (?, ?, ?, 'active')""",
+            (legacy_conversation_id, "owner+am-legacy@gmail.com", "owner+am-legacy"),
+        )
+        recent_group = {
+            "chat_id": "iMessage;-;family-group",
+            "chat_guid": "iMessage;-;family-group",
+            "chat_identifier": "family-group",
+            "name": "Family Group",
+            "chat_type": "group",
+            "participants": ["+15127436385", "+14155550101"],
+            "message_count": 3,
+            "last_message_at": "2026-03-10T10:00:00+00:00",
+            "last_message_preview": "hi",
+            "service": "iMessage",
+            "source_provider": "imessage",
+        }
+        hidden_dm = {
+            "chat_id": "RCS;-;+15127436385",
+            "chat_guid": "RCS;-;+15127436385",
+            "chat_identifier": "+15127436385",
+            "name": "+15127436385",
+            "chat_type": "dm",
+            "participants": ["+15127436385"],
+            "message_count": 8,
+            "last_message_at": "2026-03-09T10:00:00+00:00",
+            "last_message_preview": "newer rcs",
+            "service": "RCS",
+            "source_provider": "rcs",
+        }
+
+        def fake_browse(search=None, limit=100):
+            chats = [recent_group]
+            if limit is None:
+                chats.append(hidden_dm)
+            return {"available": True, "chats": chats}
+
+        with mock.patch("penguin_connect.browse_imessage_chats", side_effect=fake_browse):
+            discovered = penguin_connect.ensure_conversations_discovered(self.conn, "owner@gmail.com", max_chats=1)
+            stale_row = self.conn.execute(
+                "SELECT conversation_id, source_provider FROM penguin_connect_conversations WHERE alias_email = ?",
+                ("owner+am-legacy@gmail.com",),
+            ).fetchone()
+            sweep = penguin_connect.self_heal_conversation_cache(self.conn, "owner@gmail.com")
+
+        expected_conversation_id = penguin_connect.deterministic_conversation_id(
+            "owner@gmail.com",
+            "dm:5127436385",
+            "apple_messages",
+        )
+        healed_row = self.conn.execute(
+            """SELECT conversation_id, source_provider, imessage_chat_id
+               FROM penguin_connect_conversations
+               WHERE alias_email = ?""",
+            ("owner+am-legacy@gmail.com",),
+        ).fetchone()
+        alias_row = self.conn.execute(
+            "SELECT conversation_id FROM penguin_connect_aliases WHERE alias_email = ?",
+            ("owner+am-legacy@gmail.com",),
+        ).fetchone()
+
+        self.assertEqual(discovered, 1)
+        self.assertEqual(stale_row["conversation_id"], legacy_conversation_id)
+        self.assertEqual(stale_row["source_provider"], "imessage")
+        self.assertTrue(sweep["success"])
+        self.assertEqual(sweep["before_count"], 2)
+        self.assertEqual(sweep["after_count"], 2)
+        self.assertEqual(sweep["swept_conversations"], 2)
+        self.assertEqual(sweep["legacy_non_guid_rows_remaining"], 0)
+        self.assertEqual(healed_row["conversation_id"], expected_conversation_id)
+        self.assertEqual(healed_row["source_provider"], "apple_messages")
+        self.assertEqual(healed_row["imessage_chat_id"], "RCS;-;+15127436385")
+        self.assertEqual(alias_row["conversation_id"], expected_conversation_id)
+
+    def test_imessage_sync_reads_all_routes_for_unified_apple_messages_dm(self):
+        self.conn.execute(
+            """UPDATE penguin_connect_conversations
+               SET source_provider = ?, chat_type = 'dm', participants = ?, imessage_chat_id = ?,
+                   imessage_chat_identifier = ?, imessage_service_name = ?, display_name = ?
+               WHERE conversation_id = ?""",
+            (
+                "apple_messages",
+                json.dumps(["+15127436385"]),
+                "RCS;-;+15127436385",
+                "+15127436385",
+                "RCS",
+                "Taylor",
+                "amc_test",
+            ),
+        )
+        conv = self._conversation_row()
+        gmail_service = mock.Mock()
+        gmail_service.users.return_value.messages.return_value.import_.return_value.execute.side_effect = [
+            {"id": "gm-201", "threadId": "th-routes"},
+            {"id": "gm-202", "threadId": "th-routes"},
+        ]
+        route_messages = {
+            "RCS;-;+15127436385": [
+                {
+                    "chat_id": "RCS;-;+15127436385",
+                    "text": "rcs hello",
+                    "timestamp": "2026-03-04T09:00:00+00:00",
+                    "is_from_me": False,
+                    "handle": "+15127436385",
+                    "attachments": [],
+                    "native_message_id": "201",
+                }
+            ],
+            "SMS;-;+15127436385": [
+                {
+                    "chat_id": "SMS;-;+15127436385",
+                    "text": "sms hello",
+                    "timestamp": "2026-03-04T09:01:00+00:00",
+                    "is_from_me": False,
+                    "handle": "+15127436385",
+                    "attachments": [],
+                    "native_message_id": "202",
+                }
+            ],
+        }
+
+        def fake_fetch(chat_id, limit=50, since=None):
+            return list(route_messages.get(chat_id, []))
+
+        with mock.patch(
+            "penguin_connect._list_apple_messages_chat_routes",
+            return_value=[
+                {"guid": "RCS;-;+15127436385", "chat_id": "RCS;-;+15127436385"},
+                {"guid": "SMS;-;+15127436385", "chat_id": "SMS;-;+15127436385"},
+            ],
+        ), mock.patch("penguin_connect.fetch_imessage_messages", side_effect=fake_fetch), mock.patch(
+            "penguin_connect._get_imessage_unread_count", return_value=None
+        ):
+            result = penguin_connect._sync_conversation_imessage_to_gmail(
+                self.conn, gmail_service, conv, mode="incremental", days=7
+            )
+
+        self.assertEqual(result["imessage_imported"], 2)
+        stored = self.conn.execute(
+            """SELECT provider_message_id, metadata
+               FROM penguin_connect_messages
+               WHERE conversation_id = ?
+               ORDER BY provider_message_id""",
+            ("amc_test",),
+        ).fetchall()
+        self.assertEqual([row["provider_message_id"] for row in stored], ["imessage:201", "imessage:202"])
+        metadata_rows = [json.loads(row["metadata"] or "{}") for row in stored]
+        self.assertEqual(
+            [row["imessage_chat_id"] for row in metadata_rows],
+            ["RCS;-;+15127436385", "SMS;-;+15127436385"],
+        )
+
     def test_imessage_import_failure_retried_from_pending_queue(self):
         conv = self._conversation_row()
         msg = {
@@ -601,6 +954,15 @@ class PenguinConnectTests(unittest.TestCase):
             {"handle": "+17144741613", "push_name": "+17144741613"},
         )
         self.assertEqual(sender_name, "Kam (Shine Capital)")
+
+    def test_resolve_imessage_sender_uses_group_title_for_group_subject(self):
+        conv = self._conversation_row()
+        _sender_name, subject_name = penguin_connect._resolve_imessage_sender_and_subject(
+            self.conn,
+            conv,
+            {"handle": "+14155550111", "push_name": ""},
+        )
+        self.assertEqual(subject_name, "Family Group")
 
     def test_imessage_sync_sets_nested_reply_headers(self):
         conv = self._conversation_row()
@@ -788,8 +1150,68 @@ class PenguinConnectTests(unittest.TestCase):
             ("amc_test", "gmail:gmail-1"),
         ).fetchone()
         metadata = json.loads(row["metadata"])
+        self.assertEqual(metadata["max_retries"], 3)
         self.assertEqual(metadata["send_result"], "imessage_ok")
         self.assertEqual(metadata["retry_count"], 1)
+
+    def test_gmail_retry_queue_sends_error_notice_after_third_failure(self):
+        conv = self._conversation_row()
+        self.conn.execute(
+            """INSERT INTO penguin_connect_messages
+               (conversation_id, provider, provider_message_id, gmail_message_id, gmail_thread_id, direction,
+                sender_email, subject, body_text, message_timestamp, is_read, metadata)
+               VALUES (?, 'gmail', 'gmail:failed-1', 'failed-1', 'thread-failed-1', 'email_to_imessage',
+                       ?, ?, ?, ?, 1, ?)""",
+            (
+                "amc_test",
+                "owner@gmail.com",
+                "Status",
+                "message body to retry",
+                "2026-03-10T10:00:00+00:00",
+                json.dumps(
+                    {
+                        "delivery_status": "pending",
+                        "retry_count": 2,
+                        "max_retries": 3,
+                        "gmail_message_id": "failed-1",
+                        "gmail_thread_id": "thread-failed-1",
+                        "rfc_message_id": "<failed-1@example.test>",
+                        "rfc_references": ["<root@example.test>"],
+                    }
+                ),
+            ),
+        )
+        gmail_service = mock.Mock()
+
+        with mock.patch("penguin_connect.send_imessage", return_value=(False, "send_failed")) as mock_send, mock.patch(
+            "penguin_connect._import_message_to_gmail_with_thread_recovery",
+            return_value=({"id": "notice-1", "threadId": "thread-failed-1"}, None, None),
+        ) as mock_notice:
+            retried = penguin_connect._retry_pending_gmail_to_imessage(self.conn, conv, gmail_service=gmail_service)
+
+        self.assertEqual(retried, 0)
+        mock_send.assert_called_once()
+        mock_notice.assert_called_once()
+
+        raw_notice = mock_notice.call_args.args[1]
+        padded_notice = raw_notice + "=" * (-len(raw_notice) % 4)
+        notice_email = BytesParser(policy=policy.default).parsebytes(base64.urlsafe_b64decode(padded_notice))
+        notice_body = notice_email.get_body(preferencelist=("plain",)).get_content()
+        self.assertIn("PENGUIN_CONNECT", notice_email["From"])
+        self.assertIn("Following message ran into errors sending:", notice_body)
+        self.assertIn("message body to retry", notice_body)
+        self.assertEqual(notice_email["X-PenguinConnect-Bridge"], penguin_connect.DELIVERY_ERROR_HEADER_VALUE)
+
+        row = self.conn.execute(
+            "SELECT metadata FROM penguin_connect_messages WHERE conversation_id = ? AND provider_message_id = ?",
+            ("amc_test", "gmail:failed-1"),
+        ).fetchone()
+        metadata = json.loads(row["metadata"] or "{}")
+        self.assertEqual(metadata["delivery_status"], "failed_permanent")
+        self.assertEqual(metadata["retry_count"], 3)
+        self.assertEqual(metadata["error_notice_gmail_message_id"], "notice-1")
+        self.assertEqual(metadata["error_notice_gmail_thread_id"], "thread-failed-1")
+        self.assertIsNotNone(metadata["error_notice_sent_at"])
 
     def test_gmail_sync_persists_rfc_thread_headers(self):
         conv = self._conversation_row()
@@ -1184,7 +1606,7 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(parsed["In-Reply-To"], "<main-parent@example.test>")
         self.assertNotEqual(parsed["In-Reply-To"], "<split-latest@example.test>")
 
-    def test_gmail_nested_reply_adds_quoted_context_to_imessage(self):
+    def test_gmail_nested_reply_only_sends_latest_text_to_imessage(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_messages
                (conversation_id, provider, provider_message_id, direction, sender_email, sender_name, body_text,
@@ -1261,9 +1683,108 @@ class PenguinConnectTests(unittest.TestCase):
 
         sent_text = mock_send.call_args.args[1]
         self.assertIn("Latest nested reply", sent_text)
-        self.assertIn("Quoted context:", sent_text)
-        self.assertIn("> Alice: Root context", sent_text)
-        self.assertIn("> Bridge: Bridge context", sent_text)
+        self.assertNotIn("Quoted context:", sent_text)
+        self.assertEqual(sent_text, "Latest nested reply")
+
+    def test_gmail_plain_text_reply_strips_quoted_chain_before_send(self):
+        conv = self._conversation_row()
+        payload_data = base64.urlsafe_b64encode(
+            b"Latest reply\n\nSent from my iPhone\n\nOn Tue, Mar 10, 2026 at 10:00 AM Alice <alice@example.com> wrote:\n> Older line"
+        ).decode("utf-8").rstrip("=")
+        full_msg = {
+            "id": "gmail-quoted",
+            "threadId": "thread-quoted",
+            "historyId": "h-quoted",
+            "labelIds": ["INBOX", "UNREAD"],
+            "internalDate": "1700007200000",
+            "snippet": "Latest reply",
+            "payload": {
+                "mimeType": "text/plain",
+                "headers": [
+                    {"name": "From", "value": "Owner <owner@gmail.com>"},
+                    {"name": "Subject", "value": "Nested"},
+                    {"name": "Message-ID", "value": "<quoted@example.test>"},
+                ],
+                "body": {"data": payload_data},
+            },
+        }
+        gmail_service = mock.Mock()
+        gmail_service.users.return_value.messages.return_value.get.return_value.execute.return_value = full_msg
+
+        with mock.patch("penguin_connect._list_gmail_messages_to_alias", return_value=[{"id": "gmail-quoted"}]), mock.patch(
+            "penguin_connect.send_imessage", return_value=(True, None)
+        ) as mock_send:
+            penguin_connect._sync_conversation_gmail_to_imessage(
+                self.conn,
+                gmail_service,
+                conv,
+                gmail_email="owner@gmail.com",
+                allowed_senders=["owner@gmail.com"],
+                days=7,
+            )
+
+        sent_text = mock_send.call_args.args[1]
+        self.assertEqual(sent_text, "Latest reply")
+        stored = self.conn.execute(
+            """SELECT body_text, metadata
+               FROM penguin_connect_messages
+               WHERE conversation_id = ? AND provider_message_id = ?""",
+            ("amc_test", "gmail:gmail-quoted"),
+        ).fetchone()
+        metadata = json.loads(stored["metadata"] or "{}")
+        self.assertEqual(stored["body_text"], "Latest reply")
+        self.assertIn("On Tue, Mar 10, 2026 at 10:00 AM", metadata["source_body_text_raw"])
+        self.assertTrue(metadata["gmail_quoted_content_removed"])
+        self.assertTrue(metadata["gmail_signature_removed"])
+
+    def test_gmail_snippet_only_body_is_ignored_when_parser_is_not_confident(self):
+        conv = self._conversation_row()
+        full_msg = {
+            "id": "gmail-snippet-only",
+            "threadId": "thread-snippet-only",
+            "historyId": "h-snippet-only",
+            "labelIds": ["INBOX", "UNREAD"],
+            "internalDate": "1700007200000",
+            "snippet": "Quick status update",
+            "payload": {
+                "mimeType": "multipart/alternative",
+                "headers": [
+                    {"name": "From", "value": "Owner <owner@gmail.com>"},
+                    {"name": "Subject", "value": "Status"},
+                    {"name": "Message-ID", "value": "<snippet-only@example.test>"},
+                ],
+                "parts": [],
+            },
+        }
+        gmail_service = mock.Mock()
+        gmail_service.users.return_value.messages.return_value.get.return_value.execute.return_value = full_msg
+
+        with mock.patch("penguin_connect._list_gmail_messages_to_alias", return_value=[{"id": "gmail-snippet-only"}]), mock.patch(
+            "penguin_connect.send_imessage", return_value=(True, None)
+        ) as mock_send:
+            result = penguin_connect._sync_conversation_gmail_to_imessage(
+                self.conn,
+                gmail_service,
+                conv,
+                gmail_email="owner@gmail.com",
+                allowed_senders=["owner@gmail.com"],
+                days=7,
+            )
+
+        self.assertEqual(result["email_to_imessage"], 0)
+        mock_send.assert_not_called()
+        stored = self.conn.execute(
+            """SELECT body_text, metadata
+               FROM penguin_connect_messages
+               WHERE conversation_id = ? AND provider_message_id = ?""",
+            ("amc_test", "gmail:gmail-snippet-only"),
+        ).fetchone()
+        metadata = json.loads(stored["metadata"] or "{}")
+        self.assertEqual(stored["body_text"], "Quick status update")
+        self.assertEqual(metadata["reason"], "ambiguous_email_body")
+        self.assertEqual(metadata["gmail_body_source"], "snippet")
+        self.assertFalse(metadata["gmail_body_safe_for_send"])
+        self.assertIn("snippet_only", metadata["gmail_body_safety_flags"])
 
     def test_retry_policy_backoff_and_cap(self):
         with mock.patch.dict(
@@ -1782,7 +2303,10 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(mock_sleep.call_count, 2)
 
     def test_backfill_marks_conversation_bootstrapped_after_success(self):
-        with mock.patch("penguin_connect.ensure_conversations_discovered", return_value=1), mock.patch(
+        with mock.patch(
+            "penguin_connect.self_heal_conversation_cache",
+            return_value={"success": True, "swept_conversations": 1, "before_count": 1, "after_count": 1},
+        ), mock.patch(
             "penguin_connect._build_gmail_service", return_value=(mock.Mock(), None)
         ), mock.patch(
             "penguin_connect._refresh_send_as_aliases",
@@ -1818,6 +2342,7 @@ class PenguinConnectTests(unittest.TestCase):
         ).fetchone()
 
         self.assertTrue(stats["success"])
+        self.assertEqual(stats["self_heal_sweep"]["swept_conversations"], 1)
         self.assertIsNotNone(state)
         self.assertTrue(state["initial_sync_completed_at"])
 
@@ -1869,7 +2394,10 @@ class PenguinConnectTests(unittest.TestCase):
             call_order.append(("gmail", conv["conversation_id"], gmail_email, tuple(allowed_senders), hours, cutoff_iso))
             return {"email_to_imessage": 0, "blocked_sender_count": 0}
 
-        with mock.patch("penguin_connect.ensure_conversations_discovered", return_value=3), mock.patch(
+        with mock.patch(
+            "penguin_connect.self_heal_conversation_cache",
+            return_value={"success": True, "swept_conversations": 3, "before_count": 3, "after_count": 3},
+        ), mock.patch(
             "penguin_connect._build_gmail_service", return_value=(mock.Mock(), None)
         ), mock.patch(
             "penguin_connect._refresh_send_as_aliases",
@@ -1906,6 +2434,7 @@ class PenguinConnectTests(unittest.TestCase):
             stats = penguin_connect._sync_conversations_unlocked(self.conn, mode="backfill", days=7, hours=5)
 
         self.assertTrue(stats["success"])
+        self.assertEqual(stats["self_heal_sweep"]["swept_conversations"], 3)
         self.assertEqual(stats["discovered_conversations"], 3)
         self.assertEqual(stats["selected_conversations"], 2)
         self.assertEqual(stats["selection_strategy"], "recent_imessage_activity")
@@ -2062,7 +2591,10 @@ class PenguinConnectTests(unittest.TestCase):
             self.assertEqual(runtime["selection_cutoff"], cutoff_iso)
             return {"imessage_imported": 2, "gmail_imported": 1}
 
-        with mock.patch("penguin_connect.ensure_conversations_discovered", return_value=2), mock.patch(
+        with mock.patch(
+            "penguin_connect.self_heal_conversation_cache",
+            return_value={"success": True, "swept_conversations": 2, "before_count": 2, "after_count": 2},
+        ), mock.patch(
             "penguin_connect._build_gmail_service", return_value=(mock.Mock(), None)
         ), mock.patch(
             "penguin_connect._refresh_send_as_aliases",
@@ -2106,7 +2638,7 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(stats["gmail_imported"], 1)
         self.assertEqual(stats["email_to_imessage"], 3)
         self.assertEqual(stats["gmail_thread_repairs"], 1)
-        self.assertEqual(tracked_conn.commit_calls, 1)
+        self.assertEqual(tracked_conn.commit_calls, 2)
         self.assertFalse(runtime["running"])
         self.assertEqual(runtime["processed_conversations"], 2)
         self.assertEqual(runtime["selected_conversations"], 2)
@@ -2120,7 +2652,14 @@ class PenguinConnectTests(unittest.TestCase):
             conn = sqlite3.connect(db_path)
             conn.executescript(
                 """
-                CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, chat_identifier TEXT);
+                CREATE TABLE chat (
+                    ROWID INTEGER PRIMARY KEY,
+                    guid TEXT,
+                    chat_identifier TEXT,
+                    display_name TEXT,
+                    service_name TEXT,
+                    is_archived INTEGER DEFAULT 0
+                );
                 CREATE TABLE message (
                     ROWID INTEGER PRIMARY KEY,
                     text TEXT,
@@ -2142,7 +2681,10 @@ class PenguinConnectTests(unittest.TestCase):
                 );
                 """
             )
-            conn.execute("INSERT INTO chat(ROWID, chat_identifier) VALUES (1, ?)", ("chat-1",))
+            conn.execute(
+                "INSERT INTO chat(ROWID, guid, chat_identifier, display_name, service_name) VALUES (1, ?, ?, '', 'iMessage')",
+                ("iMessage;-;chat-1", "chat-1"),
+            )
 
             base_ns = int((timedelta(days=2).total_seconds()) * 1_000_000_000)
             for i in range(10):
@@ -2162,22 +2704,29 @@ class PenguinConnectTests(unittest.TestCase):
             browse_sources.IMESSAGE_DB = db_path
             try:
                 since = (browse_sources.APPLE_EPOCH + timedelta(days=1)).isoformat()
-                first_batch = browse_sources.fetch_imessage_messages("chat-1", limit=3, since=since)
+                first_batch = browse_sources.fetch_imessage_messages("iMessage;-;chat-1", limit=3, since=since)
                 second_since = max(r["timestamp"] for r in first_batch)
-                second_batch = browse_sources.fetch_imessage_messages("chat-1", limit=3, since=second_since)
+                second_batch = browse_sources.fetch_imessage_messages("iMessage;-;chat-1", limit=3, since=second_since)
             finally:
                 browse_sources.IMESSAGE_DB = old_path
 
         self.assertEqual([r["text"] for r in first_batch], ["m1", "m2", "m3"])
         self.assertEqual([r["text"] for r in second_batch], ["m4", "m5", "m6"])
 
-    def test_list_recent_imessage_chat_activity_orders_oldest_first(self):
+    def test_fetch_imessage_messages_fails_closed_for_ambiguous_identifier(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "chat.db")
             conn = sqlite3.connect(db_path)
             conn.executescript(
                 """
-                CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, chat_identifier TEXT);
+                CREATE TABLE chat (
+                    ROWID INTEGER PRIMARY KEY,
+                    guid TEXT,
+                    chat_identifier TEXT,
+                    display_name TEXT,
+                    service_name TEXT,
+                    is_archived INTEGER DEFAULT 0
+                );
                 CREATE TABLE message (
                     ROWID INTEGER PRIMARY KEY,
                     text TEXT,
@@ -2199,8 +2748,74 @@ class PenguinConnectTests(unittest.TestCase):
                 );
                 """
             )
-            conn.execute("INSERT INTO chat(ROWID, chat_identifier) VALUES (1, ?)", ("chat-early",))
-            conn.execute("INSERT INTO chat(ROWID, chat_identifier) VALUES (2, ?)", ("chat-late",))
+            conn.execute(
+                "INSERT INTO chat(ROWID, guid, chat_identifier, display_name, service_name) VALUES (1, ?, ?, '', 'iMessage')",
+                ("iMessage;-;chat-shared", "chat-shared"),
+            )
+            conn.execute(
+                "INSERT INTO chat(ROWID, guid, chat_identifier, display_name, service_name) VALUES (2, ?, ?, '', 'SMS')",
+                ("SMS;-;chat-shared", "chat-shared"),
+            )
+            conn.execute(
+                "INSERT INTO message(ROWID, text, date, is_from_me, service, handle_id, attributedBody) VALUES (1, 'hello', 1000, 0, 'SMS', NULL, NULL)"
+            )
+            conn.execute("INSERT INTO chat_message_join(chat_id, message_id) VALUES (2, 1)")
+            conn.commit()
+            conn.close()
+
+            old_path = browse_sources.IMESSAGE_DB
+            browse_sources.IMESSAGE_DB = db_path
+            try:
+                ambiguous = browse_sources.fetch_imessage_messages("chat-shared", limit=10)
+                exact = browse_sources.fetch_imessage_messages("SMS;-;chat-shared", limit=10)
+            finally:
+                browse_sources.IMESSAGE_DB = old_path
+
+        self.assertEqual(ambiguous, [])
+        self.assertEqual([row["text"] for row in exact], ["hello"])
+
+    def test_list_recent_imessage_chat_activity_orders_oldest_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "chat.db")
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                CREATE TABLE chat (
+                    ROWID INTEGER PRIMARY KEY,
+                    guid TEXT,
+                    chat_identifier TEXT,
+                    service_name TEXT,
+                    is_archived INTEGER DEFAULT 0
+                );
+                CREATE TABLE message (
+                    ROWID INTEGER PRIMARY KEY,
+                    text TEXT,
+                    date INTEGER,
+                    is_from_me INTEGER,
+                    service TEXT,
+                    handle_id INTEGER,
+                    attributedBody BLOB
+                );
+                CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
+                CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+                CREATE TABLE message_attachment_join (message_id INTEGER, attachment_id INTEGER);
+                CREATE TABLE attachment (
+                    ROWID INTEGER PRIMARY KEY,
+                    filename TEXT,
+                    mime_type TEXT,
+                    total_bytes INTEGER,
+                    transfer_name TEXT
+                );
+                """
+            )
+            conn.execute(
+                "INSERT INTO chat(ROWID, guid, chat_identifier, service_name) VALUES (1, ?, ?, 'iMessage')",
+                ("iMessage;-;chat-early", "chat-early"),
+            )
+            conn.execute(
+                "INSERT INTO chat(ROWID, guid, chat_identifier, service_name) VALUES (2, ?, ?, 'SMS')",
+                ("SMS;-;chat-late", "chat-late"),
+            )
 
             base_ns = int((timedelta(days=2).total_seconds()) * 1_000_000_000)
             rows = [
@@ -2229,7 +2844,7 @@ class PenguinConnectTests(unittest.TestCase):
                 browse_sources.IMESSAGE_DB = old_path
 
         self.assertTrue(recent["available"])
-        self.assertEqual([row["chat_id"] for row in recent["chats"]], ["chat-early", "chat-late"])
+        self.assertEqual([row["chat_id"] for row in recent["chats"]], ["iMessage;-;chat-early", "SMS;-;chat-late"])
         self.assertEqual(recent["chats"][0]["message_count"], 2)
 
 

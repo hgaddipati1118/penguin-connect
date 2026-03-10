@@ -140,7 +140,9 @@ def _ensure_server_running(repo_root: Path, api_base: str, no_open_terminal: boo
 
     if no_open_terminal:
         raise RuntimeError(
-            "Bridge is not running. Start it first with ./scripts/run_penguin_connect_bridge.sh and rerun setup."
+            "Bridge is not running. Start it first with "
+            "PENGUIN_CONNECT_ALLOW_MISSING_GMAIL_STARTUP=1 ./scripts/run_penguin_connect_bridge.sh "
+            "and rerun setup."
         )
 
     should_open = _confirm(
@@ -151,7 +153,7 @@ def _ensure_server_running(repo_root: Path, api_base: str, no_open_terminal: boo
     if not should_open:
         raise RuntimeError("Setup requires local bridge API. Start it and rerun this script.")
 
-    _run(["./scripts/open_penguin_connect_bridge_terminal.sh"], cwd=repo_root)
+    _run(["./scripts/open_penguin_connect_bridge_terminal.sh", "--allow-missing-gmail-startup"], cwd=repo_root)
     print("[info] Waiting for bridge health endpoint...")
     if not _wait_for_health(api_base, timeout_seconds=45):
         raise RuntimeError(
@@ -269,7 +271,10 @@ def _print_explain_plan(repo_root: Path, args: argparse.Namespace) -> None:
     print("0. Run from Terminal.app with Full Disk Access enabled.")
     print("1. Ensure .env exists (copy from .env.example if missing).")
     print("2. Ensure server/venv exists and install server/requirements.txt.")
-    print("3. Ensure local bridge API is running at /penguin-connect/health.")
+    print(
+        "3. Ensure local bridge API is running at /penguin-connect/health "
+        "(bootstrap may use PENGUIN_CONNECT_ALLOW_MISSING_GMAIL_STARTUP=1 before OAuth connect)."
+    )
     print("4. Connect Gmail using scripts/penguin_connect_connect.py.")
     print("5. Run scripts/penguin_connect_doctor.py and show final status.")
     print("6. Run sync smoke test via /penguin-connect/conversations/sync.")

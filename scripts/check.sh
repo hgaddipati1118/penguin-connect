@@ -1,26 +1,52 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON_BIN="$ROOT_DIR/server/venv/bin/python"
 
 if [ ! -x "$PYTHON_BIN" ]; then
-  PYTHON_BIN="$(command -v python3)"
+  PYTHON_BIN="$(command -v python3 || true)"
+fi
+
+if [ -z "$PYTHON_BIN" ]; then
+  echo "python3 not found"
+  exit 1
+fi
+
+if ! command -v rg >/dev/null 2>&1; then
+  echo "rg is required to run this check"
+  exit 1
+fi
+
+PYTHON_SOURCES=()
+while IFS= read -r file; do
+  PYTHON_SOURCES+=("$file")
+done < <(
+  cd "$ROOT_DIR"
+  rg --files server scripts -g '*.py' | rg -v '(^|/)(venv|__pycache__)/'
+)
+
+SHELL_SOURCES=()
+while IFS= read -r file; do
+  SHELL_SOURCES+=("$file")
+done < <(
+  cd "$ROOT_DIR"
+  {
+    printf '%s\n' "start.sh"
+    rg --files scripts -g '*.sh'
+  } | sort -u
+)
+
+if [ "${#PYTHON_SOURCES[@]}" -eq 0 ]; then
+  echo "No Python sources found under server/ or scripts/"
+  exit 1
 fi
 
 echo "[check] backend compile"
-"$PYTHON_BIN" -m py_compile \
-  "$ROOT_DIR/server/app.py" \
-  "$ROOT_DIR/server/db.py" \
-  "$ROOT_DIR/server/watcher.py" \
-  "$ROOT_DIR/server/browse_sources.py" \
-  "$ROOT_DIR/server/penguin_connect.py" \
-  "$ROOT_DIR/scripts/penguin_connect_setup.py" \
-  "$ROOT_DIR/scripts/penguin_connect_connect.py" \
-  "$ROOT_DIR/scripts/penguin_connect_backfill.py" \
-  "$ROOT_DIR/scripts/penguin_connect_doctor.py" \
-  "$ROOT_DIR/scripts/penguinconnect_create_inbox.py" \
-  "$ROOT_DIR/scripts/import_contacts.py"
+(
+  cd "$ROOT_DIR"
+  "$PYTHON_BIN" -m py_compile "${PYTHON_SOURCES[@]}"
+)
 
 echo "[check] backend tests"
 (
@@ -29,9 +55,8 @@ echo "[check] backend tests"
 )
 
 echo "[check] shell script syntax"
-bash -n "$ROOT_DIR/start.sh"
-bash -n "$ROOT_DIR/scripts/run_penguin_connect_bridge.sh"
-bash -n "$ROOT_DIR/scripts/open_penguin_connect_bridge_terminal.sh"
-bash -n "$ROOT_DIR/scripts/install_launchd_penguinconnect_bridge.sh"
+for script in "${SHELL_SOURCES[@]}"; do
+  bash -n "$ROOT_DIR/$script"
+done
 
 echo "[check] done"

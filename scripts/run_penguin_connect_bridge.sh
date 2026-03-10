@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -45,6 +45,11 @@ if [ ! -x "$PYTHON_BIN" ]; then
 fi
 
 while true; do
+  echo "[PenguinConnect] Running startup preflight..."
+  if ! "$PYTHON_BIN" startup_checks.py; then
+    exit 1
+  fi
+
   "$PYTHON_BIN" -m uvicorn app:app --host 127.0.0.1 --port "$PORT"
   code=$?
 
