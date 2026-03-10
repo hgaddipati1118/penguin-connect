@@ -25,6 +25,24 @@ Use this reference when you need the rationale behind the skill or want the sour
 - GitHub Docs supports linking and automatically closing issues from pull requests with keywords such as `Fixes #123`.
 - Use closing keywords only when the merged change truly resolves the issue.
 
+### Keep community-health files explicit
+
+- GitHub's community profile checklist looks for recommended community health
+  files such as `README`, `CODE_OF_CONDUCT`, `LICENSE`, `CONTRIBUTING`, and
+  `SECURITY`, plus valid issue templates.
+- Apply that here by keeping PenguinConnect's repo-health files intentional
+  rather than implicit or scattered.
+
+### Use contribution and issue templates to reduce review churn
+
+- GitHub Docs says a `CONTRIBUTING.md` file helps contributors submit well-formed
+  pull requests and useful issues, and GitHub surfaces that file in multiple
+  repository entry points.
+- GitHub Docs says issue and pull request templates standardize the information
+  maintainers want contributors to include.
+- Apply that here by keeping PR expectations, issue intake, and security
+  reporting concrete and visible in-repo.
+
 ### Treat AI output as untrusted draft material
 
 - Git's `SubmittingPatches` guidance allows AI assistance only when the contributor reviews, understands, and takes responsibility for every part of the result.
@@ -32,7 +50,14 @@ Use this reference when you need the rationale behind the skill or want the sour
 
 ## PenguinConnect interpretation
 
-- Because PenguinConnect handles private iMessage and Gmail content, open source standards here also include privacy-safe defaults, minimal logging, honest verification, and explicit communication about macOS-only runtime assumptions.
+- Because PenguinConnect handles private Apple Messages and Gmail content, open source standards here also include privacy-safe defaults, minimal logging, honest verification, and explicit communication about macOS-only runtime assumptions.
+- Apple Messages routing must fail closed: if a legacy identifier could map to multiple `iMessage` / `SMS` / `RCS` chats, the bridge should not send until the exact route is resolved.
+- Gmail-to-Apple-Messages delivery should be net-new-text-first: strip quoted reply chains, forwarded headers, and boilerplate before sending, and prefer dropping ambiguous quoted content over echoing private thread history back into chat.
+- Keep a short user-facing README and a separate agent-facing guide when the
+  repo benefits from dedicated coding-agent setup and invariant instructions.
+- Keep the MIT license and community-health files visible from the README so new
+  contributors do not have to guess where contribution, security, or agent
+  onboarding rules live.
 - A change is not "done" if it silently weakens local-only guarantees, sender-gate behavior, alias ownership rules, or documented setup/operations without surfacing that impact.
 
 ## Sources
@@ -41,3 +66,9 @@ Use this reference when you need the rationale behind the skill or want the sour
 - Git documentation, SubmittingPatches: <https://git-scm.com/docs/SubmittingPatches>
 - Conventional Commits 1.0.0: <https://www.conventionalcommits.org/en/v1.0.0/>
 - GitHub Docs, Linking a pull request to an issue: <https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue>
+- GitHub Docs, About community profiles for public repositories: <https://docs.github.com/en/communities/setting-up-your-project-for-healthy-contributions/about-community-profiles-for-public-repositories>
+- GitHub Docs, Setting guidelines for repository contributors: <https://docs.github.com/en/communities/setting-up-your-project-for-healthy-contributions/setting-guidelines-for-repository-contributors>
+- GitHub Docs, Configuring issue templates for your repository: <https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository>
+- GitHub Docs, Adding a security policy to your repository: <https://docs.github.com/en/code-security/how-tos/report-and-fix-vulnerabilities/configure-vulnerability-reporting/adding-a-security-policy-to-your-repository>
+- GitHub Docs, Adding a code of conduct to your project: <https://docs.github.com/en/communities/setting-up-your-project-for-healthy-contributions/adding-a-code-of-conduct-to-your-project>
+- GitHub Docs, Adding a license to a repository: <https://docs.github.com/en/communities/setting-up-your-project-for-healthy-contributions/adding-a-license-to-a-repository>
