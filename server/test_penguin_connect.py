@@ -174,6 +174,20 @@ class PenguinConnectTests(unittest.TestCase):
         mock_authed.assert_called_once_with(creds, http=http)
         mock_build.assert_called_once_with("gmail", "v1", http=authed_http, cache_discovery=False)
 
+    def test_list_gmail_messages_to_alias_queries_sent_mail_only(self):
+        gmail_service = mock.Mock()
+        gmail_service.users.return_value.messages.return_value.list.return_value.execute.return_value = {"messages": []}
+
+        penguin_connect._list_gmail_messages_to_alias(
+            gmail_service,
+            "owner+am-test@gmail.com",
+            "2026-03-04T09:00:00+00:00",
+        )
+
+        query = gmail_service.users.return_value.messages.return_value.list.call_args.kwargs["q"]
+        self.assertIn("to:owner+am-test@gmail.com", query)
+        self.assertIn("in:sent", query)
+
     def test_sender_gate_blocks_non_connected_sender(self):
         result = penguin_connect.send_manual_message(
             self.conn,
@@ -1536,7 +1550,7 @@ class PenguinConnectTests(unittest.TestCase):
             "id": "gmail-1",
             "threadId": "thread-1",
             "historyId": "h-1",
-            "labelIds": ["INBOX", "UNREAD"],
+            "labelIds": ["SENT", "INBOX", "UNREAD"],
             "internalDate": "1700000000000",
             "snippet": "hello from gmail",
             "payload": {
@@ -1717,7 +1731,7 @@ class PenguinConnectTests(unittest.TestCase):
             "id": "gmail-rfc-1",
             "threadId": "thread-rfc-1",
             "historyId": "h-rfc-1",
-            "labelIds": ["INBOX", "UNREAD"],
+            "labelIds": ["SENT", "INBOX", "UNREAD"],
             "internalDate": "1700000000000",
             "snippet": "hello from gmail",
             "payload": {
@@ -1777,7 +1791,7 @@ class PenguinConnectTests(unittest.TestCase):
             "id": "gmail-stale-sync-1",
             "threadId": "thread-stale-sync-1",
             "historyId": "h-stale-sync-1",
-            "labelIds": ["INBOX", "UNREAD"],
+            "labelIds": ["SENT", "INBOX", "UNREAD"],
             "internalDate": "1741600800000",
             "snippet": "reply while server was down",
             "payload": {
@@ -1848,7 +1862,7 @@ class PenguinConnectTests(unittest.TestCase):
             "id": "gmail-attach-bin-1",
             "threadId": "thread-attach-bin-1",
             "historyId": "h-attach-bin-1",
-            "labelIds": ["INBOX", "UNREAD"],
+            "labelIds": ["SENT", "INBOX", "UNREAD"],
             "internalDate": "1700000000000",
             "snippet": "",
             "payload": {
@@ -1901,7 +1915,7 @@ class PenguinConnectTests(unittest.TestCase):
             "id": "gmail-attach-1",
             "threadId": "thread-attach-1",
             "historyId": "h-attach-1",
-            "labelIds": ["INBOX", "UNREAD"],
+            "labelIds": ["SENT", "INBOX", "UNREAD"],
             "internalDate": "1700000000000",
             "snippet": "",
             "payload": {
@@ -1973,7 +1987,7 @@ class PenguinConnectTests(unittest.TestCase):
             "id": "gmail-split-1",
             "threadId": "thread-split",
             "historyId": "h-split-1",
-            "labelIds": ["INBOX", "UNREAD"],
+            "labelIds": ["SENT", "INBOX", "UNREAD"],
             "internalDate": "1700003600000",
             "snippet": "split thread reply",
             "payload": {
@@ -2047,7 +2061,7 @@ class PenguinConnectTests(unittest.TestCase):
             "id": "gmail-split-safe",
             "threadId": "thread-split",
             "historyId": "h-split-safe",
-            "labelIds": ["INBOX", "UNREAD"],
+            "labelIds": ["SENT", "INBOX", "UNREAD"],
             "internalDate": "1700003600000",
             "snippet": "split thread reply",
             "payload": {
@@ -2080,7 +2094,7 @@ class PenguinConnectTests(unittest.TestCase):
 
         def get_execute_side_effect(*args, **kwargs):
             fmt = kwargs.get("format")
-            response = full_msg if fmt == "full" else {"id": "gmail-split-safe", "raw": original_raw, "labelIds": ["INBOX", "UNREAD"]}
+            response = full_msg if fmt == "full" else {"id": "gmail-split-safe", "raw": original_raw, "labelIds": ["SENT", "INBOX", "UNREAD"]}
             exec_mock = mock.Mock()
             exec_mock.execute.return_value = response
             return exec_mock
@@ -2230,7 +2244,7 @@ class PenguinConnectTests(unittest.TestCase):
             "id": "gmail-leaf",
             "threadId": "thread-main",
             "historyId": "h-leaf",
-            "labelIds": ["INBOX", "UNREAD"],
+            "labelIds": ["SENT", "INBOX", "UNREAD"],
             "internalDate": leaf_internal_date,
             "snippet": "Latest nested reply",
             "payload": {
@@ -2274,7 +2288,7 @@ class PenguinConnectTests(unittest.TestCase):
             "id": "gmail-quoted",
             "threadId": "thread-quoted",
             "historyId": "h-quoted",
-            "labelIds": ["INBOX", "UNREAD"],
+            "labelIds": ["SENT", "INBOX", "UNREAD"],
             "internalDate": "1700007200000",
             "snippet": "Latest reply",
             "payload": {
@@ -2322,7 +2336,7 @@ class PenguinConnectTests(unittest.TestCase):
             "id": "gmail-snippet-only",
             "threadId": "thread-snippet-only",
             "historyId": "h-snippet-only",
-            "labelIds": ["INBOX", "UNREAD"],
+            "labelIds": ["SENT", "INBOX", "UNREAD"],
             "internalDate": "1700007200000",
             "snippet": "Quick status update",
             "payload": {
@@ -2364,6 +2378,55 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(metadata["gmail_body_source"], "snippet")
         self.assertFalse(metadata["gmail_body_safe_for_send"])
         self.assertIn("snippet_only", metadata["gmail_body_safety_flags"])
+
+    def test_gmail_draft_to_alias_is_ignored_and_never_sent_to_imessage(self):
+        conv = self._conversation_row()
+        payload_data = base64.urlsafe_b64encode(b"draft that should never send").decode("utf-8").rstrip("=")
+        full_msg = {
+            "id": "gmail-draft-1",
+            "threadId": "thread-draft-1",
+            "historyId": "h-draft-1",
+            "labelIds": ["DRAFT"],
+            "internalDate": "1700007200000",
+            "snippet": "draft that should never send",
+            "payload": {
+                "mimeType": "text/plain",
+                "headers": [
+                    {"name": "From", "value": "Owner <owner@gmail.com>"},
+                    {"name": "Subject", "value": "Draft"},
+                    {"name": "Message-ID", "value": "<draft-1@example.test>"},
+                ],
+                "body": {"data": payload_data},
+            },
+        }
+        gmail_service = mock.Mock()
+        gmail_service.users.return_value.messages.return_value.get.return_value.execute.return_value = full_msg
+
+        with mock.patch("penguin_connect._list_gmail_messages_to_alias", return_value=[{"id": "gmail-draft-1"}]), mock.patch(
+            "penguin_connect.send_imessage", return_value=(True, None)
+        ) as mock_send:
+            result = penguin_connect._sync_conversation_gmail_to_imessage(
+                self.conn,
+                gmail_service,
+                conv,
+                gmail_email="owner@gmail.com",
+                allowed_senders=["owner@gmail.com"],
+                days=7,
+            )
+
+        self.assertEqual(result["email_to_imessage"], 0)
+        mock_send.assert_not_called()
+        stored = self.conn.execute(
+            """SELECT body_text, metadata
+               FROM penguin_connect_messages
+               WHERE conversation_id = ? AND provider_message_id = ?""",
+            ("amc_test", "gmail:gmail-draft-1"),
+        ).fetchone()
+        metadata = json.loads(stored["metadata"] or "{}")
+        self.assertEqual(stored["body_text"], "draft that should never send")
+        self.assertEqual(metadata["reason"], "gmail_draft_message")
+        self.assertEqual(metadata["delivery_status"], "ignored")
+        self.assertEqual(metadata["labels"], ["DRAFT"])
 
     def test_retry_policy_backoff_and_cap(self):
         with mock.patch.dict(
@@ -2921,6 +2984,7 @@ class PenguinConnectTests(unittest.TestCase):
                 response.execute.side_effect = FakeNotFound()
             else:
                 response.execute.return_value = {
+                    "labelIds": ["SENT"],
                     "payload": {
                         "headers": [
                             {"name": "To", "value": "Owner <owner+am-test@gmail.com>"},
@@ -2953,6 +3017,54 @@ class PenguinConnectTests(unittest.TestCase):
             gmail_message_id="missing",
             gmail_history_id="101",
         )
+
+    def test_list_recent_gmail_alias_activity_ignores_draft_messages(self):
+        self.conn.execute(
+            """INSERT INTO penguin_connect_poll_state
+               (gmail_email, last_gmail_history_id)
+               VALUES (?, ?)""",
+            ("owner@gmail.com", "100"),
+        )
+        conv = self._conversation_row()
+        gmail_service = mock.Mock()
+        gmail_service.users.return_value.history.return_value.list.return_value.execute.return_value = {
+            "historyId": "101",
+            "history": [
+                {
+                    "id": "101",
+                    "messagesAdded": [
+                        {"message": {"id": "draft"}},
+                        {"message": {"id": "sent"}},
+                    ],
+                }
+            ],
+        }
+
+        def get_message(*, userId, id, format, metadataHeaders):
+            response = mock.Mock()
+            response.execute.return_value = {
+                "labelIds": ["DRAFT"] if id == "draft" else ["SENT"],
+                "payload": {
+                    "headers": [
+                        {"name": "To", "value": "Owner <owner+am-test@gmail.com>"},
+                    ]
+                },
+                "internalDate": "1700000000000" if id == "draft" else "1700003600000",
+            }
+            return response
+
+        gmail_service.users.return_value.messages.return_value.get.side_effect = get_message
+
+        recent, meta = penguin_connect._list_recent_gmail_alias_activity(
+            self.conn,
+            gmail_service,
+            "owner@gmail.com",
+            [conv],
+        )
+
+        self.assertEqual(recent["amc_test"]["message_count"], 1)
+        self.assertEqual(recent["amc_test"]["last_message_at"], penguin_connect._iso_from_gmail_internal_date("1700003600000"))
+        self.assertEqual(meta["last_gmail_history_id"], "101")
 
     def test_extract_alias_recipients_ignores_blank_header_slots(self):
         recipients = penguin_connect._extract_alias_recipients(

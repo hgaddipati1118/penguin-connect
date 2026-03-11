@@ -3995,6 +3995,8 @@ def _list_recent_gmail_alias_activity(
                         continue
                     raise
                 headers = _gmail_header_map(metadata.get("payload") or {})
+                if _gmail_to_source_ignore_reason(metadata.get("labelIds") or []):
+                    continue
                 conversation_id = None
                 for recipient in _extract_alias_recipients(headers):
                     conversation_id = alias_lookup.get(recipient)
@@ -4025,7 +4027,7 @@ def _list_recent_gmail_alias_activity(
 def _list_gmail_messages_to_alias(gmail_service, alias_email: str, after_iso: str) -> list[dict[str, Any]]:
     after_dt = _parse_iso(after_iso) or (datetime.now(timezone.utc) - timedelta(days=DEFAULT_BACKFILL_DAYS))
     after_epoch = int(after_dt.timestamp())
-    query = f"to:{alias_email} after:{after_epoch}"
+    query = f"to:{alias_email} after:{after_epoch} in:sent"
 
     result: list[dict[str, Any]] = []
     page_token = None
@@ -4051,6 +4053,24 @@ def _list_gmail_messages_to_alias(gmail_service, alias_email: str, after_iso: st
 def _parse_sender_email(from_header: str) -> str:
     _, addr = email.utils.parseaddr(from_header or "")
     return _normalize_email(addr)
+
+
+def _normalize_gmail_label_ids(label_ids: Optional[list[str]]) -> set[str]:
+    normalized: set[str] = set()
+    for label_id in label_ids or []:
+        candidate = (label_id or "").strip().upper()
+        if candidate:
+            normalized.add(candidate)
+    return normalized
+
+
+def _gmail_to_source_ignore_reason(label_ids: Optional[list[str]]) -> Optional[str]:
+    normalized = _normalize_gmail_label_ids(label_ids)
+    if "DRAFT" in normalized:
+        return "gmail_draft_message"
+    if "SENT" not in normalized:
+        return "gmail_message_not_sent"
+    return None
 
 
 def _maybe_send_gmail_delivery_error_notice(
@@ -4402,19 +4422,28 @@ def _sync_conversation_gmail_to_imessage(
         if exists:
             continue
 
-        full = _gmail_execute(
-            lambda message_id=message_id: gmail_service.users().messages().get(
-                userId="me",
-                id=message_id,
-                format="full",
-            ).execute()
-        )
+        try:
+            full = _gmail_execute(
+                lambda message_id=message_id: gmail_service.users().messages().get(
+                    userId="me",
+                    id=message_id,
+                    format="full",
+                ).execute()
+            )
+        except Exception as exc:
+            if _extract_gmail_error_status(exc) == 404:
+                log_action(
+                    "gmail_alias_message_missing",
+                    gmail_email=gmail_email,
+                    gmail_message_id=message_id,
+                    **_conversation_log_fields(conv),
+                )
+                continue
+            raise
         payload = full.get("payload") or {}
         headers = _gmail_header_map(payload)
         from_header = headers.get("from") or ""
         sender = _parse_sender_email(from_header)
-        sender_allowed = _sender_allowed(sender, gmail_email, allowed_senders)
-        stored_sender_name = _friendly_email_sender_name(from_header, sender, own_sender=sender_allowed)
         message_ts = _iso_from_gmail_internal_date(full.get("internalDate"))
         label_ids = full.get("labelIds") or []
         thread_id = full.get("threadId")
@@ -4425,6 +4454,61 @@ def _sync_conversation_gmail_to_imessage(
         rfc_references = _normalize_rfc_message_id_list(headers.get("references"))
         rfc_references = _append_reference_id(rfc_references, rfc_in_reply_to)
         attachment_meta = _extract_gmail_attachment_metadata(payload)
+        ignore_reason = _gmail_to_source_ignore_reason(label_ids)
+
+        if ignore_reason:
+            log_action(
+                "gmail_to_imessage_message",
+                success=False,
+                ignored=True,
+                reason=ignore_reason,
+                gmail_message_id=message_id,
+                gmail_thread_id=thread_id,
+                attachment_count=len(attachment_meta),
+                sender_email=sender,
+                **_conversation_log_fields(conv),
+            )
+            conn.execute(
+                """INSERT OR IGNORE INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction,
+                    sender_email, sender_name, subject, body_text, message_timestamp,
+                    is_read, metadata, gmail_message_id, gmail_thread_id)
+                   VALUES (?, 'gmail', ?, 'email_to_imessage', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    conv["conversation_id"],
+                    f"gmail:{message_id}",
+                    sender,
+                    _friendly_email_sender_name(from_header, sender, own_sender=False),
+                    headers.get("subject") or "",
+                    (full.get("snippet") or "").strip()[:20000],
+                    message_ts,
+                    0 if "UNREAD" in _normalize_gmail_label_ids(label_ids) else 1,
+                    json.dumps(
+                        {
+                            "ignored": True,
+                            "delivery_status": "ignored",
+                            "reason": ignore_reason,
+                            "gmail_message_id": message_id,
+                            "gmail_thread_id": thread_id,
+                            "rfc_message_id": rfc_message_id,
+                            "rfc_in_reply_to": rfc_in_reply_to,
+                            "rfc_references": rfc_references,
+                            "attachments": attachment_meta,
+                            "labels": label_ids,
+                            "retry_count": 0,
+                            "max_retries": _gmail_to_source_max_retries(),
+                        }
+                    ),
+                    message_id,
+                    thread_id,
+                ),
+            )
+            last_gmail_ts = max(last_gmail_ts or message_ts, message_ts)
+            history_id = full.get("historyId") or history_id
+            continue
+
+        sender_allowed = _sender_allowed(sender, gmail_email, allowed_senders)
+        stored_sender_name = _friendly_email_sender_name(from_header, sender, own_sender=sender_allowed)
 
         if not sender_allowed:
             blocked += 1
