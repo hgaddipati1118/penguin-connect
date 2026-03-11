@@ -1634,6 +1634,7 @@ class PenguinConnectTests(unittest.TestCase):
                 ),
             ),
         )
+        self.conn.commit()
         gmail_service = mock.Mock()
 
         with mock.patch("penguin_connect.send_imessage", return_value=(False, "send_failed")) as mock_send, mock.patch(
@@ -1641,6 +1642,7 @@ class PenguinConnectTests(unittest.TestCase):
             return_value=({"id": "notice-1", "threadId": "thread-failed-1"}, None, None),
         ) as mock_notice:
             retried = penguin_connect._retry_pending_gmail_to_imessage(self.conn, conv, gmail_service=gmail_service)
+        self.conn.rollback()
 
         self.assertEqual(retried, 0)
         mock_send.assert_called_once()
@@ -1702,6 +1704,7 @@ class PenguinConnectTests(unittest.TestCase):
                 ),
             ),
         )
+        self.conn.commit()
         gmail_service = mock.Mock()
 
         with mock.patch("penguin_connect.send_imessage", return_value=(True, None)) as mock_send, mock.patch(
@@ -1709,6 +1712,7 @@ class PenguinConnectTests(unittest.TestCase):
             return_value=({"id": "notice-stale-1", "threadId": "thread-stale-1"}, None, None),
         ) as mock_notice:
             retried = penguin_connect._retry_pending_gmail_to_imessage(self.conn, conv, gmail_service=gmail_service)
+        self.conn.rollback()
 
         self.assertEqual(retried, 0)
         mock_send.assert_not_called()
@@ -1816,6 +1820,7 @@ class PenguinConnectTests(unittest.TestCase):
         }
         gmail_service = mock.Mock()
         gmail_service.users.return_value.messages.return_value.get.return_value.execute.return_value = full_msg
+        self.conn.commit()
 
         with mock.patch("penguin_connect._list_gmail_messages_to_alias", return_value=[{"id": "gmail-stale-sync-1"}]), mock.patch(
             "penguin_connect.send_imessage", return_value=(True, None)
@@ -1833,6 +1838,7 @@ class PenguinConnectTests(unittest.TestCase):
                 allowed_senders=["owner@gmail.com"],
                 days=7,
             )
+        self.conn.rollback()
 
         self.assertEqual(result["email_to_imessage"], 0)
         mock_send.assert_not_called()
@@ -3678,6 +3684,84 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertIsNotNone(row)
         metadata = json.loads(row["metadata"] or "{}")
         self.assertEqual(row["body_text"], "durable send")
+        self.assertEqual(metadata["delivery_status"], "delivered")
+        self.assertEqual(metadata["send_result"], "imessage_ok")
+
+    def test_successful_gmail_retry_row_survives_later_conversation_failure(self):
+        conv = self._conversation_row()
+        self.conn.execute(
+            """INSERT INTO penguin_connect_messages
+               (conversation_id, provider, provider_message_id, gmail_message_id, gmail_thread_id, direction,
+                sender_email, subject, body_text, message_timestamp, is_read, metadata)
+               VALUES (?, 'gmail', 'gmail:retry-durable-1', 'retry-durable-1', 'thread-retry-durable-1',
+                       'email_to_imessage', ?, ?, ?, ?, 1, ?)""",
+            (
+                "amc_test",
+                "owner@gmail.com",
+                "Retry Durable",
+                "retry durable send",
+                "2026-03-10T10:00:00+00:00",
+                json.dumps(
+                    {
+                        "delivery_status": "pending",
+                        "retry_count": 1,
+                        "max_retries": 3,
+                        "gmail_message_id": "retry-durable-1",
+                        "gmail_thread_id": "thread-retry-durable-1",
+                    }
+                ),
+            ),
+        )
+        self.conn.commit()
+        gmail_service = mock.Mock()
+
+        with mock.patch(
+            "penguin_connect.ensure_conversations_discovered",
+            return_value=0,
+        ), mock.patch(
+            "penguin_connect._build_gmail_service",
+            return_value=(gmail_service, None),
+        ), mock.patch(
+            "penguin_connect._refresh_send_as_aliases",
+            return_value=(["owner@gmail.com"], "owner@gmail.com"),
+        ), mock.patch(
+            "penguin_connect._select_conversations_for_sync",
+            return_value=(
+                [conv],
+                {
+                    "discovered_conversations": 1,
+                    "selected_conversations": 1,
+                    "selection_strategy": "test_selection",
+                },
+            ),
+        ), mock.patch(
+            "penguin_connect._sync_conversation_imessage_to_gmail",
+            return_value={"imessage_imported": 0, "gmail_imported": 0},
+        ), mock.patch(
+            "penguin_connect._list_gmail_messages_to_alias",
+            return_value=[],
+        ), mock.patch(
+            "penguin_connect.send_imessage",
+            return_value=(True, None),
+        ) as mock_send, mock.patch(
+            "penguin_connect._repair_split_gmail_messages",
+            side_effect=RuntimeError("after_retry_failure"),
+        ):
+            stats = penguin_connect._sync_conversations_unlocked(self.conn, mode="incremental", days=7)
+
+        self.assertTrue(stats["success"])
+        self.assertEqual(stats["failed_conversations"], 1)
+        self.assertEqual(stats["conversation_errors"][0]["conversation_id"], "amc_test")
+        mock_send.assert_called_once()
+        row = self.conn.execute(
+            """SELECT body_text, metadata
+               FROM penguin_connect_messages
+               WHERE conversation_id = ? AND provider_message_id = ?""",
+            ("amc_test", "gmail:retry-durable-1"),
+        ).fetchone()
+        self.assertIsNotNone(row)
+        metadata = json.loads(row["metadata"] or "{}")
+        self.assertEqual(row["body_text"], "retry durable send")
         self.assertEqual(metadata["delivery_status"], "delivered")
         self.assertEqual(metadata["send_result"], "imessage_ok")
 

@@ -4140,6 +4140,10 @@ def _maybe_send_gmail_delivery_error_notice(
     return metadata
 
 
+def _new_gmail_error_notice_sent(previous_metadata: dict[str, Any], metadata: dict[str, Any]) -> bool:
+    return bool(metadata.get("error_notice_sent_at")) and not bool(previous_metadata.get("error_notice_sent_at"))
+
+
 def _latest_synced_source_message_ts(conn: sqlite3.Connection, conversation_id: str) -> Optional[str]:
     state = conn.execute(
         "SELECT last_imessage_ts FROM penguin_connect_sync_state WHERE conversation_id = ?",
@@ -4231,6 +4235,7 @@ def _retry_pending_gmail_to_imessage(
             metadata = _load_metadata(row["metadata"])
             status = _delivery_status("email_to_imessage", None, metadata)
             if status == "failed_permanent":
+                previous_metadata = dict(metadata)
                 metadata = _maybe_send_gmail_delivery_error_notice(conn, gmail_service, conv, row, metadata)
                 conn.execute(
                     """UPDATE penguin_connect_messages
@@ -4238,11 +4243,14 @@ def _retry_pending_gmail_to_imessage(
                        WHERE conversation_id = ? AND provider_message_id = ?""",
                     (json.dumps(metadata), conv["conversation_id"], row["provider_message_id"]),
                 )
+                if _new_gmail_error_notice_sent(previous_metadata, metadata):
+                    conn.commit()
                 continue
             if status in {"delivered", "blocked", "ignored"}:
                 continue
 
             if not _should_attempt_delivery_retry(metadata, now_dt):
+                previous_metadata = dict(metadata)
                 metadata = _maybe_send_gmail_delivery_error_notice(conn, gmail_service, conv, row, metadata)
                 conn.execute(
                     """UPDATE penguin_connect_messages
@@ -4250,8 +4258,11 @@ def _retry_pending_gmail_to_imessage(
                        WHERE conversation_id = ? AND provider_message_id = ?""",
                     (json.dumps(metadata), conv["conversation_id"], row["provider_message_id"]),
                 )
+                if _new_gmail_error_notice_sent(previous_metadata, metadata):
+                    conn.commit()
                 continue
 
+            previous_metadata = dict(metadata)
             is_stale, metadata = _fail_stale_gmail_to_source_delivery(
                 conn,
                 conv,
@@ -4268,6 +4279,8 @@ def _retry_pending_gmail_to_imessage(
                        WHERE conversation_id = ? AND provider_message_id = ?""",
                     (json.dumps(metadata), conv["conversation_id"], row["provider_message_id"]),
                 )
+                if _new_gmail_error_notice_sent(previous_metadata, metadata):
+                    conn.commit()
                 continue
 
             body_text = (row["body_text"] or "").strip()
@@ -4300,6 +4313,7 @@ def _retry_pending_gmail_to_imessage(
 
             if not body_text and not attachment_paths:
                 if attachment_meta:
+                    previous_metadata = dict(metadata)
                     metadata = _mark_delivery_failure(
                         metadata,
                         "send_result",
@@ -4313,6 +4327,8 @@ def _retry_pending_gmail_to_imessage(
                            WHERE conversation_id = ? AND provider_message_id = ?""",
                         (json.dumps(metadata), conv["conversation_id"], row["provider_message_id"]),
                     )
+                    if _new_gmail_error_notice_sent(previous_metadata, metadata):
+                        conn.commit()
                     log_action(
                         "gmail_to_imessage_retry_result",
                         success=False,
@@ -4356,6 +4372,7 @@ def _retry_pending_gmail_to_imessage(
                    WHERE conversation_id = ? AND provider_message_id = ?""",
                 (json.dumps(metadata), conv["conversation_id"], row["provider_message_id"]),
             )
+            conn.commit()
             log_action(
                 "gmail_to_imessage_retry_result",
                 success=ok,
@@ -4781,6 +4798,7 @@ def _sync_conversation_gmail_to_imessage(
             "body_text": body_text,
             "message_timestamp": message_ts,
         }
+        previous_meta = dict(meta)
         is_stale, meta = _fail_stale_gmail_to_source_delivery(
             conn,
             conv,
@@ -4811,6 +4829,8 @@ def _sync_conversation_gmail_to_imessage(
                     thread_id,
                 ),
             )
+            if _new_gmail_error_notice_sent(previous_meta, meta):
+                conn.commit()
             last_gmail_ts = max(last_gmail_ts or message_ts, message_ts)
             history_id = full.get("historyId") or history_id
             continue
