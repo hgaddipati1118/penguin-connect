@@ -29,7 +29,7 @@ from browse_sources import (
     resolve_apple_messages_chat as _resolve_apple_messages_chat_route,
 )
 from channels import get_channel_adapter
-from db import schedule_initial_full_verify_at
+from db import schedule_next_full_verify_at
 from quoted_content import extract_latest_email_text
 
 DEFAULT_BACKFILL_DAYS = 7
@@ -344,7 +344,7 @@ def _full_verify_due_sort_value(conv: sqlite3.Row) -> datetime:
 
 
 def _conversation_requires_full_verify(conv: sqlite3.Row, *, now_dt: Optional[datetime] = None) -> bool:
-    if not conv["initial_sync_completed_at"] or conv["full_verify_completed_at"]:
+    if not conv["initial_sync_completed_at"]:
         return False
     due_dt = _parse_iso(conv["next_full_verify_at"])
     if not due_dt:
@@ -3306,12 +3306,11 @@ def _mark_conversation_bootstrapped(conn: sqlite3.Connection, conversation_id: s
     ).fetchone()
     next_full_verify_at = None
     if not existing or not existing["initial_sync_completed_at"]:
-        if not existing or not existing["full_verify_completed_at"]:
-            next_full_verify_at = (
-                existing["next_full_verify_at"]
-                if existing and existing["next_full_verify_at"]
-                else schedule_initial_full_verify_at(conversation_id, base_iso=completed_at)
-            )
+        next_full_verify_at = (
+            existing["next_full_verify_at"]
+            if existing and existing["next_full_verify_at"]
+            else schedule_next_full_verify_at(conversation_id, base_iso=completed_at)
+        )
 
     conn.execute(
         """INSERT INTO penguin_connect_sync_state
@@ -3334,19 +3333,17 @@ def _mark_conversation_bootstrapped(conn: sqlite3.Connection, conversation_id: s
 
 def _mark_conversation_full_verify_completed(conn: sqlite3.Connection, conversation_id: str):
     completed_at = _now_iso()
+    next_full_verify_at = schedule_next_full_verify_at(conversation_id, base_iso=completed_at)
     conn.execute(
         """INSERT INTO penguin_connect_sync_state
            (conversation_id, full_verify_completed_at, next_full_verify_at, last_synced_at, updated_at)
-           VALUES (?, ?, NULL, datetime('now'), datetime('now'))
+           VALUES (?, ?, ?, datetime('now'), datetime('now'))
            ON CONFLICT(conversation_id) DO UPDATE SET
-             full_verify_completed_at = COALESCE(
-               penguin_connect_sync_state.full_verify_completed_at,
-               excluded.full_verify_completed_at
-             ),
-             next_full_verify_at = NULL,
+             full_verify_completed_at = excluded.full_verify_completed_at,
+             next_full_verify_at = excluded.next_full_verify_at,
              last_synced_at = datetime('now'),
              updated_at = datetime('now')""",
-        (conversation_id, completed_at),
+        (conversation_id, completed_at, next_full_verify_at),
     )
 
 

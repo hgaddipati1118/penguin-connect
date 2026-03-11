@@ -297,7 +297,7 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(second["initial_sync_completed_at"], first["initial_sync_completed_at"])
         self.assertEqual(second["next_full_verify_at"], first["next_full_verify_at"])
 
-    def test_mark_conversation_full_verify_completed_clears_due_schedule(self):
+    def test_mark_conversation_full_verify_completed_schedules_next_due_time(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
                (conversation_id, initial_sync_completed_at, next_full_verify_at, last_synced_at, updated_at)
@@ -319,7 +319,7 @@ class PenguinConnectTests(unittest.TestCase):
             ("amc_test",),
         ).fetchone()
 
-        self.assertIsNone(state["next_full_verify_at"])
+        self.assertTrue(state["next_full_verify_at"])
         self.assertEqual(state["full_verify_completed_at"], "2026-03-08T11:05:00+00:00")
 
     def test_resolve_display_name_uses_contact_when_chat_name_is_raw_handle(self):
@@ -406,14 +406,15 @@ class PenguinConnectTests(unittest.TestCase):
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
                (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at,
-                next_full_verify_at, last_synced_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
+                next_full_verify_at, full_verify_completed_at, last_synced_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
             (
                 "amc_test",
                 "2026-03-04T10:00:00+00:00",
                 "2026-03-04T10:00:00+00:00",
                 "2026-03-04T10:05:00+00:00",
                 "2026-03-07T10:05:00+00:00",
+                "2026-03-05T10:05:00+00:00",
             ),
         )
         self.conn.execute(
@@ -582,14 +583,15 @@ class PenguinConnectTests(unittest.TestCase):
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
                (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at,
-                next_full_verify_at, last_synced_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
+                next_full_verify_at, full_verify_completed_at, last_synced_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
             (
                 "amc_test",
                 "2026-03-04T10:00:00+00:00",
                 "2026-03-04T10:00:00+00:00",
                 "2026-03-04T10:05:00+00:00",
                 "2026-03-07T10:05:00+00:00",
+                "2026-03-05T10:05:00+00:00",
             ),
         )
 
@@ -3000,7 +3002,7 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(stats["full_verify_completed"], 1)
         self.assertEqual(imessage_calls, [("amc_test", True)])
         self.assertEqual(gmail_calls, [("amc_test", True, "owner@gmail.com", ("owner@gmail.com",))])
-        self.assertIsNone(state["next_full_verify_at"])
+        self.assertTrue(state["next_full_verify_at"])
         self.assertTrue(state["full_verify_completed_at"])
 
     def test_backfill_sync_selects_recent_conversations_oldest_first(self):

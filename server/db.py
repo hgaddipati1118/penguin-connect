@@ -228,7 +228,7 @@ def _initial_full_verify_delay_minutes(conversation_id: str) -> int:
     return MIN_INITIAL_FULL_VERIFY_DELAY_MINUTES + (int.from_bytes(digest[:8], "big") % (span + 1))
 
 
-def schedule_initial_full_verify_at(conversation_id: str, *, base_iso: str | None = None) -> str:
+def schedule_next_full_verify_at(conversation_id: str, *, base_iso: str | None = None) -> str:
     base_dt = _parse_iso_value(base_iso) or datetime.now(timezone.utc)
     due_dt = base_dt + timedelta(minutes=_initial_full_verify_delay_minutes(conversation_id))
     return due_dt.isoformat()
@@ -1048,19 +1048,22 @@ def _backfill_self_authored_sender_names(conn: sqlite3.Connection) -> int:
 
 def _backfill_initial_full_verify_schedule(conn: sqlite3.Connection) -> int:
     rows = conn.execute(
-        """SELECT conversation_id
+        """SELECT conversation_id, initial_sync_completed_at, full_verify_completed_at
            FROM penguin_connect_sync_state
            WHERE initial_sync_completed_at IS NOT NULL
-             AND next_full_verify_at IS NULL
-             AND full_verify_completed_at IS NULL"""
+             AND next_full_verify_at IS NULL"""
     ).fetchall()
     if not rows:
         return 0
 
-    base_iso = datetime.now(timezone.utc).isoformat()
     updated = 0
     for row in rows:
-        due_at = schedule_initial_full_verify_at(row["conversation_id"], base_iso=base_iso)
+        base_iso = (
+            row["full_verify_completed_at"]
+            or row["initial_sync_completed_at"]
+            or datetime.now(timezone.utc).isoformat()
+        )
+        due_at = schedule_next_full_verify_at(row["conversation_id"], base_iso=base_iso)
         conn.execute(
             "UPDATE penguin_connect_sync_state SET next_full_verify_at = ? WHERE conversation_id = ?",
             (due_at, row["conversation_id"]),
