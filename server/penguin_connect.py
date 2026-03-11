@@ -3620,12 +3620,15 @@ def _sync_conversation_imessage_to_gmail(
 
     stored = 0
     gmail_write_pause_seconds = _sync_gmail_write_pause_seconds(mode, verify_all)
-    imported, thread_id = _retry_pending_imessage_to_gmail(
-        conn,
-        gmail_service,
-        conv,
-        gmail_write_pause_seconds=gmail_write_pause_seconds,
-    )
+    imported = 0
+    thread_id = None
+    if not verify_all:
+        imported, thread_id = _retry_pending_imessage_to_gmail(
+            conn,
+            gmail_service,
+            conv,
+            gmail_write_pause_seconds=gmail_write_pause_seconds,
+        )
     last_ts = state["last_imessage_ts"] if state else None
     thread_id = _resolve_canonical_gmail_thread_id(conn, conv["conversation_id"], thread_id or conv["gmail_thread_id"]) or thread_id
     parent_rfc_message_id, reference_chain = _load_conversation_rfc_context(
@@ -3650,15 +3653,27 @@ def _sync_conversation_imessage_to_gmail(
             if not ts or (not text and not msg.get("attachments")):
                 continue
             sender_name, subject_name = _resolve_imessage_sender_and_subject(conn, conv, msg)
+            source_provider = _conversation_source_provider(conv)
+            desired_subject = _provider_subject(source_provider, subject_name)
 
             provider_id = _provider_message_id_for_imessage(msg)
             existing = conn.execute(
-                """SELECT gmail_message_id, gmail_thread_id, metadata
+                """SELECT gmail_message_id, gmail_thread_id, sender_name, subject, metadata
                    FROM penguin_connect_messages
                    WHERE conversation_id = ? AND provider_message_id = ?
                    LIMIT 1""",
                 (conv["conversation_id"], provider_id),
             ).fetchone()
+            if existing and verify_all:
+                stored_sender_name = (existing["sender_name"] or "").strip()
+                stored_subject = (existing["subject"] or "").strip()
+                if stored_sender_name != sender_name or stored_subject != desired_subject:
+                    conn.execute(
+                        """UPDATE penguin_connect_messages
+                           SET sender_name = ?, subject = ?
+                           WHERE conversation_id = ? AND provider_message_id = ?""",
+                        (sender_name, desired_subject, conv["conversation_id"], provider_id),
+                    )
             if existing and existing["gmail_message_id"]:
                 thread_id = existing["gmail_thread_id"] or thread_id
                 last_ts = max(last_ts or ts, ts)
@@ -3669,7 +3684,6 @@ def _sync_conversation_imessage_to_gmail(
                 continue
 
             is_from_me = 1 if msg.get("is_from_me") else 0
-            source_provider = _conversation_source_provider(conv)
             unread = False
             if not is_from_me:
                 if unread_count is None:
@@ -3704,7 +3718,7 @@ def _sync_conversation_imessage_to_gmail(
                     provider_id,
                     conv["alias_email"],
                     sender_name,
-                    _provider_subject(source_provider, subject_name),
+                    desired_subject,
                     text[:20000],
                     ts,
                     0 if unread else 1,
@@ -3797,6 +3811,24 @@ def _sync_conversation_imessage_to_gmail(
         if not batch_last_ts or batch_last_ts == next_since:
             break
         next_since = batch_last_ts
+
+    if verify_all:
+        retried_imported, retried_thread_id = _retry_pending_imessage_to_gmail(
+            conn,
+            gmail_service,
+            conv,
+            gmail_write_pause_seconds=gmail_write_pause_seconds,
+        )
+        imported += retried_imported
+        thread_id = (
+            _resolve_canonical_gmail_thread_id(
+                conn,
+                conv["conversation_id"],
+                retried_thread_id or thread_id or conv["gmail_thread_id"],
+            )
+            or retried_thread_id
+            or thread_id
+        )
 
     if not saw_messages:
         if thread_id and thread_id != conv["gmail_thread_id"]:

@@ -1284,6 +1284,67 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(parsed["From"], '"Kam (Shine Capital)" <owner+am-test@gmail.com>')
         self.assertEqual(parsed["Subject"], "iMessage · Kam (Shine Capital)")
 
+    def test_full_verify_refreshes_existing_imessage_contact_metadata(self):
+        self.conn.execute(
+            "UPDATE penguin_connect_conversations SET display_name = ?, chat_type = 'dm', participants = ? WHERE conversation_id = ?",
+            ("+17144741613", json.dumps(["+17144741613"]), "amc_test"),
+        )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_messages
+               (conversation_id, provider, provider_message_id, gmail_message_id, gmail_thread_id, direction,
+                sender_email, sender_name, subject, body_text, message_timestamp, is_read, metadata)
+               VALUES (?, 'imessage', ?, ?, ?, 'imessage_to_email', ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "amc_test",
+                "imessage:contact-1",
+                "gm-contact-1",
+                "th-contact-1",
+                "owner+am-test@gmail.com",
+                "+17144741613",
+                "iMessage · +17144741613",
+                "hello from Kam",
+                "2026-03-04T09:00:00+00:00",
+                1,
+                json.dumps({"native_message_id": "contact-1", "is_from_me": False}),
+            ),
+        )
+        self.conn.execute(
+            """INSERT INTO contacts (first_name, last_name, organization, phone, phone_normalized, email, source_db)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            ("Kam", "(Shine Capital)", "", "+17144741613", "+17144741613", None, "test"),
+        )
+        conv = self._conversation_row()
+        gmail_service = mock.Mock()
+        msg = {
+            "text": "hello from Kam",
+            "timestamp": "2026-03-04T09:00:00+00:00",
+            "is_from_me": False,
+            "handle": "+17144741613",
+            "attachments": [],
+            "native_message_id": "contact-1",
+        }
+
+        with mock.patch("penguin_connect.fetch_imessage_messages", return_value=[msg]), mock.patch(
+            "penguin_connect._get_imessage_unread_count", return_value=None
+        ):
+            penguin_connect._sync_conversation_imessage_to_gmail(
+                self.conn,
+                gmail_service,
+                conv,
+                mode="incremental",
+                days=7,
+                verify_all=True,
+            )
+
+        row = self.conn.execute(
+            "SELECT sender_name, subject, gmail_message_id FROM penguin_connect_messages WHERE conversation_id = ? AND provider_message_id = ?",
+            ("amc_test", "imessage:contact-1"),
+        ).fetchone()
+        self.assertEqual(row["sender_name"], "Kam (Shine Capital)")
+        self.assertEqual(row["subject"], "iMessage · Kam (Shine Capital)")
+        self.assertEqual(row["gmail_message_id"], "gm-contact-1")
+        gmail_service.users.return_value.messages.return_value.import_.assert_not_called()
+
     def test_imessage_sync_uses_group_title_for_group_subject(self):
         conv = self._conversation_row()
         gmail_service = mock.Mock()

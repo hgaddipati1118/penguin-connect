@@ -147,6 +147,8 @@ On server start, PenguinConnect also launches startup catch-up in the background
 
 Once a conversation completes its first bootstrap, PenguinConnect schedules recurring randomized full verifications 3 to 8 days apart so “verify all” work is spread out instead of landing in one burst. On startup, PenguinConnect also repairs missing recurring verify schedules for already-bootstrapped conversations before sync selection runs.
 
+Those recurring full verifications also refresh contact-derived display names, sender names, and subjects in local bridge state when your contacts have changed, without reimporting already-synced Gmail messages.
+
 ## Polling and Auto-Start
 
 - default polling: `PENGUIN_CONNECT_POLL_SECONDS=30`
