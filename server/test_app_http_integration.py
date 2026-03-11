@@ -155,6 +155,50 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(body["messages"][0]["provider_message_id"], "imsg-latest")
         self.assertEqual(body["messages"][0]["body_text"], "Latest message")
 
+    def test_messages_endpoint_uses_header_display_name_for_own_gmail_messages(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction, sender_email, sender_name, subject,
+                    body_text, message_timestamp, is_read, metadata)
+                   VALUES (?, 'gmail', 'gmail-self', 'email_to_imessage', ?, ?, ?, ?, ?, 1, ?)""",
+                (
+                    "amc_test",
+                    "owner@gmail.com",
+                    "Owner <owner@gmail.com>",
+                    "Re: Taylor",
+                    "From me in Gmail",
+                    "2026-03-11T10:00:00+00:00",
+                    "{}",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with TestClient(app_module.app) as client:
+            response = client.get("/penguin-connect/conversations/amc_test/messages", params={"limit": 1})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["messages"][0]["provider_message_id"], "gmail-self")
+        self.assertEqual(body["messages"][0]["sender_name"], "Owner")
+
+    def test_messages_endpoint_uses_me_for_manual_messages_without_a_display_name(self):
+        with mock.patch("penguin_connect.send_imessage", return_value=(True, None)), TestClient(app_module.app) as client:
+            send_response = client.post(
+                "/penguin-connect/conversations/amc_test/send",
+                json={"sender_email": "owner@gmail.com", "message": "Hello from Gmail"},
+            )
+            response = client.get("/penguin-connect/conversations/amc_test/messages", params={"limit": 1})
+
+        self.assertEqual(send_response.status_code, 200)
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["messages"][0]["direction"], "manual_to_imessage")
+        self.assertEqual(body["messages"][0]["sender_name"], "Me")
+
     def test_alias_endpoint_returns_not_found_for_unknown_conversation(self):
         with TestClient(app_module.app) as client:
             response = client.get("/penguin-connect/conversations/amc-missing/alias")

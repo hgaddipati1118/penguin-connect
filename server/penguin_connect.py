@@ -2492,11 +2492,28 @@ def get_conversation_alias(conn: sqlite3.Connection, conversation_id: str) -> di
 
 def get_conversation_messages(conn: sqlite3.Connection, conversation_id: str, limit: int = 200) -> dict[str, Any]:
     conv = conn.execute(
-        "SELECT conversation_id, source_provider, display_name, status FROM penguin_connect_conversations WHERE conversation_id = ?",
+        """SELECT conversation_id, gmail_email, source_provider, display_name, status
+           FROM penguin_connect_conversations
+           WHERE conversation_id = ?""",
         (conversation_id,),
     ).fetchone()
     if not conv:
         return {"found": False, "messages": []}
+
+    account = conn.execute(
+        "SELECT send_as_aliases FROM penguin_connect_accounts WHERE gmail_email = ? LIMIT 1",
+        (conv["gmail_email"],),
+    ).fetchone()
+    own_sender_emails = {_normalize_email(conv["gmail_email"])}
+    if account:
+        try:
+            aliases = json.loads(account["send_as_aliases"] or "[]")
+        except Exception:
+            aliases = []
+        for alias in aliases or []:
+            normalized = _normalize_email(alias) if isinstance(alias, str) else ""
+            if normalized:
+                own_sender_emails.add(normalized)
 
     rows = conn.execute(
         """SELECT provider, provider_message_id, direction, sender_email, sender_name,
@@ -2516,13 +2533,29 @@ def get_conversation_messages(conn: sqlite3.Connection, conversation_id: str, li
             metadata = json.loads(row["metadata"] or "{}")
         except Exception:
             pass
+        is_own_imessage_message = bool(metadata.get("is_from_me"))
+        is_own_gmail_message = (
+            row["direction"] in {"email_to_imessage", "manual_to_imessage"}
+            and _normalize_email(row["sender_email"]) in own_sender_emails
+        )
+        sender_name = row["sender_name"]
+        if is_own_imessage_message:
+            sender_name = "Me"
+        elif is_own_gmail_message:
+            raw_sender_name = (sender_name or "").strip()
+            parsed_name, _parsed_addr = email.utils.parseaddr(raw_sender_name)
+            sender_name = (parsed_name or "").strip()
+            if not sender_name and raw_sender_name and "@" not in raw_sender_name and "<" not in raw_sender_name:
+                sender_name = raw_sender_name
+            if not sender_name:
+                sender_name = "Me"
         messages.append(
             {
                 "provider": row["provider"],
                 "provider_message_id": row["provider_message_id"],
                 "direction": row["direction"],
                 "sender_email": row["sender_email"],
-                "sender_name": row["sender_name"],
+                "sender_name": sender_name,
                 "subject": row["subject"],
                 "body_text": row["body_text"],
                 "message_timestamp": row["message_timestamp"],

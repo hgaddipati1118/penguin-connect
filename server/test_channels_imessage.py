@@ -1,5 +1,6 @@
 import unittest
 from unittest import mock
+import sqlite3
 
 from channels import get_channel_adapter
 
@@ -67,6 +68,28 @@ class IMessageChannelAdapterTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(err, "unsafe_chat_route_ambiguous")
         mock_run.assert_not_called()
+
+    def test_resolve_sender_and_subject_uses_me_for_self_authored_messages(self):
+        adapter = get_channel_adapter("imessage")
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("CREATE TABLE conversations (display_name TEXT, chat_type TEXT)")
+            conn.execute("INSERT INTO conversations(display_name, chat_type) VALUES (?, ?)", ("Taylor", "dm"))
+            conv = conn.execute("SELECT display_name, chat_type FROM conversations LIMIT 1").fetchone()
+
+            sender_name, subject_name = adapter.resolve_sender_and_subject(
+                conn,
+                conv,
+                {"is_from_me": True, "handle": "+15125550123", "push_name": "Taylor"},
+                lookup_contact_name=lambda _conn, _handle: "Taylor",
+                looks_like_unresolved_handle=lambda value: not any(ch.isalpha() for ch in value or ""),
+            )
+        finally:
+            conn.close()
+
+        self.assertEqual(sender_name, "Me")
+        self.assertEqual(subject_name, "Taylor")
 
 
 if __name__ == "__main__":

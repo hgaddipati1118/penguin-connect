@@ -107,10 +107,13 @@ class IMessageChannelAdapter:
     ) -> tuple[str, str]:
         handle = (msg.get("handle") or "").strip()
         contact_name = lookup_contact_name(conn, handle)
-        push_name = (msg.get("push_name") or "").strip()
-        if push_name and looks_like_unresolved_handle(push_name):
-            push_name = ""
-        sender_name = contact_name or push_name or handle or conv["display_name"] or "iMessage"
+        if msg.get("is_from_me"):
+            sender_name = "Me"
+        else:
+            push_name = (msg.get("push_name") or "").strip()
+            if push_name and looks_like_unresolved_handle(push_name):
+                push_name = ""
+            sender_name = contact_name or push_name or handle or conv["display_name"] or "iMessage"
 
         display_name = (conv["display_name"] or "").strip()
         if display_name and not looks_like_unresolved_handle(display_name):
