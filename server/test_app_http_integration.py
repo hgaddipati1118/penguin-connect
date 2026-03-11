@@ -199,6 +199,36 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(body["messages"][0]["direction"], "manual_to_imessage")
         self.assertEqual(body["messages"][0]["sender_name"], "Me")
 
+    def test_messages_endpoint_uses_me_for_historical_self_authored_imessage_rows(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction, sender_email, sender_name, subject,
+                    body_text, message_timestamp, is_read, metadata)
+                   VALUES (?, 'imessage', 'imsg-self', 'imessage_to_email', ?, ?, ?, ?, ?, 1, ?)""",
+                (
+                    "amc_test",
+                    "owner+am-test@gmail.com",
+                    "Taylor",
+                    "iMessage · Taylor",
+                    "Sent from Messages",
+                    "2026-03-11T11:00:00+00:00",
+                    '{"is_from_me": true}',
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with TestClient(app_module.app) as client:
+            response = client.get("/penguin-connect/conversations/amc_test/messages", params={"limit": 1})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["messages"][0]["provider_message_id"], "imsg-self")
+        self.assertEqual(body["messages"][0]["sender_name"], "Me")
+
     def test_alias_endpoint_returns_not_found_for_unknown_conversation(self):
         with TestClient(app_module.app) as client:
             response = client.get("/penguin-connect/conversations/amc-missing/alias")

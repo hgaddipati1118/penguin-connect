@@ -299,6 +299,54 @@ class SyncIntegrationTests(unittest.TestCase):
             },
         )
 
+    def test_init_db_backfills_self_authored_imessage_sender_names(self):
+        conn = db.get_connection()
+        conn.execute(
+            """INSERT INTO penguin_connect_conversations
+               (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+                alias_email, status)
+               VALUES (?, 'imessage', ?, ?, ?, 'dm', ?, ?, 'active')""",
+            (
+                "owner@gmail.com",
+                "amc_imessage_sender_backfill",
+                "iMessage;+;chat-self",
+                "Taylor",
+                '["+15127436385"]',
+                "owner+am-imessage@gmail.com",
+            ),
+        )
+        conn.execute(
+            """INSERT INTO penguin_connect_messages
+               (conversation_id, provider, provider_message_id, direction, sender_email, sender_name, body_text,
+                message_timestamp, is_read, metadata)
+               VALUES (?, 'imessage', 'imessage:self', 'imessage_to_email', ?, ?, ?, ?, 1, ?)""",
+            (
+                "amc_imessage_sender_backfill",
+                "owner+am-imessage@gmail.com",
+                "Taylor",
+                "Sent from Messages",
+                "2026-03-11T11:00:00+00:00",
+                json.dumps({"is_from_me": True}),
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        db.init_db()
+
+        migrated_conn = db.get_connection()
+        try:
+            row = migrated_conn.execute(
+                """SELECT sender_name
+                   FROM penguin_connect_messages
+                   WHERE provider_message_id = 'imessage:self'"""
+            ).fetchone()
+        finally:
+            migrated_conn.close()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row["sender_name"], "Me")
+
     def test_init_db_backfills_historical_gmail_delivery_bodies_when_parser_improves(self):
         conn = db.get_connection()
         conn.execute(
