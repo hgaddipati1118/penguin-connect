@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import email.utils
 import hashlib
 import json
 import os
@@ -960,6 +961,74 @@ def _backfill_email_to_imessage_delivery_bodies(conn: sqlite3.Connection) -> int
     return updated
 
 
+def _allowed_sender_emails(gmail_email: str | None, send_as_aliases_raw: str | None) -> set[str]:
+    allowed = {_normalize_email(gmail_email)}
+    try:
+        aliases = json.loads(send_as_aliases_raw or "[]")
+    except Exception:
+        aliases = []
+    for alias in aliases or []:
+        if not isinstance(alias, str):
+            continue
+        normalized = _normalize_email(alias)
+        if normalized:
+            allowed.add(normalized)
+    return allowed
+
+
+def _friendly_email_sender_name(sender_name: str | None, sender_email: str | None, *, own_sender: bool) -> str:
+    raw_sender_name = (sender_name or "").strip()
+    parsed_name, parsed_addr = email.utils.parseaddr(raw_sender_name)
+    display_name = (parsed_name or "").strip()
+    if display_name:
+        return display_name
+    if raw_sender_name and "@" not in raw_sender_name and "<" not in raw_sender_name and ">" not in raw_sender_name:
+        return raw_sender_name
+    normalized_sender = _normalize_email(sender_email or parsed_addr)
+    if own_sender:
+        return "Me"
+    if normalized_sender:
+        return normalized_sender
+    return raw_sender_name
+
+
+def _backfill_self_authored_sender_names(conn: sqlite3.Connection) -> int:
+    rows = conn.execute(
+        """SELECT m.id, m.direction, m.sender_email, m.sender_name, m.metadata,
+                  c.gmail_email, a.send_as_aliases
+           FROM penguin_connect_messages m
+           JOIN penguin_connect_conversations c ON c.conversation_id = m.conversation_id
+           LEFT JOIN penguin_connect_accounts a ON a.gmail_email = c.gmail_email
+           WHERE m.direction IN ('email_to_imessage', 'manual_to_imessage', 'imessage_to_email')"""
+    ).fetchall()
+
+    updated = 0
+    for row in rows:
+        metadata = _load_message_metadata(row["metadata"])
+        target_sender_name = None
+
+        if metadata.get("is_from_me"):
+            target_sender_name = "Me"
+        else:
+            own_sender_emails = _allowed_sender_emails(row["gmail_email"], row["send_as_aliases"])
+            if _normalize_email(row["sender_email"]) in own_sender_emails:
+                target_sender_name = _friendly_email_sender_name(
+                    row["sender_name"],
+                    row["sender_email"],
+                    own_sender=True,
+                )
+
+        if not target_sender_name:
+            continue
+        if (row["sender_name"] or "").strip() == target_sender_name:
+            continue
+
+        conn.execute("UPDATE penguin_connect_messages SET sender_name = ? WHERE id = ?", (target_sender_name, row["id"]))
+        updated += 1
+
+    return updated
+
+
 def ensure_data_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1051,6 +1120,7 @@ def init_db() -> None:
         "CREATE INDEX IF NOT EXISTS idx_penguin_connect_jobs_finished ON penguin_connect_jobs(status, finished_at)"
     )
     _backfill_email_to_imessage_delivery_bodies(conn)
+    _backfill_self_authored_sender_names(conn)
     conn.commit()
     conn.close()
 

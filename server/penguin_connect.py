@@ -2061,10 +2061,35 @@ def _refresh_send_as_aliases(conn: sqlite3.Connection, gmail_service, gmail_emai
     return aliases, primary
 
 
+def _allowed_sender_emails(gmail_email: str, send_as_aliases: list[str]) -> set[str]:
+    allowed = {_normalize_email(gmail_email)}
+    for alias in send_as_aliases or []:
+        if not isinstance(alias, str):
+            continue
+        normalized = _normalize_email(alias)
+        if normalized:
+            allowed.add(normalized)
+    return allowed
+
+
 def _sender_allowed(sender_email: str, gmail_email: str, send_as_aliases: list[str]) -> bool:
-    sender = _normalize_email(sender_email)
-    allowed = {_normalize_email(gmail_email)} | {_normalize_email(x) for x in (send_as_aliases or [])}
-    return sender in allowed
+    return _normalize_email(sender_email) in _allowed_sender_emails(gmail_email, send_as_aliases)
+
+
+def _friendly_email_sender_name(sender_name: Optional[str], sender_email: Optional[str], *, own_sender: bool) -> str:
+    raw_sender_name = (sender_name or "").strip()
+    parsed_name, parsed_addr = email.utils.parseaddr(raw_sender_name)
+    display_name = (parsed_name or "").strip()
+    if display_name:
+        return display_name
+    if raw_sender_name and "@" not in raw_sender_name and "<" not in raw_sender_name and ">" not in raw_sender_name:
+        return raw_sender_name
+    normalized_sender = _normalize_email(sender_email or parsed_addr)
+    if own_sender:
+        return "Me"
+    if normalized_sender:
+        return normalized_sender
+    return raw_sender_name
 
 
 def _participant_display_name(conn: sqlite3.Connection, participants: list[str]) -> str:
@@ -2504,16 +2529,13 @@ def get_conversation_messages(conn: sqlite3.Connection, conversation_id: str, li
         "SELECT send_as_aliases FROM penguin_connect_accounts WHERE gmail_email = ? LIMIT 1",
         (conv["gmail_email"],),
     ).fetchone()
-    own_sender_emails = {_normalize_email(conv["gmail_email"])}
+    own_sender_emails = _allowed_sender_emails(conv["gmail_email"], [])
     if account:
         try:
             aliases = json.loads(account["send_as_aliases"] or "[]")
         except Exception:
             aliases = []
-        for alias in aliases or []:
-            normalized = _normalize_email(alias) if isinstance(alias, str) else ""
-            if normalized:
-                own_sender_emails.add(normalized)
+        own_sender_emails = _allowed_sender_emails(conv["gmail_email"], aliases)
 
     rows = conn.execute(
         """SELECT provider, provider_message_id, direction, sender_email, sender_name,
@@ -2542,13 +2564,7 @@ def get_conversation_messages(conn: sqlite3.Connection, conversation_id: str, li
         if is_own_imessage_message:
             sender_name = "Me"
         elif is_own_gmail_message:
-            raw_sender_name = (sender_name or "").strip()
-            parsed_name, _parsed_addr = email.utils.parseaddr(raw_sender_name)
-            sender_name = (parsed_name or "").strip()
-            if not sender_name and raw_sender_name and "@" not in raw_sender_name and "<" not in raw_sender_name:
-                sender_name = raw_sender_name
-            if not sender_name:
-                sender_name = "Me"
+            sender_name = _friendly_email_sender_name(sender_name, row["sender_email"], own_sender=True)
         messages.append(
             {
                 "provider": row["provider"],
@@ -4211,6 +4227,8 @@ def _sync_conversation_gmail_to_imessage(
         headers = _gmail_header_map(payload)
         from_header = headers.get("from") or ""
         sender = _parse_sender_email(from_header)
+        sender_allowed = _sender_allowed(sender, gmail_email, allowed_senders)
+        stored_sender_name = _friendly_email_sender_name(from_header, sender, own_sender=sender_allowed)
         message_ts = _iso_from_gmail_internal_date(full.get("internalDate"))
         label_ids = full.get("labelIds") or []
         thread_id = full.get("threadId")
@@ -4222,7 +4240,7 @@ def _sync_conversation_gmail_to_imessage(
         rfc_references = _append_reference_id(rfc_references, rfc_in_reply_to)
         attachment_meta = _extract_gmail_attachment_metadata(payload)
 
-        if not _sender_allowed(sender, gmail_email, allowed_senders):
+        if not sender_allowed:
             blocked += 1
             log_action(
                 "gmail_to_imessage_message",
@@ -4244,7 +4262,7 @@ def _sync_conversation_gmail_to_imessage(
                     conv["conversation_id"],
                     f"gmail:{message_id}",
                     sender,
-                    from_header,
+                    stored_sender_name,
                     headers.get("subject") or "",
                     "",
                     message_ts,
@@ -4298,7 +4316,7 @@ def _sync_conversation_gmail_to_imessage(
                     conv["conversation_id"],
                     f"gmail:{message_id}",
                     sender,
-                    from_header,
+                    stored_sender_name,
                     headers.get("subject") or "",
                     (full.get("snippet") or "").strip()[:20000],
                     message_ts,
@@ -4368,7 +4386,7 @@ def _sync_conversation_gmail_to_imessage(
                     conv["conversation_id"],
                     f"gmail:{message_id}",
                     sender,
-                    from_header,
+                    stored_sender_name,
                     headers.get("subject") or "",
                     body_text[:20000],
                     message_ts,
@@ -4453,7 +4471,7 @@ def _sync_conversation_gmail_to_imessage(
                     conv["conversation_id"],
                     f"gmail:{message_id}",
                     sender,
-                    from_header,
+                    stored_sender_name,
                     headers.get("subject") or "",
                     "",
                     message_ts,
@@ -4504,7 +4522,7 @@ def _sync_conversation_gmail_to_imessage(
                     conv["conversation_id"],
                     provider_message_id,
                     sender,
-                    from_header,
+                    stored_sender_name,
                     headers.get("subject") or "",
                     body_text[:20000],
                     message_ts,
@@ -4595,7 +4613,7 @@ def _sync_conversation_gmail_to_imessage(
                 conv["conversation_id"],
                 provider_message_id,
                 sender,
-                from_header,
+                stored_sender_name,
                 headers.get("subject") or "",
                 body_text[:20000],
                 message_ts,
@@ -5096,6 +5114,7 @@ def send_manual_message(
 
     source_provider = _conversation_source_provider(conv)
     provider_id = f"manual:{hashlib.sha1(f'{sender_email}:{_now_iso()}:{body_text}'.encode('utf-8')).hexdigest()}"
+    sender_display_name = _friendly_email_sender_name(sender_email, sender_email, own_sender=True)
     ok, err = _send_to_source_conversation(
         conv,
         body_text,
@@ -5127,7 +5146,7 @@ def send_manual_message(
             conversation_id,
             provider_id,
             _normalize_email(sender_email),
-            sender_email,
+            sender_display_name,
             _provider_subject(source_provider, conv["display_name"] or "Conversation"),
             body_text[:20000],
             _now_iso(),

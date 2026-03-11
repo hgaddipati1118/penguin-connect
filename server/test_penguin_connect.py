@@ -1423,9 +1423,10 @@ class PenguinConnectTests(unittest.TestCase):
             )
 
         row = self.conn.execute(
-            "SELECT metadata FROM penguin_connect_messages WHERE conversation_id = ? AND provider_message_id = ?",
+            "SELECT sender_name, metadata FROM penguin_connect_messages WHERE conversation_id = ? AND provider_message_id = ?",
             ("amc_test", "gmail:gmail-rfc-1"),
         ).fetchone()
+        self.assertEqual(row["sender_name"], "Owner")
         metadata = json.loads(row["metadata"] or "{}")
         self.assertEqual(metadata.get("rfc_message_id"), "<mail-1@example.test>")
         self.assertEqual(metadata.get("rfc_in_reply_to"), "<mail-0@example.test>")

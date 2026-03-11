@@ -241,7 +241,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         conn = self._get_connection()
         try:
             row = conn.execute(
-                """SELECT sender_email, body_text, direction
+                """SELECT sender_email, sender_name, body_text, direction
                    FROM penguin_connect_messages
                    WHERE direction = 'manual_to_imessage'"""
             ).fetchone()
@@ -250,6 +250,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
 
         self.assertIsNotNone(row)
         self.assertEqual(row["sender_email"], "owner@gmail.com")
+        self.assertEqual(row["sender_name"], "Me")
         self.assertEqual(row["body_text"], "Hello from Gmail")
         self.assertEqual(row["direction"], "manual_to_imessage")
 
