@@ -1020,6 +1020,40 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(parsed["From"], '"Kam (Shine Capital)" <owner+am-test@gmail.com>')
         self.assertEqual(parsed["Subject"], "iMessage · Kam (Shine Capital)")
 
+    def test_imessage_sync_uses_group_title_for_group_subject(self):
+        conv = self._conversation_row()
+        gmail_service = mock.Mock()
+        gmail_service.users.return_value.messages.return_value.import_.return_value.execute.return_value = {
+            "id": "gm-group-1",
+            "threadId": "th-group-1",
+        }
+        msg = {
+            "text": "hello group",
+            "timestamp": "2026-03-04T09:00:00+00:00",
+            "is_from_me": False,
+            "handle": "+14155550111",
+            "attachments": [],
+            "native_message_id": "group-1",
+        }
+
+        with mock.patch("penguin_connect.fetch_imessage_messages", return_value=[msg]), mock.patch(
+            "penguin_connect._get_imessage_unread_count", return_value=None
+        ):
+            penguin_connect._sync_conversation_imessage_to_gmail(
+                self.conn, gmail_service, conv, mode="incremental", days=7
+            )
+
+        row = self.conn.execute(
+            "SELECT sender_name, subject FROM penguin_connect_messages WHERE conversation_id = ? AND provider_message_id = ?",
+            ("amc_test", "imessage:group-1"),
+        ).fetchone()
+        self.assertEqual(row["sender_name"], "+14155550111")
+        self.assertEqual(row["subject"], "iMessage · Family Group")
+
+        import_body = gmail_service.users.return_value.messages.return_value.import_.call_args.kwargs["body"]
+        parsed = BytesParser(policy=policy.default).parsebytes(base64.urlsafe_b64decode(import_body["raw"]))
+        self.assertEqual(parsed["Subject"], "iMessage · Family Group")
+
     def test_resolve_imessage_sender_prefers_contact_over_unresolved_push_name(self):
         self.conn.execute(
             """INSERT INTO contacts (first_name, last_name, organization, phone, phone_normalized, email, source_db)
