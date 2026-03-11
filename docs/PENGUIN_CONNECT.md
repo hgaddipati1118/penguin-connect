@@ -145,6 +145,8 @@ curl -s -X POST http://127.0.0.1:8888/penguin-connect/conversations/sync \
 
 On server start, PenguinConnect also launches startup catch-up in the background and, by default, drains all pending bootstrap conversations in that run. Set `PENGUIN_CONNECT_STARTUP_CATCHUP_CONVERSATIONS_PER_RUN` if you need to cap that startup batch.
 
+Once a conversation completes its first bootstrap, PenguinConnect schedules one randomized full verification 3 to 8 days later so “verify all” work is spread out instead of landing in one burst.
+
 ## Polling and Auto-Start
 
 - default polling: `PENGUIN_CONNECT_POLL_SECONDS=30`

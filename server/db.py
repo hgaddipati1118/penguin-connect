@@ -20,6 +20,8 @@ APPLE_MESSAGES_DB = Path(
     os.environ.get("PENGUIN_CONNECT_APPLE_MESSAGES_DB_PATH", str(Path.home() / "Library" / "Messages" / "chat.db"))
 ).expanduser()
 APPLE_MESSAGES_EPOCH = datetime(2001, 1, 1, tzinfo=timezone.utc)
+MIN_INITIAL_FULL_VERIFY_DELAY_MINUTES = 3 * 24 * 60
+MAX_INITIAL_FULL_VERIFY_DELAY_MINUTES = 8 * 24 * 60
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS contacts (
@@ -105,6 +107,8 @@ CREATE TABLE IF NOT EXISTS penguin_connect_sync_state (
     last_message_ts TEXT,
     last_gmail_history_id TEXT,
     initial_sync_completed_at TEXT,
+    next_full_verify_at TEXT,
+    full_verify_completed_at TEXT,
     last_synced_at TEXT,
     updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -215,6 +219,19 @@ def _merge_history_ids(*values: str | None) -> str | None:
         except Exception:
             return present[0]
     return max(numeric, key=lambda item: item[0])[1]
+
+
+def _initial_full_verify_delay_minutes(conversation_id: str) -> int:
+    normalized = (conversation_id or "").strip() or "conversation"
+    digest = hashlib.sha256(normalized.encode("utf-8")).digest()
+    span = max(0, MAX_INITIAL_FULL_VERIFY_DELAY_MINUTES - MIN_INITIAL_FULL_VERIFY_DELAY_MINUTES)
+    return MIN_INITIAL_FULL_VERIFY_DELAY_MINUTES + (int.from_bytes(digest[:8], "big") % (span + 1))
+
+
+def schedule_initial_full_verify_at(conversation_id: str, *, base_iso: str | None = None) -> str:
+    base_dt = _parse_iso_value(base_iso) or datetime.now(timezone.utc)
+    due_dt = base_dt + timedelta(minutes=_initial_full_verify_delay_minutes(conversation_id))
+    return due_dt.isoformat()
 
 
 def _message_delivery_status(metadata: dict) -> str:
@@ -1029,6 +1046,29 @@ def _backfill_self_authored_sender_names(conn: sqlite3.Connection) -> int:
     return updated
 
 
+def _backfill_initial_full_verify_schedule(conn: sqlite3.Connection) -> int:
+    rows = conn.execute(
+        """SELECT conversation_id
+           FROM penguin_connect_sync_state
+           WHERE initial_sync_completed_at IS NOT NULL
+             AND next_full_verify_at IS NULL
+             AND full_verify_completed_at IS NULL"""
+    ).fetchall()
+    if not rows:
+        return 0
+
+    base_iso = datetime.now(timezone.utc).isoformat()
+    updated = 0
+    for row in rows:
+        due_at = schedule_initial_full_verify_at(row["conversation_id"], base_iso=base_iso)
+        conn.execute(
+            "UPDATE penguin_connect_sync_state SET next_full_verify_at = ? WHERE conversation_id = ?",
+            (due_at, row["conversation_id"]),
+        )
+        updated += 1
+    return updated
+
+
 def ensure_data_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1094,6 +1134,10 @@ def init_db() -> None:
         conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN initial_sync_completed_at TEXT")
     if "last_message_ts" not in sync_columns:
         conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN last_message_ts TEXT")
+    if "next_full_verify_at" not in sync_columns:
+        conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN next_full_verify_at TEXT")
+    if "full_verify_completed_at" not in sync_columns:
+        conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN full_verify_completed_at TEXT")
     conn.execute(
         """UPDATE penguin_connect_sync_state
            SET initial_sync_completed_at = COALESCE(initial_sync_completed_at, last_synced_at, updated_at)
@@ -1114,6 +1158,10 @@ def init_db() -> None:
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_penguin_connect_sync_last_message ON penguin_connect_sync_state(last_message_ts)")
     conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_penguin_connect_sync_next_full_verify
+           ON penguin_connect_sync_state(next_full_verify_at, full_verify_completed_at)"""
+    )
+    conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_penguin_connect_poll_rate_limit ON penguin_connect_poll_state(gmail_rate_limited_until)"
     )
     conn.execute(
@@ -1121,6 +1169,7 @@ def init_db() -> None:
     )
     _backfill_email_to_imessage_delivery_bodies(conn)
     _backfill_self_authored_sender_names(conn)
+    _backfill_initial_full_verify_schedule(conn)
     conn.commit()
     conn.close()
 

@@ -29,6 +29,7 @@ from browse_sources import (
     resolve_apple_messages_chat as _resolve_apple_messages_chat_route,
 )
 from channels import get_channel_adapter
+from db import schedule_initial_full_verify_at
 from quoted_content import extract_latest_email_text
 
 DEFAULT_BACKFILL_DAYS = 7
@@ -337,6 +338,20 @@ def _sync_due_sort_value(conv: sqlite3.Row) -> datetime:
     return datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
+def _full_verify_due_sort_value(conv: sqlite3.Row) -> datetime:
+    dt = _parse_iso(conv["next_full_verify_at"] if "next_full_verify_at" in conv.keys() else None)
+    return dt or datetime.max.replace(tzinfo=timezone.utc)
+
+
+def _conversation_requires_full_verify(conv: sqlite3.Row, *, now_dt: Optional[datetime] = None) -> bool:
+    if not conv["initial_sync_completed_at"] or conv["full_verify_completed_at"]:
+        return False
+    due_dt = _parse_iso(conv["next_full_verify_at"])
+    if not due_dt:
+        return False
+    return due_dt <= (now_dt or datetime.now(timezone.utc))
+
+
 def _get_poll_state(conn: sqlite3.Connection, gmail_email: str) -> Optional[sqlite3.Row]:
     return conn.execute(
         "SELECT * FROM penguin_connect_poll_state WHERE gmail_email = ? LIMIT 1",
@@ -509,6 +524,8 @@ def _select_conversations_for_sync(
                   s.last_message_ts,
                   s.last_gmail_history_id,
                   s.initial_sync_completed_at,
+                  s.next_full_verify_at,
+                  s.full_verify_completed_at,
                   s.last_synced_at AS sync_state_last_synced_at
            FROM penguin_connect_conversations c
            LEFT JOIN penguin_connect_sync_state s ON s.conversation_id = c.conversation_id
@@ -526,6 +543,7 @@ def _select_conversations_for_sync(
         return conversations, selection
 
     if mode == "incremental":
+        now_dt = datetime.now(timezone.utc)
         hot_cutoff_iso = _incremental_activity_cutoff().isoformat()
         recent = list_recent_imessage_chat_activity(hot_cutoff_iso, limit=len(conversations))
         recent_by_chat = {
@@ -540,6 +558,7 @@ def _select_conversations_for_sync(
         hot: list[sqlite3.Row] = []
         pending: list[sqlite3.Row] = []
         round_robin: list[sqlite3.Row] = []
+        verify_due: list[sqlite3.Row] = []
         hot_imessage = 0
         hot_gmail = 0
 
@@ -559,6 +578,9 @@ def _select_conversations_for_sync(
             if has_hot_gmail:
                 hot_gmail += 1
 
+            if _conversation_requires_full_verify(conv, now_dt=now_dt):
+                verify_due.append(conv)
+
             if has_hot_imessage or has_hot_gmail:
                 hot.append(conv)
             elif not conv["initial_sync_completed_at"]:
@@ -569,10 +591,21 @@ def _select_conversations_for_sync(
         hot.sort(key=lambda conv: (_sync_due_sort_value(conv), conv["conversation_id"]))
         pending.sort(key=lambda conv: (_sync_due_sort_value(conv), conv["conversation_id"]))
         round_robin.sort(key=lambda conv: (_sync_due_sort_value(conv), conv["conversation_id"]))
+        verify_due.sort(key=lambda conv: (_full_verify_due_sort_value(conv), _sync_due_sort_value(conv), conv["conversation_id"]))
 
         queued = hot + pending + round_robin
         limit = _incremental_conversations_per_run()
         selected = queued[:limit]
+        verify_due_ids = {conv["conversation_id"] for conv in verify_due}
+        selected_ids = {conv["conversation_id"] for conv in selected}
+        selected_verify_ids = [conv["conversation_id"] for conv in selected if conv["conversation_id"] in verify_due_ids]
+        if verify_due and not selected_verify_ids:
+            for conv in verify_due:
+                if conv["conversation_id"] in selected_ids:
+                    continue
+                selected.append(conv)
+                selected_verify_ids = [conv["conversation_id"]]
+                break
         selection["queued_conversations"] = len(queued)
         selection["selected_conversations"] = len(selected)
         selection["selection_limit"] = limit
@@ -581,49 +614,79 @@ def _select_conversations_for_sync(
         selection["hot_conversations"] = len(hot)
         selection["hot_imessage_conversations"] = hot_imessage
         selection["hot_gmail_conversations"] = hot_gmail
+        selection["pending_full_verify_conversations"] = len(verify_due)
+        selection["scheduled_full_verify_selected"] = len(selected_verify_ids)
         selection["selection_cutoff"] = hot_cutoff_iso
         if gmail_meta.get("history_initialized"):
             selection["gmail_history_initialized"] = True
         if gmail_meta.get("history_reset"):
             selection["gmail_history_reset"] = True
-        if hot:
+        if selected_verify_ids and not hot and not pending:
+            selection["selection_strategy"] = "scheduled_full_verify_due"
+        elif selected_verify_ids:
+            selection["selection_strategy"] = "activity_prioritized_with_scheduled_verify"
+        elif hot:
             selection["selection_strategy"] = "activity_prioritized_round_robin"
         elif pending:
             selection["selection_strategy"] = "pending_bootstrap_round_robin"
         else:
             selection["selection_strategy"] = "round_robin_oldest_synced"
+        if selected_verify_ids:
+            selection["verify_all_conversation_ids"] = selected_verify_ids
         return selected, selection
 
     if mode == "startup_catchup":
+        now_dt = datetime.now(timezone.utc)
         selected = [conv for conv in conversations if not conv["initial_sync_completed_at"]]
         hot_cutoff_iso = _incremental_activity_cutoff().isoformat()
-        recent = list_recent_imessage_chat_activity(hot_cutoff_iso, limit=len(selected) or 1)
-        recent_by_chat = {
-            row.get("chat_id"): row
-            for row in recent.get("chats", [])
-            if isinstance(row, dict) and row.get("chat_id")
-        }
-        hot = [conv for conv in selected if conv["imessage_chat_id"] in recent_by_chat]
-        hot.sort(
-            key=lambda conv: (
-                recent_by_chat[conv["imessage_chat_id"]].get("first_message_at") or "",
-                conv["conversation_id"],
+        verify_due = [
+            conv
+            for conv in conversations
+            if _conversation_requires_full_verify(conv, now_dt=now_dt)
+        ]
+        if selected:
+            recent = list_recent_imessage_chat_activity(hot_cutoff_iso, limit=len(selected) or 1)
+            recent_by_chat = {
+                row.get("chat_id"): row
+                for row in recent.get("chats", [])
+                if isinstance(row, dict) and row.get("chat_id")
+            }
+            hot = [conv for conv in selected if conv["imessage_chat_id"] in recent_by_chat]
+            hot.sort(
+                key=lambda conv: (
+                    recent_by_chat[conv["imessage_chat_id"]].get("first_message_at") or "",
+                    conv["conversation_id"],
+                )
             )
-        )
-        cold = [conv for conv in selected if conv["imessage_chat_id"] not in recent_by_chat]
-        cold.sort(key=lambda conv: (_sync_due_sort_value(conv), conv["conversation_id"]))
-        queued = hot + cold
+            cold = [conv for conv in selected if conv["imessage_chat_id"] not in recent_by_chat]
+            cold.sort(key=lambda conv: (_sync_due_sort_value(conv), conv["conversation_id"]))
+            queued = hot + cold
+            limit = _startup_catchup_conversations_per_run()
+            selected = queued if limit is None else queued[:limit]
+            selection["queued_conversations"] = len(queued)
+            selection["selected_conversations"] = len(selected)
+            selection["selection_limit"] = len(queued) if limit is None else limit
+            selection["bootstrapped_conversations"] = len(conversations) - len(queued)
+            selection["pending_bootstrap_conversations"] = len(queued)
+            selection["pending_full_verify_conversations"] = len(verify_due)
+            selection["selection_cutoff"] = hot_cutoff_iso
+            selection["selection_strategy"] = (
+                "pending_bootstrap_recent_imessage_activity" if hot else "pending_bootstrap_round_robin"
+            )
+            return selected, selection
+
+        verify_due.sort(key=lambda conv: (_full_verify_due_sort_value(conv), _sync_due_sort_value(conv), conv["conversation_id"]))
         limit = _startup_catchup_conversations_per_run()
-        selected = queued if limit is None else queued[:limit]
-        selection["queued_conversations"] = len(queued)
+        selected = verify_due if limit is None else verify_due[:limit]
+        selection["queued_conversations"] = len(verify_due)
         selection["selected_conversations"] = len(selected)
-        selection["selection_limit"] = len(queued) if limit is None else limit
-        selection["bootstrapped_conversations"] = len(conversations) - len(queued)
-        selection["pending_bootstrap_conversations"] = len(queued)
-        selection["selection_cutoff"] = hot_cutoff_iso
-        selection["selection_strategy"] = (
-            "pending_bootstrap_recent_imessage_activity" if hot else "pending_bootstrap_round_robin"
-        )
+        selection["selection_limit"] = len(verify_due) if limit is None else limit
+        selection["bootstrapped_conversations"] = len(conversations)
+        selection["pending_bootstrap_conversations"] = 0
+        selection["pending_full_verify_conversations"] = len(verify_due)
+        selection["selection_strategy"] = "scheduled_full_verify_due" if selected else "startup_idle"
+        if selected:
+            selection["verify_all_conversation_ids"] = [conv["conversation_id"] for conv in selected]
         return selected, selection
 
     if mode != "backfill":
@@ -3235,15 +3298,52 @@ def _upsert_sync_state(
 
 def _mark_conversation_bootstrapped(conn: sqlite3.Connection, conversation_id: str):
     completed_at = _now_iso()
+    existing = conn.execute(
+        """SELECT initial_sync_completed_at, next_full_verify_at, full_verify_completed_at
+           FROM penguin_connect_sync_state
+           WHERE conversation_id = ?""",
+        (conversation_id,),
+    ).fetchone()
+    next_full_verify_at = None
+    if not existing or not existing["initial_sync_completed_at"]:
+        if not existing or not existing["full_verify_completed_at"]:
+            next_full_verify_at = (
+                existing["next_full_verify_at"]
+                if existing and existing["next_full_verify_at"]
+                else schedule_initial_full_verify_at(conversation_id, base_iso=completed_at)
+            )
+
     conn.execute(
         """INSERT INTO penguin_connect_sync_state
-           (conversation_id, initial_sync_completed_at, last_synced_at, updated_at)
-           VALUES (?, ?, datetime('now'), datetime('now'))
+           (conversation_id, initial_sync_completed_at, next_full_verify_at, last_synced_at, updated_at)
+           VALUES (?, ?, ?, datetime('now'), datetime('now'))
            ON CONFLICT(conversation_id) DO UPDATE SET
              initial_sync_completed_at = COALESCE(
                penguin_connect_sync_state.initial_sync_completed_at,
                excluded.initial_sync_completed_at
              ),
+             next_full_verify_at = COALESCE(
+               penguin_connect_sync_state.next_full_verify_at,
+               excluded.next_full_verify_at
+             ),
+             last_synced_at = datetime('now'),
+             updated_at = datetime('now')""",
+        (conversation_id, completed_at, next_full_verify_at),
+    )
+
+
+def _mark_conversation_full_verify_completed(conn: sqlite3.Connection, conversation_id: str):
+    completed_at = _now_iso()
+    conn.execute(
+        """INSERT INTO penguin_connect_sync_state
+           (conversation_id, full_verify_completed_at, next_full_verify_at, last_synced_at, updated_at)
+           VALUES (?, ?, NULL, datetime('now'), datetime('now'))
+           ON CONFLICT(conversation_id) DO UPDATE SET
+             full_verify_completed_at = COALESCE(
+               penguin_connect_sync_state.full_verify_completed_at,
+               excluded.full_verify_completed_at
+             ),
+             next_full_verify_at = NULL,
              last_synced_at = datetime('now'),
              updated_at = datetime('now')""",
         (conversation_id, completed_at),
@@ -4730,6 +4830,7 @@ def _sync_conversations_unlocked(
             paused_until,
         )
 
+    verify_all_conversation_ids = set(selection.get("verify_all_conversation_ids", []))
     stats = {
         "success": True,
         "mode": mode,
@@ -4748,6 +4849,7 @@ def _sync_conversations_unlocked(
         "email_to_imessage": 0,
         "blocked_sender_count": 0,
         "gmail_thread_repairs": 0,
+        "full_verify_completed": 0,
     }
     if selection.get("selection_cutoff"):
         stats["selection_cutoff"] = selection["selection_cutoff"]
@@ -4763,6 +4865,8 @@ def _sync_conversations_unlocked(
         "hot_conversations",
         "hot_imessage_conversations",
         "hot_gmail_conversations",
+        "pending_full_verify_conversations",
+        "scheduled_full_verify_selected",
         "gmail_history_initialized",
         "gmail_history_reset",
     ):
@@ -4786,12 +4890,14 @@ def _sync_conversations_unlocked(
         total = len(conversations)
         for index, conv in enumerate(conversations, start=1):
             display = conv["display_name"] or conv["conversation_id"]
+            conversation_verify_all = bool(verify_all or conv["conversation_id"] in verify_all_conversation_ids)
             print(f"[PenguinConnect] Sync {mode} {index}/{total}: {display}")
             log_action(
                 "sync_conversation_started",
                 mode=mode,
                 index=index,
                 total=total,
+                verify_all=conversation_verify_all,
                 **_conversation_log_fields(conv),
             )
             _sync_runtime_progress(index - 1, conv)
@@ -4804,7 +4910,7 @@ def _sync_conversations_unlocked(
                     days,
                     hours=hours,
                     cutoff_iso=selection.get("selection_cutoff"),
-                    verify_all=verify_all,
+                    verify_all=conversation_verify_all,
                 )
                 gsync = _sync_conversation_gmail_to_imessage(
                     conn,
@@ -4815,7 +4921,7 @@ def _sync_conversations_unlocked(
                     days,
                     hours=hours,
                     cutoff_iso=selection.get("selection_cutoff"),
-                    verify_all=verify_all,
+                    verify_all=conversation_verify_all,
                 )
                 canonical_thread_id = _resolve_canonical_gmail_thread_id(
                     conn, conv["conversation_id"], conv["gmail_thread_id"]
@@ -4829,6 +4935,9 @@ def _sync_conversations_unlocked(
                 stats["gmail_thread_repairs"] += repaired
                 if mode in {"backfill", "startup_catchup"}:
                     _mark_conversation_bootstrapped(conn, conv["conversation_id"])
+                if conversation_verify_all:
+                    _mark_conversation_full_verify_completed(conn, conv["conversation_id"])
+                    stats["full_verify_completed"] += 1
 
                 conn.execute(
                     "UPDATE penguin_connect_conversations SET last_synced_at = datetime('now') WHERE conversation_id = ?",
@@ -4849,6 +4958,7 @@ def _sync_conversations_unlocked(
                     index=index,
                     total=total,
                     success=True,
+                    verify_all=conversation_verify_all,
                     imessage_imported=imsg.get("imessage_imported", 0),
                     gmail_imported=imsg.get("gmail_imported", 0),
                     email_to_imessage=gsync.get("email_to_imessage", 0),
@@ -4900,6 +5010,7 @@ def _sync_conversations_unlocked(
                     index=index,
                     total=total,
                     success=False,
+                    verify_all=conversation_verify_all,
                     error=error,
                     **_conversation_log_fields(conv),
                 )

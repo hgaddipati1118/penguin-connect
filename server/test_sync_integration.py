@@ -136,6 +136,12 @@ class SyncIntegrationTests(unittest.TestCase):
         legacy_schema = db.SCHEMA.replace("    initial_sync_completed_at TEXT,\n", "").replace(
             "    last_message_ts TEXT,\n",
             "",
+        ).replace(
+            "    next_full_verify_at TEXT,\n",
+            "",
+        ).replace(
+            "    full_verify_completed_at TEXT,\n",
+            "",
         )
 
         raw_conn = sqlite3.connect(str(db.DB_PATH))
@@ -156,16 +162,22 @@ class SyncIntegrationTests(unittest.TestCase):
         try:
             columns = {row[1] for row in migrated_conn.execute("PRAGMA table_info(penguin_connect_sync_state)").fetchall()}
             row = migrated_conn.execute(
-                "SELECT initial_sync_completed_at, last_message_ts FROM penguin_connect_sync_state WHERE conversation_id = 'amc_legacy'"
+                """SELECT initial_sync_completed_at, last_message_ts, next_full_verify_at, full_verify_completed_at
+                   FROM penguin_connect_sync_state
+                   WHERE conversation_id = 'amc_legacy'"""
             ).fetchone()
         finally:
             migrated_conn.close()
 
         self.assertIn("initial_sync_completed_at", columns)
         self.assertIn("last_message_ts", columns)
+        self.assertIn("next_full_verify_at", columns)
+        self.assertIn("full_verify_completed_at", columns)
         self.assertIsNotNone(row)
         self.assertEqual(row["initial_sync_completed_at"], "2026-03-04 10:05:00")
         self.assertEqual(row["last_message_ts"], "2026-03-04T10:00:00+00:00")
+        self.assertIsNotNone(row["next_full_verify_at"])
+        self.assertIsNone(row["full_verify_completed_at"])
 
     def test_init_db_backfills_pending_gmail_delivery_bodies_to_latest_text(self):
         conn = db.get_connection()
