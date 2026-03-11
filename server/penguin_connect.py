@@ -3331,6 +3331,35 @@ def _mark_conversation_bootstrapped(conn: sqlite3.Connection, conversation_id: s
     )
 
 
+def _ensure_full_verify_schedule(conn: sqlite3.Connection, gmail_email: str) -> int:
+    rows = conn.execute(
+        """SELECT s.conversation_id, s.initial_sync_completed_at, s.full_verify_completed_at
+           FROM penguin_connect_sync_state s
+           JOIN penguin_connect_conversations c ON c.conversation_id = s.conversation_id
+           WHERE c.gmail_email = ?
+             AND c.status = 'active'
+             AND s.initial_sync_completed_at IS NOT NULL
+             AND s.next_full_verify_at IS NULL""",
+        (gmail_email,),
+    ).fetchall()
+    if not rows:
+        return 0
+
+    updated = 0
+    for row in rows:
+        base_iso = row["full_verify_completed_at"] or row["initial_sync_completed_at"] or _now_iso()
+        next_full_verify_at = schedule_next_full_verify_at(row["conversation_id"], base_iso=base_iso)
+        conn.execute(
+            """UPDATE penguin_connect_sync_state
+               SET next_full_verify_at = ?,
+                   updated_at = datetime('now')
+               WHERE conversation_id = ?""",
+            (next_full_verify_at, row["conversation_id"]),
+        )
+        updated += 1
+    return updated
+
+
 def _mark_conversation_full_verify_completed(conn: sqlite3.Connection, conversation_id: str):
     completed_at = _now_iso()
     next_full_verify_at = schedule_next_full_verify_at(conversation_id, base_iso=completed_at)
@@ -4789,6 +4818,9 @@ def _sync_conversations_unlocked(
     else:
         ensure_conversations_discovered(conn, gmail_email)
         sweep_result = None
+    full_verify_schedule_backfilled = _ensure_full_verify_schedule(conn, gmail_email)
+    if full_verify_schedule_backfilled:
+        conn.commit()
 
     gmail_service, err = _build_gmail_service(gmail_email, account["keychain_service"])
     if err or not gmail_service:
@@ -4854,6 +4886,8 @@ def _sync_conversations_unlocked(
         stats["selection_reason"] = selection["selection_reason"]
     if sweep_result:
         stats["self_heal_sweep"] = sweep_result
+    if full_verify_schedule_backfilled:
+        stats["full_verify_schedule_backfilled"] = full_verify_schedule_backfilled
     for key in (
         "queued_conversations",
         "selection_limit",

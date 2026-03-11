@@ -322,6 +322,29 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertTrue(state["next_full_verify_at"])
         self.assertEqual(state["full_verify_completed_at"], "2026-03-08T11:05:00+00:00")
 
+    def test_ensure_full_verify_schedule_backfills_missing_due_time_for_bootstrapped_conversation(self):
+        self.conn.execute(
+            """INSERT INTO penguin_connect_sync_state
+               (conversation_id, initial_sync_completed_at, last_synced_at, updated_at)
+               VALUES (?, ?, datetime('now'), datetime('now'))""",
+            (
+                "amc_test",
+                "2026-03-08T10:05:00+00:00",
+            ),
+        )
+
+        updated = penguin_connect._ensure_full_verify_schedule(self.conn, "owner@gmail.com")
+        state = self.conn.execute(
+            """SELECT next_full_verify_at, full_verify_completed_at
+               FROM penguin_connect_sync_state
+               WHERE conversation_id = ?""",
+            ("amc_test",),
+        ).fetchone()
+
+        self.assertEqual(updated, 1)
+        self.assertTrue(state["next_full_verify_at"])
+        self.assertIsNone(state["full_verify_completed_at"])
+
     def test_resolve_display_name_uses_contact_when_chat_name_is_raw_handle(self):
         self.conn.execute(
             """INSERT INTO contacts (first_name, last_name, organization, phone, phone_normalized, email, source_db)
@@ -2675,13 +2698,15 @@ class PenguinConnectTests(unittest.TestCase):
         )
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
-               VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
+               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at,
+                next_full_verify_at, last_synced_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
             (
                 "amc_ready",
                 "2026-03-04T10:00:00+00:00",
                 "2026-03-04T10:00:00+00:00",
                 "2026-03-04T10:05:00+00:00",
+                "2026-03-20T10:05:00+00:00",
             ),
         )
 
@@ -3004,6 +3029,51 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(gmail_calls, [("amc_test", True, "owner@gmail.com", ("owner@gmail.com",))])
         self.assertTrue(state["next_full_verify_at"])
         self.assertTrue(state["full_verify_completed_at"])
+
+    def test_startup_catchup_backfills_missing_full_verify_schedule_before_selection(self):
+        self.conn.execute(
+            """INSERT INTO penguin_connect_sync_state
+               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
+            (
+                "amc_test",
+                "2026-03-08T10:00:00+00:00",
+                "2026-03-08T10:00:00+00:00",
+                "2026-03-08T10:05:00+00:00",
+            ),
+        )
+
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 3, 8, 10, 5, tzinfo=tz or timezone.utc)
+
+        with mock.patch("penguin_connect.datetime", FixedDateTime), mock.patch(
+            "penguin_connect.self_heal_conversation_cache",
+            return_value={"success": True, "swept_conversations": 1, "before_count": 1, "after_count": 1},
+        ), mock.patch(
+            "penguin_connect._build_gmail_service", return_value=(mock.Mock(), None)
+        ), mock.patch(
+            "penguin_connect._refresh_send_as_aliases",
+            return_value=(["owner@gmail.com"], "owner@gmail.com"),
+        ), mock.patch(
+            "penguin_connect._repair_split_gmail_messages",
+            return_value=0,
+        ):
+            stats = penguin_connect._sync_conversations_unlocked(self.conn, mode="startup_catchup", days=7)
+
+        state = self.conn.execute(
+            """SELECT next_full_verify_at
+               FROM penguin_connect_sync_state
+               WHERE conversation_id = ?""",
+            ("amc_test",),
+        ).fetchone()
+
+        self.assertTrue(stats["success"])
+        self.assertEqual(stats["selection_strategy"], "startup_idle")
+        self.assertEqual(stats["selected_conversations"], 0)
+        self.assertEqual(stats["full_verify_schedule_backfilled"], 1)
+        self.assertTrue(state["next_full_verify_at"])
 
     def test_backfill_sync_selects_recent_conversations_oldest_first(self):
         self.conn.execute(
