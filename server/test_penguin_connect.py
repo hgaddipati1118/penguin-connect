@@ -3486,6 +3486,40 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(result["imessage_imported"], 1)
         self.assertEqual(fetch_calls[0][2], penguin_connect.FULL_IMESSAGE_SYNC_SINCE)
 
+    def test_imessage_initial_bootstrap_starts_from_origin_even_with_partial_state(self):
+        self.conn.execute(
+            """INSERT INTO penguin_connect_sync_state
+               (conversation_id, last_imessage_ts, last_gmail_ts, last_synced_at, updated_at)
+               VALUES (?, ?, ?, datetime('now'), datetime('now'))""",
+            (
+                "amc_test",
+                "2026-03-11T15:34:17.621095+00:00",
+                "2026-03-11T15:34:17.621095+00:00",
+            ),
+        )
+        conv = self._conversation_row()
+        gmail_service = mock.Mock()
+        fetch_calls = []
+
+        def fake_fetch(chat_id, limit=50, since=None):
+            fetch_calls.append((chat_id, limit, since))
+            return []
+
+        with mock.patch("penguin_connect.fetch_imessage_messages", side_effect=fake_fetch), mock.patch(
+            "penguin_connect._get_imessage_unread_count", return_value=None
+        ):
+            result = penguin_connect._sync_conversation_imessage_to_gmail(
+                self.conn,
+                gmail_service,
+                conv,
+                mode="startup_catchup",
+                days=7,
+                cutoff_iso="2026-03-11T15:34:17.621095+00:00",
+            )
+
+        self.assertEqual(result["imessage_imported"], 0)
+        self.assertEqual(fetch_calls[0][2], penguin_connect.FULL_IMESSAGE_SYNC_SINCE)
+
     def test_gmail_backfill_verify_all_starts_from_origin(self):
         conv = self._conversation_row()
         gmail_service = mock.Mock()
@@ -3505,6 +3539,41 @@ class PenguinConnectTests(unittest.TestCase):
                 ["owner@gmail.com"],
                 days=7,
                 verify_all=True,
+            )
+
+        self.assertEqual(result["email_to_imessage"], 0)
+        self.assertEqual(captured["alias_email"], "owner+am-test@gmail.com")
+        self.assertEqual(captured["after_iso"], penguin_connect.FULL_GMAIL_SYNC_SINCE)
+
+    def test_gmail_initial_bootstrap_starts_from_origin_even_with_partial_state(self):
+        self.conn.execute(
+            """INSERT INTO penguin_connect_sync_state
+               (conversation_id, last_imessage_ts, last_gmail_ts, last_synced_at, updated_at)
+               VALUES (?, ?, ?, datetime('now'), datetime('now'))""",
+            (
+                "amc_test",
+                "2026-03-11T15:34:17.621095+00:00",
+                "2026-03-11T15:34:17.621095+00:00",
+            ),
+        )
+        conv = self._conversation_row()
+        gmail_service = mock.Mock()
+        captured = {}
+
+        def fake_list(_gmail_service, alias_email, after_iso):
+            captured["alias_email"] = alias_email
+            captured["after_iso"] = after_iso
+            return []
+
+        with mock.patch("penguin_connect._list_gmail_messages_to_alias", side_effect=fake_list):
+            result = penguin_connect._sync_conversation_gmail_to_imessage(
+                self.conn,
+                gmail_service,
+                conv,
+                "owner@gmail.com",
+                ["owner@gmail.com"],
+                days=7,
+                cutoff_iso="2026-03-11T15:34:17.621095+00:00",
             )
 
         self.assertEqual(result["email_to_imessage"], 0)

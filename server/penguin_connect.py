@@ -3379,6 +3379,10 @@ def _mark_conversation_full_verify_completed(conn: sqlite3.Connection, conversat
     )
 
 
+def _conversation_needs_initial_bootstrap(state: Optional[sqlite3.Row]) -> bool:
+    return not bool(state and state["initial_sync_completed_at"])
+
+
 def _retry_pending_imessage_to_gmail(
     conn: sqlite3.Connection,
     gmail_service,
@@ -3613,6 +3617,8 @@ def _sync_conversation_imessage_to_gmail(
     cutoff = _parse_iso(cutoff_iso) or _sync_window_cutoff(days, hours)
     since = None
     if verify_all:
+        since = FULL_IMESSAGE_SYNC_SINCE
+    elif _conversation_needs_initial_bootstrap(state):
         since = FULL_IMESSAGE_SYNC_SINCE
     elif mode == "backfill":
         since = cutoff.isoformat()
@@ -4417,6 +4423,8 @@ def _sync_conversation_gmail_to_imessage(
 
     cutoff = _parse_iso(cutoff_iso) or _sync_window_cutoff(days, hours)
     if verify_all:
+        since = FULL_GMAIL_SYNC_SINCE
+    elif _conversation_needs_initial_bootstrap(state):
         since = FULL_GMAIL_SYNC_SINCE
     else:
         since = (state["last_gmail_ts"] if state and state["last_gmail_ts"] else cutoff.isoformat())
