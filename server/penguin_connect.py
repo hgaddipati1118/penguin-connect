@@ -1981,6 +1981,9 @@ def run_sync_job_worker_once(conn: sqlite3.Connection, owner: Optional[str] = No
         return {"success": True, "skipped": True, "reason": "queue_idle"}
 
     payload = _load_sync_job_payload(job)
+    # Persist the lease before entering sync work so other DB writers are not blocked
+    # while this worker waits on the in-process sync lock.
+    conn.commit()
     try:
         result = sync_conversations(
             conn,

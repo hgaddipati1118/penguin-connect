@@ -129,6 +129,67 @@ class SyncIntegrationTests(unittest.TestCase):
         self.assertEqual(len(results), 8)
         self.assertTrue(all(r["success"] for r in results))
 
+    def test_sync_job_worker_commits_job_lease_before_running_sync(self):
+        conn = db.get_connection()
+        try:
+            enqueued = penguin_connect.enqueue_sync_job(
+                conn,
+                mode="incremental",
+                days=7,
+                hours=None,
+                verify_all=False,
+                dedupe=False,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        sync_started = threading.Event()
+        allow_finish = threading.Event()
+        worker_result = {}
+
+        def fake_sync(_conn, mode="incremental", days=7, hours=None, verify_all=False):
+            sync_started.set()
+            self.assertTrue(allow_finish.wait(1.0))
+            return {"success": True, "mode": mode, "days": days, "hours": hours, "verify_all": verify_all}
+
+        def run_worker():
+            worker_conn = db.get_connection()
+            try:
+                worker_result["result"] = penguin_connect.run_sync_job_worker_once(worker_conn, owner="worker-a")
+            finally:
+                worker_conn.close()
+
+        with mock.patch("penguin_connect.sync_conversations", side_effect=fake_sync):
+            thread = threading.Thread(target=run_worker)
+            thread.start()
+            self.assertTrue(sync_started.wait(1.0))
+
+            other_conn = sqlite3.connect(str(db.DB_PATH), timeout=0.1)
+            try:
+                other_conn.row_factory = sqlite3.Row
+                other_conn.execute("PRAGMA journal_mode=WAL")
+                other_conn.execute("PRAGMA foreign_keys=ON")
+                second_job = penguin_connect.enqueue_sync_job(
+                    other_conn,
+                    mode="backfill",
+                    days=7,
+                    hours=None,
+                    verify_all=False,
+                    dedupe=False,
+                )
+                other_conn.commit()
+            finally:
+                other_conn.close()
+
+            allow_finish.set()
+            thread.join(timeout=2.0)
+
+        self.assertFalse(thread.is_alive())
+        self.assertTrue(second_job["enqueued"])
+        self.assertEqual(worker_result["result"]["queue_job_id"], enqueued["job_id"])
+        self.assertEqual(worker_result["result"]["queue_job_status"], "succeeded")
+
     def test_init_db_backfills_bootstrap_marker_for_existing_sync_rows(self):
         conn = db.get_connection()
         conn.close()
