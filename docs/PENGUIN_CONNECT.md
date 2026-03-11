@@ -143,9 +143,12 @@ curl -s -X POST http://127.0.0.1:8888/penguin-connect/conversations/sync \
   -d '{"mode":"startup_catchup"}' | jq
 ```
 
+On server start, PenguinConnect also launches startup catch-up in the background and, by default, drains all pending bootstrap conversations in that run. Set `PENGUIN_CONNECT_STARTUP_CATCHUP_CONVERSATIONS_PER_RUN` if you need to cap that startup batch.
+
 ## Polling and Auto-Start
 
 - default polling: `PENGUIN_CONNECT_POLL_SECONDS=30`
+- optional startup catch-up cap: `PENGUIN_CONNECT_STARTUP_CATCHUP_CONVERSATIONS_PER_RUN` (unset means all pending bootstrap conversations)
 - backfill Gmail write pacing: `PENGUIN_CONNECT_BACKFILL_WRITE_PAUSE_SECONDS=0.15`
 - action log:
   - `PENGUIN_CONNECT_ACTION_LOG_PATH`

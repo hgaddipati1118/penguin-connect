@@ -116,6 +116,25 @@ class PenguinConnectTests(unittest.TestCase):
             pause = penguin_connect._sync_gmail_write_pause_seconds("backfill", verify_all=False)
         self.assertEqual(pause, 0.8)
 
+    def test_startup_catchup_limit_defaults_to_all_pending_conversations(self):
+        self.assertIsNone(penguin_connect._startup_catchup_conversations_per_run())
+
+    def test_startup_catchup_limit_honors_env_override(self):
+        with mock.patch.dict(
+            os.environ,
+            {"PENGUIN_CONNECT_STARTUP_CATCHUP_CONVERSATIONS_PER_RUN": "2"},
+            clear=False,
+        ):
+            self.assertEqual(penguin_connect._startup_catchup_conversations_per_run(), 2)
+
+    def test_startup_catchup_limit_treats_non_positive_values_as_unbounded(self):
+        with mock.patch.dict(
+            os.environ,
+            {"PENGUIN_CONNECT_STARTUP_CATCHUP_CONVERSATIONS_PER_RUN": "0"},
+            clear=False,
+        ):
+            self.assertIsNone(penguin_connect._startup_catchup_conversations_per_run())
+
     def test_build_gmail_service_uses_configured_http_timeout(self):
         token_json = {
             "token": "tok",
@@ -343,6 +362,19 @@ class PenguinConnectTests(unittest.TestCase):
                 "2026-03-04T10:05:00+00:00",
             ),
         )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_conversations
+               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+                alias_email, status)
+               VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
+            (
+                "owner@gmail.com",
+                "amc_pending_cold",
+                "chat-pending-cold",
+                "Pending Cold",
+                "owner+am-pending-cold@gmail.com",
+            ),
+        )
 
         with mock.patch(
             "penguin_connect.list_recent_imessage_chat_activity",
@@ -366,13 +398,60 @@ class PenguinConnectTests(unittest.TestCase):
                 hours=None,
             )
 
-        self.assertEqual([row["conversation_id"] for row in conversations], ["amc_test"])
-        self.assertEqual(selection["discovered_conversations"], 2)
-        self.assertEqual(selection["selected_conversations"], 1)
+        self.assertEqual([row["conversation_id"] for row in conversations], ["amc_test", "amc_pending_cold"])
+        self.assertEqual(selection["discovered_conversations"], 3)
+        self.assertEqual(selection["selected_conversations"], 2)
         self.assertEqual(selection["bootstrapped_conversations"], 1)
-        self.assertEqual(selection["pending_bootstrap_conversations"], 1)
+        self.assertEqual(selection["pending_bootstrap_conversations"], 2)
+        self.assertEqual(selection["selection_limit"], 2)
         self.assertEqual(selection["selection_strategy"], "pending_bootstrap_recent_imessage_activity")
         self.assertTrue(selection["selection_cutoff"])
+
+    def test_startup_catchup_selection_honors_env_limit(self):
+        self.conn.execute(
+            """INSERT INTO penguin_connect_conversations
+               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+                alias_email, status)
+               VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
+            (
+                "owner@gmail.com",
+                "amc_pending_second",
+                "chat-pending-second",
+                "Pending Second",
+                "owner+am-pending-second@gmail.com",
+            ),
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {"PENGUIN_CONNECT_STARTUP_CATCHUP_CONVERSATIONS_PER_RUN": "1"},
+            clear=False,
+        ), mock.patch(
+            "penguin_connect.list_recent_imessage_chat_activity",
+            return_value={
+                "available": True,
+                "chats": [
+                    {
+                        "chat_id": "chat-123",
+                        "first_message_at": "2026-03-07T07:10:00+00:00",
+                        "last_message_at": "2026-03-07T07:15:00+00:00",
+                        "message_count": 2,
+                    }
+                ],
+            },
+        ):
+            conversations, selection = penguin_connect._select_conversations_for_sync(
+                self.conn,
+                "owner@gmail.com",
+                "startup_catchup",
+                days=7,
+                hours=None,
+            )
+
+        self.assertEqual([row["conversation_id"] for row in conversations], ["amc_test"])
+        self.assertEqual(selection["queued_conversations"], 2)
+        self.assertEqual(selection["selected_conversations"], 1)
+        self.assertEqual(selection["selection_limit"], 1)
 
     def test_incremental_selection_uses_recent_gmail_activity(self):
         self.conn.execute(

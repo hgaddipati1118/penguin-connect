@@ -274,6 +274,19 @@ def _incremental_conversations_per_run() -> int:
     )
 
 
+def _startup_catchup_conversations_per_run() -> Optional[int]:
+    raw = (os.environ.get("PENGUIN_CONNECT_STARTUP_CATCHUP_CONVERSATIONS_PER_RUN") or "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except Exception:
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
 def _incremental_activity_window_minutes() -> int:
     return _env_int(
         "PENGUIN_CONNECT_INCREMENTAL_ACTIVITY_WINDOW_MINUTES",
@@ -600,11 +613,11 @@ def _select_conversations_for_sync(
         cold = [conv for conv in selected if conv["imessage_chat_id"] not in recent_by_chat]
         cold.sort(key=lambda conv: (_sync_due_sort_value(conv), conv["conversation_id"]))
         queued = hot + cold
-        limit = _incremental_conversations_per_run()
-        selected = queued[:limit]
+        limit = _startup_catchup_conversations_per_run()
+        selected = queued if limit is None else queued[:limit]
         selection["queued_conversations"] = len(queued)
         selection["selected_conversations"] = len(selected)
-        selection["selection_limit"] = limit
+        selection["selection_limit"] = len(queued) if limit is None else limit
         selection["bootstrapped_conversations"] = len(conversations) - len(queued)
         selection["pending_bootstrap_conversations"] = len(queued)
         selection["selection_cutoff"] = hot_cutoff_iso

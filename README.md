@@ -31,6 +31,7 @@ Current runtime is macOS-only because the first source adapter is Apple Messages
 - Durable local sync queue (SQLite): queued and leased jobs survive process pauses and resume with retries
 - Durable server action log: `~/penguinconnect-local-bridge-data/actions.jsonl`
 - Startup gap fill plus default 7-day backfill
+- Startup catch-up runs in a background thread and drains all pending bootstrap conversations by default
 - Startup catch-up and backfill perform a full self-heal sweep across all Apple Messages chats
   - old cache rows are migrated into the current canonical thread format before sync continues
 - Sender gate blocks non-connected Gmail senders (`403 sender_not_connected_gmail`)
