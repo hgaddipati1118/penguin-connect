@@ -3732,10 +3732,14 @@ def _extract_alias_recipients(headers: dict[str, str]) -> list[str]:
         headers.get("x-forwarded-to") or "",
     ]
     recipients: list[str] = []
-    for _name, addr in email.utils.getaddresses(values):
-        normalized = _normalize_email(addr)
-        if normalized:
-            recipients.append(normalized)
+    for value in values:
+        raw_value = (value or "").strip()
+        if not raw_value:
+            continue
+        for _name, addr in email.utils.getaddresses([raw_value]):
+            normalized = _normalize_email(addr)
+            if normalized:
+                recipients.append(normalized)
     return recipients
 
 
@@ -3800,14 +3804,25 @@ def _list_recent_gmail_alias_activity(
                 message_id = message.get("id")
                 if not message_id:
                     continue
-                metadata = _gmail_execute(
-                    lambda message_id=message_id: gmail_service.users().messages().get(
-                        userId="me",
-                        id=message_id,
-                        format="metadata",
-                        metadataHeaders=["To", "Cc", "Delivered-To", "X-Original-To", "X-Forwarded-To"],
-                    ).execute()
-                )
+                try:
+                    metadata = _gmail_execute(
+                        lambda message_id=message_id: gmail_service.users().messages().get(
+                            userId="me",
+                            id=message_id,
+                            format="metadata",
+                            metadataHeaders=["To", "Cc", "Delivered-To", "X-Original-To", "X-Forwarded-To"],
+                        ).execute()
+                    )
+                except Exception as exc:
+                    if _extract_gmail_error_status(exc) == 404:
+                        log_action(
+                            "gmail_history_message_missing",
+                            gmail_email=gmail_email,
+                            gmail_message_id=message_id,
+                            gmail_history_id=history_id,
+                        )
+                        continue
+                    raise
                 headers = _gmail_header_map(metadata.get("payload") or {})
                 conversation_id = None
                 for recipient in _extract_alias_recipients(headers):

@@ -2556,6 +2556,90 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(attempts["count"], 3)
         self.assertEqual(mock_sleep.call_count, 2)
 
+    def test_list_recent_gmail_alias_activity_skips_missing_history_messages(self):
+        class FakeResp:
+            status = 404
+            headers = {}
+
+        class FakeNotFound(Exception):
+            def __init__(self):
+                super().__init__("Requested entity was not found.")
+                self.resp = FakeResp()
+                self.reason = "notFound"
+
+        self.conn.execute(
+            """INSERT INTO penguin_connect_poll_state
+               (gmail_email, last_gmail_history_id)
+               VALUES (?, ?)""",
+            ("owner@gmail.com", "100"),
+        )
+        conv = self._conversation_row()
+        gmail_service = mock.Mock()
+        gmail_service.users.return_value.history.return_value.list.return_value.execute.return_value = {
+            "historyId": "101",
+            "history": [
+                {
+                    "id": "101",
+                    "messagesAdded": [
+                        {"message": {"id": "missing"}},
+                        {"message": {"id": "present"}},
+                    ],
+                }
+            ],
+        }
+
+        def get_message(*, userId, id, format, metadataHeaders):
+            response = mock.Mock()
+            if id == "missing":
+                response.execute.side_effect = FakeNotFound()
+            else:
+                response.execute.return_value = {
+                    "payload": {
+                        "headers": [
+                            {"name": "To", "value": "Owner <owner+am-test@gmail.com>"},
+                        ]
+                    },
+                    "internalDate": "1700000000000",
+                }
+            return response
+
+        gmail_service.users.return_value.messages.return_value.get.side_effect = get_message
+
+        with mock.patch("penguin_connect.log_action") as mock_log:
+            recent, meta = penguin_connect._list_recent_gmail_alias_activity(
+                self.conn,
+                gmail_service,
+                "owner@gmail.com",
+                [conv],
+            )
+
+        self.assertEqual(recent["amc_test"]["message_count"], 1)
+        self.assertEqual(meta["last_gmail_history_id"], "101")
+        poll_state = self.conn.execute(
+            "SELECT last_gmail_history_id FROM penguin_connect_poll_state WHERE gmail_email = ?",
+            ("owner@gmail.com",),
+        ).fetchone()
+        self.assertEqual(poll_state["last_gmail_history_id"], "101")
+        mock_log.assert_any_call(
+            "gmail_history_message_missing",
+            gmail_email="owner@gmail.com",
+            gmail_message_id="missing",
+            gmail_history_id="101",
+        )
+
+    def test_extract_alias_recipients_ignores_blank_header_slots(self):
+        recipients = penguin_connect._extract_alias_recipients(
+            {
+                "to": "Owner <owner+am-test@gmail.com>",
+                "cc": "",
+                "delivered-to": "",
+                "x-original-to": "",
+                "x-forwarded-to": "",
+            }
+        )
+
+        self.assertEqual(recipients, ["owner+am-test@gmail.com"])
+
     def test_backfill_marks_conversation_bootstrapped_after_success(self):
         with mock.patch(
             "penguin_connect.self_heal_conversation_cache",
