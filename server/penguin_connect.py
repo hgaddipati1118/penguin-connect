@@ -4073,6 +4073,13 @@ def _gmail_to_source_ignore_reason(label_ids: Optional[list[str]]) -> Optional[s
     return None
 
 
+def _gmail_message_targets_alias(headers: dict[str, str], alias_email: str) -> bool:
+    expected = _normalize_email(alias_email)
+    if not expected:
+        return False
+    return expected in _extract_alias_recipients(headers)
+
+
 def _maybe_send_gmail_delivery_error_notice(
     conn: sqlite3.Connection,
     gmail_service,
@@ -4455,6 +4462,8 @@ def _sync_conversation_gmail_to_imessage(
         rfc_references = _append_reference_id(rfc_references, rfc_in_reply_to)
         attachment_meta = _extract_gmail_attachment_metadata(payload)
         ignore_reason = _gmail_to_source_ignore_reason(label_ids)
+        if not ignore_reason and not _gmail_message_targets_alias(headers, conv["alias_email"]):
+            ignore_reason = "alias_recipient_mismatch"
 
         if ignore_reason:
             log_action(
@@ -4832,23 +4841,6 @@ def _sync_conversation_gmail_to_imessage(
         if staged_dir:
             shutil.rmtree(staged_dir, ignore_errors=True)
         source_provider = _conversation_source_provider(conv)
-        log_action(
-            "gmail_to_imessage_message",
-            success=ok,
-            error=None if ok else (error or f"{source_provider}_failed"),
-            gmail_message_id=message_id,
-            gmail_thread_id=thread_id,
-            provider_message_id=provider_message_id,
-            gmail_body_source=parsed_body.source,
-            gmail_quoted_content_removed=parsed_body.quoted_content_removed,
-            gmail_signature_removed=parsed_body.signature_removed,
-            gmail_body_safe_for_send=parsed_body.safe_for_send,
-            gmail_body_safety_flags=list(parsed_body.safety_flags),
-            attachment_count=len(attachment_paths),
-            sender_email=sender,
-            **_conversation_log_fields(conv),
-            **message_fingerprint(body_text),
-        )
         if ok:
             meta = _mark_delivery_success(meta, "send_result", f"{source_provider}_ok")
             converted += 1
@@ -4892,6 +4884,24 @@ def _sync_conversation_gmail_to_imessage(
                 message_id,
                 thread_id,
             ),
+        )
+        conn.commit()
+        log_action(
+            "gmail_to_imessage_message",
+            success=ok,
+            error=None if ok else (error or f"{source_provider}_failed"),
+            gmail_message_id=message_id,
+            gmail_thread_id=thread_id,
+            provider_message_id=provider_message_id,
+            gmail_body_source=parsed_body.source,
+            gmail_quoted_content_removed=parsed_body.quoted_content_removed,
+            gmail_signature_removed=parsed_body.signature_removed,
+            gmail_body_safe_for_send=parsed_body.safe_for_send,
+            gmail_body_safety_flags=list(parsed_body.safety_flags),
+            attachment_count=len(attachment_paths),
+            sender_email=sender,
+            **_conversation_log_fields(conv),
+            **message_fingerprint(body_text),
         )
 
         last_gmail_ts = max(last_gmail_ts or message_ts, message_ts)

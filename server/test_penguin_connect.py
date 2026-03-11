@@ -1557,6 +1557,7 @@ class PenguinConnectTests(unittest.TestCase):
                 "mimeType": "text/plain",
                 "headers": [
                     {"name": "From", "value": "Owner <owner@gmail.com>"},
+                    {"name": "To", "value": "Owner <owner+am-test@gmail.com>"},
                     {"name": "Subject", "value": "Hi"},
                 ],
                 "body": {"data": payload_data},
@@ -1738,6 +1739,7 @@ class PenguinConnectTests(unittest.TestCase):
                 "mimeType": "text/plain",
                 "headers": [
                     {"name": "From", "value": "Owner <owner@gmail.com>"},
+                    {"name": "To", "value": "Owner <owner+am-test@gmail.com>"},
                     {"name": "Subject", "value": "Threaded"},
                     {"name": "Message-ID", "value": "<mail-1@example.test>"},
                     {"name": "In-Reply-To", "value": "<mail-0@example.test>"},
@@ -1798,6 +1800,7 @@ class PenguinConnectTests(unittest.TestCase):
                 "mimeType": "multipart/mixed",
                 "headers": [
                     {"name": "From", "value": "Owner <owner@gmail.com>"},
+                    {"name": "To", "value": "Owner <owner+am-test@gmail.com>"},
                     {"name": "Subject", "value": "Status"},
                     {"name": "Message-ID", "value": "<stale-sync-1@example.test>"},
                 ],
@@ -1869,6 +1872,7 @@ class PenguinConnectTests(unittest.TestCase):
                 "mimeType": "multipart/mixed",
                 "headers": [
                     {"name": "From", "value": "Owner <owner@gmail.com>"},
+                    {"name": "To", "value": "Owner <owner+am-test@gmail.com>"},
                     {"name": "Subject", "value": "Photo"},
                     {"name": "Message-ID", "value": "<attach-bin-1@example.test>"},
                 ],
@@ -1922,6 +1926,7 @@ class PenguinConnectTests(unittest.TestCase):
                 "mimeType": "multipart/mixed",
                 "headers": [
                     {"name": "From", "value": "Owner <owner@gmail.com>"},
+                    {"name": "To", "value": "Owner <owner+am-test@gmail.com>"},
                     {"name": "Subject", "value": "Photo"},
                     {"name": "Message-ID", "value": "<attach-1@example.test>"},
                 ],
@@ -1994,6 +1999,7 @@ class PenguinConnectTests(unittest.TestCase):
                 "mimeType": "text/plain",
                 "headers": [
                     {"name": "From", "value": "Owner <owner@gmail.com>"},
+                    {"name": "To", "value": "Owner <owner+am-test@gmail.com>"},
                     {"name": "Subject", "value": "Family Group"},
                     {"name": "Message-ID", "value": "<split-1@example.test>"},
                     {"name": "In-Reply-To", "value": "<root@example.test>"},
@@ -2068,6 +2074,7 @@ class PenguinConnectTests(unittest.TestCase):
                 "mimeType": "text/plain",
                 "headers": [
                     {"name": "From", "value": "Owner <owner@gmail.com>"},
+                    {"name": "To", "value": "Owner <owner+am-test@gmail.com>"},
                     {"name": "Subject", "value": "Family Group"},
                     {"name": "Message-ID", "value": "<split-safe@example.test>"},
                     {"name": "In-Reply-To", "value": root_message_id},
@@ -2251,6 +2258,7 @@ class PenguinConnectTests(unittest.TestCase):
                 "mimeType": "text/plain",
                 "headers": [
                     {"name": "From", "value": "Owner <owner@gmail.com>"},
+                    {"name": "To", "value": "Owner <owner+am-test@gmail.com>"},
                     {"name": "Subject", "value": "Nested"},
                     {"name": "Message-ID", "value": "<leaf@example.test>"},
                     {"name": "In-Reply-To", "value": "<bridge@example.test>"},
@@ -2295,6 +2303,7 @@ class PenguinConnectTests(unittest.TestCase):
                 "mimeType": "text/plain",
                 "headers": [
                     {"name": "From", "value": "Owner <owner@gmail.com>"},
+                    {"name": "To", "value": "Owner <owner+am-test@gmail.com>"},
                     {"name": "Subject", "value": "Nested"},
                     {"name": "Message-ID", "value": "<quoted@example.test>"},
                 ],
@@ -2343,6 +2352,7 @@ class PenguinConnectTests(unittest.TestCase):
                 "mimeType": "multipart/alternative",
                 "headers": [
                     {"name": "From", "value": "Owner <owner@gmail.com>"},
+                    {"name": "To", "value": "Owner <owner+am-test@gmail.com>"},
                     {"name": "Subject", "value": "Status"},
                     {"name": "Message-ID", "value": "<snippet-only@example.test>"},
                 ],
@@ -2427,6 +2437,55 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(metadata["reason"], "gmail_draft_message")
         self.assertEqual(metadata["delivery_status"], "ignored")
         self.assertEqual(metadata["labels"], ["DRAFT"])
+
+    def test_gmail_message_without_exact_alias_recipient_is_ignored(self):
+        conv = self._conversation_row()
+        payload_data = base64.urlsafe_b64encode(b"wrong alias target").decode("utf-8").rstrip("=")
+        full_msg = {
+            "id": "gmail-wrong-alias-1",
+            "threadId": "thread-wrong-alias-1",
+            "historyId": "h-wrong-alias-1",
+            "labelIds": ["SENT"],
+            "internalDate": "1700007200000",
+            "snippet": "wrong alias target",
+            "payload": {
+                "mimeType": "text/plain",
+                "headers": [
+                    {"name": "From", "value": "Owner <owner@gmail.com>"},
+                    {"name": "To", "value": "Owner <owner+am-other@gmail.com>"},
+                    {"name": "Subject", "value": "Wrong alias"},
+                    {"name": "Message-ID", "value": "<wrong-alias-1@example.test>"},
+                ],
+                "body": {"data": payload_data},
+            },
+        }
+        gmail_service = mock.Mock()
+        gmail_service.users.return_value.messages.return_value.get.return_value.execute.return_value = full_msg
+
+        with mock.patch("penguin_connect._list_gmail_messages_to_alias", return_value=[{"id": "gmail-wrong-alias-1"}]), mock.patch(
+            "penguin_connect.send_imessage", return_value=(True, None)
+        ) as mock_send:
+            result = penguin_connect._sync_conversation_gmail_to_imessage(
+                self.conn,
+                gmail_service,
+                conv,
+                gmail_email="owner@gmail.com",
+                allowed_senders=["owner@gmail.com"],
+                days=7,
+            )
+
+        self.assertEqual(result["email_to_imessage"], 0)
+        mock_send.assert_not_called()
+        stored = self.conn.execute(
+            """SELECT body_text, metadata
+               FROM penguin_connect_messages
+               WHERE conversation_id = ? AND provider_message_id = ?""",
+            ("amc_test", "gmail:gmail-wrong-alias-1"),
+        ).fetchone()
+        metadata = json.loads(stored["metadata"] or "{}")
+        self.assertEqual(stored["body_text"], "wrong alias target")
+        self.assertEqual(metadata["reason"], "alias_recipient_mismatch")
+        self.assertEqual(metadata["delivery_status"], "ignored")
 
     def test_retry_policy_backoff_and_cap(self):
         with mock.patch.dict(
@@ -3547,6 +3606,80 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(runtime["current_conversation_id"], None)
         self.assertEqual(runtime["last_result"]["failed_conversations"], 1)
         self.assertIsNotNone(runtime["last_completed_at"])
+
+    def test_successful_gmail_send_row_survives_later_conversation_failure(self):
+        conv = self._conversation_row()
+        payload_data = base64.urlsafe_b64encode(b"durable send").decode("utf-8").rstrip("=")
+        full_msg = {
+            "id": "gmail-durable-1",
+            "threadId": "thread-durable-1",
+            "historyId": "h-durable-1",
+            "labelIds": ["SENT", "INBOX", "UNREAD"],
+            "internalDate": "1700000000000",
+            "snippet": "durable send",
+            "payload": {
+                "mimeType": "text/plain",
+                "headers": [
+                    {"name": "From", "value": "Owner <owner@gmail.com>"},
+                    {"name": "To", "value": "Owner <owner+am-test@gmail.com>"},
+                    {"name": "Subject", "value": "Durable"},
+                    {"name": "Message-ID", "value": "<durable-1@example.test>"},
+                ],
+                "body": {"data": payload_data},
+            },
+        }
+        gmail_service = mock.Mock()
+        gmail_service.users.return_value.messages.return_value.get.return_value.execute.return_value = full_msg
+
+        with mock.patch(
+            "penguin_connect.ensure_conversations_discovered",
+            return_value=0,
+        ), mock.patch(
+            "penguin_connect._build_gmail_service",
+            return_value=(gmail_service, None),
+        ), mock.patch(
+            "penguin_connect._refresh_send_as_aliases",
+            return_value=(["owner@gmail.com"], "owner@gmail.com"),
+        ), mock.patch(
+            "penguin_connect._select_conversations_for_sync",
+            return_value=(
+                [conv],
+                {
+                    "discovered_conversations": 1,
+                    "selected_conversations": 1,
+                    "selection_strategy": "test_selection",
+                },
+            ),
+        ), mock.patch(
+            "penguin_connect._sync_conversation_imessage_to_gmail",
+            return_value={"imessage_imported": 0, "gmail_imported": 0},
+        ), mock.patch(
+            "penguin_connect._list_gmail_messages_to_alias",
+            return_value=[{"id": "gmail-durable-1"}],
+        ), mock.patch(
+            "penguin_connect.send_imessage",
+            return_value=(True, None),
+        ) as mock_send, mock.patch(
+            "penguin_connect._repair_split_gmail_messages",
+            side_effect=RuntimeError("after_send_failure"),
+        ):
+            stats = penguin_connect._sync_conversations_unlocked(self.conn, mode="incremental", days=7)
+
+        self.assertTrue(stats["success"])
+        self.assertEqual(stats["failed_conversations"], 1)
+        self.assertEqual(stats["conversation_errors"][0]["conversation_id"], "amc_test")
+        mock_send.assert_called_once()
+        row = self.conn.execute(
+            """SELECT body_text, metadata
+               FROM penguin_connect_messages
+               WHERE conversation_id = ? AND provider_message_id = ?""",
+            ("amc_test", "gmail:gmail-durable-1"),
+        ).fetchone()
+        self.assertIsNotNone(row)
+        metadata = json.loads(row["metadata"] or "{}")
+        self.assertEqual(row["body_text"], "durable send")
+        self.assertEqual(metadata["delivery_status"], "delivered")
+        self.assertEqual(metadata["send_result"], "imessage_ok")
 
     def test_fetch_imessage_messages_applies_limit_with_since(self):
         with tempfile.TemporaryDirectory() as tmp:
