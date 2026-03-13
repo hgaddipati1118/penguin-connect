@@ -19,6 +19,7 @@ Optional flags:
 
 - `--yes` for default-yes non-interactive execution
 - `--client-secrets /abs/path/client_secret.json` to force OAuth JSON path
+- `--signature-marker "External email:"` to save a custom signature/disclaimer cutoff marker into `.env`
 - `--skip-sync-smoke` to skip final sync endpoint smoke test
 - `--explain-only` to print steps without executing
 
@@ -66,6 +67,13 @@ cd /path/to/penguin-connect/server
 python3 -m venv venv
 venv/bin/pip install -r requirements.txt
 ```
+
+Optional reply-cleanup setting:
+
+- `PENGUIN_CONNECT_EMAIL_SIGNATURE_MARKERS`
+  - optional `||`-separated list of normalized line prefixes
+  - when a reply line starts with one of them, PenguinConnect strips that line and everything after it before sending to Apple Messages
+  - useful for recurring legal disclaimers, CRM footers, or signatures the built-in parser misses
 
 ## 1) Get Google OAuth Client JSON
 
@@ -121,6 +129,15 @@ Verify:
 
 ```bash
 curl -s http://127.0.0.1:8888/penguin-connect/gmail/status | jq
+```
+
+Example setup with custom footer removal:
+
+```bash
+./scripts/penguin_connect_setup.py \
+  --gmail you@gmail.com \
+  --signature-marker "External email:" \
+  --signature-marker "Company Confidential"
 ```
 
 ## 3) Verify and Catch Up

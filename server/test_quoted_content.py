@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 from quoted_content import extract_latest_email_text, strip_quoted_html_text, strip_quoted_plain_text
 
@@ -109,6 +110,20 @@ class QuotedContentTests(unittest.TestCase):
         self.assertEqual(parsed.text, "Latest response <blockquote>Older response</blockquote>")
         self.assertFalse(parsed.safe_for_send)
         self.assertIn("html_residue", parsed.safety_flags)
+
+    def test_strip_quoted_plain_text_respects_configured_signature_markers(self):
+        with mock.patch.dict(
+            "os.environ",
+            {"PENGUIN_CONNECT_EMAIL_SIGNATURE_MARKERS": "External email:||Company Confidential"},
+            clear=False,
+        ):
+            parsed = strip_quoted_plain_text(
+                "Latest reply\n\nCompany Confidential\nPlease do not share outside the company\nFooter line"
+            )
+
+        self.assertEqual(parsed.text, "Latest reply")
+        self.assertTrue(parsed.signature_removed)
+        self.assertTrue(parsed.safe_for_send)
 
 
 if __name__ == "__main__":

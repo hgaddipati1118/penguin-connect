@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import html
 from html.parser import HTMLParser
+import os
 import re
 import unicodedata
 from typing import Optional
@@ -106,6 +107,7 @@ _ZERO_WIDTH_CODEPOINTS = {
     0x2060,
     0xFEFF,
 }
+_CUSTOM_SIGNATURE_MARKER_ENV = "PENGUIN_CONNECT_EMAIL_SIGNATURE_MARKERS"
 
 
 @dataclass(frozen=True)
@@ -255,6 +257,36 @@ def _trim_trailing_signature(lines: list[str]) -> tuple[list[str], bool]:
     return trimmed, removed
 
 
+def _configured_signature_markers() -> tuple[str, ...]:
+    raw = os.environ.get(_CUSTOM_SIGNATURE_MARKER_ENV, "")
+    if not raw:
+        return ()
+    markers: list[str] = []
+    for chunk in re.split(r"\|\||\r?\n", raw):
+        marker = _normalize_text(chunk).casefold()
+        if marker:
+            markers.append(marker)
+    return tuple(dict.fromkeys(markers))
+
+
+def _trim_custom_signature_block(lines: list[str]) -> tuple[list[str], bool]:
+    markers = _configured_signature_markers()
+    if not lines or not markers:
+        return lines, False
+
+    for index, line in enumerate(lines):
+        normalized_line = _normalize_text((line or "").strip()).casefold()
+        if not normalized_line:
+            continue
+        if any(normalized_line.startswith(marker) for marker in markers):
+            trimmed = lines[:index]
+            while trimmed and not trimmed[-1].strip():
+                trimmed.pop()
+            return trimmed, True
+
+    return lines, False
+
+
 def _has_contact_marker(value: str) -> bool:
     return bool(_EMAIL_RE.search(value) or _URL_RE.search(value) or _PHONE_RE.search(value) or _SOCIAL_LINE_RE.search(value))
 
@@ -338,7 +370,9 @@ def strip_quoted_plain_text(text: str) -> ParsedEmailBody:
             break
         kept_lines.append(line)
 
+    kept_lines, custom_signature_removed = _trim_custom_signature_block(kept_lines)
     kept_lines, signature_removed = _trim_trailing_signature(kept_lines)
+    signature_removed = custom_signature_removed or signature_removed
     cleaned = _normalize_text("\n".join(kept_lines))
     safety_flags = _safety_flags_for_text(cleaned, source="plain")
     return ParsedEmailBody(

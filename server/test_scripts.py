@@ -13,6 +13,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 import penguin_connect_local_api
 import import_contacts
 import penguin_connect_backfill
+import penguin_connect_setup
 import penguin_connect_verify_contact_resolution
 
 
@@ -133,6 +134,25 @@ class ScriptTests(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertEqual(mock_call.call_count, 2)
         mock_sleep.assert_called_once_with(3)
+
+    def test_setup_persists_signature_markers_to_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text("PENGUIN_CONNECT_PORT=8888\n", encoding="utf-8")
+
+            penguin_connect_setup._configure_signature_markers(
+                env_path,
+                cli_markers=["External email:", "Company Confidential"],
+                assume_yes=True,
+            )
+
+            contents = env_path.read_text(encoding="utf-8")
+
+        self.assertIn("PENGUIN_CONNECT_PORT=8888", contents)
+        self.assertIn(
+            "PENGUIN_CONNECT_EMAIL_SIGNATURE_MARKERS=External email:||Company Confidential",
+            contents,
+        )
 
 
 if __name__ == "__main__":

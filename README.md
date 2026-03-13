@@ -81,6 +81,15 @@ For fully non-interactive defaults:
 ./scripts/penguin_connect_setup.py --gmail you@gmail.com --yes
 ```
 
+Add custom email signature/disclaimer cutoff markers during setup if you have recurring footer text the parser should always remove:
+
+```bash
+./scripts/penguin_connect_setup.py \
+  --gmail you@gmail.com \
+  --signature-marker "External email:" \
+  --signature-marker "Company Confidential"
+```
+
 Skip the final sync smoke if needed:
 
 ```bash
@@ -88,6 +97,12 @@ Skip the final sync smoke if needed:
 ```
 
 If OAuth fails with `redirect_uri_mismatch`, the setup scripts print the exact Google Cloud fix steps for a Desktop OAuth client.
+
+Custom parsing option:
+
+- `PENGUIN_CONNECT_EMAIL_SIGNATURE_MARKERS`
+  - optional `||`-separated list of line prefixes
+  - when a normalized line starts with one of them, PenguinConnect strips that line and everything after it before Gmail-to-chat send
 
 ## Required Setup Order
 

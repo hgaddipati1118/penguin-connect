@@ -22,6 +22,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Optional
 
 from penguin_connect_local_api import resolve_local_api_base
 
@@ -78,6 +79,92 @@ def _env_value(key: str, env_file: dict[str, str]) -> str:
     if val is not None and val != "":
         return val
     return env_file.get(key, "")
+
+
+def _prompt_text(prompt: str, default: str = "") -> str:
+    raw = input(prompt).strip()
+    if raw:
+        return raw
+    return default
+
+
+def _upsert_env_value(path: Path, key: str, value: str) -> None:
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    updated = False
+    new_lines: list[str] = []
+    for line in lines:
+        if line.startswith(f"{key}="):
+            if not updated:
+                new_lines.append(f"{key}={value}")
+                updated = True
+            continue
+        new_lines.append(line)
+    if not updated:
+        if new_lines and new_lines[-1].strip():
+            new_lines.append("")
+        new_lines.append(f"{key}={value}")
+    path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+
+def _normalize_signature_markers(markers: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for marker in markers:
+        for chunk in marker.replace("\r", "\n").split("\n"):
+            for part in chunk.split("||"):
+                cleaned = part.strip()
+                if cleaned:
+                    normalized.append(cleaned)
+    return list(dict.fromkeys(normalized))
+
+
+def _configure_signature_markers(
+    env_path: Path,
+    *,
+    cli_markers: list[str],
+    assume_yes: bool,
+    current_value: Optional[str] = None,
+) -> None:
+    env_key = "PENGUIN_CONNECT_EMAIL_SIGNATURE_MARKERS"
+    existing_value = (current_value or "").strip()
+    markers = _normalize_signature_markers(cli_markers)
+    if markers:
+        _upsert_env_value(env_path, env_key, "||".join(markers))
+        print(f"[ok] Saved {env_key} with {len(markers)} marker(s).")
+        return
+
+    if assume_yes:
+        if existing_value:
+            print(f"[ok] Keeping existing {env_key}.")
+        return
+
+    if existing_value:
+        print(f"[info] Existing {env_key}: {existing_value}")
+        keep_existing = _confirm(
+            "Keep the current email signature/disclaimer cutoff markers?",
+            default_yes=True,
+            assume_yes=assume_yes,
+        )
+        if keep_existing:
+            return
+
+    should_configure = _confirm(
+        "Add custom email signature/disclaimer cutoff markers?",
+        default_yes=False,
+        assume_yes=assume_yes,
+    )
+    if not should_configure:
+        return
+
+    print("[info] Enter phrases that start the content you want removed.")
+    print("[info] Example: External email:||Company Confidential||Sent from Example CRM")
+    raw_value = _prompt_text("Markers (separate multiple values with ||): ")
+    markers = _normalize_signature_markers([raw_value])
+    if not markers:
+        print("[skip] No custom markers entered.")
+        return
+
+    _upsert_env_value(env_path, env_key, "||".join(markers))
+    print(f"[ok] Saved {env_key} with {len(markers)} marker(s).")
 
 
 def _http_ok(url: str, timeout: float = 2.0) -> bool:
@@ -270,14 +357,15 @@ def _print_explain_plan(repo_root: Path, args: argparse.Namespace) -> None:
     print("PenguinConnect setup plan (explain-only):")
     print("0. Run from Terminal.app with Full Disk Access enabled.")
     print("1. Ensure .env exists (copy from .env.example if missing).")
-    print("2. Ensure server/venv exists and install server/requirements.txt.")
+    print("2. Optionally save custom email signature/disclaimer cutoff markers in .env.")
+    print("3. Ensure server/venv exists and install server/requirements.txt.")
     print(
-        "3. Ensure local bridge API is running at /penguin-connect/health "
+        "4. Ensure local bridge API is running at /penguin-connect/health "
         "(bootstrap may use PENGUIN_CONNECT_ALLOW_MISSING_GMAIL_STARTUP=1 before OAuth connect)."
     )
-    print("4. Connect Gmail using scripts/penguin_connect_connect.py.")
-    print("5. Run scripts/penguin_connect_doctor.py and show final status.")
-    print("6. Run sync smoke test via /penguin-connect/conversations/sync.")
+    print("5. Connect Gmail using scripts/penguin_connect_connect.py.")
+    print("6. Run scripts/penguin_connect_doctor.py and show final status.")
+    print("7. Run sync smoke test via /penguin-connect/conversations/sync.")
     print("\nExpected command entry point:")
     cmd = ["./scripts/penguin_connect_setup.py"]
     if args.gmail:
@@ -293,6 +381,12 @@ def main() -> int:
         description="Guided setup wizard for PenguinConnect local bridge"
     )
     parser.add_argument("--gmail", help="Gmail address to connect")
+    parser.add_argument(
+        "--signature-marker",
+        action="append",
+        default=[],
+        help="Custom line prefix that should strip signatures/disclaimers and everything after it",
+    )
     parser.add_argument(
         "--api-base",
         default=None,
@@ -333,7 +427,15 @@ def main() -> int:
         return 0
 
     venv_python = _bootstrap(repo_root, skip_install=args.skip_install)
-    env_values = _read_env_file(repo_root / ".env")
+    env_path = repo_root / ".env"
+    env_values = _read_env_file(env_path)
+    _configure_signature_markers(
+        env_path,
+        cli_markers=args.signature_marker,
+        assume_yes=args.yes,
+        current_value=env_values.get("PENGUIN_CONNECT_EMAIL_SIGNATURE_MARKERS"),
+    )
+    env_values = _read_env_file(env_path)
     local_api_env = dict(env_values)
     local_api_env.update({k: v for k, v in os.environ.items() if v != ""})
     api_base = (args.api_base or resolve_local_api_base(local_api_env)).strip()
