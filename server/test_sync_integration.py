@@ -1322,9 +1322,9 @@ class SyncIntegrationTests(unittest.TestCase):
         finally:
             migrated_conn.close()
 
-        self.assertEqual(row["body_text"], "Test email\nSent with\nSlashy")
+        self.assertEqual(row["body_text"], "Test email\nSent with Slashy: https://slashy.com")
         metadata = json.loads(row["metadata"] or "{}")
-        self.assertEqual(metadata["source_body_text"], "Test email\nSent with\nSlashy")
+        self.assertEqual(metadata["source_body_text"], "Test email\nSent with Slashy: https://slashy.com")
         self.assertEqual(metadata["gmail_body_source"], "html")
         self.assertEqual(metadata["source_body_html_raw"], raw_html)
         self.assertTrue(metadata["gmail_quoted_content_removed"])

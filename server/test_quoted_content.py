@@ -99,6 +99,21 @@ class QuotedContentTests(unittest.TestCase):
         self.assertTrue(parsed.quoted_content_removed)
         self.assertTrue(parsed.safe_for_send)
 
+    def test_strip_quoted_html_text_preserves_anchor_href(self):
+        parsed = strip_quoted_html_text(
+            """
+            <div>Read <a href="https://example.com/docs">Docs</a></div>
+            <div class="gmail_quote">
+              <div class="gmail_attr">On Tue, Mar 10, 2026, Sender wrote:</div>
+              <blockquote>Earlier text</blockquote>
+            </div>
+            """
+        )
+
+        self.assertEqual(parsed.text, "Read Docs: https://example.com/docs")
+        self.assertTrue(parsed.quoted_content_removed)
+        self.assertTrue(parsed.safe_for_send)
+
     def test_strip_quoted_html_text_removes_wrapped_reply_header_before_quote(self):
         parsed = strip_quoted_html_text(
             """

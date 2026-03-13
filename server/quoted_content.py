@@ -573,7 +573,9 @@ def _clean_quoted_html_text(html_text: str) -> tuple[str, bool]:
     removed_any = _remove_outlook_quote_sections(soup) or removed_any
     removed_any = _remove_reply_header_elements(soup) or removed_any
     removed_any = _remove_quoted_text_nodes(soup) or removed_any
-    return soup.get_text("\n"), removed_any
+    parser = _EmailHtmlTextParser()
+    parser.feed(str(soup))
+    return parser.text_content(), removed_any
 
 
 class _EmailHtmlTextParser(HTMLParser):
@@ -581,6 +583,7 @@ class _EmailHtmlTextParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self._skip_stack: list[bool] = []
         self._chunks: list[str] = []
+        self._anchor_stack: list[tuple[int, str]] = []
 
     def _is_skipping(self) -> bool:
         return bool(self._skip_stack and self._skip_stack[-1])
@@ -596,11 +599,22 @@ class _EmailHtmlTextParser(HTMLParser):
         attr_map = {name.lower(): value or "" for name, value in attrs}
         should_skip = self._is_skipping() or _should_skip_html_element(tag, attr_map)
         self._skip_stack.append(should_skip)
+        if not should_skip and tag.lower() == "a":
+            href = (attr_map.get("href") or "").strip()
+            self._anchor_stack.append((len(self._chunks), href))
         if not should_skip and tag.lower() in _BLOCK_BREAK_TAGS:
             self._append_break()
 
     def handle_endtag(self, tag: str) -> None:
         was_skipping = self._skip_stack.pop() if self._skip_stack else False
+        if not was_skipping and tag.lower() == "a" and self._anchor_stack:
+            start_index, href = self._anchor_stack.pop()
+            if href:
+                label = _normalize_text("".join(self._chunks[start_index:]))
+                if not label:
+                    self._chunks.append(href)
+                elif label.casefold() != href.casefold():
+                    self._chunks.append(f": {href}")
         if not was_skipping and tag.lower() in _BLOCK_BREAK_TAGS:
             self._append_break()
 
