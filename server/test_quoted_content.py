@@ -96,6 +96,41 @@ class QuotedContentTests(unittest.TestCase):
         self.assertTrue(parsed.quoted_content_removed)
         self.assertTrue(parsed.safe_for_send)
 
+    def test_strip_quoted_html_text_removes_wrapped_reply_header_before_quote(self):
+        parsed = strip_quoted_html_text(
+            """
+            <div>Test email</div>
+            <div>On Fri, Mar 13, 2026 at 1:38 PM Dhruv Roonga &lt;<br>
+            hgaddipati1118+am-e3526656f885@gmail.com&gt; wrote:</div>
+            <blockquote>&gt; why did we have the on... stuff thats bad.</blockquote>
+            """
+        )
+
+        self.assertEqual(parsed.text, "Test email")
+        self.assertTrue(parsed.quoted_content_removed)
+        self.assertTrue(parsed.safe_for_send)
+
+    def test_extract_latest_email_text_prefers_html_quote_stripping_over_plain_text(self):
+        parsed = extract_latest_email_text(
+            plain_text=(
+                "Test email\n\nOn Fri, Mar 13, 2026 at 1:38 PM Dhruv Roonga <\n"
+                "hgaddipati1118+am-e3526656f885@gmail.com> wrote:\n\n"
+                "> why did we have the on... stuff thats bad."
+            ),
+            html_text="""
+            <div>Test email</div>
+            <div class="gmail_quote">
+              <div class="gmail_attr">On Fri, Mar 13, 2026 at 1:38 PM Dhruv Roonga wrote:</div>
+              <blockquote>why did we have the on... stuff thats bad.</blockquote>
+            </div>
+            """,
+        )
+
+        self.assertEqual(parsed.source, "html")
+        self.assertEqual(parsed.text, "Test email")
+        self.assertTrue(parsed.quoted_content_removed)
+        self.assertTrue(parsed.safe_for_send)
+
     def test_extract_latest_email_text_marks_snippet_only_as_unsafe(self):
         parsed = extract_latest_email_text(snippet="Please send this quick update")
 
@@ -125,8 +160,13 @@ class QuotedContentTests(unittest.TestCase):
         self.assertTrue(parsed.signature_removed)
         self.assertTrue(parsed.safe_for_send)
 
-    def test_strip_quoted_plain_text_removes_sent_with_slashy_footer(self):
-        parsed = strip_quoted_plain_text("Latest reply\n\nSent with Slashy.")
+    def test_strip_quoted_plain_text_removes_sent_with_slashy_footer_when_configured(self):
+        with mock.patch.dict(
+            "os.environ",
+            {"PENGUIN_CONNECT_EMAIL_SIGNATURE_MARKERS": "Sent with Slashy"},
+            clear=False,
+        ):
+            parsed = strip_quoted_plain_text("Latest reply\n\nSent with Slashy.")
 
         self.assertEqual(parsed.text, "Latest reply")
         self.assertTrue(parsed.signature_removed)

@@ -74,7 +74,7 @@ Optional reply-cleanup setting:
   - optional `||`-separated list of normalized line prefixes
   - when a reply line starts with one of them, PenguinConnect strips that line and everything after it before sending to Apple Messages
   - useful for recurring legal disclaimers, CRM footers, or signatures the built-in parser misses
-  - built-in stripping already covers common client footers such as `Sent with Slashy`
+  - use this for workflow-specific footers such as `Sent with Slashy`
 
 ## 1) Get Google OAuth Client JSON
 

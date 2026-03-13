@@ -103,7 +103,7 @@ Custom parsing option:
 - `PENGUIN_CONNECT_EMAIL_SIGNATURE_MARKERS`
   - optional `||`-separated list of line prefixes
   - when a normalized line starts with one of them, PenguinConnect strips that line and everything after it before Gmail-to-chat send
-  - the built-in parser already strips common mobile/client footers such as `Sent with Slashy`
+  - use this for footer text that is specific to your workflow, for example `Sent with Slashy`
 
 ## Required Setup Order
 

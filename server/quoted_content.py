@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from bs4 import BeautifulSoup, NavigableString, Tag
 from dataclasses import dataclass
 import html
 from html.parser import HTMLParser
 import os
 import re
 import unicodedata
-from typing import Optional
+from typing import Iterable, Optional
 
 _MSO_CONDITIONAL_RE = re.compile(r"<!--\[if.*?<!\[endif\]-->", re.IGNORECASE | re.DOTALL)
 _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
@@ -17,6 +18,7 @@ _HTML_QUOTE_MARKER_RE = re.compile(
     r"divRplyFwdMsg|mail-editor-reference-message-container|border-left\s*:|border-top\s*:",
     re.IGNORECASE,
 )
+_HTML_PLAIN_REPLY_MARKER_RE = re.compile(r"(?:^|>)\s*On[\s\S]{0,200}?wrote:\s*(?=<|\n|$)", re.IGNORECASE)
 _DISPLAY_NONE_RE = re.compile(r"\bdisplay\s*:\s*none\b", re.IGNORECASE)
 _BORDER_LEFT_QUOTE_RE = re.compile(r"border-left\s*:[^;]*(solid|rgb\(204|#ccc|#999)", re.IGNORECASE)
 _OUTLOOK_REPLY_BORDER_RE = re.compile(r"border-top\s*:[^;]*solid", re.IGNORECASE)
@@ -25,6 +27,7 @@ _FORWARDED_MARKER_RE = re.compile(r"^-{2,}\s*(forwarded|original) message\s*-{2,
 _BEGIN_FORWARD_RE = re.compile(r"^begin forwarded message:\s*$", re.IGNORECASE)
 _ON_WROTE_RE = re.compile(r"^on\s+.+\s+wrote:\s*$", re.IGNORECASE)
 _INLINE_ON_WROTE_RE = re.compile(r"(?<!\S)(On\s+.+?\s+wrote:)", re.IGNORECASE)
+_HTML_ON_WROTE_TEXT_RE = re.compile(r"^\s*On[\s\S]{0,200}?wrote:\s*$", re.IGNORECASE)
 _INLINE_FORWARD_RE = re.compile(
     r"(?<!\S)(-{2,}\s*(?:forwarded|original) message\s*-{2,}|Begin forwarded message:)",
     re.IGNORECASE,
@@ -37,7 +40,8 @@ _DISCLAIMER_START_RE = re.compile(
 )
 _TRAILING_SIGNATURE_RE = re.compile(
     r"^(sent from my (iphone|ipad|mac|android|galaxy|pixel)|"
-    r"get outlook for (ios|android)|sent with slashy|sent via superhuman|"
+    r"get outlook for (ios|android)|sent with slashy|"
+    r"sent with \[slashy\]\(https?://slashy\.(?:com|ai)\)|sent via superhuman|"
     r"sent from gmail mobile|sent from proton mail)[.!]*$",
     re.IGNORECASE,
 )
@@ -66,6 +70,7 @@ _IGNORED_HTML_CLASSES = {
     "moz-cite-prefix",
     "front-blockquote",
 }
+_SIGNATURE_HTML_CLASSES = {"slashy-signature"}
 _IGNORED_HTML_IDS = {
     "divrplyfwdmsg",
     "mail-editor-reference-message-container",
@@ -108,8 +113,6 @@ _ZERO_WIDTH_CODEPOINTS = {
     0xFEFF,
 }
 _CUSTOM_SIGNATURE_MARKER_ENV = "PENGUIN_CONNECT_EMAIL_SIGNATURE_MARKERS"
-
-
 @dataclass(frozen=True)
 class ParsedEmailBody:
     text: str
@@ -257,20 +260,26 @@ def _trim_trailing_signature(lines: list[str]) -> tuple[list[str], bool]:
     return trimmed, removed
 
 
-def _configured_signature_markers() -> tuple[str, ...]:
-    raw = os.environ.get(_CUSTOM_SIGNATURE_MARKER_ENV, "")
-    if not raw:
+def _normalize_signature_markers(markers: Optional[Iterable[str]]) -> tuple[str, ...]:
+    if not markers:
         return ()
-    markers: list[str] = []
-    for chunk in re.split(r"\|\||\r?\n", raw):
-        marker = _normalize_text(chunk).casefold()
-        if marker:
-            markers.append(marker)
-    return tuple(dict.fromkeys(markers))
+    normalized_markers: list[str] = []
+    for raw_marker in markers:
+        if not raw_marker:
+            continue
+        for chunk in re.split(r"\|\||\r?\n", raw_marker):
+            marker = _normalize_text(chunk).casefold()
+            if marker:
+                normalized_markers.append(marker)
+    return tuple(dict.fromkeys(normalized_markers))
 
 
-def _trim_custom_signature_block(lines: list[str]) -> tuple[list[str], bool]:
-    markers = _configured_signature_markers()
+def _default_signature_markers() -> tuple[str, ...]:
+    return _normalize_signature_markers([os.environ.get(_CUSTOM_SIGNATURE_MARKER_ENV, "")])
+
+
+def _trim_custom_signature_block(lines: list[str], signature_markers: tuple[str, ...]) -> tuple[list[str], bool]:
+    markers = signature_markers
     if not lines or not markers:
         return lines, False
 
@@ -340,7 +349,7 @@ def _safety_flags_for_text(text: str, *, source: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(flags))
 
 
-def strip_quoted_plain_text(text: str) -> ParsedEmailBody:
+def strip_quoted_plain_text(text: str, *, signature_markers: Optional[Iterable[str]] = None) -> ParsedEmailBody:
     normalized = _normalize_text(text)
     if not normalized:
         return ParsedEmailBody(text="", source="plain", quoted_content_removed=False, signature_removed=False)
@@ -370,7 +379,10 @@ def strip_quoted_plain_text(text: str) -> ParsedEmailBody:
             break
         kept_lines.append(line)
 
-    kept_lines, custom_signature_removed = _trim_custom_signature_block(kept_lines)
+    kept_lines, custom_signature_removed = _trim_custom_signature_block(
+        kept_lines,
+        _normalize_signature_markers(signature_markers) or _default_signature_markers(),
+    )
     kept_lines, signature_removed = _trim_trailing_signature(kept_lines)
     signature_removed = custom_signature_removed or signature_removed
     cleaned = _normalize_text("\n".join(kept_lines))
@@ -420,6 +432,138 @@ def _should_skip_html_element(tag: str, attrs: dict[str, str]) -> bool:
     return False
 
 
+def _remove_display_none_elements(soup: BeautifulSoup) -> bool:
+    removed = False
+    for element in list(soup.find_all(style=True)):
+        if not isinstance(element, Tag):
+            continue
+        style = (element.get("style") or "").lower()
+        if _DISPLAY_NONE_RE.search(style):
+            element.decompose()
+            removed = True
+    return removed
+
+
+def _remove_explicit_quote_elements(soup: BeautifulSoup) -> bool:
+    removed = False
+    for element in list(soup.find_all(True)):
+        if not isinstance(element, Tag):
+            continue
+        attrs = element.attrs if isinstance(element.attrs, dict) else {}
+        classes = {token.strip().lower() for token in attrs.get("class", []) if token}
+        element_id = str(attrs.get("id") or "").strip().lower()
+        style = str(attrs.get("style") or "").lower()
+        if (
+            element.name == "blockquote"
+            or bool(classes & _IGNORED_HTML_CLASSES)
+            or bool(classes & _SIGNATURE_HTML_CLASSES)
+            or element_id in _IGNORED_HTML_IDS
+            or _BORDER_LEFT_QUOTE_RE.search(style)
+        ):
+            element.decompose()
+            removed = True
+    return removed
+
+
+def _text_looks_like_reply_header(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    if _HTML_ON_WROTE_TEXT_RE.match(normalized):
+        return True
+    lines = normalized.split("\n")
+    return any(_reply_header_end_index(lines, index) is not None for index in range(len(lines)))
+
+
+def _text_looks_like_header_block(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    lines = normalized.split("\n")
+    return any(_is_header_block_start(lines, index) for index in range(len(lines)))
+
+
+def _remove_outlook_quote_sections(soup: BeautifulSoup) -> bool:
+    removed = False
+    for element in list(soup.find_all(style=True)):
+        if not isinstance(element, Tag):
+            continue
+        style = (element.get("style") or "").lower()
+        if not _OUTLOOK_REPLY_BORDER_RE.search(style):
+            continue
+        text = _normalize_text(element.get_text("\n"))
+        if not _text_looks_like_header_block(text):
+            continue
+        wrapper = element.parent if isinstance(element.parent, Tag) else element
+        container = wrapper.parent if isinstance(wrapper.parent, Tag) else None
+        if container is None:
+            wrapper.decompose()
+            removed = True
+            continue
+        remove_children = False
+        for child in list(container.children):
+            if child == wrapper:
+                remove_children = True
+            if remove_children and isinstance(child, Tag):
+                child.decompose()
+                removed = True
+        break
+    return removed
+
+
+def _remove_reply_header_elements(soup: BeautifulSoup) -> bool:
+    removed = False
+    for element in list(soup.find_all(["div", "p", "span"])):
+        if not isinstance(element, Tag):
+            continue
+        text = _normalize_text(element.get_text("\n"))
+        if not text:
+            continue
+        if _text_looks_like_reply_header(text) or _text_looks_like_header_block(text):
+            element.decompose()
+            removed = True
+    return removed
+
+
+def _remove_quoted_text_nodes(soup: BeautifulSoup) -> bool:
+    removed = False
+    for text_node in list(soup.find_all(string=True)):
+        if not isinstance(text_node, NavigableString):
+            continue
+        text_value = str(text_node)
+        normalized = _normalize_text(text_value)
+        if not normalized:
+            continue
+        if _text_looks_like_reply_header(text_value) or _text_looks_like_header_block(text_value):
+            text_node.extract()
+            removed = True
+            continue
+        filtered_lines = [
+            line for line in text_value.splitlines() if not _QUOTE_PREFIX_RE.match((line or "").lstrip())
+        ]
+        if len(filtered_lines) == len(text_value.splitlines()):
+            continue
+        replacement = "\n".join(filtered_lines).strip()
+        if replacement:
+            text_node.replace_with(replacement)
+        else:
+            text_node.extract()
+        removed = True
+    return removed
+
+
+def _clean_quoted_html_text(html_text: str) -> tuple[str, bool]:
+    stripped_html = _strip_mso_comments(html_text)
+    soup = BeautifulSoup(stripped_html, "html.parser")
+    removed_any = False
+    removed_any = _remove_display_none_elements(soup) or removed_any
+    removed_any = _remove_explicit_quote_elements(soup) or removed_any
+    removed_any = _remove_outlook_quote_sections(soup) or removed_any
+    removed_any = _remove_reply_header_elements(soup) or removed_any
+    removed_any = _remove_quoted_text_nodes(soup) or removed_any
+    return soup.get_text("\n"), removed_any
+
+
 class _EmailHtmlTextParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -464,21 +608,18 @@ class _EmailHtmlTextParser(HTMLParser):
         return "".join(self._chunks)
 
 
-def strip_quoted_html_text(html_text: str) -> ParsedEmailBody:
+def strip_quoted_html_text(html_text: str, *, signature_markers: Optional[Iterable[str]] = None) -> ParsedEmailBody:
     if not html_text:
         return ParsedEmailBody(text="", source="html", quoted_content_removed=False, signature_removed=False)
 
-    had_html_quote_markers = bool(_HTML_QUOTE_MARKER_RE.search(html_text))
-    parser = _EmailHtmlTextParser()
-    parser.feed(_strip_mso_comments(html_text))
-    parser.close()
-    plain = parser.text_content()
-    parsed = strip_quoted_plain_text(plain)
+    had_html_quote_markers = bool(_HTML_QUOTE_MARKER_RE.search(html_text) or _HTML_PLAIN_REPLY_MARKER_RE.search(html_text))
+    plain, dom_quote_removed = _clean_quoted_html_text(html_text)
+    parsed = strip_quoted_plain_text(plain, signature_markers=signature_markers)
     safety_flags = _safety_flags_for_text(parsed.text, source="html")
     return ParsedEmailBody(
         text=parsed.text,
         source="html",
-        quoted_content_removed=had_html_quote_markers or parsed.quoted_content_removed,
+        quoted_content_removed=had_html_quote_markers or dom_quote_removed or parsed.quoted_content_removed,
         signature_removed=parsed.signature_removed,
         safe_for_send=not safety_flags,
         safety_flags=safety_flags,
@@ -490,19 +631,20 @@ def extract_latest_email_text(
     plain_text: Optional[str] = None,
     html_text: Optional[str] = None,
     snippet: Optional[str] = None,
+    signature_markers: Optional[Iterable[str]] = None,
 ) -> ParsedEmailBody:
-    if plain_text:
-        parsed_plain = strip_quoted_plain_text(plain_text)
-        if _has_meaningful_text(parsed_plain.text):
-            return parsed_plain
-
     if html_text:
-        parsed_html = strip_quoted_html_text(html_text)
+        parsed_html = strip_quoted_html_text(html_text, signature_markers=signature_markers)
         if _has_meaningful_text(parsed_html.text):
             return parsed_html
 
+    if plain_text:
+        parsed_plain = strip_quoted_plain_text(plain_text, signature_markers=signature_markers)
+        if _has_meaningful_text(parsed_plain.text):
+            return parsed_plain
+
     if snippet:
-        parsed_snippet = strip_quoted_plain_text(snippet)
+        parsed_snippet = strip_quoted_plain_text(snippet, signature_markers=signature_markers)
         safety_flags = _safety_flags_for_text(parsed_snippet.text, source="snippet")
         if _has_meaningful_text(parsed_snippet.text):
             return ParsedEmailBody(
