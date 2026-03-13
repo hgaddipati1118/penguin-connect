@@ -793,6 +793,289 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(selection["hot_gmail_conversations"], 1)
         self.assertEqual(selection["selection_strategy"], "activity_prioritized_round_robin")
 
+    def test_incremental_selection_prioritizes_gmail_hot_over_imessage_hot(self):
+        self.conn.execute(
+            """INSERT INTO penguin_connect_conversations
+               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+                alias_email, status)
+               VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
+            (
+                "owner@gmail.com",
+                "amc_gmail_hot",
+                "chat-gmail-hot",
+                "Gmail Hot",
+                "owner+am-gmail-hot@gmail.com",
+            ),
+        )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_sync_state
+               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                "amc_test",
+                "2026-03-04T10:00:00+00:00",
+                "2026-03-04T10:00:00+00:00",
+                "2026-03-04T10:05:00+00:00",
+                "2026-03-04T10:05:00+00:00",
+                "2026-03-04T10:05:00+00:00",
+            ),
+        )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_sync_state
+               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                "amc_gmail_hot",
+                "2026-03-04T10:00:00+00:00",
+                "2026-03-04T10:00:00+00:00",
+                "2026-03-04T10:05:00+00:00",
+                "2026-03-04T10:06:00+00:00",
+                "2026-03-04T10:06:00+00:00",
+            ),
+        )
+        self.conn.execute(
+            "UPDATE penguin_connect_conversations SET last_synced_at = ? WHERE conversation_id = ?",
+            ("2026-03-04T10:05:00+00:00", "amc_test"),
+        )
+
+        gmail_service = mock.Mock()
+        with mock.patch.dict(
+            os.environ,
+            {"PENGUIN_CONNECT_INCREMENTAL_CONVERSATIONS_PER_RUN": "1"},
+            clear=False,
+        ), mock.patch(
+            "penguin_connect.list_recent_imessage_chat_activity",
+            return_value={
+                "available": True,
+                "chats": [
+                    {
+                        "chat_id": "chat-123",
+                        "first_message_at": "2026-03-07T07:10:00+00:00",
+                        "last_message_at": "2026-03-07T07:15:00+00:00",
+                        "message_count": 1,
+                    }
+                ],
+            },
+        ), mock.patch(
+            "penguin_connect._list_recent_gmail_alias_activity",
+            return_value=(
+                {"amc_gmail_hot": {"last_message_at": "2026-03-07T07:16:00+00:00", "message_count": 1}},
+                {},
+            ),
+        ):
+            conversations, selection = penguin_connect._select_conversations_for_sync(
+                self.conn,
+                "owner@gmail.com",
+                "incremental",
+                days=7,
+                hours=None,
+                gmail_service=gmail_service,
+            )
+
+        self.assertEqual([row["conversation_id"] for row in conversations], ["amc_gmail_hot"])
+        self.assertEqual(selection["hot_gmail_conversations"], 1)
+        self.assertEqual(selection["hot_imessage_conversations"], 1)
+
+    def test_incremental_selection_persists_unselected_gmail_hot_activity_until_synced(self):
+        self.conn.execute(
+            """INSERT INTO penguin_connect_conversations
+               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+                alias_email, status)
+               VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
+            (
+                "owner@gmail.com",
+                "amc_gmail_hot_b",
+                "chat-gmail-hot-b",
+                "Gmail Hot B",
+                "owner+am-gmail-hot-b@gmail.com",
+            ),
+        )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_sync_state
+               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                "amc_test",
+                "2026-03-04T10:00:00+00:00",
+                "2026-03-04T10:00:00+00:00",
+                "2026-03-04T10:05:00+00:00",
+                "2026-03-04T10:05:00+00:00",
+                "2026-03-04T10:05:00+00:00",
+            ),
+        )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_sync_state
+               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                "amc_gmail_hot_b",
+                "2026-03-04T10:00:00+00:00",
+                "2026-03-04T10:00:00+00:00",
+                "2026-03-04T10:05:00+00:00",
+                "2026-03-04T10:06:00+00:00",
+                "2026-03-04T10:06:00+00:00",
+            ),
+        )
+
+        gmail_service = mock.Mock()
+        with mock.patch.dict(
+            os.environ,
+            {"PENGUIN_CONNECT_INCREMENTAL_CONVERSATIONS_PER_RUN": "1"},
+            clear=False,
+        ), mock.patch(
+            "penguin_connect.list_recent_imessage_chat_activity",
+            return_value={"available": True, "chats": []},
+        ), mock.patch(
+            "penguin_connect._list_recent_gmail_alias_activity",
+            return_value=(
+                {
+                    "amc_test": {"last_message_at": "2026-03-07T07:15:00+00:00", "message_count": 1},
+                    "amc_gmail_hot_b": {"last_message_at": "2026-03-07T07:16:00+00:00", "message_count": 1},
+                },
+                {},
+            ),
+        ):
+            first_conversations, first_selection = penguin_connect._select_conversations_for_sync(
+                self.conn,
+                "owner@gmail.com",
+                "incremental",
+                days=7,
+                hours=None,
+                gmail_service=gmail_service,
+            )
+
+        self.assertEqual(first_selection["hot_gmail_conversations"], 2)
+        first_selected_id = first_conversations[0]["conversation_id"]
+        second_expected_id = "amc_gmail_hot_b" if first_selected_id == "amc_test" else "amc_test"
+        penguin_connect._record_pending_gmail_activity(
+            self.conn,
+            {
+                "amc_test": {"last_message_at": "2026-03-07T07:15:00+00:00", "message_count": 1},
+                "amc_gmail_hot_b": {"last_message_at": "2026-03-07T07:16:00+00:00", "message_count": 1},
+            },
+        )
+        pending_row = self.conn.execute(
+            "SELECT pending_gmail_activity_at FROM penguin_connect_sync_state WHERE conversation_id = ?",
+            (second_expected_id,),
+        ).fetchone()
+        self.assertEqual(
+            pending_row["pending_gmail_activity_at"],
+            "2026-03-07T07:16:00+00:00" if second_expected_id == "amc_gmail_hot_b" else "2026-03-07T07:15:00+00:00",
+        )
+
+        penguin_connect._upsert_sync_state(
+            self.conn,
+            first_selected_id,
+            None,
+            "2026-03-07T07:15:00+00:00" if first_selected_id == "amc_test" else "2026-03-07T07:16:00+00:00",
+            None,
+        )
+        penguin_connect._clear_pending_gmail_activity_if_caught_up(self.conn, first_selected_id)
+
+        with mock.patch.dict(
+            os.environ,
+            {"PENGUIN_CONNECT_INCREMENTAL_CONVERSATIONS_PER_RUN": "1"},
+            clear=False,
+        ), mock.patch(
+            "penguin_connect.list_recent_imessage_chat_activity",
+            return_value={"available": True, "chats": []},
+        ), mock.patch(
+            "penguin_connect._list_recent_gmail_alias_activity",
+            return_value=({}, {}),
+        ):
+            second_conversations, second_selection = penguin_connect._select_conversations_for_sync(
+                self.conn,
+                "owner@gmail.com",
+                "incremental",
+                days=7,
+                hours=None,
+                gmail_service=gmail_service,
+            )
+
+        self.assertEqual([row["conversation_id"] for row in second_conversations], [second_expected_id])
+        self.assertEqual(second_selection["hot_gmail_conversations"], 1)
+
+    def test_list_recent_gmail_alias_activity_backstop_recovers_recent_sent_alias_messages(self):
+        self.conn.execute(
+            """INSERT INTO penguin_connect_sync_state
+               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
+            (
+                "amc_test",
+                "2026-03-04T10:00:00+00:00",
+                "2026-03-04T10:00:00+00:00",
+                "2026-03-04T10:05:00+00:00",
+            ),
+        )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_poll_state
+               (gmail_email, last_gmail_history_id)
+               VALUES (?, ?)""",
+            ("owner@gmail.com", "200"),
+        )
+        conv = self.conn.execute(
+            """SELECT c.*,
+                      s.last_imessage_ts,
+                      s.last_gmail_ts,
+                      s.last_message_ts,
+                      s.last_gmail_history_id,
+                      s.pending_gmail_activity_at,
+                      s.initial_sync_completed_at,
+                      s.next_full_verify_at,
+                      s.full_verify_completed_at,
+                      s.last_synced_at AS sync_state_last_synced_at
+               FROM penguin_connect_conversations c
+               LEFT JOIN penguin_connect_sync_state s ON s.conversation_id = c.conversation_id
+               WHERE c.conversation_id = ?""",
+            ("amc_test",),
+        ).fetchone()
+
+        gmail_service = mock.Mock()
+        gmail_service.users.return_value.history.return_value.list.return_value.execute.return_value = {
+            "historyId": "201",
+            "history": [],
+        }
+        gmail_service.users.return_value.messages.return_value.list.return_value.execute.return_value = {
+            "messages": [{"id": "sent-1"}],
+        }
+        recent_internal_date = str(int((datetime.now(timezone.utc) - timedelta(minutes=5)).timestamp() * 1000))
+
+        def get_message(*, userId, id, format, metadataHeaders):
+            response = mock.Mock()
+            self.assertEqual(id, "sent-1")
+            self.assertEqual(format, "metadata")
+            response.execute.return_value = {
+                "labelIds": ["SENT"],
+                "payload": {
+                    "headers": [
+                        {"name": "To", "value": "Owner <owner+am-test@gmail.com>"},
+                    ]
+                },
+                "internalDate": recent_internal_date,
+            }
+            return response
+
+        gmail_service.users.return_value.messages.return_value.get.side_effect = get_message
+
+        recent, meta = penguin_connect._list_recent_gmail_alias_activity(
+            self.conn,
+            gmail_service,
+            "owner@gmail.com",
+            [conv],
+        )
+
+        self.assertEqual(recent["amc_test"]["message_count"], 1)
+        self.assertTrue(meta["gmail_activity_backstop_used"])
+        self.assertEqual(meta["gmail_activity_backstop_matches"], 1)
+        pending = self.conn.execute(
+            "SELECT pending_gmail_activity_at FROM penguin_connect_sync_state WHERE conversation_id = ?",
+            ("amc_test",),
+        ).fetchone()
+        self.assertEqual(
+            pending["pending_gmail_activity_at"],
+            penguin_connect._iso_from_gmail_internal_date(recent_internal_date),
+        )
+
     def test_list_conversations_uses_cache_without_discovery(self):
         with mock.patch("penguin_connect.ensure_conversations_discovered") as mock_discover:
             result = penguin_connect.list_conversations(self.conn)

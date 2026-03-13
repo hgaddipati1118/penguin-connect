@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS penguin_connect_sync_state (
     last_gmail_ts TEXT,
     last_message_ts TEXT,
     last_gmail_history_id TEXT,
+    pending_gmail_activity_at TEXT,
     initial_sync_completed_at TEXT,
     next_full_verify_at TEXT,
     full_verify_completed_at TEXT,
@@ -1137,6 +1138,8 @@ def init_db() -> None:
         conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN initial_sync_completed_at TEXT")
     if "last_message_ts" not in sync_columns:
         conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN last_message_ts TEXT")
+    if "pending_gmail_activity_at" not in sync_columns:
+        conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN pending_gmail_activity_at TEXT")
     if "next_full_verify_at" not in sync_columns:
         conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN next_full_verify_at TEXT")
     if "full_verify_completed_at" not in sync_columns:
@@ -1160,6 +1163,9 @@ def init_db() -> None:
         "CREATE INDEX IF NOT EXISTS idx_penguin_connect_sync_bootstrap ON penguin_connect_sync_state(initial_sync_completed_at)"
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_penguin_connect_sync_last_message ON penguin_connect_sync_state(last_message_ts)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_penguin_connect_sync_pending_gmail ON penguin_connect_sync_state(pending_gmail_activity_at)"
+    )
     conn.execute(
         """CREATE INDEX IF NOT EXISTS idx_penguin_connect_sync_next_full_verify
            ON penguin_connect_sync_state(next_full_verify_at, full_verify_completed_at)"""

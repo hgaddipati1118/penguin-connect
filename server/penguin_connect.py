@@ -67,6 +67,8 @@ DEFAULT_INCREMENTAL_CONVERSATIONS_PER_RUN = 1
 MAX_INCREMENTAL_CONVERSATIONS_PER_RUN = 20
 DEFAULT_INCREMENTAL_ACTIVITY_WINDOW_MINUTES = 360
 MAX_INCREMENTAL_ACTIVITY_WINDOW_MINUTES = 24 * 60
+DEFAULT_GMAIL_ACTIVITY_BACKSTOP_HOURS = 24
+DEFAULT_GMAIL_ACTIVITY_BACKSTOP_MAX_MESSAGES = 250
 DEFAULT_GMAIL_API_MAX_RETRIES = 3
 DEFAULT_GMAIL_API_MAX_BACKOFF_SECONDS = 30
 DEFAULT_GMAIL_RATE_LIMIT_PAUSE_SECONDS = 120
@@ -358,6 +360,10 @@ def _incremental_activity_cutoff() -> datetime:
     return datetime.now(timezone.utc) - timedelta(minutes=_incremental_activity_window_minutes())
 
 
+def _gmail_activity_backstop_cutoff() -> datetime:
+    return datetime.now(timezone.utc) - timedelta(hours=DEFAULT_GMAIL_ACTIVITY_BACKSTOP_HOURS)
+
+
 def _recent_activity_sort_value(value: Optional[str]) -> datetime:
     dt = _parse_iso(value)
     return dt or datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -556,6 +562,7 @@ def _select_conversations_for_sync(
                   s.last_gmail_ts,
                   s.last_message_ts,
                   s.last_gmail_history_id,
+                  s.pending_gmail_activity_at,
                   s.initial_sync_completed_at,
                   s.next_full_verify_at,
                   s.full_verify_completed_at,
@@ -592,6 +599,7 @@ def _select_conversations_for_sync(
         pending: list[sqlite3.Row] = []
         round_robin: list[sqlite3.Row] = []
         verify_due: list[sqlite3.Row] = []
+        hot_gmail_ids: set[str] = set()
         hot_imessage = 0
         hot_gmail = 0
 
@@ -604,12 +612,16 @@ def _select_conversations_for_sync(
 
             gmail_row = gmail_activity.get(conv["conversation_id"])
             gmail_ts = gmail_row.get("last_message_at") if gmail_row else None
-            has_hot_gmail = bool(gmail_ts and _recent_activity_sort_value(gmail_ts) > _recent_activity_sort_value(conv["last_gmail_ts"]))
+            gmail_ts = _max_iso_value(conv["pending_gmail_activity_at"], gmail_ts)
+            has_hot_gmail = bool(
+                gmail_ts and _recent_activity_sort_value(gmail_ts) > _recent_activity_sort_value(conv["last_gmail_ts"])
+            )
 
             if has_hot_imessage:
                 hot_imessage += 1
             if has_hot_gmail:
                 hot_gmail += 1
+                hot_gmail_ids.add(conv["conversation_id"])
 
             if _conversation_requires_full_verify(conv, now_dt=now_dt):
                 verify_due.append(conv)
@@ -621,7 +633,13 @@ def _select_conversations_for_sync(
             else:
                 round_robin.append(conv)
 
-        hot.sort(key=lambda conv: (_sync_due_sort_value(conv), conv["conversation_id"]))
+        hot.sort(
+            key=lambda conv: (
+                0 if conv["conversation_id"] in hot_gmail_ids else 1,
+                _sync_due_sort_value(conv),
+                conv["conversation_id"],
+            )
+        )
         pending.sort(key=lambda conv: (_sync_due_sort_value(conv), conv["conversation_id"]))
         round_robin.sort(key=lambda conv: (_sync_due_sort_value(conv), conv["conversation_id"]))
         verify_due.sort(key=lambda conv: (_full_verify_due_sort_value(conv), _sync_due_sort_value(conv), conv["conversation_id"]))
@@ -1483,7 +1501,8 @@ def _load_conversations_by_ids(conn: sqlite3.Connection, conversation_ids: set[s
 
 def _merge_sync_state_into_target(conn: sqlite3.Connection, source_id: str, target_id: str) -> None:
     source_state = conn.execute(
-        """SELECT last_imessage_ts, last_gmail_ts, last_gmail_history_id, initial_sync_completed_at
+        """SELECT last_imessage_ts, last_gmail_ts, last_gmail_history_id,
+                  pending_gmail_activity_at, initial_sync_completed_at
            FROM penguin_connect_sync_state
            WHERE conversation_id = ?""",
         (source_id,),
@@ -1497,6 +1516,7 @@ def _merge_sync_state_into_target(conn: sqlite3.Connection, source_id: str, targ
         source_state["last_imessage_ts"],
         source_state["last_gmail_ts"],
         source_state["last_gmail_history_id"],
+        pending_gmail_activity_at=source_state["pending_gmail_activity_at"],
     )
     if source_state["initial_sync_completed_at"]:
         conn.execute(
@@ -3483,6 +3503,7 @@ def _upsert_sync_state(
     last_imessage_ts: Optional[str],
     last_gmail_ts: Optional[str],
     last_gmail_history_id: Optional[str],
+    pending_gmail_activity_at: Optional[str] = None,
 ):
     def _max_iso(existing: Optional[str], candidate: Optional[str]) -> Optional[str]:
         existing_dt = _parse_iso(existing)
@@ -3497,7 +3518,10 @@ def _upsert_sync_state(
 
     last_message_ts = _max_iso(last_imessage_ts, last_gmail_ts)
     existing = conn.execute(
-        "SELECT last_imessage_ts, last_gmail_ts, last_message_ts, last_gmail_history_id FROM penguin_connect_sync_state WHERE conversation_id = ?",
+        """SELECT last_imessage_ts, last_gmail_ts, last_message_ts,
+                  last_gmail_history_id, pending_gmail_activity_at
+           FROM penguin_connect_sync_state
+           WHERE conversation_id = ?""",
         (conversation_id,),
     ).fetchone()
     if existing:
@@ -3506,19 +3530,29 @@ def _upsert_sync_state(
         last_message_ts = _max_iso(existing["last_message_ts"], _max_iso(last_imessage_ts, last_gmail_ts))
         if not last_gmail_history_id:
             last_gmail_history_id = existing["last_gmail_history_id"]
+        pending_gmail_activity_at = _max_iso(existing["pending_gmail_activity_at"], pending_gmail_activity_at)
 
     conn.execute(
         """INSERT INTO penguin_connect_sync_state
-           (conversation_id, last_imessage_ts, last_gmail_ts, last_message_ts, last_gmail_history_id, last_synced_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+           (conversation_id, last_imessage_ts, last_gmail_ts, last_message_ts,
+            last_gmail_history_id, pending_gmail_activity_at, last_synced_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
            ON CONFLICT(conversation_id) DO UPDATE SET
              last_imessage_ts = excluded.last_imessage_ts,
              last_gmail_ts = excluded.last_gmail_ts,
              last_message_ts = excluded.last_message_ts,
              last_gmail_history_id = excluded.last_gmail_history_id,
+             pending_gmail_activity_at = excluded.pending_gmail_activity_at,
              last_synced_at = datetime('now'),
              updated_at = datetime('now')""",
-        (conversation_id, last_imessage_ts, last_gmail_ts, last_message_ts, last_gmail_history_id),
+        (
+            conversation_id,
+            last_imessage_ts,
+            last_gmail_ts,
+            last_message_ts,
+            last_gmail_history_id,
+            pending_gmail_activity_at,
+        ),
     )
 
 
@@ -4152,6 +4186,181 @@ def _get_gmail_mailbox_history_id(gmail_service) -> Optional[str]:
     return history_id or None
 
 
+def _merge_recent_gmail_activity(
+    existing: dict[str, dict[str, Any]],
+    candidate: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    merged = {conversation_id: dict(row) for conversation_id, row in existing.items()}
+    for conversation_id, row in candidate.items():
+        candidate_ts = row.get("last_message_at")
+        if not merged.get(conversation_id):
+            merged[conversation_id] = {
+                "last_message_at": candidate_ts,
+                "message_count": int(row.get("message_count") or 0),
+            }
+            continue
+        current = merged[conversation_id]
+        current["last_message_at"] = _max_iso_value(current.get("last_message_at"), candidate_ts)
+        current["message_count"] = int(current.get("message_count") or 0) + int(row.get("message_count") or 0)
+    return merged
+
+
+def _record_pending_gmail_activity(
+    conn: sqlite3.Connection,
+    recent_by_conversation: dict[str, dict[str, Any]],
+) -> int:
+    recorded = 0
+    for conversation_id, row in recent_by_conversation.items():
+        activity_at = row.get("last_message_at")
+        if not activity_at:
+            continue
+        conn.execute(
+            """INSERT INTO penguin_connect_sync_state
+               (conversation_id, pending_gmail_activity_at, updated_at)
+               VALUES (?, ?, datetime('now'))
+               ON CONFLICT(conversation_id) DO UPDATE SET
+                 pending_gmail_activity_at = CASE
+                   WHEN penguin_connect_sync_state.pending_gmail_activity_at IS NULL THEN excluded.pending_gmail_activity_at
+                   WHEN excluded.pending_gmail_activity_at IS NULL THEN penguin_connect_sync_state.pending_gmail_activity_at
+                   WHEN penguin_connect_sync_state.pending_gmail_activity_at >= excluded.pending_gmail_activity_at
+                     THEN penguin_connect_sync_state.pending_gmail_activity_at
+                   ELSE excluded.pending_gmail_activity_at
+                 END,
+                 updated_at = datetime('now')""",
+            (conversation_id, activity_at),
+        )
+        recorded += 1
+    return recorded
+
+
+def _clear_pending_gmail_activity_if_caught_up(
+    conn: sqlite3.Connection,
+    conversation_id: str,
+    *,
+    force: bool = False,
+) -> bool:
+    row = conn.execute(
+        """SELECT last_gmail_ts, pending_gmail_activity_at
+           FROM penguin_connect_sync_state
+           WHERE conversation_id = ?""",
+        (conversation_id,),
+    ).fetchone()
+    if not row or not row["pending_gmail_activity_at"]:
+        return False
+    if not force and _recent_activity_sort_value(row["last_gmail_ts"]) < _recent_activity_sort_value(
+        row["pending_gmail_activity_at"]
+    ):
+        return False
+    conn.execute(
+        """UPDATE penguin_connect_sync_state
+           SET pending_gmail_activity_at = NULL,
+               updated_at = datetime('now')
+           WHERE conversation_id = ?""",
+        (conversation_id,),
+    )
+    return True
+
+
+def _list_recent_sent_alias_mailbox_activity(
+    gmail_service,
+    conversations: list[sqlite3.Row],
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    alias_lookup = {
+        _normalize_email(conv["alias_email"]): conv["conversation_id"]
+        for conv in conversations
+        if conv["alias_email"]
+    }
+    if not alias_lookup:
+        return {}, {}
+
+    last_gmail_lookup = {
+        conv["conversation_id"]: conv["last_gmail_ts"]
+        for conv in conversations
+        if conv["conversation_id"]
+    }
+    after_dt = _gmail_activity_backstop_cutoff()
+    query = f"in:sent after:{int(after_dt.timestamp())}"
+    recent_by_conversation: dict[str, dict[str, Any]] = {}
+    page_token = None
+    scanned_messages = 0
+
+    while scanned_messages < DEFAULT_GMAIL_ACTIVITY_BACKSTOP_MAX_MESSAGES:
+        params = {
+            "userId": "me",
+            "q": query,
+            "maxResults": 100,
+            "includeSpamTrash": False,
+        }
+        if page_token:
+            params["pageToken"] = page_token
+
+        data = _gmail_execute(lambda params=params: gmail_service.users().messages().list(**params).execute())
+        payload = data if isinstance(data, dict) else {}
+        for message in payload.get("messages", []) or []:
+            message_id = message.get("id")
+            if not message_id:
+                continue
+            scanned_messages += 1
+            try:
+                metadata = _gmail_execute(
+                    lambda message_id=message_id: gmail_service.users().messages().get(
+                        userId="me",
+                        id=message_id,
+                        format="metadata",
+                        metadataHeaders=["To", "Cc", "Delivered-To", "X-Original-To", "X-Forwarded-To"],
+                    ).execute()
+                )
+            except Exception as exc:
+                if _extract_gmail_error_status(exc) == 404:
+                    log_action("gmail_sent_backstop_message_missing", gmail_message_id=message_id)
+                    if scanned_messages >= DEFAULT_GMAIL_ACTIVITY_BACKSTOP_MAX_MESSAGES:
+                        break
+                    continue
+                raise
+            if _gmail_to_source_ignore_reason(metadata.get("labelIds") or []):
+                if scanned_messages >= DEFAULT_GMAIL_ACTIVITY_BACKSTOP_MAX_MESSAGES:
+                    break
+                continue
+            headers = _gmail_header_map(metadata.get("payload") or {})
+            conversation_id = None
+            for recipient in _extract_alias_recipients(headers):
+                conversation_id = alias_lookup.get(recipient)
+                if conversation_id:
+                    break
+            if not conversation_id:
+                if scanned_messages >= DEFAULT_GMAIL_ACTIVITY_BACKSTOP_MAX_MESSAGES:
+                    break
+                continue
+            message_ts = _iso_from_gmail_internal_date(metadata.get("internalDate"))
+            if _recent_activity_sort_value(message_ts) <= _recent_activity_sort_value(last_gmail_lookup.get(conversation_id)):
+                if scanned_messages >= DEFAULT_GMAIL_ACTIVITY_BACKSTOP_MAX_MESSAGES:
+                    break
+                continue
+            existing = recent_by_conversation.get(conversation_id)
+            if not existing:
+                recent_by_conversation[conversation_id] = {
+                    "last_message_at": message_ts,
+                    "message_count": 1,
+                }
+            else:
+                existing["last_message_at"] = _max_iso_value(existing.get("last_message_at"), message_ts)
+                existing["message_count"] = int(existing.get("message_count") or 0) + 1
+            if scanned_messages >= DEFAULT_GMAIL_ACTIVITY_BACKSTOP_MAX_MESSAGES:
+                break
+
+        if scanned_messages >= DEFAULT_GMAIL_ACTIVITY_BACKSTOP_MAX_MESSAGES:
+            break
+        page_token = payload.get("nextPageToken")
+        if not page_token:
+            break
+
+    return recent_by_conversation, {
+        "gmail_activity_backstop_cutoff": after_dt.isoformat(),
+        "gmail_activity_backstop_scanned_messages": scanned_messages,
+        "gmail_activity_backstop_matches": len(recent_by_conversation),
+    }
+
+
 def _list_recent_gmail_alias_activity(
     conn: sqlite3.Connection,
     gmail_service,
@@ -4166,94 +4375,122 @@ def _list_recent_gmail_alias_activity(
     if not alias_lookup:
         return {}, {}
 
+    recent_by_conversation: dict[str, dict[str, Any]] = {}
     poll_state = _get_poll_state(conn, gmail_email)
     start_history_id = (poll_state["last_gmail_history_id"] or "").strip() if poll_state else ""
+    latest_history_id = start_history_id
+    meta: dict[str, Any] = {}
+    history_initialized = False
+    history_reset = False
+
     if not start_history_id:
         current_history_id = _get_gmail_mailbox_history_id(gmail_service)
         if current_history_id:
             _upsert_poll_state(conn, gmail_email, last_gmail_history_id=current_history_id)
-        return {}, {"history_initialized": bool(current_history_id)}
+            latest_history_id = current_history_id
+        history_initialized = bool(current_history_id)
+    else:
+        page_token = None
+        while True:
+            try:
+                data = _gmail_execute(
+                    lambda page_token=page_token: gmail_service.users().history().list(
+                        userId="me",
+                        startHistoryId=start_history_id,
+                        historyTypes=["messageAdded"],
+                        maxResults=100,
+                        pageToken=page_token,
+                    ).execute()
+                )
+            except Exception as exc:
+                if _extract_gmail_error_status(exc) == 404:
+                    current_history_id = _get_gmail_mailbox_history_id(gmail_service)
+                    if current_history_id:
+                        _upsert_poll_state(conn, gmail_email, last_gmail_history_id=current_history_id)
+                        latest_history_id = current_history_id
+                    history_reset = True
+                    break
+                raise
 
-    recent_by_conversation: dict[str, dict[str, Any]] = {}
-    latest_history_id = start_history_id
-    page_token = None
-
-    while True:
-        try:
-            data = _gmail_execute(
-                lambda page_token=page_token: gmail_service.users().history().list(
-                    userId="me",
-                    startHistoryId=start_history_id,
-                    historyTypes=["messageAdded"],
-                    maxResults=100,
-                    pageToken=page_token,
-                ).execute()
-            )
-        except Exception as exc:
-            if _extract_gmail_error_status(exc) == 404:
-                current_history_id = _get_gmail_mailbox_history_id(gmail_service)
-                if current_history_id:
-                    _upsert_poll_state(conn, gmail_email, last_gmail_history_id=current_history_id)
-                return {}, {"history_reset": True}
-            raise
-
-        latest_history_id = (data.get("historyId") or latest_history_id or "").strip() or latest_history_id
-        for history_row in data.get("history") or []:
-            history_id = (history_row.get("id") or "").strip()
-            if history_id:
-                latest_history_id = history_id
-            for added in history_row.get("messagesAdded") or []:
-                message = added.get("message") or {}
-                message_id = message.get("id")
-                if not message_id:
-                    continue
-                try:
-                    metadata = _gmail_execute(
-                        lambda message_id=message_id: gmail_service.users().messages().get(
-                            userId="me",
-                            id=message_id,
-                            format="metadata",
-                            metadataHeaders=["To", "Cc", "Delivered-To", "X-Original-To", "X-Forwarded-To"],
-                        ).execute()
-                    )
-                except Exception as exc:
-                    if _extract_gmail_error_status(exc) == 404:
-                        log_action(
-                            "gmail_history_message_missing",
-                            gmail_email=gmail_email,
-                            gmail_message_id=message_id,
-                            gmail_history_id=history_id,
-                        )
+            latest_history_id = (data.get("historyId") or latest_history_id or "").strip() or latest_history_id
+            for history_row in data.get("history") or []:
+                history_id = (history_row.get("id") or "").strip()
+                if history_id:
+                    latest_history_id = history_id
+                for added in history_row.get("messagesAdded") or []:
+                    message = added.get("message") or {}
+                    message_id = message.get("id")
+                    if not message_id:
                         continue
-                    raise
-                headers = _gmail_header_map(metadata.get("payload") or {})
-                if _gmail_to_source_ignore_reason(metadata.get("labelIds") or []):
-                    continue
-                conversation_id = None
-                for recipient in _extract_alias_recipients(headers):
-                    conversation_id = alias_lookup.get(recipient)
-                    if conversation_id:
-                        break
-                if not conversation_id:
-                    continue
-                message_ts = _iso_from_gmail_internal_date(metadata.get("internalDate"))
-                existing = recent_by_conversation.get(conversation_id)
-                if not existing:
-                    recent_by_conversation[conversation_id] = {
-                        "last_message_at": message_ts,
-                        "message_count": 1,
-                    }
-                    continue
-                existing["last_message_at"] = max(existing["last_message_at"], message_ts)
-                existing["message_count"] += 1
+                    try:
+                        metadata = _gmail_execute(
+                            lambda message_id=message_id: gmail_service.users().messages().get(
+                                userId="me",
+                                id=message_id,
+                                format="metadata",
+                                metadataHeaders=["To", "Cc", "Delivered-To", "X-Original-To", "X-Forwarded-To"],
+                            ).execute()
+                        )
+                    except Exception as exc:
+                        if _extract_gmail_error_status(exc) == 404:
+                            log_action(
+                                "gmail_history_message_missing",
+                                gmail_email=gmail_email,
+                                gmail_message_id=message_id,
+                                gmail_history_id=history_id,
+                            )
+                            continue
+                        raise
+                    headers = _gmail_header_map(metadata.get("payload") or {})
+                    if _gmail_to_source_ignore_reason(metadata.get("labelIds") or []):
+                        continue
+                    conversation_id = None
+                    for recipient in _extract_alias_recipients(headers):
+                        conversation_id = alias_lookup.get(recipient)
+                        if conversation_id:
+                            break
+                    if not conversation_id:
+                        continue
+                    message_ts = _iso_from_gmail_internal_date(metadata.get("internalDate"))
+                    existing = recent_by_conversation.get(conversation_id)
+                    if not existing:
+                        recent_by_conversation[conversation_id] = {
+                            "last_message_at": message_ts,
+                            "message_count": 1,
+                        }
+                        continue
+                    existing["last_message_at"] = _max_iso_value(existing.get("last_message_at"), message_ts)
+                    existing["message_count"] = int(existing.get("message_count") or 0) + 1
 
-        page_token = data.get("nextPageToken")
-        if not page_token:
-            break
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                break
 
-    if latest_history_id and latest_history_id != start_history_id:
-        _upsert_poll_state(conn, gmail_email, last_gmail_history_id=latest_history_id)
-    return recent_by_conversation, {"last_gmail_history_id": latest_history_id}
+        if latest_history_id and latest_history_id != start_history_id and not history_reset:
+            _upsert_poll_state(conn, gmail_email, last_gmail_history_id=latest_history_id)
+
+    if history_initialized:
+        meta["history_initialized"] = True
+    if history_reset:
+        meta["history_reset"] = True
+    if latest_history_id:
+        meta["last_gmail_history_id"] = latest_history_id
+
+    if history_initialized or history_reset or not recent_by_conversation:
+        mailbox_recent, mailbox_meta = _list_recent_sent_alias_mailbox_activity(gmail_service, conversations)
+        recent_by_conversation = _merge_recent_gmail_activity(recent_by_conversation, mailbox_recent)
+        if mailbox_recent:
+            meta["gmail_activity_backstop_used"] = True
+        for key in (
+            "gmail_activity_backstop_cutoff",
+            "gmail_activity_backstop_scanned_messages",
+            "gmail_activity_backstop_matches",
+        ):
+            if mailbox_meta.get(key) is not None:
+                meta[key] = mailbox_meta[key]
+
+    _record_pending_gmail_activity(conn, recent_by_conversation)
+    return recent_by_conversation, meta
 
 
 def _list_gmail_messages_to_alias(gmail_service, alias_email: str, after_iso: str) -> list[dict[str, Any]]:
@@ -4826,6 +5063,7 @@ def _sync_conversation_gmail_to_imessage(
             _apply_canonical_thread_reconciliation(conn, conv["conversation_id"], canonical_thread_id)
             deleted_alias_drafts = _cleanup_stale_alias_drafts(conn, gmail_service, conv, canonical_thread_id)
         _upsert_sync_state(conn, conv["conversation_id"], None, None if verify_all else since, None)
+        _clear_pending_gmail_activity_if_caught_up(conn, conv["conversation_id"], force=True)
         return {
             "email_to_imessage": converted,
             "blocked_sender_count": blocked,
@@ -5336,6 +5574,7 @@ def _sync_conversation_gmail_to_imessage(
         deleted_alias_drafts = _cleanup_stale_alias_drafts(conn, gmail_service, conv, canonical_thread_id)
 
     _upsert_sync_state(conn, conv["conversation_id"], None, last_gmail_ts, history_id)
+    _clear_pending_gmail_activity_if_caught_up(conn, conv["conversation_id"])
     return {
         "email_to_imessage": converted,
         "blocked_sender_count": blocked,
