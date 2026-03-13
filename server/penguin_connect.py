@@ -59,6 +59,7 @@ DEFAULT_MAX_EMAIL_ATTACHMENT_BYTES = 20 * 1024 * 1024
 DEFAULT_MAX_IMESSAGE_ATTACHMENT_BYTES = 25 * 1024 * 1024
 THREAD_REPAIR_HEADER_VALUE = "thread_repair"
 DELIVERY_ERROR_HEADER_VALUE = "delivery_error_notice"
+DELIVERY_REJECTION_HEADER_VALUE = "delivery_rejection_notice"
 MAX_SYNC_WINDOW_HOURS = 24 * 60
 DEFAULT_GMAIL_HTTP_TIMEOUT_SECONDS = 60
 MIN_GMAIL_HTTP_TIMEOUT_SECONDS = 5
@@ -3263,6 +3264,59 @@ def _build_gmail_delivery_error_email(
     return raw, notice_rfc_message_id
 
 
+def _build_gmail_delivery_rejection_email(
+    conv: sqlite3.Row | dict[str, Any],
+    row: sqlite3.Row | dict[str, Any],
+    metadata: dict[str, Any],
+) -> tuple[str, str]:
+    rejected_body = (row["body_text"] or "").strip()
+    attachments = metadata.get("attachments") if isinstance(metadata.get("attachments"), list) else []
+    reason = (metadata.get("reason") or "").strip()
+    body_lines = [
+        "PenguinConnect rejected this email reply and did not send it to the source chat.",
+        "",
+    ]
+    if reason == "ambiguous_email_body":
+        body_lines.extend(
+            [
+                "Reason: the reply body could not be confirmed as net-new text only.",
+                "Please simplify the reply and resend if you still want it delivered.",
+                "",
+            ]
+        )
+    else:
+        body_lines.extend(["Reason: the reply could not be delivered safely.", ""])
+    body_lines.append(rejected_body or "(empty message)")
+    if attachments:
+        body_lines.extend(["", f"[{len(attachments)} attachment(s) were not delivered]"])
+
+    notice_rfc_message_id = _build_bridge_rfc_message_id(
+        conv["conversation_id"],
+        f"{row['provider_message_id']}:delivery-rejection",
+    )
+    in_reply_to = _normalize_rfc_message_id(metadata.get("rfc_message_id"))
+    references = _normalize_rfc_message_id_list(metadata.get("rfc_references") or [])
+    if in_reply_to:
+        references = _append_reference_id(references, in_reply_to)
+
+    email_msg = EmailMessage()
+    email_msg["From"] = email.utils.formataddr(("PENGUIN_CONNECT", conv["alias_email"]))
+    email_msg["To"] = conv["gmail_email"]
+    email_msg["Subject"] = (row["subject"] or _provider_subject(_conversation_source_provider(conv), conv["display_name"])).strip()
+    email_msg["Reply-To"] = conv["alias_email"]
+    email_msg["X-PenguinConnect-Conversation-ID"] = conv["conversation_id"]
+    email_msg["X-PenguinConnect-Source-Provider"] = _normalize_source_provider(_conversation_source_provider(conv))
+    email_msg[PENGUINCONNECT_HEADER] = DELIVERY_REJECTION_HEADER_VALUE
+    email_msg["Message-ID"] = notice_rfc_message_id
+    if in_reply_to:
+        email_msg["In-Reply-To"] = in_reply_to
+    if references:
+        email_msg["References"] = " ".join(references)
+    email_msg.set_content("\n".join(body_lines))
+    raw = base64.urlsafe_b64encode(email_msg.as_bytes()).decode("utf-8")
+    return raw, notice_rfc_message_id
+
+
 def _import_message_to_gmail(gmail_service, raw_message: str, gmail_thread_id: Optional[str], unread: bool):
     labels = ["INBOX"]
     if unread:
@@ -4845,6 +4899,72 @@ def _new_gmail_error_notice_sent(previous_metadata: dict[str, Any], metadata: di
     return bool(metadata.get("error_notice_sent_at")) and not bool(previous_metadata.get("error_notice_sent_at"))
 
 
+def _maybe_send_gmail_delivery_rejection_notice(
+    conn: sqlite3.Connection,
+    gmail_service,
+    conv: sqlite3.Row | dict[str, Any],
+    row: sqlite3.Row | dict[str, Any],
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    if not gmail_service:
+        return metadata
+    if _delivery_status("email_to_imessage", None, metadata) != "ignored":
+        return metadata
+    if (metadata.get("reason") or "").strip() != "ambiguous_email_body":
+        return metadata
+    if metadata.get("rejection_notice_sent_at"):
+        return metadata
+
+    thread_id = (
+        metadata.get("rejection_notice_gmail_thread_id")
+        or metadata.get("gmail_thread_id")
+        or row["gmail_thread_id"]
+        or conv["gmail_thread_id"]
+    )
+    raw_email, notice_rfc_message_id = _build_gmail_delivery_rejection_email(conv, row, metadata)
+    imported_data, import_error, recovered_thread_id = _import_message_to_gmail_with_thread_recovery(
+        gmail_service,
+        raw_email,
+        thread_id,
+        True,
+        _normalize_rfc_message_id(metadata.get("rfc_message_id")),
+    )
+    if import_error or not imported_data:
+        metadata["rejection_notice_last_error"] = import_error or "delivery_rejection_notice_failed"
+        log_action(
+            "gmail_to_imessage_rejection_notice",
+            success=False,
+            error=metadata["rejection_notice_last_error"],
+            provider_message_id=row["provider_message_id"],
+            gmail_message_id=metadata.get("gmail_message_id") or row["gmail_message_id"],
+            gmail_thread_id=thread_id,
+            **_conversation_log_fields(conv),
+            **message_fingerprint(row["body_text"] or ""),
+        )
+        return metadata
+
+    metadata["rejection_notice_sent_at"] = _now_iso()
+    metadata["rejection_notice_last_error"] = None
+    metadata["rejection_notice_gmail_message_id"] = imported_data.get("id")
+    metadata["rejection_notice_gmail_thread_id"] = recovered_thread_id or imported_data.get("threadId") or thread_id
+    metadata["rejection_notice_rfc_message_id"] = notice_rfc_message_id
+    log_action(
+        "gmail_to_imessage_rejection_notice",
+        success=True,
+        provider_message_id=row["provider_message_id"],
+        gmail_message_id=metadata.get("gmail_message_id") or row["gmail_message_id"],
+        gmail_thread_id=metadata["rejection_notice_gmail_thread_id"],
+        rejection_notice_gmail_message_id=metadata["rejection_notice_gmail_message_id"],
+        **_conversation_log_fields(conv),
+        **message_fingerprint(row["body_text"] or ""),
+    )
+    return metadata
+
+
+def _new_gmail_rejection_notice_sent(previous_metadata: dict[str, Any], metadata: dict[str, Any]) -> bool:
+    return bool(metadata.get("rejection_notice_sent_at")) and not bool(previous_metadata.get("rejection_notice_sent_at"))
+
+
 def _latest_synced_source_message_ts(conn: sqlite3.Connection, conversation_id: str) -> Optional[str]:
     state = conn.execute(
         "SELECT last_imessage_ts FROM penguin_connect_sync_state WHERE conversation_id = ?",
@@ -5298,7 +5418,7 @@ def _sync_conversation_gmail_to_imessage(
 
         # Ignore bridge-generated inbound imports.
         bridge_header = (headers.get(PENGUINCONNECT_HEADER.lower()) or "").strip()
-        if bridge_header in {"imessage_to_email", THREAD_REPAIR_HEADER_VALUE, DELIVERY_ERROR_HEADER_VALUE}:
+        if bridge_header in {"imessage_to_email", THREAD_REPAIR_HEADER_VALUE, DELIVERY_ERROR_HEADER_VALUE, DELIVERY_REJECTION_HEADER_VALUE}:
             log_action(
                 "gmail_to_imessage_message",
                 success=False,
@@ -5306,7 +5426,11 @@ def _sync_conversation_gmail_to_imessage(
                 reason=(
                     "bridge_generated_message"
                     if bridge_header == "imessage_to_email"
-                    else ("thread_repair_clone" if bridge_header == THREAD_REPAIR_HEADER_VALUE else "delivery_error_notice")
+                    else (
+                        "thread_repair_clone"
+                        if bridge_header == THREAD_REPAIR_HEADER_VALUE
+                        else ("delivery_error_notice" if bridge_header == DELIVERY_ERROR_HEADER_VALUE else "delivery_rejection_notice")
+                    )
                 ),
                 gmail_message_id=message_id,
                 gmail_thread_id=thread_id,
@@ -5334,7 +5458,11 @@ def _sync_conversation_gmail_to_imessage(
                             "reason": (
                                 "bridge_generated_message"
                                 if bridge_header == "imessage_to_email"
-                                else ("thread_repair_clone" if bridge_header == THREAD_REPAIR_HEADER_VALUE else "delivery_error_notice")
+                                else (
+                                    "thread_repair_clone"
+                                    if bridge_header == THREAD_REPAIR_HEADER_VALUE
+                                    else ("delivery_error_notice" if bridge_header == DELIVERY_ERROR_HEADER_VALUE else "delivery_rejection_notice")
+                                )
                             ),
                             "gmail_message_id": message_id,
                             "gmail_thread_id": thread_id,
@@ -5383,6 +5511,39 @@ def _sync_conversation_gmail_to_imessage(
                 **_conversation_log_fields(conv),
                 **message_fingerprint(body_text),
             )
+            metadata = {
+                "ignored": True,
+                "delivery_status": "ignored",
+                "reason": "ambiguous_email_body",
+                "gmail_message_id": message_id,
+                "gmail_thread_id": thread_id,
+                "rfc_message_id": rfc_message_id,
+                "rfc_in_reply_to": rfc_in_reply_to,
+                "rfc_references": rfc_references,
+                "attachments": attachment_meta,
+                "attachments_forwarded": attachment_delivery.get("forwarded", []),
+                "attachments_skipped": attachment_delivery.get("skipped", []),
+                "source_body_text": body_text,
+                "source_body_text_raw": raw_text_source,
+                "source_body_html_raw": raw_html_source,
+                "gmail_body_source": parsed_body.source,
+                "gmail_quoted_content_removed": parsed_body.quoted_content_removed,
+                "gmail_signature_removed": parsed_body.signature_removed,
+                "gmail_body_safe_for_send": parsed_body.safe_for_send,
+                "gmail_body_safety_flags": list(parsed_body.safety_flags),
+                "labels": label_ids,
+                "retry_count": 0,
+                "max_retries": _gmail_to_source_max_retries(),
+            }
+            rejection_row = {
+                "provider_message_id": f"gmail:{message_id}",
+                "gmail_message_id": message_id,
+                "gmail_thread_id": thread_id,
+                "subject": headers.get("subject") or "",
+                "body_text": body_text[:20000],
+            }
+            previous_metadata = dict(metadata)
+            metadata = _maybe_send_gmail_delivery_rejection_notice(conn, gmail_service, conv, rejection_row, metadata)
             conn.execute(
                 """INSERT OR IGNORE INTO penguin_connect_messages
                    (conversation_id, provider, provider_message_id, direction,
@@ -5398,36 +5559,13 @@ def _sync_conversation_gmail_to_imessage(
                     body_text[:20000],
                     message_ts,
                     0 if "UNREAD" in label_ids else 1,
-                    json.dumps(
-                        {
-                            "ignored": True,
-                            "delivery_status": "ignored",
-                            "reason": "ambiguous_email_body",
-                            "gmail_message_id": message_id,
-                            "gmail_thread_id": thread_id,
-                            "rfc_message_id": rfc_message_id,
-                            "rfc_in_reply_to": rfc_in_reply_to,
-                            "rfc_references": rfc_references,
-                            "attachments": attachment_meta,
-                            "attachments_forwarded": attachment_delivery.get("forwarded", []),
-                            "attachments_skipped": attachment_delivery.get("skipped", []),
-                            "source_body_text": body_text,
-                            "source_body_text_raw": raw_text_source,
-                            "source_body_html_raw": raw_html_source,
-                            "gmail_body_source": parsed_body.source,
-                            "gmail_quoted_content_removed": parsed_body.quoted_content_removed,
-                            "gmail_signature_removed": parsed_body.signature_removed,
-                            "gmail_body_safe_for_send": parsed_body.safe_for_send,
-                            "gmail_body_safety_flags": list(parsed_body.safety_flags),
-                            "labels": label_ids,
-                            "retry_count": 0,
-                            "max_retries": _gmail_to_source_max_retries(),
-                        }
-                    ),
+                    json.dumps(metadata),
                     message_id,
                     thread_id,
                 ),
             )
+            if _new_gmail_rejection_notice_sent(previous_metadata, metadata):
+                conn.commit()
             last_gmail_ts = max(last_gmail_ts or message_ts, message_ts)
             history_id = full.get("historyId") or history_id
             continue

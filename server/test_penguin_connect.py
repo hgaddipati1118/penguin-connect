@@ -221,6 +221,7 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertTrue(primary["success"])
         self.assertTrue(alias["success"])
 
+
     def test_disconnect_and_reconnect_provisions_fresh_alias(self):
         first_alias = self.conn.execute(
             "SELECT alias_email FROM penguin_connect_conversations WHERE conversation_id='amc_test'"
@@ -2783,8 +2784,9 @@ class PenguinConnectTests(unittest.TestCase):
         gmail_service.users.return_value.messages.return_value.get.return_value.execute.return_value = full_msg
 
         with mock.patch("penguin_connect._list_gmail_messages_to_alias", return_value=[{"id": "gmail-snippet-only"}]), mock.patch(
-            "penguin_connect.send_imessage", return_value=(True, None)
-        ) as mock_send:
+            "penguin_connect._import_message_to_gmail_with_thread_recovery",
+            return_value=({"id": "notice-1", "threadId": "thread-snippet-only"}, None, "thread-snippet-only"),
+        ) as mock_notice, mock.patch("penguin_connect.send_imessage", return_value=(True, None)) as mock_send:
             result = penguin_connect._sync_conversation_gmail_to_imessage(
                 self.conn,
                 gmail_service,
@@ -2808,6 +2810,77 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(metadata["gmail_body_source"], "snippet")
         self.assertFalse(metadata["gmail_body_safe_for_send"])
         self.assertIn("snippet_only", metadata["gmail_body_safety_flags"])
+
+    def test_gmail_snippet_only_body_sends_rejection_notice(self):
+        conv = self._conversation_row()
+        full_msg = {
+            "id": "gmail-snippet-reject",
+            "threadId": "thread-snippet-reject",
+            "historyId": "h-snippet-reject",
+            "labelIds": ["SENT", "INBOX", "UNREAD"],
+            "internalDate": "1700007200000",
+            "snippet": "Quick status update",
+            "payload": {
+                "mimeType": "multipart/alternative",
+                "headers": [
+                    {"name": "From", "value": "Owner <owner@gmail.com>"},
+                    {"name": "To", "value": "Owner <owner+am-test@gmail.com>"},
+                    {"name": "Subject", "value": "Status"},
+                    {"name": "Message-ID", "value": "<snippet-reject@example.test>"},
+                ],
+                "parts": [],
+            },
+        }
+        gmail_service = mock.Mock()
+        gmail_service.users.return_value.messages.return_value.get.return_value.execute.return_value = full_msg
+
+        with mock.patch("penguin_connect._list_gmail_messages_to_alias", return_value=[{"id": "gmail-snippet-reject"}]), mock.patch(
+            "penguin_connect.send_imessage", return_value=(True, None)
+        ) as mock_send, mock.patch(
+            "penguin_connect._import_message_to_gmail_with_thread_recovery",
+            return_value=({"id": "reject-notice-1", "threadId": "thread-snippet-reject"}, None, None),
+        ) as mock_notice:
+            result = penguin_connect._sync_conversation_gmail_to_imessage(
+                self.conn,
+                gmail_service,
+                conv,
+                gmail_email="owner@gmail.com",
+                allowed_senders=["owner@gmail.com"],
+                days=7,
+            )
+
+        self.assertEqual(result["email_to_imessage"], 0)
+        mock_send.assert_not_called()
+        mock_notice.assert_called_once()
+
+        raw_notice = mock_notice.call_args.args[1]
+        padded_notice = raw_notice + "=" * (-len(raw_notice) % 4)
+        notice_email = BytesParser(policy=policy.default).parsebytes(base64.urlsafe_b64decode(padded_notice))
+        notice_body = notice_email.get_body(preferencelist=("plain",)).get_content()
+        self.assertIn("PenguinConnect rejected this email reply", notice_body)
+        self.assertIn("Quick status update", notice_body)
+        self.assertEqual(notice_email["X-PenguinConnect-Bridge"], penguin_connect.DELIVERY_REJECTION_HEADER_VALUE)
+
+        stored = self.conn.execute(
+            """SELECT metadata
+               FROM penguin_connect_messages
+               WHERE conversation_id = ? AND provider_message_id = ?""",
+            ("amc_test", "gmail:gmail-snippet-reject"),
+        ).fetchone()
+        metadata = json.loads(stored["metadata"] or "{}")
+        self.assertEqual(metadata["reason"], "ambiguous_email_body")
+        self.assertEqual(metadata["rejection_notice_gmail_message_id"], "reject-notice-1")
+        self.assertEqual(metadata["rejection_notice_gmail_thread_id"], "thread-snippet-reject")
+        self.assertIsNotNone(metadata["rejection_notice_sent_at"])
+        self.assertIsNotNone(metadata["rejection_notice_sent_at"])
+        self.assertEqual(metadata["rejection_notice_gmail_message_id"], "reject-notice-1")
+        mock_notice.assert_called_once()
+        raw_email = mock_notice.call_args.args[1]
+        parsed_notice = BytesParser(policy=policy.default).parsebytes(
+            base64.urlsafe_b64decode(raw_email + ("=" * (-len(raw_email) % 4)))
+        )
+        self.assertEqual(parsed_notice[penguin_connect.PENGUINCONNECT_HEADER], penguin_connect.DELIVERY_REJECTION_HEADER_VALUE)
+        self.assertIn("could not be confirmed as net-new text only", parsed_notice.get_content())
 
     def test_gmail_wrapped_reply_header_is_stripped_before_send(self):
         conv = self._conversation_row()
@@ -2968,8 +3041,8 @@ class PenguinConnectTests(unittest.TestCase):
         gmail_service.users.return_value.messages.return_value.get.return_value.execute.return_value = full_msg
 
         with mock.patch("penguin_connect._list_gmail_messages_to_alias", return_value=[{"id": "gmail-draft-1"}]), mock.patch(
-            "penguin_connect.send_imessage", return_value=(True, None)
-        ) as mock_send:
+            "penguin_connect._import_message_to_gmail_with_thread_recovery"
+        ) as mock_notice, mock.patch("penguin_connect.send_imessage", return_value=(True, None)) as mock_send:
             result = penguin_connect._sync_conversation_gmail_to_imessage(
                 self.conn,
                 gmail_service,
@@ -2981,6 +3054,7 @@ class PenguinConnectTests(unittest.TestCase):
 
         self.assertEqual(result["email_to_imessage"], 0)
         mock_send.assert_not_called()
+        mock_notice.assert_not_called()
         stored = self.conn.execute(
             """SELECT body_text, metadata
                FROM penguin_connect_messages
