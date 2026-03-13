@@ -42,8 +42,7 @@ _DISCLAIMER_START_RE = re.compile(
 )
 _TRAILING_SIGNATURE_RE = re.compile(
     r"^(sent from my (iphone|ipad|mac|android|galaxy|pixel)|"
-    r"get outlook for (ios|android)|sent with slashy|"
-    r"sent with \[slashy\]\(https?://slashy\.(?:com|ai)\)|sent via superhuman|"
+    r"get outlook for (ios|android)|sent via superhuman|"
     r"sent from gmail mobile|sent from proton mail)[.!]*$",
     re.IGNORECASE,
 )
@@ -72,7 +71,6 @@ _IGNORED_HTML_CLASSES = {
     "moz-cite-prefix",
     "front-blockquote",
 }
-_SIGNATURE_HTML_CLASSES = {"slashy-signature"}
 _IGNORED_HTML_IDS = {
     "divrplyfwdmsg",
     "mail-editor-reference-message-container",
@@ -471,7 +469,6 @@ def _remove_explicit_quote_elements(soup: BeautifulSoup) -> bool:
         if (
             element.name == "blockquote"
             or bool(classes & _IGNORED_HTML_CLASSES)
-            or bool(classes & _SIGNATURE_HTML_CLASSES)
             or element_id in _IGNORED_HTML_IDS
             or _BORDER_LEFT_QUOTE_RE.search(style)
         ):
