@@ -88,6 +88,7 @@ _sync_runtime_lock = threading.Lock()
 _UNSET = object()
 _USE_DEFAULT_DISCOVERY_LIMIT = object()
 _IMESSAGE_CHANNEL = get_channel_adapter("imessage")
+_MARKDOWN_LINK_RE = re.compile(r"(?<!\!)\[([^\]\n]+)\]\((https?://[^\s)]+)\)")
 
 
 class _GmailRetryableError(RuntimeError):
@@ -233,6 +234,21 @@ def _strip_provider_subject(subject: Optional[str], source_provider: Optional[st
     return normalized_subject
 
 
+def _rewrite_markdown_links_for_source_message(message_text: str) -> str:
+    normalized = (message_text or "").strip()
+    if not normalized:
+        return ""
+
+    def _replace(match: re.Match[str]) -> str:
+        label = " ".join((match.group(1) or "").split())
+        url = (match.group(2) or "").strip()
+        if not label or label.casefold() == url.casefold():
+            return url
+        return f"{label}: {url}"
+
+    return _MARKDOWN_LINK_RE.sub(_replace, normalized)
+
+
 def _send_to_source_conversation(
     conv: sqlite3.Row | dict[str, Any],
     message_text: str,
@@ -240,6 +256,7 @@ def _send_to_source_conversation(
     attachment_paths: Optional[list[str]] = None,
     action_context: Optional[dict[str, Any]] = None,
 ) -> tuple[bool, Optional[str]]:
+    message_text = _rewrite_markdown_links_for_source_message(message_text)
     source_provider = _conversation_source_provider(conv)
     source_chat_id = _conversation_source_chat_id(conv)
     base_fields = {
@@ -5350,6 +5367,7 @@ def _sync_conversation_gmail_to_imessage(
         raw_text_source = plain_body_text or ((full.get("snippet") or "") if parsed_body.source == "snippet" else "")
         raw_html_source = html_body_text or ""
         body_text = parsed_body.text
+        body_text = _rewrite_markdown_links_for_source_message(body_text)
         if body_text and not parsed_body.safe_for_send:
             log_action(
                 "gmail_to_imessage_message",
@@ -6173,6 +6191,7 @@ def send_manual_message(
     sender_email: str,
     body_text: str,
 ) -> dict[str, Any]:
+    body_text = _rewrite_markdown_links_for_source_message(body_text)
     conv = conn.execute(
         "SELECT * FROM penguin_connect_conversations WHERE conversation_id = ?",
         (conversation_id,),
