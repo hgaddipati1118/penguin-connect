@@ -43,7 +43,11 @@ GMAIL_SCOPES = [
     "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/gmail.settings.basic",
 ]
-_sync_lock = threading.Lock()
+_incremental_sync_lock = threading.Lock()
+_backfill_sync_lock = threading.Lock()
+_contacts_refresh_lock = threading.Lock()
+_conversation_sync_state_lock = threading.Lock()
+_active_conversation_syncs: dict[str, dict[str, Any]] = {}
 DEFAULT_RETRY_BASE_SECONDS = 30
 DEFAULT_RETRY_MAX_BACKOFF_SECONDS = 900
 DEFAULT_MAX_RETRIES = 8
@@ -107,6 +111,9 @@ def _new_sync_runtime_state() -> dict[str, Any]:
         "selection_cutoff": None,
         "last_error": None,
         "last_result": None,
+        "active_runs": 0,
+        "active_modes": [],
+        "_runs": {},
     }
 
 
@@ -119,6 +126,19 @@ def _now_iso() -> str:
 
 def _normalize_email(value: Optional[str]) -> str:
     return (value or "").strip().lower()
+
+
+def _sync_lane(mode: str) -> str:
+    normalized_mode = (mode or "incremental").strip().lower()
+    return "incremental" if normalized_mode == "incremental" else "backfill"
+
+
+def _sync_lane_lock(mode: str) -> threading.Lock:
+    return _incremental_sync_lock if _sync_lane(mode) == "incremental" else _backfill_sync_lock
+
+
+def _new_sync_run_id(mode: str) -> str:
+    return f"{_sync_lane(mode)}:{threading.get_ident()}:{time.monotonic_ns()}"
 
 
 def _parse_participants_json(raw_value: Optional[str]) -> list[str]:
@@ -1699,48 +1719,135 @@ def get_gmail_connection_status(conn: sqlite3.Connection) -> dict[str, Any]:
 
 def get_runtime_sync_status() -> dict[str, Any]:
     with _sync_runtime_lock:
-        return dict(_sync_runtime)
+        status = dict(_sync_runtime)
+        status.pop("_runs", None)
+        return status
 
 
-def _sync_runtime_started(mode: str, selection: dict[str, Any]) -> None:
-    with _sync_runtime_lock:
+def _sync_runtime_apply_summary_locked() -> None:
+    runs = list(_sync_runtime.get("_runs", {}).values())
+    _sync_runtime["active_runs"] = len(runs)
+    _sync_runtime["active_modes"] = sorted({run["mode"] for run in runs})
+    if not runs:
+        _sync_runtime["running"] = False
+        _sync_runtime["current_conversation_id"] = None
+        _sync_runtime["current_display_name"] = None
+        return
+
+    _sync_runtime["last_error"] = None
+    _sync_runtime["last_result"] = None
+    if len(runs) == 1:
+        run = runs[0]
         _sync_runtime.update(
             {
                 "running": True,
-                "mode": mode,
-                "started_at": _now_iso(),
+                "mode": run["mode"],
+                "started_at": run["started_at"],
                 "finished_at": None,
-                "selected_conversations": selection.get("selected_conversations", 0),
-                "processed_conversations": 0,
-                "current_conversation_id": None,
-                "current_display_name": None,
-                "selection_strategy": selection.get("selection_strategy"),
-                "selection_cutoff": selection.get("selection_cutoff"),
-                "last_error": None,
-                "last_result": None,
+                "selected_conversations": run["selected_conversations"],
+                "processed_conversations": run["processed_conversations"],
+                "current_conversation_id": run["current_conversation_id"],
+                "current_display_name": run["current_display_name"],
+                "selection_strategy": run["selection_strategy"],
+                "selection_cutoff": run["selection_cutoff"],
             }
         )
+        return
+
+    started_ats = [run["started_at"] for run in runs if run.get("started_at")]
+    _sync_runtime.update(
+        {
+            "running": True,
+            "mode": "multiple",
+            "started_at": min(started_ats) if started_ats else None,
+            "finished_at": None,
+            "selected_conversations": sum(int(run.get("selected_conversations") or 0) for run in runs),
+            "processed_conversations": sum(int(run.get("processed_conversations") or 0) for run in runs),
+            "current_conversation_id": None,
+            "current_display_name": None,
+            "selection_strategy": "multiple",
+            "selection_cutoff": None,
+        }
+    )
 
 
-def _sync_runtime_progress(processed_conversations: int, conv: Optional[sqlite3.Row] = None) -> None:
+def _sync_runtime_started(mode: str, selection: dict[str, Any]) -> str:
+    run_id = _new_sync_run_id(mode)
     with _sync_runtime_lock:
-        _sync_runtime["processed_conversations"] = processed_conversations
-        _sync_runtime["current_conversation_id"] = conv["conversation_id"] if conv else None
-        _sync_runtime["current_display_name"] = conv["display_name"] if conv else None
+        runs = _sync_runtime.setdefault("_runs", {})
+        runs[run_id] = {
+            "mode": mode,
+            "started_at": _now_iso(),
+            "selected_conversations": selection.get("selected_conversations", 0),
+            "processed_conversations": 0,
+            "current_conversation_id": None,
+            "current_display_name": None,
+            "selection_strategy": selection.get("selection_strategy"),
+            "selection_cutoff": selection.get("selection_cutoff"),
+        }
+        _sync_runtime_apply_summary_locked()
+    return run_id
 
 
-def _sync_runtime_finished(result: Optional[dict[str, Any]] = None, error: Optional[str] = None) -> None:
+def _sync_runtime_progress(run_id: str, processed_conversations: int, conv: Optional[sqlite3.Row] = None) -> None:
+    with _sync_runtime_lock:
+        runs = _sync_runtime.setdefault("_runs", {})
+        run = runs.get(run_id)
+        if not run:
+            return
+        run["processed_conversations"] = processed_conversations
+        run["current_conversation_id"] = conv["conversation_id"] if conv else None
+        run["current_display_name"] = conv["display_name"] if conv else None
+        _sync_runtime_apply_summary_locked()
+
+
+def _sync_runtime_finished(run_id: str, result: Optional[dict[str, Any]] = None, error: Optional[str] = None) -> None:
     finished_at = _now_iso()
     with _sync_runtime_lock:
-        _sync_runtime["running"] = False
-        _sync_runtime["finished_at"] = finished_at
-        _sync_runtime["current_conversation_id"] = None
-        _sync_runtime["current_display_name"] = None
-        _sync_runtime["last_error"] = error
+        runs = _sync_runtime.setdefault("_runs", {})
+        run = runs.pop(run_id, None)
         if result is not None:
             _sync_runtime["last_result"] = result
             if result.get("success"):
                 _sync_runtime["last_completed_at"] = finished_at
+        _sync_runtime["last_error"] = error
+        if runs:
+            _sync_runtime_apply_summary_locked()
+            return
+        if run:
+            _sync_runtime["mode"] = run["mode"]
+            _sync_runtime["started_at"] = run["started_at"]
+            _sync_runtime["selected_conversations"] = run["selected_conversations"]
+            _sync_runtime["processed_conversations"] = run["processed_conversations"]
+            _sync_runtime["selection_strategy"] = run["selection_strategy"]
+            _sync_runtime["selection_cutoff"] = run["selection_cutoff"]
+        _sync_runtime["running"] = False
+        _sync_runtime["finished_at"] = finished_at
+        _sync_runtime["current_conversation_id"] = None
+        _sync_runtime["current_display_name"] = None
+        _sync_runtime["active_runs"] = 0
+        _sync_runtime["active_modes"] = []
+
+
+def _try_acquire_conversation_sync(conversation_id: str, *, run_id: str, mode: str) -> tuple[bool, Optional[dict[str, Any]]]:
+    with _conversation_sync_state_lock:
+        existing = _active_conversation_syncs.get(conversation_id)
+        if existing:
+            return False, dict(existing)
+        _active_conversation_syncs[conversation_id] = {
+            "run_id": run_id,
+            "mode": mode,
+            "lane": _sync_lane(mode),
+            "started_at": _now_iso(),
+        }
+        return True, None
+
+
+def _release_conversation_sync(conversation_id: str, *, run_id: str) -> None:
+    with _conversation_sync_state_lock:
+        existing = _active_conversation_syncs.get(conversation_id)
+        if existing and existing.get("run_id") == run_id:
+            _active_conversation_syncs.pop(conversation_id, None)
 
 
 def _default_sync_job_owner() -> str:
@@ -2356,29 +2463,31 @@ def _refresh_contact_display_names(conn: sqlite3.Connection) -> int:
 def refresh_contacts_and_repair_display_names() -> dict[str, Any]:
     repo_root = Path(__file__).resolve().parent.parent
     script_path = repo_root / "scripts" / "import_contacts.py"
-    with _sync_lock:
-        completed_at = _now_iso()
-        result = subprocess.run(
-            [sys.executable, str(script_path)],
-            cwd=str(repo_root),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            error = (result.stderr or result.stdout or "").strip() or "contact_import_failed"
-            log_action("contacts_refresh_result", success=False, error=error)
-            return {"success": False, "error": error, "completed_at": completed_at}
+    with _contacts_refresh_lock:
+        with _incremental_sync_lock:
+            with _backfill_sync_lock:
+                completed_at = _now_iso()
+                result = subprocess.run(
+                    [sys.executable, str(script_path)],
+                    cwd=str(repo_root),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if result.returncode != 0:
+                    error = (result.stderr or result.stdout or "").strip() or "contact_import_failed"
+                    log_action("contacts_refresh_result", success=False, error=error)
+                    return {"success": False, "error": error, "completed_at": completed_at}
 
-        from db import get_connection
+                from db import get_connection
 
-        conn = get_connection()
-        try:
-            display_names_updated = _refresh_contact_display_names(conn)
-            contacts_count = conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
-            conn.commit()
-        finally:
-            conn.close()
+                conn = get_connection()
+                try:
+                    display_names_updated = _refresh_contact_display_names(conn)
+                    contacts_count = conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
+                    conn.commit()
+                finally:
+                    conn.close()
 
     stdout_lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
     summary = stdout_lines[-1] if stdout_lines else None
@@ -5176,7 +5285,8 @@ def _sync_conversations_unlocked(
             stats[key] = selection[key]
     stats["failed_conversations"] = 0
     stats["conversation_errors"] = []
-    _sync_runtime_started(mode, selection)
+    stats["skipped_locked_conversations"] = 0
+    run_id = _sync_runtime_started(mode, selection)
     log_action(
         "sync_run_started",
         mode=mode,
@@ -5202,7 +5312,33 @@ def _sync_conversations_unlocked(
                 verify_all=conversation_verify_all,
                 **_conversation_log_fields(conv),
             )
-            _sync_runtime_progress(index - 1, conv)
+            _sync_runtime_progress(run_id, index - 1, conv)
+            acquired, existing_lock = _try_acquire_conversation_sync(
+                conv["conversation_id"],
+                run_id=run_id,
+                mode=mode,
+            )
+            if not acquired:
+                stats["skipped_locked_conversations"] += 1
+                print(
+                    "[PenguinConnect] Sync "
+                    f"{mode} {index}/{total} skipped for {display}: conversation_sync_in_progress"
+                )
+                log_action(
+                    "sync_conversation_result",
+                    mode=mode,
+                    index=index,
+                    total=total,
+                    success=True,
+                    skipped=True,
+                    reason="conversation_sync_in_progress",
+                    locked_by_mode=existing_lock.get("mode") if existing_lock else None,
+                    locked_by_lane=existing_lock.get("lane") if existing_lock else None,
+                    verify_all=conversation_verify_all,
+                    **_conversation_log_fields(conv),
+                )
+                _sync_runtime_progress(run_id, index, None)
+                continue
             try:
                 imsg = _sync_conversation_imessage_to_gmail(
                     conn,
@@ -5289,7 +5425,7 @@ def _sync_conversations_unlocked(
                     rate_limited_until=paused_until,
                     stats=stats,
                 )
-                _sync_runtime_finished(result=stats)
+                _sync_runtime_finished(run_id, result=stats)
                 return stats
             except sqlite3.OperationalError:
                 conn.rollback()
@@ -5317,15 +5453,16 @@ def _sync_conversations_unlocked(
                     **_conversation_log_fields(conv),
                 )
             finally:
-                _sync_runtime_progress(index, None)
+                _release_conversation_sync(conv["conversation_id"], run_id=run_id)
+                _sync_runtime_progress(run_id, index, None)
     except Exception as exc:
         log_action("sync_run_result", mode=mode, success=False, error=str(exc).strip() or exc.__class__.__name__)
-        _sync_runtime_finished(error=str(exc).strip() or exc.__class__.__name__)
+        _sync_runtime_finished(run_id, error=str(exc).strip() or exc.__class__.__name__)
         raise
 
     _clear_gmail_rate_limit_pause(conn, gmail_email)
     log_action("sync_run_result", mode=mode, success=True, stats=stats)
-    _sync_runtime_finished(result=stats)
+    _sync_runtime_finished(run_id, result=stats)
     return stats
 
 
@@ -5336,7 +5473,7 @@ def sync_conversations(
     hours: Optional[int] = None,
     verify_all: bool = False,
 ) -> dict[str, Any]:
-    with _sync_lock:
+    with _sync_lane_lock(mode):
         return _sync_conversations_unlocked(conn, mode=mode, days=days, hours=hours, verify_all=verify_all)
 
 

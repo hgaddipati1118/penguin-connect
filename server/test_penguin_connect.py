@@ -23,6 +23,8 @@ class PenguinConnectTests(unittest.TestCase):
     def setUp(self):
         with penguin_connect._sync_runtime_lock:
             penguin_connect._sync_runtime = penguin_connect._new_sync_runtime_state()
+        with penguin_connect._conversation_sync_state_lock:
+            penguin_connect._active_conversation_syncs.clear()
         self.send_imessage_patcher = mock.patch(
             "penguin_connect.send_imessage",
             side_effect=AssertionError("Tests must mock send_imessage explicitly"),
@@ -56,6 +58,8 @@ class PenguinConnectTests(unittest.TestCase):
         )
 
     def tearDown(self):
+        with penguin_connect._conversation_sync_state_lock:
+            penguin_connect._active_conversation_syncs.clear()
         self.send_imessage_patcher.stop()
         self.conn.close()
 
@@ -420,6 +424,42 @@ class PenguinConnectTests(unittest.TestCase):
 
         self.assertEqual(updated, 1)
         self.assertEqual(row["display_name"], "Sai Mandhan, Nikhil (Remedy)")
+
+    def test_refresh_contacts_waits_for_active_sync_lane(self):
+        entered_refresh = threading.Event()
+        result_holder = {}
+        errors = []
+        fake_conn = mock.Mock()
+        fake_conn.execute.return_value.fetchone.return_value = (0,)
+
+        def fake_subprocess_run(*_args, **_kwargs):
+            entered_refresh.set()
+            return mock.Mock(returncode=0, stdout="Imported 0 contacts", stderr="")
+
+        def run_refresh():
+            try:
+                result_holder["result"] = penguin_connect.refresh_contacts_and_repair_display_names()
+            except Exception as exc:  # pragma: no cover
+                errors.append(exc)
+
+        with mock.patch("penguin_connect.subprocess.run", side_effect=fake_subprocess_run), mock.patch(
+            "db.get_connection",
+            return_value=fake_conn,
+        ), mock.patch(
+            "penguin_connect._refresh_contact_display_names",
+            return_value=0,
+        ), mock.patch("penguin_connect.log_action"):
+            with penguin_connect._incremental_sync_lock:
+                thread = threading.Thread(target=run_refresh)
+                thread.start()
+                time.sleep(0.05)
+                self.assertFalse(entered_refresh.is_set())
+            self.assertTrue(entered_refresh.wait(1.0))
+            thread.join(1.0)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertTrue(result_holder["result"]["success"])
 
     def test_incremental_selection_prefers_recent_activity_across_all_conversations(self):
         self.conn.execute(
@@ -2795,7 +2835,7 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(retried, 1)
         mock_send.assert_called_once()
 
-    def test_sync_conversations_is_single_flight(self):
+    def test_sync_conversations_is_single_flight_within_same_lane(self):
         active = 0
         peak = 0
         state_lock = threading.Lock()
@@ -2812,8 +2852,8 @@ class PenguinConnectTests(unittest.TestCase):
             return {"success": True, "mode": mode, "days": days, "hours": hours, "verify_all": verify_all}
 
         with mock.patch("penguin_connect._sync_conversations_unlocked", side_effect=fake_sync):
-            t1 = threading.Thread(target=lambda: results.append(penguin_connect.sync_conversations(None)))
-            t2 = threading.Thread(target=lambda: results.append(penguin_connect.sync_conversations(None)))
+            t1 = threading.Thread(target=lambda: results.append(penguin_connect.sync_conversations(None, mode="incremental")))
+            t2 = threading.Thread(target=lambda: results.append(penguin_connect.sync_conversations(None, mode="incremental")))
             t1.start()
             t2.start()
             t1.join()
@@ -2822,6 +2862,85 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(peak, 1)
         self.assertEqual(len(results), 2)
         self.assertTrue(all(r["success"] for r in results))
+
+    def test_sync_conversations_allows_incremental_and_backfill_in_parallel(self):
+        active = 0
+        peak = 0
+        state_lock = threading.Lock()
+        results = []
+
+        def fake_sync(_conn, mode="incremental", days=7, hours=None, verify_all=False):
+            nonlocal active, peak
+            with state_lock:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.05)
+            with state_lock:
+                active -= 1
+            return {"success": True, "mode": mode, "days": days, "hours": hours, "verify_all": verify_all}
+
+        with mock.patch("penguin_connect._sync_conversations_unlocked", side_effect=fake_sync):
+            t1 = threading.Thread(target=lambda: results.append(penguin_connect.sync_conversations(None, mode="incremental")))
+            t2 = threading.Thread(target=lambda: results.append(penguin_connect.sync_conversations(None, mode="backfill")))
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+
+        self.assertEqual(peak, 2)
+        self.assertEqual(len(results), 2)
+        self.assertCountEqual([result["mode"] for result in results], ["incremental", "backfill"])
+
+    def test_sync_conversations_skips_conversation_locked_by_other_lane(self):
+        conv = self._conversation_row()
+        acquired, existing = penguin_connect._try_acquire_conversation_sync(
+            conv["conversation_id"],
+            run_id="backfill-run",
+            mode="backfill",
+        )
+        self.assertTrue(acquired)
+        self.assertIsNone(existing)
+
+        with mock.patch(
+            "penguin_connect.self_heal_conversation_cache",
+            return_value={"success": True, "swept_conversations": 1, "before_count": 1, "after_count": 1},
+        ), mock.patch(
+            "penguin_connect._build_gmail_service", return_value=(mock.Mock(), None)
+        ), mock.patch(
+            "penguin_connect._refresh_send_as_aliases",
+            return_value=(["owner@gmail.com"], "owner@gmail.com"),
+        ), mock.patch(
+            "penguin_connect._list_recent_gmail_alias_activity",
+            return_value=({}, {"available": False, "reason": "mocked"}),
+        ), mock.patch(
+            "penguin_connect.list_recent_imessage_chat_activity",
+            return_value={
+                "available": True,
+                "chats": [
+                    {
+                        "chat_id": "chat-123",
+                        "first_message_at": "2026-03-07T07:10:00+00:00",
+                        "last_message_at": "2026-03-07T07:15:00+00:00",
+                        "message_count": 2,
+                    }
+                ],
+            },
+        ), mock.patch(
+            "penguin_connect._sync_conversation_imessage_to_gmail"
+        ) as mock_imsg, mock.patch(
+            "penguin_connect._sync_conversation_gmail_to_imessage"
+        ) as mock_gmail, mock.patch(
+            "penguin_connect._repair_split_gmail_messages",
+            return_value=0,
+        ):
+            stats = penguin_connect._sync_conversations_unlocked(self.conn, mode="incremental", days=7)
+
+        penguin_connect._release_conversation_sync(conv["conversation_id"], run_id="backfill-run")
+        self.assertTrue(stats["success"])
+        self.assertEqual(stats["skipped_locked_conversations"], 1)
+        self.assertEqual(stats["selected_conversations"], 1)
+        mock_imsg.assert_not_called()
+        mock_gmail.assert_not_called()
 
     def test_run_incremental_sync_does_not_skip_without_initial_backfill(self):
         with tempfile.TemporaryDirectory() as tmp:

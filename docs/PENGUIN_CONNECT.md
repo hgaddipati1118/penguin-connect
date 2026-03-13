@@ -148,6 +148,8 @@ On server start, PenguinConnect also launches startup catch-up in the background
 
 Startup catch-up still imports full history for a conversation's first bootstrap. The recent-activity cutoff only prioritizes which pending conversations run first; it does not truncate the first-time bootstrap window.
 
+Incremental sync can keep running while startup catch-up or backfill is in progress. PenguinConnect serializes work within each lane and skips any conversation that is already being processed by the other lane, so the same conversation is never synced by both at once.
+
 PenguinConnect also refreshes the local Contacts cache on startup and then again every 30 to 60 minutes while the watcher is running. That refresh pass repairs active conversation display names when a raw-handle group title such as `Sai Mandhan, +15126629638` can now resolve fully from contacts.
 
 Once a conversation completes its first bootstrap, PenguinConnect schedules recurring randomized full verifications 3 to 8 days apart so “verify all” work is spread out instead of landing in one burst. On startup, PenguinConnect also repairs missing recurring verify schedules for already-bootstrapped conversations before sync selection runs.

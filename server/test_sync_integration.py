@@ -21,6 +21,10 @@ class SyncIntegrationTests(unittest.TestCase):
             side_effect=AssertionError("Tests must mock send_imessage explicitly"),
         )
         self.send_imessage_patcher.start()
+        with penguin_connect._sync_runtime_lock:
+            penguin_connect._sync_runtime = penguin_connect._new_sync_runtime_state()
+        with penguin_connect._conversation_sync_state_lock:
+            penguin_connect._active_conversation_syncs.clear()
         self.tmpdir = tempfile.TemporaryDirectory()
         self.old_db_path = db.DB_PATH
         self.old_data_dir = db.DATA_DIR
@@ -34,6 +38,8 @@ class SyncIntegrationTests(unittest.TestCase):
             watcher.stop_watchers()
         except Exception:
             pass
+        with penguin_connect._conversation_sync_state_lock:
+            penguin_connect._active_conversation_syncs.clear()
         self.send_imessage_patcher.stop()
         db.DB_PATH = self.old_db_path
         db.DATA_DIR = self.old_data_dir
