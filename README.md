@@ -26,6 +26,8 @@ Current runtime is macOS-only because the first source adapter is Apple Messages
 - Two-way sync:
   - Apple Messages -> Gmail inbox thread
   - Gmail replies to alias -> Apple Messages
+- Apple Messages read state is mirrored back to Gmail `UNREAD` labels at the conversation level
+  - the latest synced inbound Apple Messages stay unread in Gmail until the conversation is read in Messages
 - Gmail-to-Apple-Messages delivery only processes messages from Gmail `SENT` that still target the exact conversation alias; drafts are ignored
 - Incremental Gmail reply detection persists per-conversation pending sent activity until that conversation is actually synced, so one poll cannot silently drop an unsent alias reply behind the global mailbox cursor
 - Gmail-to-chat delivery strips quoted history and signatures aggressively and sends only net-new text

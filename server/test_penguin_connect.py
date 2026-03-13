@@ -341,6 +341,134 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertTrue(state["next_full_verify_at"])
         self.assertEqual(state["full_verify_completed_at"], "2026-03-08T11:05:00+00:00")
 
+    def test_reconcile_conversation_gmail_read_state_marks_latest_inbound_messages_unread(self):
+        self.conn.executemany(
+            """INSERT INTO penguin_connect_messages
+               (conversation_id, provider, provider_message_id, direction, sender_email, sender_name, subject,
+                body_text, message_timestamp, is_read, metadata, gmail_message_id, gmail_thread_id)
+               VALUES (?, 'imessage', ?, 'imessage_to_email', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                (
+                    "amc_test",
+                    "imessage:old-inbound",
+                    "owner+am-test@gmail.com",
+                    "Alice",
+                    "Family Group",
+                    "old inbound",
+                    "2026-03-04T08:00:00+00:00",
+                    0,
+                    json.dumps({"is_from_me": False}),
+                    "gm-old-inbound",
+                    "thread-1",
+                ),
+                (
+                    "amc_test",
+                    "imessage:new-inbound",
+                    "owner+am-test@gmail.com",
+                    "Alice",
+                    "Family Group",
+                    "new inbound",
+                    "2026-03-04T09:00:00+00:00",
+                    1,
+                    json.dumps({"is_from_me": False}),
+                    "gm-new-inbound",
+                    "thread-1",
+                ),
+                (
+                    "amc_test",
+                    "imessage:outbound",
+                    "owner+am-test@gmail.com",
+                    "Me",
+                    "Family Group",
+                    "sent by me",
+                    "2026-03-04T10:00:00+00:00",
+                    1,
+                    json.dumps({"is_from_me": True}),
+                    "gm-outbound",
+                    "thread-1",
+                ),
+            ],
+        )
+        gmail_service = mock.Mock()
+
+        penguin_connect._reconcile_conversation_gmail_read_state(
+            self.conn,
+            gmail_service,
+            "amc_test",
+            unread_count=1,
+        )
+
+        modify_calls = gmail_service.users.return_value.messages.return_value.modify.call_args_list
+        self.assertEqual(len(modify_calls), 2)
+        self.assertEqual(modify_calls[0].kwargs["id"], "gm-new-inbound")
+        self.assertEqual(modify_calls[0].kwargs["body"], {"addLabelIds": ["UNREAD"]})
+        self.assertEqual(modify_calls[1].kwargs["id"], "gm-old-inbound")
+        self.assertEqual(modify_calls[1].kwargs["body"], {"removeLabelIds": ["UNREAD"]})
+
+        rows = self.conn.execute(
+            """SELECT provider_message_id, is_read
+               FROM penguin_connect_messages
+               WHERE conversation_id = ?
+               ORDER BY message_timestamp ASC""",
+            ("amc_test",),
+        ).fetchall()
+        self.assertEqual(
+            [(row["provider_message_id"], row["is_read"]) for row in rows],
+            [
+                ("imessage:old-inbound", 1),
+                ("imessage:new-inbound", 0),
+                ("imessage:outbound", 1),
+            ],
+        )
+
+    def test_imessage_sync_reconciles_gmail_read_state_without_new_messages(self):
+        self.conn.execute(
+            """INSERT INTO penguin_connect_messages
+               (conversation_id, provider, provider_message_id, direction, sender_email, sender_name, subject,
+                body_text, message_timestamp, is_read, metadata, gmail_message_id, gmail_thread_id)
+               VALUES (?, 'imessage', ?, 'imessage_to_email', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "amc_test",
+                "imessage:stale-unread",
+                "owner+am-test@gmail.com",
+                "Alice",
+                "Family Group",
+                "already synced",
+                "2026-03-04T08:00:00+00:00",
+                0,
+                json.dumps({"is_from_me": False}),
+                "gm-stale-unread",
+                "thread-1",
+            ),
+        )
+        conv = self._conversation_row()
+        gmail_service = mock.Mock()
+
+        with mock.patch("penguin_connect.fetch_imessage_messages", return_value=[]), mock.patch(
+            "penguin_connect._get_imessage_unread_count", return_value=0
+        ):
+            result = penguin_connect._sync_conversation_imessage_to_gmail(
+                self.conn,
+                gmail_service,
+                conv,
+                mode="incremental",
+                days=7,
+            )
+
+        self.assertEqual(result["imessage_imported"], 0)
+        modify = gmail_service.users.return_value.messages.return_value.modify
+        modify.assert_called_once_with(
+            userId="me",
+            id="gm-stale-unread",
+            body={"removeLabelIds": ["UNREAD"]},
+        )
+        row = self.conn.execute(
+            """SELECT is_read FROM penguin_connect_messages
+               WHERE conversation_id = ? AND provider_message_id = ?""",
+            ("amc_test", "imessage:stale-unread"),
+        ).fetchone()
+        self.assertEqual(row["is_read"], 1)
+
     def test_ensure_full_verify_schedule_backfills_missing_due_time_for_bootstrapped_conversation(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state

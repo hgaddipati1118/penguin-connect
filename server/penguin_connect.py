@@ -4174,67 +4174,91 @@ def _sync_conversation_imessage_to_gmail(
         )
 
     if not saw_messages:
-        if thread_id and thread_id != conv["gmail_thread_id"]:
-            conn.execute(
-                "UPDATE penguin_connect_conversations SET gmail_thread_id = ?, last_synced_at = datetime('now') WHERE conversation_id = ?",
-                (thread_id, conv["conversation_id"]),
-            )
-        _upsert_sync_state(
+        canonical_thread_id = thread_id
+    else:
+        canonical_thread_id = _resolve_canonical_gmail_thread_id(
             conn,
             conv["conversation_id"],
-            None if verify_all else since,
-            None,
-            None,
+            thread_id or conv["gmail_thread_id"],
         )
-        return {
-            "imessage_imported": 0,
-            "gmail_imported": imported,
-            "gmail_write_pause_seconds": gmail_write_pause_seconds,
-        }
-
-    canonical_thread_id = _resolve_canonical_gmail_thread_id(conn, conv["conversation_id"], thread_id or conv["gmail_thread_id"])
     if canonical_thread_id and canonical_thread_id != conv["gmail_thread_id"]:
         conn.execute(
             "UPDATE penguin_connect_conversations SET gmail_thread_id = ?, last_synced_at = datetime('now') WHERE conversation_id = ?",
             (canonical_thread_id, conv["conversation_id"]),
         )
 
-    _upsert_sync_state(conn, conv["conversation_id"], last_ts, None, None)
+    _upsert_sync_state(conn, conv["conversation_id"], last_ts if saw_messages else (None if verify_all else since), None, None)
 
-    if unread_count == 0:
-        _mark_conversation_gmail_read(conn, gmail_service, conv["conversation_id"])
+    _reconcile_conversation_gmail_read_state(conn, gmail_service, conv["conversation_id"], unread_count)
 
     return {
-        "imessage_imported": stored,
+        "imessage_imported": stored if saw_messages else 0,
         "gmail_imported": imported,
         "gmail_write_pause_seconds": gmail_write_pause_seconds,
     }
 
 
-def _mark_conversation_gmail_read(conn: sqlite3.Connection, gmail_service, conversation_id: str):
+def _set_gmail_message_read_state(gmail_service, gmail_message_id: str, *, unread: bool) -> bool:
+    body = {"addLabelIds": ["UNREAD"]} if unread else {"removeLabelIds": ["UNREAD"]}
+    try:
+        _gmail_execute(
+            lambda: gmail_service.users().messages().modify(
+                userId="me",
+                id=gmail_message_id,
+                body=body,
+            ).execute()
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _reconcile_conversation_gmail_read_state(
+    conn: sqlite3.Connection,
+    gmail_service,
+    conversation_id: str,
+    unread_count: Optional[int],
+):
+    if unread_count is None:
+        return
+
     rows = conn.execute(
-        """SELECT gmail_message_id FROM penguin_connect_messages
-           WHERE conversation_id = ? AND gmail_message_id IS NOT NULL AND is_read = 0""",
+        """SELECT id, gmail_message_id, message_timestamp, is_read, metadata
+           FROM penguin_connect_messages
+           WHERE conversation_id = ?
+             AND provider = 'imessage'
+             AND direction = 'imessage_to_email'
+             AND gmail_message_id IS NOT NULL
+           ORDER BY message_timestamp DESC, id DESC""",
         (conversation_id,),
     ).fetchall()
 
+    unread_slots = max(0, int(unread_count))
+    target_ids: set[int] = set()
     for row in rows:
-        msg_id = row["gmail_message_id"]
-        try:
-            _gmail_execute(
-                lambda msg_id=msg_id: gmail_service.users().messages().modify(
-                    userId="me",
-                    id=msg_id,
-                    body={"removeLabelIds": ["UNREAD"]},
-                ).execute()
-            )
-        except Exception:
-            pass
+        metadata = _load_metadata(row["metadata"])
+        if metadata.get("is_from_me"):
+            continue
+        if len(target_ids) >= unread_slots:
+            break
+        target_ids.add(int(row["id"]))
 
-    conn.execute(
-        "UPDATE penguin_connect_messages SET is_read = 1 WHERE conversation_id = ? AND gmail_message_id IS NOT NULL",
-        (conversation_id,),
-    )
+    for row in rows:
+        row_id = int(row["id"])
+        should_be_unread = row_id in target_ids
+        is_unread = not bool(row["is_read"])
+        if should_be_unread == is_unread:
+            continue
+        if not _set_gmail_message_read_state(
+            gmail_service,
+            row["gmail_message_id"],
+            unread=should_be_unread,
+        ):
+            continue
+        conn.execute(
+            "UPDATE penguin_connect_messages SET is_read = ? WHERE id = ?",
+            (0 if should_be_unread else 1, row_id),
+        )
 
 
 def _extract_alias_recipients(headers: dict[str, str]) -> list[str]:

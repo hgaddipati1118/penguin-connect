@@ -38,6 +38,7 @@ Optional flags:
 - Reads sibling Apple Messages DM routes during source-to-Gmail sync so route changes between `iMessage`, `RCS`, and `SMS` do not silently drop messages.
 - Keeps Apple Messages group chats separate and uses the group title when one exists.
 - Polls Gmail for replies to alias addresses and sends those replies back to the source provider.
+- Mirrors Apple Messages read state back into Gmail `UNREAD` labels using the conversation unread count, so the latest synced inbound source messages clear once the conversation is read in Messages.
 - Only Gmail messages from `SENT` that still target the exact conversation alias are eligible for Gmail-to-source delivery; drafts are ignored.
 - Incremental Gmail reply detection keeps a per-conversation pending sent-activity marker until that conversation is actually synced, and it falls back to a recent sent-mail scan when the global Gmail history cursor has already moved past a valid alias reply.
 - Sends only the latest non-quoted Gmail reply text back to Apple Messages; it does not append synthetic quoted context.
