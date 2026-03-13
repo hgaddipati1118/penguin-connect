@@ -144,6 +144,14 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertTrue(body["sync_status"]["penguin_connect"]["running"])
         self.assertEqual(body["sync_metrics"]["totals"]["retry_queue_count"], 1)
 
+    def test_app_startup_refreshes_contacts_once(self):
+        with mock.patch("app.refresh_contacts_now", return_value={"success": True}) as mock_refresh, TestClient(
+            app_module.app
+        ):
+            pass
+
+        mock_refresh.assert_called_once_with()
+
     def test_messages_endpoint_respects_limit_and_returns_latest_first(self):
         with TestClient(app_module.app) as client:
             response = client.get("/penguin-connect/conversations/amc_test/messages", params={"limit": 1})

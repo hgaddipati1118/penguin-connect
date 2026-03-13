@@ -28,7 +28,7 @@ from penguin_connect import (
 )
 from db import DB_PATH, get_connection, init_db
 from startup_checks import StartupReadinessError, assert_startup_ready
-from watcher import get_sync_status, start_watchers, stop_watchers
+from watcher import get_sync_status, refresh_contacts_now, start_watchers, stop_watchers
 
 class PenguinConnectGmailConnectRequest(BaseModel):
     gmail_email: str
@@ -72,6 +72,14 @@ async def lifespan(_app: FastAPI):
         raise
     finally:
         conn.close()
+
+    try:
+        refresh_result = refresh_contacts_now()
+        if not refresh_result.get("success"):
+            print(f"[PenguinConnect] Contacts refresh warning: {refresh_result.get('error')}")
+    except Exception as exc:
+        log_action("contacts_refresh_exception", error=str(exc).strip() or exc.__class__.__name__)
+        print(f"[PenguinConnect] Contacts refresh failed: {exc}")
 
     start_watchers()
     log_action(

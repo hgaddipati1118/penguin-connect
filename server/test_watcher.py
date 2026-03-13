@@ -1,6 +1,7 @@
 import os
 import threading
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 import watcher
@@ -25,6 +26,7 @@ class WatcherTests(unittest.TestCase):
     def setUp(self):
         watcher._thread = None
         watcher._last_error_code = None
+        watcher._next_contacts_refresh_at = None
         watcher._shutdown_event = threading.Event()
         with watcher._status_lock:
             watcher._sync_status["penguin_connect"] = {
@@ -35,6 +37,7 @@ class WatcherTests(unittest.TestCase):
     def tearDown(self):
         watcher._thread = None
         watcher._last_error_code = None
+        watcher._next_contacts_refresh_at = None
         watcher._shutdown_event = threading.Event()
         with watcher._status_lock:
             watcher._sync_status["penguin_connect"] = {
@@ -109,6 +112,51 @@ class WatcherTests(unittest.TestCase):
         status = watcher.get_sync_status()
         self.assertIsNone(status["penguin_connect"]["last_sync"])
         self.assertIsNone(watcher._last_error_code)
+
+    def test_polling_loop_triggers_contacts_refresh(self):
+        def fake_run_incremental_sync():
+            watcher._shutdown_event.set()
+            return {"success": True, "mode": "incremental"}
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PENGUIN_CONNECT_POLL_SECONDS": "10",
+                "PENGUIN_CONNECT_POLL_INITIAL_DELAY_SECONDS": "0",
+            },
+            clear=False,
+        ), mock.patch("penguin_connect.run_incremental_sync", side_effect=fake_run_incremental_sync), mock.patch(
+            "watcher._maybe_refresh_contacts",
+            return_value={"success": True, "skipped": False, "next_run_at": "2026-03-13T20:00:00+00:00"},
+        ) as mock_refresh, mock.patch("watcher.log_action"):
+            watcher._penguin_connect_polling_loop()
+
+        mock_refresh.assert_called_once_with()
+
+    def test_maybe_refresh_contacts_skips_until_due(self):
+        watcher._next_contacts_refresh_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+        result = watcher._maybe_refresh_contacts()
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["reason"], "not_due")
+
+    def test_refresh_contacts_now_runs_and_schedules_next_due_time(self):
+        with mock.patch(
+            "penguin_connect.refresh_contacts_and_repair_display_names",
+            return_value={"success": True, "contacts_count": 1360, "display_names_updated": 3},
+        ), mock.patch("watcher.random.randint", return_value=42):
+            before = datetime.now(timezone.utc)
+            result = watcher.refresh_contacts_now()
+            after = datetime.now(timezone.utc)
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["contacts_count"], 1360)
+        self.assertEqual(result["display_names_updated"], 3)
+        self.assertIsNotNone(watcher._next_contacts_refresh_at)
+        self.assertGreaterEqual(watcher._next_contacts_refresh_at, before + timedelta(minutes=42))
+        self.assertLessEqual(watcher._next_contacts_refresh_at, after + timedelta(minutes=42))
 
     def test_start_watchers_is_single_flight(self):
         with mock.patch("watcher.threading.Thread", side_effect=_FakeThread) as mock_thread, mock.patch(

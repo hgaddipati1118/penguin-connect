@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import os
+import random
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from action_log import log_action
 
@@ -18,6 +19,7 @@ _status_lock = threading.Lock()
 _shutdown_event = threading.Event()
 _thread: threading.Thread | None = None
 _last_error_code: str | None = None
+_next_contacts_refresh_at: datetime | None = None
 
 
 def _update_sync_status() -> None:
@@ -37,6 +39,42 @@ def _poll_initial_delay_seconds(interval: int) -> int:
     except Exception:
         delay = interval
     return max(0, min(delay, 300))
+
+
+def _schedule_next_contacts_refresh(now: datetime | None = None) -> str:
+    global _next_contacts_refresh_at
+    from penguin_connect import DEFAULT_CONTACT_REFRESH_MINUTES_MAX, DEFAULT_CONTACT_REFRESH_MINUTES_MIN
+
+    current = now or datetime.now(timezone.utc)
+    delay_minutes = random.randint(DEFAULT_CONTACT_REFRESH_MINUTES_MIN, DEFAULT_CONTACT_REFRESH_MINUTES_MAX)
+    _next_contacts_refresh_at = current + timedelta(minutes=delay_minutes)
+    return _next_contacts_refresh_at.isoformat()
+
+
+def _maybe_refresh_contacts(*, force: bool = False) -> dict:
+    global _next_contacts_refresh_at
+    now = datetime.now(timezone.utc)
+    if not force and _next_contacts_refresh_at and now < _next_contacts_refresh_at:
+        return {
+            "success": True,
+            "skipped": True,
+            "reason": "not_due",
+            "next_run_at": _next_contacts_refresh_at.isoformat(),
+        }
+
+    try:
+        from penguin_connect import refresh_contacts_and_repair_display_names
+
+        result = refresh_contacts_and_repair_display_names()
+    except Exception as exc:
+        result = {"success": False, "error": str(exc).strip() or exc.__class__.__name__}
+
+    result["next_run_at"] = _schedule_next_contacts_refresh()
+    return result
+
+
+def refresh_contacts_now() -> dict:
+    return _maybe_refresh_contacts(force=True)
 
 
 def _penguin_connect_polling_loop() -> None:
@@ -97,12 +135,28 @@ def _penguin_connect_polling_loop() -> None:
             log_action("watcher_poll_exception", error=str(exc).strip() or exc.__class__.__name__)
             print(f"[Watcher] PenguinConnect polling error: {exc}")
 
+        refresh_result = _maybe_refresh_contacts()
+        log_action(
+            "contacts_refresh_tick",
+            success=bool(refresh_result.get("success")),
+            skipped=bool(refresh_result.get("skipped")),
+            reason=refresh_result.get("reason"),
+            error=refresh_result.get("error"),
+            next_run_at=refresh_result.get("next_run_at"),
+            contacts_count=refresh_result.get("contacts_count"),
+            display_names_updated=refresh_result.get("display_names_updated"),
+        )
+        if not refresh_result.get("success") and refresh_result.get("error"):
+            print(f"[Watcher] PenguinConnect contacts refresh warning: {refresh_result.get('error')}")
+
         _shutdown_event.wait(interval)
 
 
 def start_watchers() -> None:
     global _thread
     _shutdown_event.clear()
+    if _next_contacts_refresh_at is None:
+        _schedule_next_contacts_refresh()
 
     if _thread and _thread.is_alive():
         return

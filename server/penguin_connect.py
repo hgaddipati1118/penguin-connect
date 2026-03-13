@@ -10,6 +10,7 @@ import json
 import mimetypes
 import os
 import re
+import sys
 import secrets
 import shutil
 import sqlite3
@@ -67,6 +68,8 @@ DEFAULT_GMAIL_API_MAX_BACKOFF_SECONDS = 30
 DEFAULT_GMAIL_RATE_LIMIT_PAUSE_SECONDS = 120
 DEFAULT_GMAIL_BACKFILL_WRITE_PAUSE_SECONDS = 0.15
 MAX_GMAIL_BACKFILL_WRITE_PAUSE_SECONDS = 5.0
+DEFAULT_CONTACT_REFRESH_MINUTES_MIN = 30
+DEFAULT_CONTACT_REFRESH_MINUTES_MAX = 60
 SYNC_JOB_TYPE = "sync_conversations"
 SYNC_JOB_QUEUE = "sync"
 DEFAULT_SYNC_JOB_MAX_ATTEMPTS = 12
@@ -116,6 +119,16 @@ def _now_iso() -> str:
 
 def _normalize_email(value: Optional[str]) -> str:
     return (value or "").strip().lower()
+
+
+def _parse_participants_json(raw_value: Optional[str]) -> list[str]:
+    try:
+        parsed = json.loads(raw_value or "[]")
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [(item or "").strip() for item in parsed if isinstance(item, str) and (item or "").strip()]
 
 
 def _normalize_source_provider(value: Optional[str]) -> str:
@@ -1301,6 +1314,16 @@ def _looks_like_unresolved_handle(value: str) -> bool:
     return not any(ch.isalpha() for ch in candidate)
 
 
+def _name_contains_unresolved_handle_component(value: str) -> bool:
+    candidate = (value or "").strip()
+    if not candidate:
+        return False
+    parts = [part.strip() for part in candidate.split(",") if part.strip()]
+    if len(parts) <= 1:
+        return _looks_like_unresolved_handle(candidate)
+    return any(_looks_like_unresolved_handle(part) for part in parts)
+
+
 def deterministic_conversation_id(
     gmail_email: str,
     source_chat_id: str,
@@ -2199,6 +2222,20 @@ def _normalize_source_chat_name(chat_name: str, *, chat_identifier: str = "", ch
     return candidate
 
 
+def _preferred_group_display_name(source_name: str, participant_name: str) -> str:
+    normalized_source = (source_name or "").strip()
+    normalized_participant = (participant_name or "").strip()
+    if not normalized_source:
+        return normalized_participant
+    if not normalized_participant or normalized_source == normalized_participant:
+        return normalized_source
+    if _name_contains_unresolved_handle_component(normalized_source) and not _name_contains_unresolved_handle_component(
+        normalized_participant
+    ):
+        return normalized_participant
+    return normalized_source
+
+
 def _resolve_display_name(
     conn: sqlite3.Connection,
     chat_name: str,
@@ -2214,14 +2251,21 @@ def _resolve_display_name(
         chat_identifier=chat_identifier,
         chat_id=chat_id,
     )
-    if source_name:
-        return source_name
-
     participant_name = _participant_display_name(conn, participants)
     if (chat_type or "").strip().lower() == "group":
+        if source_name:
+            preferred_source_name = _preferred_group_display_name(source_name, participant_name)
+            if preferred_source_name:
+                return preferred_source_name
         existing_name = _normalize_source_chat_name(existing_display_name)
-        if existing_name and existing_name != participant_name:
-            return existing_name
+        preferred_existing_name = _preferred_group_display_name(existing_name, participant_name)
+        if preferred_existing_name:
+            return preferred_existing_name
+        if participant_name:
+            return participant_name
+
+    if source_name:
+        return source_name
 
     if participant_name:
         return participant_name
@@ -2277,6 +2321,76 @@ def _ensure_active_alias(conn: sqlite3.Connection, gmail_email: str, conversatio
         (alias_email, conversation_id),
     )
     return _get_active_alias(conn, conversation_id)
+
+
+def _refresh_contact_display_names(conn: sqlite3.Connection) -> int:
+    rows = conn.execute(
+        """SELECT conversation_id, display_name, chat_type, participants
+           FROM penguin_connect_conversations
+           WHERE status = 'active'"""
+    ).fetchall()
+    updated = 0
+    for row in rows:
+        participants = _parse_participants_json(row["participants"])
+        if not participants:
+            continue
+        refreshed_name = _resolve_display_name(
+            conn,
+            "",
+            participants,
+            chat_type=row["chat_type"] or "group",
+            existing_display_name=row["display_name"] or "",
+        )
+        if not refreshed_name or refreshed_name == (row["display_name"] or "").strip():
+            continue
+        conn.execute(
+            """UPDATE penguin_connect_conversations
+               SET display_name = ?, updated_at = datetime('now')
+               WHERE conversation_id = ?""",
+            (refreshed_name, row["conversation_id"]),
+        )
+        updated += 1
+    return updated
+
+
+def refresh_contacts_and_repair_display_names() -> dict[str, Any]:
+    repo_root = Path(__file__).resolve().parent.parent
+    script_path = repo_root / "scripts" / "import_contacts.py"
+    with _sync_lock:
+        completed_at = _now_iso()
+        result = subprocess.run(
+            [sys.executable, str(script_path)],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            error = (result.stderr or result.stdout or "").strip() or "contact_import_failed"
+            log_action("contacts_refresh_result", success=False, error=error)
+            return {"success": False, "error": error, "completed_at": completed_at}
+
+        from db import get_connection
+
+        conn = get_connection()
+        try:
+            display_names_updated = _refresh_contact_display_names(conn)
+            contacts_count = conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
+            conn.commit()
+        finally:
+            conn.close()
+
+    stdout_lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+    summary = stdout_lines[-1] if stdout_lines else None
+    refresh_result = {
+        "success": True,
+        "completed_at": completed_at,
+        "contacts_count": contacts_count,
+        "display_names_updated": display_names_updated,
+        "summary": summary,
+    }
+    log_action("contacts_refresh_result", **refresh_result)
+    return refresh_result
 
 
 def ensure_conversations_discovered(

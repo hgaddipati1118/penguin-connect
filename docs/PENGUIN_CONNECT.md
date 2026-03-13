@@ -148,6 +148,8 @@ On server start, PenguinConnect also launches startup catch-up in the background
 
 Startup catch-up still imports full history for a conversation's first bootstrap. The recent-activity cutoff only prioritizes which pending conversations run first; it does not truncate the first-time bootstrap window.
 
+PenguinConnect also refreshes the local Contacts cache on startup and then again every 30 to 60 minutes while the watcher is running. That refresh pass repairs active conversation display names when a raw-handle group title such as `Sai Mandhan, +15126629638` can now resolve fully from contacts.
+
 Once a conversation completes its first bootstrap, PenguinConnect schedules recurring randomized full verifications 3 to 8 days apart so “verify all” work is spread out instead of landing in one burst. On startup, PenguinConnect also repairs missing recurring verify schedules for already-bootstrapped conversations before sync selection runs.
 
 Those recurring full verifications also refresh contact-derived display names, sender names, and subjects in local bridge state when your contacts have changed, without reimporting already-synced Gmail messages.

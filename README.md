@@ -34,6 +34,7 @@ Current runtime is macOS-only because the first source adapter is Apple Messages
 - Startup gap fill plus default 7-day backfill
 - Startup catch-up runs in a background thread and drains all pending bootstrap conversations by default
 - Startup catch-up still imports full history for a conversation's first bootstrap; the recent-activity cutoff only decides which pending conversations run first
+- Contacts refresh at startup and then again every 30 to 60 minutes, repairing raw-handle group titles when participant contacts resolve
 - After initial bootstrap, each conversation gets a recurring randomized full-verify schedule 3 to 8 days apart so verify-all work stays spread out
 - Full verify refreshes contact-derived conversation/message names in local state without reimporting already-synced messages
 - Startup repairs any missing recurring full-verify schedule for already-bootstrapped conversations before selection runs
