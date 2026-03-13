@@ -150,6 +150,8 @@ Startup catch-up still imports full history for a conversation's first bootstrap
 
 Incremental sync can keep running while startup catch-up or backfill is in progress. PenguinConnect serializes work within each lane and skips any conversation that is already being processed by the other lane, so the same conversation is never synced by both at once.
 
+PenguinConnect also cleans up stale Gmail drafts addressed to a conversation alias when they live in a non-canonical thread and the conversation already has a bridge-owned canonical thread. This prevents duplicate draft-only threads from lingering in Gmail while still leaving active in-progress drafts alone until they age past the safety window. The default safety window is 30 minutes and can be adjusted with `PENGUIN_CONNECT_ALIAS_DRAFT_DELETE_MINUTES`.
+
 PenguinConnect also refreshes the local Contacts cache on startup and then again every 30 to 60 minutes while the watcher is running. That refresh pass repairs active conversation display names when a raw-handle group title such as `Sai Mandhan, +15126629638` can now resolve fully from contacts.
 
 Once a conversation completes its first bootstrap, PenguinConnect schedules recurring randomized full verifications 3 to 8 days apart so “verify all” work is spread out instead of landing in one burst. On startup, PenguinConnect also repairs missing recurring verify schedules for already-bootstrapped conversations before sync selection runs.

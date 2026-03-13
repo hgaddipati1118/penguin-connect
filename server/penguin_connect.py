@@ -4274,12 +4274,78 @@ def _list_gmail_messages_to_alias(gmail_service, alias_email: str, after_iso: st
             params["pageToken"] = page_token
 
         data = _gmail_execute(lambda params=params: gmail_service.users().messages().list(**params).execute())
-        result.extend(data.get("messages", []))
-        page_token = data.get("nextPageToken")
+        payload = data if isinstance(data, dict) else {}
+        result.extend(payload.get("messages", []) or [])
+        page_token = payload.get("nextPageToken")
         if not page_token:
             break
 
     return result
+
+
+def _list_gmail_draft_messages_to_alias(gmail_service, alias_email: str) -> list[dict[str, Any]]:
+    query = f"to:{alias_email} in:drafts"
+    result: list[dict[str, Any]] = []
+    page_token = None
+    while True:
+        params = {
+            "userId": "me",
+            "q": query,
+            "maxResults": 100,
+            "includeSpamTrash": False,
+        }
+        if page_token:
+            params["pageToken"] = page_token
+
+        data = _gmail_execute(lambda params=params: gmail_service.users().messages().list(**params).execute())
+        payload = data if isinstance(data, dict) else {}
+        result.extend(payload.get("messages", []) or [])
+        page_token = payload.get("nextPageToken")
+        if not page_token:
+            break
+
+    return result
+
+
+def _list_gmail_draft_ids_by_message_id(
+    gmail_service,
+    candidate_message_ids: set[str],
+    *,
+    scan_limit: int = 500,
+) -> dict[str, str]:
+    if not candidate_message_ids:
+        return {}
+
+    draft_ids: dict[str, str] = {}
+    page_token = None
+    scanned = 0
+    while True:
+        params = {
+            "userId": "me",
+            "maxResults": 100,
+        }
+        if page_token:
+            params["pageToken"] = page_token
+
+        data = _gmail_execute(lambda params=params: gmail_service.users().drafts().list(**params).execute())
+        payload = data if isinstance(data, dict) else {}
+        for draft in payload.get("drafts") or []:
+            scanned += 1
+            message = draft.get("message") or {}
+            message_id = (message.get("id") or "").strip()
+            draft_id = (draft.get("id") or "").strip()
+            if message_id in candidate_message_ids and draft_id:
+                draft_ids[message_id] = draft_id
+            if scanned >= scan_limit or len(draft_ids) >= len(candidate_message_ids):
+                break
+
+        if scanned >= scan_limit or len(draft_ids) >= len(candidate_message_ids):
+            break
+        page_token = payload.get("nextPageToken")
+        if not page_token:
+            break
+
+    return draft_ids
 
 
 def _parse_sender_email(from_header: str) -> str:
@@ -4310,6 +4376,98 @@ def _gmail_message_targets_alias(headers: dict[str, str], alias_email: str) -> b
     if not expected:
         return False
     return expected in _extract_alias_recipients(headers)
+
+
+def _alias_draft_delete_minutes() -> int:
+    return _env_int("PENGUIN_CONNECT_ALIAS_DRAFT_DELETE_MINUTES", 30, 5, 7 * 24 * 60)
+
+
+def _delete_gmail_draft(gmail_service, draft_id: str) -> Optional[str]:
+    try:
+        _gmail_execute(
+            lambda draft_id=draft_id: gmail_service.users().drafts().delete(
+                userId="me",
+                id=draft_id,
+            ).execute()
+        )
+        return None
+    except _GmailRetryableError:
+        raise
+    except Exception:
+        return "gmail_draft_delete_failed"
+
+
+def _cleanup_stale_alias_drafts(
+    conn: sqlite3.Connection,
+    gmail_service,
+    conv: sqlite3.Row | dict[str, Any],
+    canonical_thread_id: Optional[str],
+) -> int:
+    canonical = (canonical_thread_id or "").strip()
+    alias_email = _normalize_email(conv["alias_email"])
+    if not canonical or not alias_email:
+        return 0
+    if not _thread_is_bridge_owned(conn, conv["conversation_id"], canonical):
+        return 0
+
+    draft_messages = _list_gmail_draft_messages_to_alias(gmail_service, alias_email)
+    if not draft_messages:
+        return 0
+
+    draft_id_by_message_id = _list_gmail_draft_ids_by_message_id(
+        gmail_service,
+        {(message.get("id") or "").strip() for message in draft_messages if (message.get("id") or "").strip()},
+    )
+    delete_before = datetime.now(timezone.utc) - timedelta(minutes=_alias_draft_delete_minutes())
+    deleted = 0
+    for message in draft_messages:
+        message_id = (message.get("id") or "").strip()
+        if not message_id:
+            continue
+
+        draft_id = draft_id_by_message_id.get(message_id)
+        if not draft_id:
+            continue
+
+        full = _gmail_execute(
+            lambda message_id=message_id: gmail_service.users().messages().get(
+                userId="me",
+                id=message_id,
+                format="metadata",
+                metadataHeaders=["To", "Cc", "Delivered-To", "X-Original-To", "X-Forwarded-To"],
+            ).execute()
+        )
+        headers = _gmail_header_map(full.get("payload") or {})
+        label_ids = full.get("labelIds") or []
+        if _gmail_to_source_ignore_reason(label_ids) != "gmail_draft_message":
+            continue
+        if not _gmail_message_targets_alias(headers, alias_email):
+            continue
+
+        thread_id = (full.get("threadId") or "").strip()
+        if not thread_id or thread_id == canonical:
+            continue
+
+        draft_ts = _parse_iso(_iso_from_gmail_internal_date(full.get("internalDate")))
+        if not draft_ts or draft_ts > delete_before:
+            continue
+
+        error = _delete_gmail_draft(gmail_service, draft_id)
+        log_action(
+            "gmail_alias_draft_cleanup",
+            success=not bool(error),
+            error=error,
+            gmail_draft_id=draft_id,
+            gmail_message_id=message_id,
+            gmail_thread_id=thread_id,
+            canonical_gmail_thread_id=canonical,
+            draft_age_seconds=max(0, int((datetime.now(timezone.utc) - draft_ts).total_seconds())),
+            **_conversation_log_fields(conv),
+        )
+        if not error:
+            deleted += 1
+
+    return deleted
 
 
 def _maybe_send_gmail_delivery_error_notice(
@@ -4657,6 +4815,7 @@ def _sync_conversation_gmail_to_imessage(
     history_id = state["last_gmail_history_id"] if state else None
     canonical_thread_id = _resolve_canonical_gmail_thread_id(conn, conv["conversation_id"], conv["gmail_thread_id"])
     observed_thread_ids: list[str] = []
+    deleted_alias_drafts = 0
 
     messages = _list_gmail_messages_to_alias(gmail_service, conv["alias_email"], since)
     if not messages:
@@ -4665,8 +4824,13 @@ def _sync_conversation_gmail_to_imessage(
         )
         if canonical_thread_id:
             _apply_canonical_thread_reconciliation(conn, conv["conversation_id"], canonical_thread_id)
+            deleted_alias_drafts = _cleanup_stale_alias_drafts(conn, gmail_service, conv, canonical_thread_id)
         _upsert_sync_state(conn, conv["conversation_id"], None, None if verify_all else since, None)
-        return {"email_to_imessage": converted, "blocked_sender_count": blocked}
+        return {
+            "email_to_imessage": converted,
+            "blocked_sender_count": blocked,
+            "alias_drafts_deleted": deleted_alias_drafts,
+        }
 
     message_ids = [m.get("id") for m in messages if m.get("id")]
     for message_id in message_ids:
@@ -5169,9 +5333,14 @@ def _sync_conversation_gmail_to_imessage(
     )
     if canonical_thread_id:
         _apply_canonical_thread_reconciliation(conn, conv["conversation_id"], canonical_thread_id)
+        deleted_alias_drafts = _cleanup_stale_alias_drafts(conn, gmail_service, conv, canonical_thread_id)
 
     _upsert_sync_state(conn, conv["conversation_id"], None, last_gmail_ts, history_id)
-    return {"email_to_imessage": converted, "blocked_sender_count": blocked}
+    return {
+        "email_to_imessage": converted,
+        "blocked_sender_count": blocked,
+        "alias_drafts_deleted": deleted_alias_drafts,
+    }
 
 
 def _sync_conversations_unlocked(
@@ -5256,6 +5425,7 @@ def _sync_conversations_unlocked(
         "imessage_imported": 0,
         "gmail_imported": 0,
         "email_to_imessage": 0,
+        "alias_drafts_deleted": 0,
         "blocked_sender_count": 0,
         "gmail_thread_repairs": 0,
         "full_verify_completed": 0,
@@ -5369,6 +5539,7 @@ def _sync_conversations_unlocked(
                 stats["imessage_imported"] += imsg.get("imessage_imported", 0)
                 stats["gmail_imported"] += imsg.get("gmail_imported", 0)
                 stats["email_to_imessage"] += gsync.get("email_to_imessage", 0)
+                stats["alias_drafts_deleted"] += gsync.get("alias_drafts_deleted", 0)
                 stats["blocked_sender_count"] += gsync.get("blocked_sender_count", 0)
                 stats["gmail_thread_repairs"] += repaired
                 if mode in {"backfill", "startup_catchup"}:

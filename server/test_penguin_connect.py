@@ -2535,6 +2535,141 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(metadata["delivery_status"], "ignored")
         self.assertEqual(metadata["labels"], ["DRAFT"])
 
+    def test_cleanup_stale_alias_drafts_deletes_old_split_drafts_only(self):
+        conv = self._conversation_row()
+        self.conn.execute(
+            """INSERT INTO penguin_connect_messages
+               (conversation_id, provider, provider_message_id, gmail_message_id, gmail_thread_id, direction,
+                sender_email, sender_name, subject, body_text, message_timestamp, is_read, metadata)
+               VALUES (?, 'imessage', ?, ?, ?, 'imessage_to_email', ?, ?, ?, ?, ?, 1, ?)""",
+            (
+                "amc_test",
+                "imessage:root",
+                "gmail-root",
+                "thread-main",
+                "owner+am-test@gmail.com",
+                "Taylor",
+                "iMessage · Family Group",
+                "hello",
+                "2026-03-10T10:00:00+00:00",
+                json.dumps({"rfc_message_id": "<am.root@penguinconnect.local>"}),
+            ),
+        )
+        self.conn.execute(
+            "UPDATE penguin_connect_conversations SET gmail_thread_id = ? WHERE conversation_id = ?",
+            ("thread-main", "amc_test"),
+        )
+        now_dt = datetime.now(timezone.utc)
+        old_ms = str(int((now_dt - timedelta(minutes=90)).timestamp() * 1000))
+        recent_ms = str(int((now_dt - timedelta(minutes=5)).timestamp() * 1000))
+
+        gmail_service = mock.Mock()
+
+        def list_messages(**params):
+            self.assertIn("in:drafts", params["q"])
+            response = mock.Mock()
+            response.execute.return_value = {
+                "messages": [
+                    {"id": "draft-old"},
+                    {"id": "draft-main"},
+                    {"id": "draft-recent"},
+                ]
+            }
+            return response
+
+        def get_message(*, userId, id, format, metadataHeaders):
+            response = mock.Mock()
+            if id == "draft-old":
+                payload = {
+                    "labelIds": ["DRAFT"],
+                    "threadId": "thread-split-old",
+                    "internalDate": old_ms,
+                    "payload": {"headers": [{"name": "To", "value": "Owner <owner+am-test@gmail.com>"}]},
+                }
+            elif id == "draft-main":
+                payload = {
+                    "labelIds": ["DRAFT"],
+                    "threadId": "thread-main",
+                    "internalDate": old_ms,
+                    "payload": {"headers": [{"name": "To", "value": "Owner <owner+am-test@gmail.com>"}]},
+                }
+            else:
+                payload = {
+                    "labelIds": ["DRAFT"],
+                    "threadId": "thread-split-recent",
+                    "internalDate": recent_ms,
+                    "payload": {"headers": [{"name": "To", "value": "Owner <owner+am-test@gmail.com>"}]},
+                }
+            response.execute.return_value = payload
+            return response
+
+        def list_drafts(**_params):
+            response = mock.Mock()
+            response.execute.return_value = {
+                "drafts": [
+                    {"id": "draft-resource-old", "message": {"id": "draft-old"}},
+                    {"id": "draft-resource-main", "message": {"id": "draft-main"}},
+                    {"id": "draft-resource-recent", "message": {"id": "draft-recent"}},
+                ]
+            }
+            return response
+
+        gmail_service.users.return_value.messages.return_value.list.side_effect = list_messages
+        gmail_service.users.return_value.messages.return_value.get.side_effect = get_message
+        gmail_service.users.return_value.drafts.return_value.list.side_effect = list_drafts
+
+        with mock.patch("penguin_connect.log_action"), mock.patch(
+            "penguin_connect._delete_gmail_draft",
+            return_value=None,
+        ) as mock_delete:
+            deleted = penguin_connect._cleanup_stale_alias_drafts(self.conn, gmail_service, conv, "thread-main")
+
+        self.assertEqual(deleted, 1)
+        mock_delete.assert_called_once_with(gmail_service, "draft-resource-old")
+
+    def test_gmail_sync_cleans_stale_alias_drafts_without_new_sent_messages(self):
+        conv = self._conversation_row()
+        self.conn.execute(
+            """INSERT INTO penguin_connect_messages
+               (conversation_id, provider, provider_message_id, gmail_message_id, gmail_thread_id, direction,
+                sender_email, sender_name, subject, body_text, message_timestamp, is_read, metadata)
+               VALUES (?, 'imessage', ?, ?, ?, 'imessage_to_email', ?, ?, ?, ?, ?, 1, ?)""",
+            (
+                "amc_test",
+                "imessage:root",
+                "gmail-root",
+                "thread-main",
+                "owner+am-test@gmail.com",
+                "Taylor",
+                "iMessage · Family Group",
+                "hello",
+                "2026-03-10T10:00:00+00:00",
+                json.dumps({"rfc_message_id": "<am.root@penguinconnect.local>"}),
+            ),
+        )
+        self.conn.execute(
+            "UPDATE penguin_connect_conversations SET gmail_thread_id = ? WHERE conversation_id = ?",
+            ("thread-main", "amc_test"),
+        )
+        gmail_service = mock.Mock()
+
+        with mock.patch("penguin_connect._list_gmail_messages_to_alias", return_value=[]), mock.patch(
+            "penguin_connect._cleanup_stale_alias_drafts",
+            return_value=4,
+        ) as mock_cleanup:
+            result = penguin_connect._sync_conversation_gmail_to_imessage(
+                self.conn,
+                gmail_service,
+                conv,
+                gmail_email="owner@gmail.com",
+                allowed_senders=["owner@gmail.com"],
+                days=7,
+            )
+
+        self.assertEqual(result["email_to_imessage"], 0)
+        self.assertEqual(result["alias_drafts_deleted"], 4)
+        mock_cleanup.assert_called_once_with(self.conn, gmail_service, conv, "thread-main")
+
     def test_gmail_message_without_exact_alias_recipient_is_ignored(self):
         conv = self._conversation_row()
         payload_data = base64.urlsafe_b64encode(b"wrong alias target").decode("utf-8").rstrip("=")
