@@ -1170,37 +1170,23 @@ def get_connection() -> sqlite3.Connection:
 
 def init_db() -> None:
     conn = get_connection()
-    conn.executescript(SCHEMA)
-    sync_columns = {row[1] for row in conn.execute("PRAGMA table_info(penguin_connect_sync_state)").fetchall()}
-    conversation_columns = {
-        row[1] for row in conn.execute("PRAGMA table_info(penguin_connect_conversations)").fetchall()
-    }
-    if "source_provider" not in conversation_columns:
-        conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN source_provider TEXT DEFAULT 'imessage'")
-        conn.execute(
-            """UPDATE penguin_connect_conversations
-               SET source_provider = LOWER(COALESCE(NULLIF(source_provider, ''), 'imessage'))"""
-        )
-    else:
-        conn.execute(
-            """UPDATE penguin_connect_conversations
-               SET source_provider = LOWER(COALESCE(NULLIF(source_provider, ''), 'imessage'))"""
-        )
-    if "imessage_chat_identifier" not in conversation_columns:
-        conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN imessage_chat_identifier TEXT")
-    if "imessage_service_name" not in conversation_columns:
-        conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN imessage_service_name TEXT")
-    conn.execute(
-        """UPDATE penguin_connect_conversations
-           SET imessage_chat_identifier = COALESCE(NULLIF(imessage_chat_identifier, ''), imessage_chat_id)
-           WHERE source_provider IN ('imessage', 'sms', 'rcs')"""
-    )
-    if not _has_provider_aware_conversation_uniqueness(conn):
-        _rebuild_conversations_table_for_provider_uniqueness(conn)
+    try:
         conn.executescript(SCHEMA)
+        sync_columns = {row[1] for row in conn.execute("PRAGMA table_info(penguin_connect_sync_state)").fetchall()}
         conversation_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(penguin_connect_conversations)").fetchall()
         }
+        if "source_provider" not in conversation_columns:
+            conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN source_provider TEXT DEFAULT 'imessage'")
+            conn.execute(
+                """UPDATE penguin_connect_conversations
+                   SET source_provider = LOWER(COALESCE(NULLIF(source_provider, ''), 'imessage'))"""
+            )
+        else:
+            conn.execute(
+                """UPDATE penguin_connect_conversations
+                   SET source_provider = LOWER(COALESCE(NULLIF(source_provider, ''), 'imessage'))"""
+            )
         if "imessage_chat_identifier" not in conversation_columns:
             conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN imessage_chat_identifier TEXT")
         if "imessage_service_name" not in conversation_columns:
@@ -1210,69 +1196,87 @@ def init_db() -> None:
                SET imessage_chat_identifier = COALESCE(NULLIF(imessage_chat_identifier, ''), imessage_chat_id)
                WHERE source_provider IN ('imessage', 'sms', 'rcs')"""
         )
-    _migrate_legacy_conversation_ids(conn)
-    _migrate_apple_messages_conversation_routes(conn)
-    conn.execute(
-        """CREATE INDEX IF NOT EXISTS idx_penguin_connect_conv_provider_status
-           ON penguin_connect_conversations(gmail_email, source_provider, status)"""
-    )
-    if "initial_sync_completed_at" not in sync_columns:
-        conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN initial_sync_completed_at TEXT")
-    if "initial_sync_empty_verified_at" not in sync_columns:
-        conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN initial_sync_empty_verified_at TEXT")
-    if "last_message_ts" not in sync_columns:
-        conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN last_message_ts TEXT")
-    if "pending_gmail_activity_at" not in sync_columns:
-        conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN pending_gmail_activity_at TEXT")
-    if "next_full_verify_at" not in sync_columns:
-        conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN next_full_verify_at TEXT")
-    if "full_verify_completed_at" not in sync_columns:
-        conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN full_verify_completed_at TEXT")
-    conn.execute(
-        """UPDATE penguin_connect_sync_state
-           SET initial_sync_completed_at = COALESCE(initial_sync_completed_at, last_synced_at, updated_at)
-           WHERE initial_sync_completed_at IS NULL
-             AND EXISTS (
-               SELECT 1
-               FROM penguin_connect_messages m
-               WHERE m.conversation_id = penguin_connect_sync_state.conversation_id
-                 AND m.direction = 'imessage_to_email'
-                 AND m.gmail_message_id IS NOT NULL
-             )"""
-    )
-    conn.execute(
-        """UPDATE penguin_connect_sync_state
-           SET last_message_ts = CASE
-             WHEN last_imessage_ts IS NOT NULL AND last_gmail_ts IS NOT NULL
-               THEN CASE WHEN last_imessage_ts >= last_gmail_ts THEN last_imessage_ts ELSE last_gmail_ts END
-             ELSE COALESCE(last_imessage_ts, last_gmail_ts, last_message_ts)
-           END
-           WHERE last_message_ts IS NULL"""
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_penguin_connect_sync_bootstrap ON penguin_connect_sync_state(initial_sync_completed_at)"
-    )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_penguin_connect_sync_last_message ON penguin_connect_sync_state(last_message_ts)")
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_penguin_connect_sync_pending_gmail ON penguin_connect_sync_state(pending_gmail_activity_at)"
-    )
-    conn.execute(
-        """CREATE INDEX IF NOT EXISTS idx_penguin_connect_sync_next_full_verify
-           ON penguin_connect_sync_state(next_full_verify_at, full_verify_completed_at)"""
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_penguin_connect_poll_rate_limit ON penguin_connect_poll_state(gmail_rate_limited_until)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_penguin_connect_jobs_finished ON penguin_connect_jobs(status, finished_at)"
-    )
-    _backfill_email_to_imessage_delivery_bodies(conn)
-    _backfill_conversation_gmail_thread_ids(conn)
-    _repair_incomplete_bootstrap_state(conn)
-    _backfill_self_authored_sender_names(conn)
-    _backfill_initial_full_verify_schedule(conn)
-    conn.commit()
-    conn.close()
+        if not _has_provider_aware_conversation_uniqueness(conn):
+            _rebuild_conversations_table_for_provider_uniqueness(conn)
+            conn.executescript(SCHEMA)
+            conversation_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(penguin_connect_conversations)").fetchall()
+            }
+            if "imessage_chat_identifier" not in conversation_columns:
+                conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN imessage_chat_identifier TEXT")
+            if "imessage_service_name" not in conversation_columns:
+                conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN imessage_service_name TEXT")
+            conn.execute(
+                """UPDATE penguin_connect_conversations
+                   SET imessage_chat_identifier = COALESCE(NULLIF(imessage_chat_identifier, ''), imessage_chat_id)
+                   WHERE source_provider IN ('imessage', 'sms', 'rcs')"""
+            )
+        _migrate_legacy_conversation_ids(conn)
+        _migrate_apple_messages_conversation_routes(conn)
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_penguin_connect_conv_provider_status
+               ON penguin_connect_conversations(gmail_email, source_provider, status)"""
+        )
+        if "initial_sync_completed_at" not in sync_columns:
+            conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN initial_sync_completed_at TEXT")
+        if "initial_sync_empty_verified_at" not in sync_columns:
+            conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN initial_sync_empty_verified_at TEXT")
+        if "last_message_ts" not in sync_columns:
+            conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN last_message_ts TEXT")
+        if "pending_gmail_activity_at" not in sync_columns:
+            conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN pending_gmail_activity_at TEXT")
+        if "next_full_verify_at" not in sync_columns:
+            conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN next_full_verify_at TEXT")
+        if "full_verify_completed_at" not in sync_columns:
+            conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN full_verify_completed_at TEXT")
+        conn.execute(
+            """UPDATE penguin_connect_sync_state
+               SET initial_sync_completed_at = COALESCE(initial_sync_completed_at, last_synced_at, updated_at)
+               WHERE initial_sync_completed_at IS NULL
+                 AND EXISTS (
+                   SELECT 1
+                   FROM penguin_connect_messages m
+                   WHERE m.conversation_id = penguin_connect_sync_state.conversation_id
+                     AND m.direction = 'imessage_to_email'
+                     AND m.gmail_message_id IS NOT NULL
+                 )"""
+        )
+        conn.execute(
+            """UPDATE penguin_connect_sync_state
+               SET last_message_ts = CASE
+                 WHEN last_imessage_ts IS NOT NULL AND last_gmail_ts IS NOT NULL
+                   THEN CASE WHEN last_imessage_ts >= last_gmail_ts THEN last_imessage_ts ELSE last_gmail_ts END
+                 ELSE COALESCE(last_imessage_ts, last_gmail_ts, last_message_ts)
+               END
+               WHERE last_message_ts IS NULL"""
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_penguin_connect_sync_bootstrap ON penguin_connect_sync_state(initial_sync_completed_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_penguin_connect_sync_last_message ON penguin_connect_sync_state(last_message_ts)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_penguin_connect_sync_pending_gmail ON penguin_connect_sync_state(pending_gmail_activity_at)"
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_penguin_connect_sync_next_full_verify
+               ON penguin_connect_sync_state(next_full_verify_at, full_verify_completed_at)"""
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_penguin_connect_poll_rate_limit ON penguin_connect_poll_state(gmail_rate_limited_until)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_penguin_connect_jobs_finished ON penguin_connect_jobs(status, finished_at)"
+        )
+        _backfill_email_to_imessage_delivery_bodies(conn)
+        _backfill_conversation_gmail_thread_ids(conn)
+        _repair_incomplete_bootstrap_state(conn)
+        _backfill_self_authored_sender_names(conn)
+        _backfill_initial_full_verify_schedule(conn)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

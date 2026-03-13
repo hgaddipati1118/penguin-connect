@@ -254,33 +254,36 @@ class SyncIntegrationTests(unittest.TestCase):
 
     def test_imessage_import_commits_pending_row_before_gmail_call(self):
         conn = db.get_connection()
-        conn.execute(
-            """INSERT INTO penguin_connect_accounts
-               (gmail_email, keychain_service, send_as_aliases, status)
-               VALUES (?, ?, ?, 'connected')""",
-            (
-                "owner@gmail.com",
-                "penguinconnect-local-bridge.gmail.owner@gmail.com",
-                '["owner@gmail.com"]',
-            ),
-        )
-        conn.execute(
-            """INSERT INTO penguin_connect_conversations
-               (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants, alias_email, status)
-               VALUES (?, 'apple_messages', ?, ?, ?, 'group', '[]', ?, 'active')""",
-            (
-                "owner@gmail.com",
-                "amc_import_lock",
-                "iMessage;+;chat-import-lock",
-                "Import Lock",
-                "owner+am-import-lock@gmail.com",
-            ),
-        )
-        conn.commit()
-        conv = conn.execute(
-            "SELECT * FROM penguin_connect_conversations WHERE conversation_id = ?",
-            ("amc_import_lock",),
-        ).fetchone()
+        try:
+            conn.execute(
+                """INSERT INTO penguin_connect_accounts
+                   (gmail_email, keychain_service, send_as_aliases, status)
+                   VALUES (?, ?, ?, 'connected')""",
+                (
+                    "owner@gmail.com",
+                    "penguinconnect-local-bridge.gmail.owner@gmail.com",
+                    '["owner@gmail.com"]',
+                ),
+            )
+            conn.execute(
+                """INSERT INTO penguin_connect_conversations
+                   (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants, alias_email, status)
+                   VALUES (?, 'apple_messages', ?, ?, ?, 'group', '[]', ?, 'active')""",
+                (
+                    "owner@gmail.com",
+                    "amc_import_lock",
+                    "iMessage;+;chat-import-lock",
+                    "Import Lock",
+                    "owner+am-import-lock@gmail.com",
+                ),
+            )
+            conn.commit()
+            conv = conn.execute(
+                "SELECT * FROM penguin_connect_conversations WHERE conversation_id = ?",
+                ("amc_import_lock",),
+            ).fetchone()
+        finally:
+            conn.close()
 
         import_started = threading.Event()
         allow_finish = threading.Event()
