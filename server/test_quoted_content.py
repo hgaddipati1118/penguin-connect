@@ -110,6 +110,22 @@ class QuotedContentTests(unittest.TestCase):
         self.assertTrue(parsed.quoted_content_removed)
         self.assertTrue(parsed.safe_for_send)
 
+    def test_strip_quoted_html_text_removes_slashy_signature_before_quote(self):
+        parsed = strip_quoted_html_text(
+            """
+            <div>Test email pt 2.</div>
+            <div class="slashy-signature"><br/>Sent with <a href="https://slashy.com">Slashy</a></div>
+            <div class="gmail_quote">
+              <div class="gmail_attr">On Fri, Mar 13, 2026 at 1:40 PM Harsha Gaddipati wrote:</div>
+              <blockquote>Older text</blockquote>
+            </div>
+            """
+        )
+
+        self.assertEqual(parsed.text, "Test email pt 2.")
+        self.assertTrue(parsed.quoted_content_removed)
+        self.assertTrue(parsed.safe_for_send)
+
     def test_extract_latest_email_text_prefers_html_quote_stripping_over_plain_text(self):
         parsed = extract_latest_email_text(
             plain_text=(
@@ -167,6 +183,13 @@ class QuotedContentTests(unittest.TestCase):
             clear=False,
         ):
             parsed = strip_quoted_plain_text("Latest reply\n\nSent with Slashy.")
+
+        self.assertEqual(parsed.text, "Latest reply")
+        self.assertTrue(parsed.signature_removed)
+        self.assertTrue(parsed.safe_for_send)
+
+    def test_strip_quoted_plain_text_removes_markdown_slashy_footer(self):
+        parsed = strip_quoted_plain_text("Latest reply\n\nSent with [Slashy](https://slashy.com)")
 
         self.assertEqual(parsed.text, "Latest reply")
         self.assertTrue(parsed.signature_removed)

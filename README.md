@@ -29,6 +29,8 @@ Current runtime is macOS-only because the first source adapter is Apple Messages
 - Gmail-to-Apple-Messages delivery only processes messages from Gmail `SENT` that still target the exact conversation alias; drafts are ignored
 - Incremental Gmail reply detection persists per-conversation pending sent activity until that conversation is actually synced, so one poll cannot silently drop an unsent alias reply behind the global mailbox cursor
 - Gmail-to-chat delivery strips quoted history and signatures aggressively and sends only net-new text
+  - parsing is HTML-first and DOM-aware for Gmail/Slashy-style quote blocks, wrapped `On ... wrote:` headers, and common client quote containers
+  - built-in footer stripping also removes `Sent with Slashy` signatures from both HTML and plain-text reply bodies before send
 - Gmail-to-chat delivery retries failed sends up to 3 times; after the final failure the bridge posts a `PENGUIN_CONNECT` error reply into the Gmail thread with the failed message body
 - Durable local sync queue (SQLite): queued and leased jobs survive process pauses and resume with retries
 - Durable server action log: `~/penguinconnect-local-bridge-data/actions.jsonl`

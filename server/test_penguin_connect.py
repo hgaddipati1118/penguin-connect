@@ -2870,6 +2870,80 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertTrue(metadata["gmail_quoted_content_removed"])
         self.assertTrue(metadata["gmail_body_safe_for_send"])
 
+    def test_gmail_prefers_html_quote_stripping_over_plain_text_part(self):
+        conv = self._conversation_row()
+        plain_payload_data = base64.urlsafe_b64encode(
+            (
+                "Test email\r\n\r\nOn Fri, Mar 13, 2026 at 1:38 PM Dhruv Roonga <\r\n"
+                "hgaddipati1118+am-e3526656f885@gmail.com> wrote:\r\n\r\n"
+                "> why did we have the on... stuff thats bad."
+            ).encode("utf-8")
+        ).decode("utf-8").rstrip("=")
+        html_payload_data = base64.urlsafe_b64encode(
+            (
+                "<div>Test email</div>"
+                '<div class="gmail_quote">'
+                '<div class="gmail_attr">On Fri, Mar 13, 2026 at 1:38 PM Dhruv Roonga wrote:</div>'
+                "<blockquote>why did we have the on... stuff thats bad.</blockquote>"
+                "</div>"
+            ).encode("utf-8")
+        ).decode("utf-8").rstrip("=")
+        full_msg = {
+            "id": "gmail-html-preferred",
+            "threadId": "thread-html-preferred",
+            "historyId": "h-html-preferred",
+            "labelIds": ["SENT", "INBOX", "UNREAD"],
+            "internalDate": "1700007200000",
+            "snippet": "Test email",
+            "payload": {
+                "mimeType": "multipart/alternative",
+                "headers": [
+                    {"name": "From", "value": "Owner <owner@gmail.com>"},
+                    {"name": "To", "value": "Owner <owner+am-test@gmail.com>"},
+                    {"name": "Subject", "value": "Status"},
+                    {"name": "Message-ID", "value": "<html-preferred@example.test>"},
+                ],
+                "parts": [
+                    {
+                        "mimeType": "text/plain",
+                        "body": {"data": plain_payload_data},
+                    },
+                    {
+                        "mimeType": "text/html",
+                        "body": {"data": html_payload_data},
+                    },
+                ],
+            },
+        }
+        gmail_service = mock.Mock()
+        gmail_service.users.return_value.messages.return_value.get.return_value.execute.return_value = full_msg
+
+        with mock.patch("penguin_connect._list_gmail_messages_to_alias", return_value=[{"id": "gmail-html-preferred"}]), mock.patch(
+            "penguin_connect.send_imessage", return_value=(True, None)
+        ) as mock_send:
+            penguin_connect._sync_conversation_gmail_to_imessage(
+                self.conn,
+                gmail_service,
+                conv,
+                gmail_email="owner@gmail.com",
+                allowed_senders=["owner@gmail.com"],
+                days=7,
+            )
+
+        sent_text = mock_send.call_args.args[1]
+        self.assertEqual(sent_text, "Test email")
+        stored = self.conn.execute(
+            """SELECT body_text, metadata
+               FROM penguin_connect_messages
+               WHERE conversation_id = ? AND provider_message_id = ?""",
+            ("amc_test", "gmail:gmail-html-preferred"),
+        ).fetchone()
+        metadata = json.loads(stored["metadata"] or "{}")
+        self.assertEqual(stored["body_text"], "Test email")
+        self.assertEqual(metadata["gmail_body_source"], "html")
+        self.assertTrue(metadata["gmail_quoted_content_removed"])
+        self.assertTrue(metadata["gmail_body_safe_for_send"])
+
     def test_gmail_draft_to_alias_is_ignored_and_never_sent_to_imessage(self):
         conv = self._conversation_row()
         payload_data = base64.urlsafe_b64encode(b"draft that should never send").decode("utf-8").rstrip("=")

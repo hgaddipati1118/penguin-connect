@@ -532,6 +532,73 @@ class SyncIntegrationTests(unittest.TestCase):
         self.assertTrue(metadata["gmail_quoted_content_removed"])
         self.assertTrue(metadata["gmail_body_safe_for_send"])
 
+    def test_init_db_backfills_historical_gmail_delivery_using_html_first_extraction(self):
+        conn = db.get_connection()
+        conn.execute(
+            """INSERT INTO penguin_connect_conversations
+               (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+                alias_email, status)
+               VALUES (?, 'imessage', ?, ?, ?, 'dm', ?, ?, 'active')""",
+            (
+                "owner@gmail.com",
+                "amc_historical_html_first",
+                "iMessage;+;chat-html-first",
+                "Crow",
+                '["+15127436385"]',
+                "owner+am-html-first@gmail.com",
+            ),
+        )
+        raw_plain = (
+            "Test email\r\n\r\nSent with [Slashy](https://slashy.com)\r\n\r\nOn Fri, Mar 13, 2026 at 1:38 PM Dhruv Roonga <\r\n"
+            "owner+am-html-first@gmail.com> wrote:\r\n\r\n"
+            "> older quoted text"
+        )
+        raw_html = (
+            "<div>Test email</div>"
+            '<div class="slashy-signature"><br/>Sent with <a href="https://slashy.com">Slashy</a></div>'
+            '<div class="gmail_quote">'
+            '<div class="gmail_attr">On Fri, Mar 13, 2026 at 1:38 PM Dhruv Roonga wrote:</div>'
+            "<blockquote>older quoted text</blockquote>"
+            "</div>"
+        )
+        conn.execute(
+            """INSERT INTO penguin_connect_messages
+               (conversation_id, provider, provider_message_id, direction, body_text, message_timestamp, metadata)
+               VALUES (?, 'gmail', 'gmail:historical-html-first', 'email_to_imessage', ?, '2026-03-13T20:40:48+00:00', ?)""",
+            (
+                "amc_historical_html_first",
+                raw_plain,
+                json.dumps(
+                    {
+                        "delivery_status": "delivered",
+                        "source_body_text": raw_plain,
+                        "source_body_text_raw": raw_plain,
+                        "source_body_html_raw": raw_html,
+                    }
+                ),
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        db.init_db()
+
+        migrated_conn = db.get_connection()
+        try:
+            row = migrated_conn.execute(
+                "SELECT body_text, metadata FROM penguin_connect_messages WHERE provider_message_id = 'gmail:historical-html-first'"
+            ).fetchone()
+        finally:
+            migrated_conn.close()
+
+        self.assertEqual(row["body_text"], "Test email")
+        metadata = json.loads(row["metadata"] or "{}")
+        self.assertEqual(metadata["source_body_text"], "Test email")
+        self.assertEqual(metadata["gmail_body_source"], "html")
+        self.assertEqual(metadata["source_body_html_raw"], raw_html)
+        self.assertTrue(metadata["gmail_quoted_content_removed"])
+        self.assertTrue(metadata["gmail_body_safe_for_send"])
+
     def test_init_db_migrates_legacy_conversation_ids_to_provider_aware_ids(self):
         conn = db.get_connection()
         conn.close()
