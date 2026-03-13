@@ -42,6 +42,7 @@ Optional flags:
 - Incremental Gmail reply detection keeps a per-conversation pending sent-activity marker until that conversation is actually synced, and it falls back to a recent sent-mail scan when the global Gmail history cursor has already moved past a valid alias reply.
 - Sends only the latest non-quoted Gmail reply text back to Apple Messages; it does not append synthetic quoted context.
 - Gmail reply cleanup is HTML-first and DOM-aware, so Gmail/Slashy quote containers and wrapped `On ... wrote:` reply headers are stripped before Apple Messages delivery whenever the underlying message body contains that structure.
+- If a user-sent Gmail reply is rejected by the parser safety gate as `ambiguous_email_body`, PenguinConnect posts a rejection notice into the Gmail thread so the skip is visible instead of silent.
 - Retries Gmail-to-Apple-Messages delivery up to 3 times. If the final attempt still fails, the bridge posts a `PENGUIN_CONNECT` reply into the Gmail thread containing the failed message body.
 - Startup catch-up and backfill run a full self-heal sweep across all Apple Messages chats before syncing so legacy cache rows are migrated into the current canonical thread format.
 - Applies sender gate:
