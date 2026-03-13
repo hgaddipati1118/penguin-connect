@@ -316,6 +316,32 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(second["initial_sync_completed_at"], first["initial_sync_completed_at"])
         self.assertEqual(second["next_full_verify_at"], first["next_full_verify_at"])
 
+    def test_mark_conversation_bootstrapped_records_empty_verification_once(self):
+        with mock.patch("penguin_connect._now_iso", return_value="2026-03-04T10:05:00+00:00"):
+            penguin_connect._mark_conversation_bootstrapped(self.conn, "amc_test", empty_verified=True)
+
+        first = self.conn.execute(
+            """SELECT initial_sync_completed_at, initial_sync_empty_verified_at
+               FROM penguin_connect_sync_state
+               WHERE conversation_id = ?""",
+            ("amc_test",),
+        ).fetchone()
+
+        with mock.patch("penguin_connect._now_iso", return_value="2026-03-05T10:05:00+00:00"):
+            penguin_connect._mark_conversation_bootstrapped(self.conn, "amc_test")
+
+        second = self.conn.execute(
+            """SELECT initial_sync_completed_at, initial_sync_empty_verified_at
+               FROM penguin_connect_sync_state
+               WHERE conversation_id = ?""",
+            ("amc_test",),
+        ).fetchone()
+
+        self.assertEqual(first["initial_sync_completed_at"], "2026-03-04T10:05:00+00:00")
+        self.assertEqual(first["initial_sync_empty_verified_at"], "2026-03-04T10:05:00+00:00")
+        self.assertEqual(second["initial_sync_completed_at"], first["initial_sync_completed_at"])
+        self.assertEqual(second["initial_sync_empty_verified_at"], first["initial_sync_empty_verified_at"])
+
     def test_mark_conversation_full_verify_completed_schedules_next_due_time(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
@@ -3826,6 +3852,108 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(row["status"], "succeeded")
         self.assertEqual(row["attempt_count"], 1)
 
+    def test_sync_job_worker_with_incremental_dedupe_does_not_lease_startup_job(self):
+        startup = penguin_connect.enqueue_sync_job(
+            self.conn,
+            mode="startup_catchup",
+            days=7,
+            hours=None,
+            verify_all=False,
+            dedupe=True,
+        )
+        incremental = penguin_connect.enqueue_sync_job(
+            self.conn,
+            mode="incremental",
+            days=7,
+            hours=None,
+            verify_all=False,
+            dedupe=True,
+        )
+        self.conn.commit()
+
+        seen_modes = []
+
+        def fake_sync(_conn, mode="incremental", days=7, hours=None, verify_all=False):
+            seen_modes.append(mode)
+            return {"success": True, "mode": mode, "days": days, "hours": hours, "verify_all": verify_all}
+
+        with mock.patch("penguin_connect.sync_conversations", side_effect=fake_sync):
+            result = penguin_connect.run_sync_job_worker_once(
+                self.conn,
+                owner="watcher",
+                dedupe_key="sync:incremental",
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["mode"], "incremental")
+        self.assertEqual(result["queue_job_id"], incremental["job_id"])
+        self.assertEqual(seen_modes, ["incremental"])
+
+        startup_row = self.conn.execute(
+            "SELECT status, lease_owner, started_at, finished_at FROM penguin_connect_jobs WHERE id = ?",
+            (startup["job_id"],),
+        ).fetchone()
+        incremental_row = self.conn.execute(
+            "SELECT status, lease_owner, started_at, finished_at FROM penguin_connect_jobs WHERE id = ?",
+            (incremental["job_id"],),
+        ).fetchone()
+        self.assertEqual(startup_row["status"], "queued")
+        self.assertIsNone(startup_row["lease_owner"])
+        self.assertIsNone(startup_row["started_at"])
+        self.assertIsNone(startup_row["finished_at"])
+        self.assertEqual(incremental_row["status"], "succeeded")
+
+    def test_sync_job_worker_with_startup_dedupe_does_not_lease_incremental_job(self):
+        incremental = penguin_connect.enqueue_sync_job(
+            self.conn,
+            mode="incremental",
+            days=7,
+            hours=None,
+            verify_all=False,
+            dedupe=True,
+        )
+        startup = penguin_connect.enqueue_sync_job(
+            self.conn,
+            mode="startup_catchup",
+            days=7,
+            hours=None,
+            verify_all=False,
+            dedupe=True,
+        )
+        self.conn.commit()
+
+        seen_modes = []
+
+        def fake_sync(_conn, mode="incremental", days=7, hours=None, verify_all=False):
+            seen_modes.append(mode)
+            return {"success": True, "mode": mode, "days": days, "hours": hours, "verify_all": verify_all}
+
+        with mock.patch("penguin_connect.sync_conversations", side_effect=fake_sync):
+            result = penguin_connect.run_sync_job_worker_once(
+                self.conn,
+                owner="startup",
+                dedupe_key="sync:startup_catchup",
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["mode"], "startup_catchup")
+        self.assertEqual(result["queue_job_id"], startup["job_id"])
+        self.assertEqual(seen_modes, ["startup_catchup"])
+
+        incremental_row = self.conn.execute(
+            "SELECT status, lease_owner, started_at, finished_at FROM penguin_connect_jobs WHERE id = ?",
+            (incremental["job_id"],),
+        ).fetchone()
+        startup_row = self.conn.execute(
+            "SELECT status, lease_owner, started_at, finished_at FROM penguin_connect_jobs WHERE id = ?",
+            (startup["job_id"],),
+        ).fetchone()
+        self.assertEqual(incremental_row["status"], "queued")
+        self.assertIsNone(incremental_row["lease_owner"])
+        self.assertIsNone(incremental_row["started_at"])
+        self.assertIsNone(incremental_row["finished_at"])
+        self.assertEqual(startup_row["status"], "succeeded")
+
     def test_incremental_sync_processes_one_recent_conversation_per_run(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
@@ -4133,7 +4261,7 @@ class PenguinConnectTests(unittest.TestCase):
             },
         ), mock.patch(
             "penguin_connect._sync_conversation_imessage_to_gmail",
-            return_value={"imessage_imported": 0, "gmail_imported": 0},
+            return_value={"imessage_imported": 0, "gmail_imported": 0, "bootstrap_ready": True},
         ), mock.patch(
             "penguin_connect._sync_conversation_gmail_to_imessage",
             return_value={"email_to_imessage": 0, "blocked_sender_count": 0},
@@ -4156,6 +4284,48 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertTrue(state["initial_sync_completed_at"])
         self.assertTrue(state["next_full_verify_at"])
         self.assertIsNone(state["full_verify_completed_at"])
+
+    def test_backfill_keeps_bootstrap_pending_without_materialized_history(self):
+        with mock.patch(
+            "penguin_connect.self_heal_conversation_cache",
+            return_value={"success": True, "swept_conversations": 1, "before_count": 1, "after_count": 1},
+        ), mock.patch(
+            "penguin_connect._build_gmail_service", return_value=(mock.Mock(), None)
+        ), mock.patch(
+            "penguin_connect._refresh_send_as_aliases",
+            return_value=(["owner@gmail.com"], "owner@gmail.com"),
+        ), mock.patch(
+            "penguin_connect.list_recent_imessage_chat_activity",
+            return_value={
+                "available": True,
+                "chats": [
+                    {
+                        "chat_id": "chat-123",
+                        "first_message_at": "2026-03-07T07:10:00+00:00",
+                        "last_message_at": "2026-03-07T07:55:00+00:00",
+                        "message_count": 2,
+                    }
+                ],
+            },
+        ), mock.patch(
+            "penguin_connect._sync_conversation_imessage_to_gmail",
+            return_value={"imessage_imported": 0, "gmail_imported": 0, "bootstrap_ready": False},
+        ), mock.patch(
+            "penguin_connect._sync_conversation_gmail_to_imessage",
+            return_value={"email_to_imessage": 0, "blocked_sender_count": 0},
+        ), mock.patch(
+            "penguin_connect._repair_split_gmail_messages",
+            return_value=0,
+        ):
+            stats = penguin_connect._sync_conversations_unlocked(self.conn, mode="backfill", days=7, hours=5)
+
+        state = self.conn.execute(
+            "SELECT initial_sync_completed_at FROM penguin_connect_sync_state WHERE conversation_id = ?",
+            ("amc_test",),
+        ).fetchone()
+
+        self.assertTrue(stats["success"])
+        self.assertIsNone(state)
 
     def test_startup_catchup_marks_due_full_verify_complete_after_success(self):
         self.conn.execute(
@@ -4639,7 +4809,7 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(stats["gmail_imported"], 1)
         self.assertEqual(stats["email_to_imessage"], 3)
         self.assertEqual(stats["gmail_thread_repairs"], 1)
-        self.assertEqual(tracked_conn.commit_calls, 2)
+        self.assertEqual(tracked_conn.commit_calls, 4)
         self.assertFalse(runtime["running"])
         self.assertEqual(runtime["processed_conversations"], 2)
         self.assertEqual(runtime["selected_conversations"], 2)

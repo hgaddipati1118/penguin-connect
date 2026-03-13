@@ -2007,19 +2007,37 @@ def _recover_expired_sync_job_leases(conn: sqlite3.Connection) -> int:
     return int(cursor.rowcount or 0)
 
 
-def _lease_next_sync_job(conn: sqlite3.Connection, owner: str) -> Optional[sqlite3.Row]:
+def _lease_next_sync_job(
+    conn: sqlite3.Connection,
+    owner: str,
+    *,
+    dedupe_key: Optional[str] = None,
+) -> Optional[sqlite3.Row]:
     _recover_expired_sync_job_leases(conn)
     now_iso = _now_iso()
-    row = conn.execute(
-        """SELECT *
-           FROM penguin_connect_jobs
-           WHERE job_type = ?
-             AND status = 'queued'
-             AND next_run_at <= ?
-           ORDER BY next_run_at ASC, id ASC
-           LIMIT 1""",
-        (SYNC_JOB_TYPE, now_iso),
-    ).fetchone()
+    if dedupe_key:
+        row = conn.execute(
+            """SELECT *
+               FROM penguin_connect_jobs
+               WHERE job_type = ?
+                 AND dedupe_key = ?
+                 AND status = 'queued'
+                 AND next_run_at <= ?
+               ORDER BY next_run_at ASC, id ASC
+               LIMIT 1""",
+            (SYNC_JOB_TYPE, dedupe_key, now_iso),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """SELECT *
+               FROM penguin_connect_jobs
+               WHERE job_type = ?
+                 AND status = 'queued'
+                 AND next_run_at <= ?
+               ORDER BY next_run_at ASC, id ASC
+               LIMIT 1""",
+            (SYNC_JOB_TYPE, now_iso),
+        ).fetchone()
     if not row:
         return None
 
@@ -2148,10 +2166,30 @@ def _load_sync_job_payload(job: sqlite3.Row) -> dict[str, Any]:
     )
 
 
-def run_sync_job_worker_once(conn: sqlite3.Connection, owner: Optional[str] = None) -> dict[str, Any]:
+def _matching_sync_job_leased(conn: sqlite3.Connection, dedupe_key: str) -> bool:
+    row = conn.execute(
+        """SELECT 1
+           FROM penguin_connect_jobs
+           WHERE job_type = ?
+             AND dedupe_key = ?
+             AND status = 'leased'
+           LIMIT 1""",
+        (SYNC_JOB_TYPE, dedupe_key),
+    ).fetchone()
+    return bool(row)
+
+
+def run_sync_job_worker_once(
+    conn: sqlite3.Connection,
+    owner: Optional[str] = None,
+    *,
+    dedupe_key: Optional[str] = None,
+) -> dict[str, Any]:
     owner = (owner or "").strip() or _default_sync_job_owner()
-    job = _lease_next_sync_job(conn, owner)
+    job = _lease_next_sync_job(conn, owner, dedupe_key=dedupe_key)
     if not job:
+        if dedupe_key and _matching_sync_job_leased(conn, dedupe_key):
+            return {"success": True, "skipped": True, "reason": "queue_busy"}
         return {"success": True, "skipped": True, "reason": "queue_idle"}
 
     payload = _load_sync_job_payload(job)
@@ -3633,10 +3671,28 @@ def _upsert_sync_state(
     )
 
 
-def _mark_conversation_bootstrapped(conn: sqlite3.Connection, conversation_id: str):
+def _conversation_has_materialized_imessage_history(conn: sqlite3.Connection, conversation_id: str) -> bool:
+    row = conn.execute(
+        """SELECT 1
+           FROM penguin_connect_messages
+           WHERE conversation_id = ?
+             AND direction = 'imessage_to_email'
+             AND gmail_message_id IS NOT NULL
+           LIMIT 1""",
+        (conversation_id,),
+    ).fetchone()
+    return bool(row)
+
+
+def _mark_conversation_bootstrapped(
+    conn: sqlite3.Connection,
+    conversation_id: str,
+    *,
+    empty_verified: bool = False,
+):
     completed_at = _now_iso()
     existing = conn.execute(
-        """SELECT initial_sync_completed_at, next_full_verify_at, full_verify_completed_at
+        """SELECT initial_sync_completed_at, initial_sync_empty_verified_at, next_full_verify_at, full_verify_completed_at
            FROM penguin_connect_sync_state
            WHERE conversation_id = ?""",
         (conversation_id,),
@@ -3651,12 +3707,16 @@ def _mark_conversation_bootstrapped(conn: sqlite3.Connection, conversation_id: s
 
     conn.execute(
         """INSERT INTO penguin_connect_sync_state
-           (conversation_id, initial_sync_completed_at, next_full_verify_at, last_synced_at, updated_at)
-           VALUES (?, ?, ?, datetime('now'), datetime('now'))
+           (conversation_id, initial_sync_completed_at, initial_sync_empty_verified_at, next_full_verify_at, last_synced_at, updated_at)
+           VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
            ON CONFLICT(conversation_id) DO UPDATE SET
              initial_sync_completed_at = COALESCE(
                penguin_connect_sync_state.initial_sync_completed_at,
                excluded.initial_sync_completed_at
+             ),
+             initial_sync_empty_verified_at = COALESCE(
+               penguin_connect_sync_state.initial_sync_empty_verified_at,
+               excluded.initial_sync_empty_verified_at
              ),
              next_full_verify_at = COALESCE(
                penguin_connect_sync_state.next_full_verify_at,
@@ -3664,7 +3724,7 @@ def _mark_conversation_bootstrapped(conn: sqlite3.Connection, conversation_id: s
              ),
              last_synced_at = datetime('now'),
              updated_at = datetime('now')""",
-        (conversation_id, completed_at, next_full_verify_at),
+        (conversation_id, completed_at, completed_at if empty_verified else None, next_full_verify_at),
     )
 
 
@@ -3769,6 +3829,7 @@ def _retry_pending_imessage_to_gmail(
                        WHERE conversation_id = ? AND provider_message_id = ?""",
                     (json.dumps(metadata), conv["conversation_id"], row["provider_message_id"]),
                 )
+                conn.commit()
                 continue
 
             msg = {
@@ -3854,6 +3915,7 @@ def _retry_pending_imessage_to_gmail(
                     **message_fingerprint(row["body_text"] or ""),
                 )
 
+            conn.commit()
             processed += 1
             if processed >= 500:
                 break
@@ -3981,6 +4043,8 @@ def _sync_conversation_imessage_to_gmail(
     next_since = since
     batch_size = 500
     saw_messages = False
+    eligible_message_count = 0
+    full_history_checked = since == FULL_IMESSAGE_SYNC_SINCE
     unread_count = _get_apple_messages_unread_count_for_conversation(conv)
 
     while True:
@@ -3995,6 +4059,7 @@ def _sync_conversation_imessage_to_gmail(
             text = msg.get("text") or ""
             if not ts or (not text and not msg.get("attachments")):
                 continue
+            eligible_message_count += 1
             sender_name, subject_name = _resolve_imessage_sender_and_subject(conn, conv, msg)
             source_provider = _conversation_source_provider(conv)
             desired_subject = _provider_subject(source_provider, subject_name)
@@ -4017,6 +4082,7 @@ def _sync_conversation_imessage_to_gmail(
                            WHERE conversation_id = ? AND provider_message_id = ?""",
                         (sender_name, desired_subject, conv["conversation_id"], provider_id),
                     )
+                    conn.commit()
             if existing and existing["gmail_message_id"]:
                 thread_id = existing["gmail_thread_id"] or thread_id
                 last_ts = max(last_ts or ts, ts)
@@ -4072,6 +4138,10 @@ def _sync_conversation_imessage_to_gmail(
                 last_ts = max(last_ts or ts, ts)
                 continue
             stored += 1
+            # Persist the pending row before the remote Gmail import so this
+            # conversation does not hold the SQLite writer lock while waiting
+            # on network calls or Gmail backoff sleeps.
+            conn.commit()
 
             raw_email = _build_import_email(
                 conv["conversation_id"],
@@ -4146,6 +4216,7 @@ def _sync_conversation_imessage_to_gmail(
                     **message_fingerprint(text),
                 )
 
+            conn.commit()
             last_ts = max(last_ts or ts, ts)
 
         if not verify_all or len(messages) < batch_size:
@@ -4191,10 +4262,18 @@ def _sync_conversation_imessage_to_gmail(
 
     _reconcile_conversation_gmail_read_state(conn, gmail_service, conv["conversation_id"], unread_count)
 
+    bootstrap_empty_verified = full_history_checked and eligible_message_count == 0
+    bootstrap_ready = bootstrap_empty_verified or _conversation_has_materialized_imessage_history(
+        conn,
+        conv["conversation_id"],
+    )
+
     return {
         "imessage_imported": stored if saw_messages else 0,
         "gmail_imported": imported,
         "gmail_write_pause_seconds": gmail_write_pause_seconds,
+        "bootstrap_empty_verified": bootstrap_empty_verified,
+        "bootstrap_ready": bootstrap_ready,
     }
 
 
@@ -4517,6 +4596,7 @@ def _list_recent_gmail_alias_activity(
         current_history_id = _get_gmail_mailbox_history_id(gmail_service)
         if current_history_id:
             _upsert_poll_state(conn, gmail_email, last_gmail_history_id=current_history_id)
+            conn.commit()
             latest_history_id = current_history_id
         history_initialized = bool(current_history_id)
     else:
@@ -4537,6 +4617,7 @@ def _list_recent_gmail_alias_activity(
                     current_history_id = _get_gmail_mailbox_history_id(gmail_service)
                     if current_history_id:
                         _upsert_poll_state(conn, gmail_email, last_gmail_history_id=current_history_id)
+                        conn.commit()
                         latest_history_id = current_history_id
                     history_reset = True
                     break
@@ -4598,6 +4679,7 @@ def _list_recent_gmail_alias_activity(
 
         if latest_history_id and latest_history_id != start_history_id and not history_reset:
             _upsert_poll_state(conn, gmail_email, last_gmail_history_id=latest_history_id)
+            conn.commit()
 
     if history_initialized:
         meta["history_initialized"] = True
@@ -5085,11 +5167,10 @@ def _retry_pending_gmail_to_imessage(
                 conn.execute(
                     """UPDATE penguin_connect_messages
                        SET metadata = ?
-                       WHERE conversation_id = ? AND provider_message_id = ?""",
+                    WHERE conversation_id = ? AND provider_message_id = ?""",
                     (json.dumps(metadata), conv["conversation_id"], row["provider_message_id"]),
                 )
-                if _new_gmail_error_notice_sent(previous_metadata, metadata):
-                    conn.commit()
+                conn.commit()
                 continue
             if status in {"delivered", "blocked", "ignored"}:
                 continue
@@ -5100,11 +5181,10 @@ def _retry_pending_gmail_to_imessage(
                 conn.execute(
                     """UPDATE penguin_connect_messages
                        SET metadata = ?
-                       WHERE conversation_id = ? AND provider_message_id = ?""",
+                    WHERE conversation_id = ? AND provider_message_id = ?""",
                     (json.dumps(metadata), conv["conversation_id"], row["provider_message_id"]),
                 )
-                if _new_gmail_error_notice_sent(previous_metadata, metadata):
-                    conn.commit()
+                conn.commit()
                 continue
 
             previous_metadata = dict(metadata)
@@ -5124,8 +5204,7 @@ def _retry_pending_gmail_to_imessage(
                        WHERE conversation_id = ? AND provider_message_id = ?""",
                     (json.dumps(metadata), conv["conversation_id"], row["provider_message_id"]),
                 )
-                if _new_gmail_error_notice_sent(previous_metadata, metadata):
-                    conn.commit()
+                conn.commit()
                 continue
 
             body_text = (row["body_text"] or "").strip()
@@ -5172,8 +5251,7 @@ def _retry_pending_gmail_to_imessage(
                            WHERE conversation_id = ? AND provider_message_id = ?""",
                         (json.dumps(metadata), conv["conversation_id"], row["provider_message_id"]),
                     )
-                    if _new_gmail_error_notice_sent(previous_metadata, metadata):
-                        conn.commit()
+                    conn.commit()
                     log_action(
                         "gmail_to_imessage_retry_result",
                         success=False,
@@ -5279,6 +5357,7 @@ def _sync_conversation_gmail_to_imessage(
         )
         if canonical_thread_id:
             _apply_canonical_thread_reconciliation(conn, conv["conversation_id"], canonical_thread_id)
+            conn.commit()
             deleted_alias_drafts = _cleanup_stale_alias_drafts(conn, gmail_service, conv, canonical_thread_id)
         _upsert_sync_state(conn, conv["conversation_id"], None, None if verify_all else since, None)
         _clear_pending_gmail_activity_if_caught_up(conn, conv["conversation_id"], force=True)
@@ -5383,6 +5462,7 @@ def _sync_conversation_gmail_to_imessage(
                     thread_id,
                 ),
             )
+            conn.commit()
             last_gmail_ts = max(last_gmail_ts or message_ts, message_ts)
             history_id = full.get("historyId") or history_id
             continue
@@ -5436,6 +5516,7 @@ def _sync_conversation_gmail_to_imessage(
                     thread_id,
                 ),
             )
+            conn.commit()
             last_gmail_ts = max(last_gmail_ts or message_ts, message_ts)
             history_id = full.get("historyId") or history_id
             continue
@@ -5503,6 +5584,7 @@ def _sync_conversation_gmail_to_imessage(
                     thread_id,
                 ),
             )
+            conn.commit()
             last_gmail_ts = max(last_gmail_ts or message_ts, message_ts)
             history_id = full.get("historyId") or history_id
             continue
@@ -5588,8 +5670,7 @@ def _sync_conversation_gmail_to_imessage(
                     thread_id,
                 ),
             )
-            if _new_gmail_rejection_notice_sent(previous_metadata, metadata):
-                conn.commit()
+            conn.commit()
             last_gmail_ts = max(last_gmail_ts or message_ts, message_ts)
             history_id = full.get("historyId") or history_id
             continue
@@ -5658,6 +5739,7 @@ def _sync_conversation_gmail_to_imessage(
                     thread_id,
                 ),
             )
+            conn.commit()
             last_gmail_ts = max(last_gmail_ts or message_ts, message_ts)
             history_id = full.get("historyId") or history_id
             continue
@@ -5702,8 +5784,7 @@ def _sync_conversation_gmail_to_imessage(
                     thread_id,
                 ),
             )
-            if _new_gmail_error_notice_sent(previous_meta, meta):
-                conn.commit()
+            conn.commit()
             last_gmail_ts = max(last_gmail_ts or message_ts, message_ts)
             history_id = full.get("historyId") or history_id
             continue
@@ -5808,6 +5889,7 @@ def _sync_conversation_gmail_to_imessage(
     )
     if canonical_thread_id:
         _apply_canonical_thread_reconciliation(conn, conv["conversation_id"], canonical_thread_id)
+        conn.commit()
         deleted_alias_drafts = _cleanup_stale_alias_drafts(conn, gmail_service, conv, canonical_thread_id)
 
     _upsert_sync_state(conn, conv["conversation_id"], None, last_gmail_ts, history_id)
@@ -5842,6 +5924,7 @@ def _sync_conversations_unlocked(
         conn.commit()
     else:
         ensure_conversations_discovered(conn, gmail_email)
+        conn.commit()
         sweep_result = None
     full_verify_schedule_backfilled = _ensure_full_verify_schedule(conn, gmail_email)
     if full_verify_schedule_backfilled:
@@ -5864,6 +5947,7 @@ def _sync_conversations_unlocked(
 
     try:
         send_as_aliases, primary_send_as = _refresh_send_as_aliases(conn, gmail_service, gmail_email)
+        conn.commit()
         conversations, selection = _select_conversations_for_sync(
             conn,
             gmail_email,
@@ -5873,6 +5957,7 @@ def _sync_conversations_unlocked(
             verify_all=verify_all,
             gmail_service=gmail_service,
         )
+        conn.commit()
     except _GmailRetryableError as exc:
         paused_until = _set_gmail_rate_limit_pause(conn, gmail_email, exc.retry_after_seconds)
         return _gmail_rate_limit_skip_result(
@@ -6029,8 +6114,20 @@ def _sync_conversations_unlocked(
                 stats["alias_drafts_deleted"] += gsync.get("alias_drafts_deleted", 0)
                 stats["blocked_sender_count"] += gsync.get("blocked_sender_count", 0)
                 stats["gmail_thread_repairs"] += repaired
+                bootstrap_completed = False
+                bootstrap_deferred = False
                 if mode in {"backfill", "startup_catchup"}:
-                    _mark_conversation_bootstrapped(conn, conv["conversation_id"])
+                    if conv["initial_sync_completed_at"]:
+                        bootstrap_completed = False
+                    elif imsg.get("bootstrap_ready"):
+                        _mark_conversation_bootstrapped(
+                            conn,
+                            conv["conversation_id"],
+                            empty_verified=bool(imsg.get("bootstrap_empty_verified")),
+                        )
+                        bootstrap_completed = True
+                    else:
+                        bootstrap_deferred = True
                 if conversation_verify_all:
                     _mark_conversation_full_verify_completed(conn, conv["conversation_id"])
                     stats["full_verify_completed"] += 1
@@ -6045,7 +6142,6 @@ def _sync_conversations_unlocked(
                 email_to_imessage = int(gsync.get("email_to_imessage", 0))
                 alias_drafts_deleted = int(gsync.get("alias_drafts_deleted", 0))
                 blocked_sender_count = int(gsync.get("blocked_sender_count", 0))
-                bootstrap_completed = bool(mode in {"backfill", "startup_catchup"} and not conv["initial_sync_completed_at"])
                 terminal_fields: dict[str, Any] = {}
                 if (
                     imessage_imported
@@ -6069,6 +6165,8 @@ def _sync_conversations_unlocked(
                     terminal_fields["result"] = "no_changes"
                 if bootstrap_completed:
                     terminal_fields["bootstrap_completed"] = True
+                elif bootstrap_deferred:
+                    terminal_fields["bootstrap_pending"] = True
                 if conversation_verify_all:
                     terminal_fields["full_verify_completed"] = True
                 _print_sync_terminal_summary(
@@ -6090,6 +6188,7 @@ def _sync_conversations_unlocked(
                     blocked_sender_count=blocked_sender_count,
                     alias_drafts_deleted=alias_drafts_deleted,
                     bootstrap_completed=bootstrap_completed,
+                    bootstrap_pending=bootstrap_deferred,
                     full_verify_completed=conversation_verify_all,
                     gmail_thread_repairs=repaired,
                     **_conversation_log_fields(conv),
@@ -6492,7 +6591,11 @@ def run_startup_catchup() -> dict[str, Any]:
                 verify_all=False,
                 dedupe=True,
             )
-            result = run_sync_job_worker_once(conn, owner="startup")
+            result = run_sync_job_worker_once(
+                conn,
+                owner="startup",
+                dedupe_key=enqueue_result.get("dedupe_key"),
+            )
             if result.get("reason") == "queue_idle" and not enqueue_result.get("enqueued"):
                 result = {
                     "success": True,
@@ -6529,7 +6632,11 @@ def run_incremental_sync() -> dict[str, Any]:
                 verify_all=False,
                 dedupe=True,
             )
-            result = run_sync_job_worker_once(conn, owner="watcher")
+            result = run_sync_job_worker_once(
+                conn,
+                owner="watcher",
+                dedupe_key=enqueue_result.get("dedupe_key"),
+            )
             if result.get("reason") == "queue_idle" and not enqueue_result.get("enqueued"):
                 result = {
                     "success": True,

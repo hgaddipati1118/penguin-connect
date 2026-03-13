@@ -171,7 +171,13 @@ On server start, PenguinConnect also launches startup catch-up in the background
 
 Startup catch-up still imports full history for a conversation's first bootstrap. The recent-activity cutoff only prioritizes which pending conversations run first; it does not truncate the first-time bootstrap window.
 
+First bootstrap only completes after the bridge either materializes Gmail history for that conversation or verifies that a full-history scan is empty. A zero-import startup pass no longer marks a conversation done by itself.
+
 Incremental sync can keep running while startup catch-up or backfill is in progress. PenguinConnect serializes work within each lane and skips any conversation that is already being processed by the other lane, so the same conversation is never synced by both at once.
+
+The incremental watcher and startup worker now lease only their own queued job mode, so a watcher poll cannot accidentally grab a long-running `startup_catchup` job and leave the real incremental work stranded in the queue.
+
+Queue, selection, and per-message sync state are committed before PenguinConnect moves on to the next remote Gmail or Apple Messages call. That keeps the concurrent startup and watcher lanes from holding SQLite write locks across network waits or send retries.
 
 PenguinConnect also cleans up stale Gmail drafts addressed to a conversation alias when they live in a non-canonical thread and the conversation already has a bridge-owned canonical thread. This prevents duplicate draft-only threads from lingering in Gmail while still leaving active in-progress drafts alone until they age past the safety window. The default safety window is 30 minutes and can be adjusted with `PENGUIN_CONNECT_ALIAS_DRAFT_DELETE_MINUTES`.
 

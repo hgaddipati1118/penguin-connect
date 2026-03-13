@@ -39,7 +39,10 @@ Current runtime is macOS-only because the first source adapter is Apple Messages
 - Startup gap fill plus default 7-day backfill
 - Startup catch-up runs in a background thread and drains all pending bootstrap conversations by default
 - Startup catch-up still imports full history for a conversation's first bootstrap; the recent-activity cutoff only decides which pending conversations run first
+- First bootstrap now only counts as complete after Gmail thread materialization or a full-history empty verification, so conversations are not marked synced after a zero-import pass
 - Incremental sync can keep running while startup catch-up or backfill is in progress; PenguinConnect only blocks the same conversation from being synced by both lanes at once
+- Incremental and startup workers lease only their own queued mode, so watcher polls cannot accidentally steal long-running startup jobs and starve hot conversations
+- Queue, selection, and per-message sync state are committed before the next remote Gmail/iMessage call, so concurrent startup and watcher lanes do not hold SQLite write locks across network waits
 - Stale alias-only Gmail drafts in non-canonical threads are deleted automatically after a safety window so duplicate draft threads do not accumulate
 - Contacts refresh at startup and then again every 30 to 60 minutes, repairing raw-handle group titles when participant contacts resolve
 - After initial bootstrap, each conversation gets a recurring randomized full-verify schedule 3 to 8 days apart so verify-all work stays spread out

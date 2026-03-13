@@ -108,6 +108,7 @@ CREATE TABLE IF NOT EXISTS penguin_connect_sync_state (
     last_gmail_history_id TEXT,
     pending_gmail_activity_at TEXT,
     initial_sync_completed_at TEXT,
+    initial_sync_empty_verified_at TEXT,
     next_full_verify_at TEXT,
     full_verify_completed_at TEXT,
     last_synced_at TEXT,
@@ -546,14 +547,14 @@ def _merge_conversation_into_existing_target(
 
     source_state = conn.execute(
         """SELECT last_imessage_ts, last_gmail_ts, last_message_ts, last_gmail_history_id,
-                  initial_sync_completed_at
+                  initial_sync_completed_at, initial_sync_empty_verified_at
            FROM penguin_connect_sync_state
            WHERE conversation_id = ?""",
         (source_id,),
     ).fetchone()
     target_state = conn.execute(
         """SELECT last_imessage_ts, last_gmail_ts, last_message_ts, last_gmail_history_id,
-                  initial_sync_completed_at
+                  initial_sync_completed_at, initial_sync_empty_verified_at
            FROM penguin_connect_sync_state
            WHERE conversation_id = ?""",
         (target_id,),
@@ -579,17 +580,22 @@ def _merge_conversation_into_existing_target(
             target_state["initial_sync_completed_at"] if target_state else None,
             source_state["initial_sync_completed_at"],
         )
+        merged_initial_sync_empty_verified_at = _min_iso_value(
+            target_state["initial_sync_empty_verified_at"] if target_state else None,
+            source_state["initial_sync_empty_verified_at"],
+        )
         conn.execute(
             """INSERT INTO penguin_connect_sync_state
                (conversation_id, last_imessage_ts, last_gmail_ts, last_message_ts,
-                last_gmail_history_id, initial_sync_completed_at, last_synced_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                last_gmail_history_id, initial_sync_completed_at, initial_sync_empty_verified_at, last_synced_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                ON CONFLICT(conversation_id) DO UPDATE SET
                  last_imessage_ts = excluded.last_imessage_ts,
                  last_gmail_ts = excluded.last_gmail_ts,
                  last_message_ts = excluded.last_message_ts,
                  last_gmail_history_id = excluded.last_gmail_history_id,
                  initial_sync_completed_at = excluded.initial_sync_completed_at,
+                 initial_sync_empty_verified_at = excluded.initial_sync_empty_verified_at,
                  last_synced_at = datetime('now'),
                  updated_at = datetime('now')""",
             (
@@ -599,6 +605,7 @@ def _merge_conversation_into_existing_target(
                 merged_last_message,
                 merged_history_id,
                 merged_initial_sync_completed_at,
+                merged_initial_sync_empty_verified_at,
             ),
         )
         conn.execute("DELETE FROM penguin_connect_sync_state WHERE conversation_id = ?", (source_id,))
@@ -979,6 +986,81 @@ def _backfill_email_to_imessage_delivery_bodies(conn: sqlite3.Connection) -> int
     return updated
 
 
+def _backfill_conversation_gmail_thread_ids(conn: sqlite3.Connection) -> int:
+    rows = conn.execute(
+        """SELECT conversation_id, gmail_thread_id, COUNT(*) AS thread_count, MAX(message_timestamp) AS latest_message_at
+           FROM penguin_connect_messages
+           WHERE gmail_thread_id IS NOT NULL
+             AND gmail_thread_id != ''
+           GROUP BY conversation_id, gmail_thread_id"""
+    ).fetchall()
+    if not rows:
+        return 0
+
+    best_by_conversation: dict[str, sqlite3.Row] = {}
+    for row in rows:
+        conversation_id = row["conversation_id"]
+        current = best_by_conversation.get(conversation_id)
+        candidate_key = (
+            int(row["thread_count"] or 0),
+            row["latest_message_at"] or "",
+            row["gmail_thread_id"] or "",
+        )
+        current_key = (
+            int(current["thread_count"] or 0),
+            current["latest_message_at"] or "",
+            current["gmail_thread_id"] or "",
+        ) if current else None
+        if current is None or candidate_key > current_key:
+            best_by_conversation[conversation_id] = row
+
+    updated = 0
+    for conversation_id, row in best_by_conversation.items():
+        result = conn.execute(
+            """UPDATE penguin_connect_conversations
+               SET gmail_thread_id = ?,
+                   updated_at = datetime('now')
+               WHERE conversation_id = ?
+                 AND (gmail_thread_id IS NULL OR gmail_thread_id = '')""",
+            (row["gmail_thread_id"], conversation_id),
+        )
+        if result.rowcount:
+            updated += 1
+    return updated
+
+
+def _repair_incomplete_bootstrap_state(conn: sqlite3.Connection) -> int:
+    rows = conn.execute(
+        """SELECT s.conversation_id
+           FROM penguin_connect_sync_state s
+           JOIN penguin_connect_conversations c ON c.conversation_id = s.conversation_id
+           WHERE c.status = 'active'
+             AND s.initial_sync_completed_at IS NOT NULL
+             AND s.initial_sync_empty_verified_at IS NULL
+             AND NOT EXISTS (
+               SELECT 1
+               FROM penguin_connect_messages m
+               WHERE m.conversation_id = s.conversation_id
+                 AND m.direction = 'imessage_to_email'
+                 AND m.gmail_message_id IS NOT NULL
+             )"""
+    ).fetchall()
+    if not rows:
+        return 0
+
+    conversation_ids = [(row["conversation_id"],) for row in rows]
+    conn.executemany(
+        """UPDATE penguin_connect_sync_state
+           SET initial_sync_completed_at = NULL,
+               next_full_verify_at = NULL,
+               full_verify_completed_at = NULL,
+               updated_at = datetime('now')
+           WHERE conversation_id = ?""",
+        conversation_ids,
+    )
+    return len(conversation_ids)
+
+
 def _allowed_sender_emails(gmail_email: str | None, send_as_aliases_raw: str | None) -> set[str]:
     allowed = {_normalize_email(gmail_email)}
     try:
@@ -1136,6 +1218,8 @@ def init_db() -> None:
     )
     if "initial_sync_completed_at" not in sync_columns:
         conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN initial_sync_completed_at TEXT")
+    if "initial_sync_empty_verified_at" not in sync_columns:
+        conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN initial_sync_empty_verified_at TEXT")
     if "last_message_ts" not in sync_columns:
         conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN last_message_ts TEXT")
     if "pending_gmail_activity_at" not in sync_columns:
@@ -1148,7 +1232,13 @@ def init_db() -> None:
         """UPDATE penguin_connect_sync_state
            SET initial_sync_completed_at = COALESCE(initial_sync_completed_at, last_synced_at, updated_at)
            WHERE initial_sync_completed_at IS NULL
-             AND (last_imessage_ts IS NOT NULL OR last_gmail_ts IS NOT NULL OR last_synced_at IS NOT NULL)"""
+             AND EXISTS (
+               SELECT 1
+               FROM penguin_connect_messages m
+               WHERE m.conversation_id = penguin_connect_sync_state.conversation_id
+                 AND m.direction = 'imessage_to_email'
+                 AND m.gmail_message_id IS NOT NULL
+             )"""
     )
     conn.execute(
         """UPDATE penguin_connect_sync_state
@@ -1177,6 +1267,8 @@ def init_db() -> None:
         "CREATE INDEX IF NOT EXISTS idx_penguin_connect_jobs_finished ON penguin_connect_jobs(status, finished_at)"
     )
     _backfill_email_to_imessage_delivery_bodies(conn)
+    _backfill_conversation_gmail_thread_ids(conn)
+    _repair_incomplete_bootstrap_state(conn)
     _backfill_self_authored_sender_names(conn)
     _backfill_initial_full_verify_schedule(conn)
     conn.commit()
