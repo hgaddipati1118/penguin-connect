@@ -164,11 +164,32 @@ def _is_header_block_start(lines: list[str], index: int) -> bool:
     return has_date and has_recipients
 
 
+def _reply_header_end_index(lines: list[str], index: int) -> Optional[int]:
+    stripped = (lines[index] or "").strip()
+    if not stripped:
+        return None
+    if _ON_WROTE_RE.match(stripped):
+        return index + 1
+    if not stripped.lower().startswith("on "):
+        return None
+
+    combined = stripped
+    for candidate_index in range(index + 1, min(index + 4, len(lines))):
+        candidate = (lines[candidate_index] or "").strip()
+        if not candidate:
+            break
+        combined = f"{combined} {candidate}"
+        if _ON_WROTE_RE.match(combined):
+            return candidate_index + 1
+
+    return None
+
+
 def _is_quote_boundary(lines: list[str], index: int) -> bool:
     stripped = (lines[index] or "").strip()
     if not stripped:
         return False
-    if _ON_WROTE_RE.match(stripped):
+    if _reply_header_end_index(lines, index) is not None:
         return True
     if _FORWARDED_MARKER_RE.match(stripped) or _BEGIN_FORWARD_RE.match(stripped):
         return True
@@ -268,7 +289,7 @@ def _safety_flags_for_text(text: str, *, source: str) -> tuple[str, ...]:
 
     if source == "snippet":
         flags.append("snippet_only")
-    if _INLINE_ON_WROTE_RE.search(normalized) or any(_ON_WROTE_RE.match((line or "").strip()) for line in lines):
+    if _INLINE_ON_WROTE_RE.search(normalized) or any(_reply_header_end_index(lines, index) is not None for index in range(len(lines))):
         flags.append("reply_header")
     if _INLINE_FORWARD_RE.search(normalized) or any(
         _FORWARDED_MARKER_RE.match((line or "").strip()) or _BEGIN_FORWARD_RE.match((line or "").strip())

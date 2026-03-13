@@ -54,6 +54,17 @@ class QuotedContentTests(unittest.TestCase):
         self.assertTrue(parsed.quoted_content_removed)
         self.assertTrue(parsed.safe_for_send)
 
+    def test_strip_quoted_plain_text_removes_wrapped_reply_header(self):
+        parsed = strip_quoted_plain_text(
+            "Test email\n\nOn Fri, Mar 13, 2026 at 1:38 PM Dhruv Roonga <\n"
+            "hgaddipati1118+am-e3526656f885@gmail.com> wrote:\n\n"
+            "> why did we have the on... stuff thats bad."
+        )
+
+        self.assertEqual(parsed.text, "Test email")
+        self.assertTrue(parsed.quoted_content_removed)
+        self.assertTrue(parsed.safe_for_send)
+
     def test_strip_quoted_html_text_removes_outlook_quote_block(self):
         parsed = strip_quoted_html_text(
             """

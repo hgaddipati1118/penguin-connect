@@ -475,6 +475,63 @@ class SyncIntegrationTests(unittest.TestCase):
         self.assertEqual(metadata["source_body_text"], "Haha, that's a feature!")
         self.assertTrue(metadata["gmail_signature_removed"])
 
+    def test_init_db_backfills_wrapped_reply_header_from_historical_gmail_delivery(self):
+        conn = db.get_connection()
+        conn.execute(
+            """INSERT INTO penguin_connect_conversations
+               (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+                alias_email, status)
+               VALUES (?, 'imessage', ?, ?, ?, 'dm', ?, ?, 'active')""",
+            (
+                "owner@gmail.com",
+                "amc_wrapped_reply_historical",
+                "iMessage;+;chat-wrapped-reply",
+                "Crow",
+                '["+15127436385"]',
+                "owner+am-wrapped@gmail.com",
+            ),
+        )
+        raw_body = (
+            "Test email\r\n\r\nOn Fri, Mar 13, 2026 at 1:38 PM Dhruv Roonga <\r\n"
+            "owner+am-wrapped@gmail.com> wrote:\r\n\r\n"
+            "> older quoted text"
+        )
+        conn.execute(
+            """INSERT INTO penguin_connect_messages
+               (conversation_id, provider, provider_message_id, direction, body_text, message_timestamp, metadata)
+               VALUES (?, 'gmail', 'gmail:wrapped-historical', 'email_to_imessage', ?, '2026-03-13T20:40:48+00:00', ?)""",
+            (
+                "amc_wrapped_reply_historical",
+                raw_body,
+                json.dumps(
+                    {
+                        "delivery_status": "delivered",
+                        "source_body_text": raw_body,
+                        "source_body_text_raw": raw_body,
+                    }
+                ),
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        db.init_db()
+
+        migrated_conn = db.get_connection()
+        try:
+            row = migrated_conn.execute(
+                "SELECT body_text, metadata FROM penguin_connect_messages WHERE provider_message_id = 'gmail:wrapped-historical'"
+            ).fetchone()
+        finally:
+            migrated_conn.close()
+
+        self.assertEqual(row["body_text"], "Test email")
+        metadata = json.loads(row["metadata"] or "{}")
+        self.assertEqual(metadata["source_body_text"], "Test email")
+        self.assertEqual(metadata["source_body_text_raw"], raw_body)
+        self.assertTrue(metadata["gmail_quoted_content_removed"])
+        self.assertTrue(metadata["gmail_body_safe_for_send"])
+
     def test_init_db_migrates_legacy_conversation_ids_to_provider_aware_ids(self):
         conn = db.get_connection()
         conn.close()

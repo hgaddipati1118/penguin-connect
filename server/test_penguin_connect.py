@@ -2809,6 +2809,67 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertFalse(metadata["gmail_body_safe_for_send"])
         self.assertIn("snippet_only", metadata["gmail_body_safety_flags"])
 
+    def test_gmail_wrapped_reply_header_is_stripped_before_send(self):
+        conv = self._conversation_row()
+        payload_data = base64.urlsafe_b64encode(
+            (
+                "Test email\r\n\r\nOn Fri, Mar 13, 2026 at 1:38 PM Dhruv Roonga <\r\n"
+                "hgaddipati1118+am-e3526656f885@gmail.com> wrote:\r\n\r\n"
+                "> why did we have the on... stuff thats bad."
+            ).encode("utf-8")
+        ).decode("utf-8").rstrip("=")
+        full_msg = {
+            "id": "gmail-wrapped-quoted",
+            "threadId": "thread-wrapped-quoted",
+            "historyId": "h-wrapped-quoted",
+            "labelIds": ["SENT", "INBOX", "UNREAD"],
+            "internalDate": "1700007200000",
+            "snippet": "Test email",
+            "payload": {
+                "mimeType": "multipart/alternative",
+                "headers": [
+                    {"name": "From", "value": "Owner <owner@gmail.com>"},
+                    {"name": "To", "value": "Owner <owner+am-test@gmail.com>"},
+                    {"name": "Subject", "value": "Status"},
+                    {"name": "Message-ID", "value": "<wrapped-quoted@example.test>"},
+                ],
+                "parts": [
+                    {
+                        "mimeType": "text/plain",
+                        "body": {"data": payload_data},
+                    }
+                ],
+            },
+        }
+        gmail_service = mock.Mock()
+        gmail_service.users.return_value.messages.return_value.get.return_value.execute.return_value = full_msg
+
+        with mock.patch("penguin_connect._list_gmail_messages_to_alias", return_value=[{"id": "gmail-wrapped-quoted"}]), mock.patch(
+            "penguin_connect.send_imessage", return_value=(True, None)
+        ) as mock_send:
+            penguin_connect._sync_conversation_gmail_to_imessage(
+                self.conn,
+                gmail_service,
+                conv,
+                gmail_email="owner@gmail.com",
+                allowed_senders=["owner@gmail.com"],
+                days=7,
+            )
+
+        sent_text = mock_send.call_args.args[1]
+        self.assertEqual(sent_text, "Test email")
+        stored = self.conn.execute(
+            """SELECT body_text, metadata
+               FROM penguin_connect_messages
+               WHERE conversation_id = ? AND provider_message_id = ?""",
+            ("amc_test", "gmail:gmail-wrapped-quoted"),
+        ).fetchone()
+        metadata = json.loads(stored["metadata"] or "{}")
+        self.assertEqual(stored["body_text"], "Test email")
+        self.assertIn("On Fri, Mar 13, 2026 at 1:38 PM", metadata["source_body_text_raw"])
+        self.assertTrue(metadata["gmail_quoted_content_removed"])
+        self.assertTrue(metadata["gmail_body_safe_for_send"])
+
     def test_gmail_draft_to_alias_is_ignored_and_never_sent_to_imessage(self):
         conv = self._conversation_row()
         payload_data = base64.urlsafe_b64encode(b"draft that should never send").decode("utf-8").rstrip("=")
