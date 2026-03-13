@@ -139,20 +139,22 @@ class ScriptTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env"
             env_path.write_text("PENGUIN_CONNECT_PORT=8888\n", encoding="utf-8")
+            env_values = penguin_connect_setup._read_env_file(env_path)
 
             penguin_connect_setup._configure_signature_markers(
+                Path(tmp),
                 env_path,
                 cli_markers=["External email:", "Company Confidential"],
                 assume_yes=True,
+                env_file=env_values,
             )
 
-            contents = env_path.read_text(encoding="utf-8")
+            prefs_path = Path(tmp) / penguin_connect_setup.DEFAULT_SIGNATURE_MARKERS_FILE
+            contents = prefs_path.read_text(encoding="utf-8")
 
-        self.assertIn("PENGUIN_CONNECT_PORT=8888", contents)
-        self.assertIn(
-            "PENGUIN_CONNECT_EMAIL_SIGNATURE_MARKERS=External email:||Company Confidential",
-            contents,
-        )
+        self.assertIn('"signature_markers"', contents)
+        self.assertIn('"External email:"', contents)
+        self.assertIn('"Company Confidential"', contents)
 
 
 if __name__ == "__main__":

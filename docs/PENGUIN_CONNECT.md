@@ -19,7 +19,7 @@ Optional flags:
 
 - `--yes` for default-yes non-interactive execution
 - `--client-secrets /abs/path/client_secret.json` to force OAuth JSON path
-- `--signature-marker "External email:"` to save a custom signature/disclaimer cutoff marker into `.env`
+- `--signature-marker "External email:"` to save a custom signature/disclaimer cutoff marker into the local JSON preferences file
 - `--skip-sync-smoke` to skip final sync endpoint smoke test
 - `--explain-only` to print steps without executing
 
@@ -71,9 +71,11 @@ venv/bin/pip install -r requirements.txt
 
 Optional reply-cleanup setting:
 
-- `PENGUIN_CONNECT_EMAIL_SIGNATURE_MARKERS`
-  - optional `||`-separated list of normalized line prefixes
-  - when a reply line starts with one of them, PenguinConnect strips that line and everything after it before sending to Apple Messages
+- `PENGUIN_CONNECT_SIGNATURE_MARKERS_FILE`
+  - optional path to a local JSON file with a `signature_markers` array
+  - default path: `./.penguin_connect_signature_markers.json`
+  - see `./signature_markers.example.json` for the file format
+  - when a reply line starts with one of those markers, PenguinConnect strips that line and everything after it before sending to Apple Messages
   - useful for recurring legal disclaimers, CRM footers, or signatures the built-in parser misses
 
 ## 1) Get Google OAuth Client JSON

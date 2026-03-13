@@ -6,7 +6,9 @@ from bs4 import BeautifulSoup, NavigableString, Tag
 from dataclasses import dataclass
 import html
 from html.parser import HTMLParser
+import json
 import os
+from pathlib import Path
 import re
 import unicodedata
 from typing import Iterable, Optional
@@ -112,7 +114,10 @@ _ZERO_WIDTH_CODEPOINTS = {
     0x2060,
     0xFEFF,
 }
-_CUSTOM_SIGNATURE_MARKER_ENV = "PENGUIN_CONNECT_EMAIL_SIGNATURE_MARKERS"
+_SIGNATURE_MARKERS_FILE_ENV = "PENGUIN_CONNECT_SIGNATURE_MARKERS_FILE"
+_DEFAULT_SIGNATURE_MARKERS_FILE = Path(__file__).resolve().parent.parent / ".penguin_connect_signature_markers.json"
+
+
 @dataclass(frozen=True)
 class ParsedEmailBody:
     text: str
@@ -275,7 +280,17 @@ def _normalize_signature_markers(markers: Optional[Iterable[str]]) -> tuple[str,
 
 
 def _default_signature_markers() -> tuple[str, ...]:
-    return _normalize_signature_markers([os.environ.get(_CUSTOM_SIGNATURE_MARKER_ENV, "")])
+    raw_path = (os.environ.get(_SIGNATURE_MARKERS_FILE_ENV) or "").strip()
+    path = Path(raw_path).expanduser() if raw_path else _DEFAULT_SIGNATURE_MARKERS_FILE
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return ()
+    if isinstance(payload, dict):
+        return _normalize_signature_markers(payload.get("signature_markers"))
+    if isinstance(payload, list):
+        return _normalize_signature_markers(payload)
+    return ()
 
 
 def _trim_custom_signature_block(lines: list[str], signature_markers: tuple[str, ...]) -> tuple[list[str], bool]:

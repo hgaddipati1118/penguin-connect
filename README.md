@@ -91,6 +91,8 @@ Add custom email signature/disclaimer cutoff markers during setup if you have re
   --signature-marker "Company Confidential"
 ```
 
+Those markers are written to the local JSON preferences file at `./.penguin_connect_signature_markers.json` by default.
+
 Skip the final sync smoke if needed:
 
 ```bash
@@ -101,10 +103,11 @@ If OAuth fails with `redirect_uri_mismatch`, the setup scripts print the exact G
 
 Custom parsing option:
 
-- `PENGUIN_CONNECT_EMAIL_SIGNATURE_MARKERS`
-  - optional `||`-separated list of line prefixes
-  - when a normalized line starts with one of them, PenguinConnect strips that line and everything after it before Gmail-to-chat send
-  - use this for recurring legal disclaimers, CRM footers, or other trailing text the built-in parser misses
+- `PENGUIN_CONNECT_SIGNATURE_MARKERS_FILE`
+  - optional path to a local JSON file with `signature_markers`
+  - default path: [`.penguin_connect_signature_markers.json`](/Users/harshagaddipati/Documents/penguin-connect/.penguin_connect_signature_markers.json)
+  - example format: [`signature_markers.example.json`](/Users/harshagaddipati/Documents/penguin-connect/signature_markers.example.json)
+  - when a normalized line starts with one of those markers, PenguinConnect strips that line and everything after it before Gmail-to-chat send
 
 ## Required Setup Order
 

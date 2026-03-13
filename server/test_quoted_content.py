@@ -1,4 +1,7 @@
 import unittest
+import json
+import tempfile
+from pathlib import Path
 from unittest import mock
 
 from quoted_content import extract_latest_email_text, strip_quoted_html_text, strip_quoted_plain_text
@@ -163,26 +166,35 @@ class QuotedContentTests(unittest.TestCase):
         self.assertIn("html_residue", parsed.safety_flags)
 
     def test_strip_quoted_plain_text_respects_configured_signature_markers(self):
-        with mock.patch.dict(
-            "os.environ",
-            {"PENGUIN_CONNECT_EMAIL_SIGNATURE_MARKERS": "External email:||Company Confidential"},
-            clear=False,
-        ):
-            parsed = strip_quoted_plain_text(
-                "Latest reply\n\nCompany Confidential\nPlease do not share outside the company\nFooter line"
+        with tempfile.TemporaryDirectory() as tmp:
+            prefs_path = Path(tmp) / "markers.json"
+            prefs_path.write_text(
+                json.dumps({"signature_markers": ["External email:", "Company Confidential"]}),
+                encoding="utf-8",
             )
+            with mock.patch.dict(
+                "os.environ",
+                {"PENGUIN_CONNECT_SIGNATURE_MARKERS_FILE": str(prefs_path)},
+                clear=False,
+            ):
+                parsed = strip_quoted_plain_text(
+                    "Latest reply\n\nCompany Confidential\nPlease do not share outside the company\nFooter line"
+                )
 
         self.assertEqual(parsed.text, "Latest reply")
         self.assertTrue(parsed.signature_removed)
         self.assertTrue(parsed.safe_for_send)
 
     def test_strip_quoted_plain_text_removes_sent_with_slashy_footer_when_configured(self):
-        with mock.patch.dict(
-            "os.environ",
-            {"PENGUIN_CONNECT_EMAIL_SIGNATURE_MARKERS": "Sent with Slashy"},
-            clear=False,
-        ):
-            parsed = strip_quoted_plain_text("Latest reply\n\nSent with Slashy.")
+        with tempfile.TemporaryDirectory() as tmp:
+            prefs_path = Path(tmp) / "markers.json"
+            prefs_path.write_text(json.dumps({"signature_markers": ["Sent with Slashy"]}), encoding="utf-8")
+            with mock.patch.dict(
+                "os.environ",
+                {"PENGUIN_CONNECT_SIGNATURE_MARKERS_FILE": str(prefs_path)},
+                clear=False,
+            ):
+                parsed = strip_quoted_plain_text("Latest reply\n\nSent with Slashy.")
 
         self.assertEqual(parsed.text, "Latest reply")
         self.assertTrue(parsed.signature_removed)

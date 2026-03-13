@@ -26,6 +26,8 @@ from typing import Optional
 
 from penguin_connect_local_api import resolve_local_api_base
 
+DEFAULT_SIGNATURE_MARKERS_FILE = ".penguin_connect_signature_markers.json"
+
 
 def _header(text: str) -> None:
     print(f"\n=== {text} ===")
@@ -117,28 +119,57 @@ def _normalize_signature_markers(markers: list[str]) -> list[str]:
     return list(dict.fromkeys(normalized))
 
 
+def _resolve_signature_markers_path(repo_root: Path, env_file: dict[str, str]) -> Path:
+    configured = _env_value("PENGUIN_CONNECT_SIGNATURE_MARKERS_FILE", env_file).strip()
+    if configured:
+        return Path(configured).expanduser()
+    return repo_root / DEFAULT_SIGNATURE_MARKERS_FILE
+
+
+def _write_signature_markers_file(path: Path, markers: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"signature_markers": markers}
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _load_signature_markers_file(path: Path) -> list[str]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if isinstance(payload, dict):
+        markers = payload.get("signature_markers")
+    else:
+        markers = payload
+    if not isinstance(markers, list):
+        return []
+    return [marker.strip() for marker in markers if isinstance(marker, str) and marker.strip()]
+
+
 def _configure_signature_markers(
+    repo_root: Path,
     env_path: Path,
     *,
     cli_markers: list[str],
     assume_yes: bool,
-    current_value: Optional[str] = None,
+    env_file: dict[str, str],
 ) -> None:
-    env_key = "PENGUIN_CONNECT_EMAIL_SIGNATURE_MARKERS"
-    existing_value = (current_value or "").strip()
+    markers_path = _resolve_signature_markers_path(repo_root, env_file)
+    existing_markers = _load_signature_markers_file(markers_path)
     markers = _normalize_signature_markers(cli_markers)
     if markers:
-        _upsert_env_value(env_path, env_key, "||".join(markers))
-        print(f"[ok] Saved {env_key} with {len(markers)} marker(s).")
+        _write_signature_markers_file(markers_path, markers)
+        print(f"[ok] Saved {len(markers)} signature marker(s) to {markers_path}")
         return
 
     if assume_yes:
-        if existing_value:
-            print(f"[ok] Keeping existing {env_key}.")
+        if existing_markers:
+            print(f"[ok] Keeping existing signature markers in {markers_path}.")
         return
 
-    if existing_value:
-        print(f"[info] Existing {env_key}: {existing_value}")
+    if existing_markers:
+        print(f"[info] Existing signature markers file: {markers_path}")
+        print(f"[info] Current markers: {' || '.join(existing_markers)}")
         keep_existing = _confirm(
             "Keep the current email signature/disclaimer cutoff markers?",
             default_yes=True,
@@ -156,6 +187,7 @@ def _configure_signature_markers(
         return
 
     print("[info] Enter phrases that start the content you want removed.")
+    print(f"[info] Markers will be saved to {markers_path}")
     print("[info] Example: External email:||Company Confidential||Automated footer")
     raw_value = _prompt_text("Markers (separate multiple values with ||): ")
     markers = _normalize_signature_markers([raw_value])
@@ -163,8 +195,8 @@ def _configure_signature_markers(
         print("[skip] No custom markers entered.")
         return
 
-    _upsert_env_value(env_path, env_key, "||".join(markers))
-    print(f"[ok] Saved {env_key} with {len(markers)} marker(s).")
+    _write_signature_markers_file(markers_path, markers)
+    print(f"[ok] Saved {len(markers)} signature marker(s) to {markers_path}")
 
 
 def _http_ok(url: str, timeout: float = 2.0) -> bool:
@@ -357,7 +389,7 @@ def _print_explain_plan(repo_root: Path, args: argparse.Namespace) -> None:
     print("PenguinConnect setup plan (explain-only):")
     print("0. Run from Terminal.app with Full Disk Access enabled.")
     print("1. Ensure .env exists (copy from .env.example if missing).")
-    print("2. Optionally save custom email signature/disclaimer cutoff markers in .env.")
+    print("2. Optionally save custom email signature/disclaimer cutoff markers in a local JSON preferences file.")
     print("3. Ensure server/venv exists and install server/requirements.txt.")
     print(
         "4. Ensure local bridge API is running at /penguin-connect/health "
@@ -430,10 +462,11 @@ def main() -> int:
     env_path = repo_root / ".env"
     env_values = _read_env_file(env_path)
     _configure_signature_markers(
+        repo_root,
         env_path,
         cli_markers=args.signature_marker,
         assume_yes=args.yes,
-        current_value=env_values.get("PENGUIN_CONNECT_EMAIL_SIGNATURE_MARKERS"),
+        env_file=env_values,
     )
     env_values = _read_env_file(env_path)
     local_api_env = dict(env_values)

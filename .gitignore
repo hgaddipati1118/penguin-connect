@@ -1,5 +1,6 @@
 # Secrets
 .env
+.penguin_connect_signature_markers.json
 client_secret.json
 google_client_secret.json
 
