@@ -18,6 +18,10 @@ Describe the problem and the change in 2 to 5 bullets:
 - Does this touch OAuth, Gmail parsing, Apple Messages routing, local storage,
   logs, or sender-gate behavior?
 - If yes, what is the risk and how was it mitigated?
+- Confirm the PR title, body, screenshots, logs, and examples are scrubbed of
+  real message content, contact names, email addresses, alias emails, phone
+  numbers, OAuth material, and contact exports.
+- If you needed examples or artifacts, were they redacted or synthetic?
 
 ## Docs And Tests
 

@@ -27,6 +27,10 @@ was actually verified.
 - Do not add logging for OAuth credentials, raw message bodies, phone numbers,
   email addresses, or contact exports unless the task explicitly requires it and
   the risk is documented.
+- Do not place real names, phone numbers, email addresses, alias emails, raw
+  message content, or OAuth material into commit messages, PR descriptions,
+  issue comments, screenshots, docs examples, or pasted logs. Use redacted or
+  synthetic examples instead.
 
 ## Local Setup
 
@@ -90,6 +94,8 @@ Before opening a PR:
 - link the relevant issue when one exists
 - include scrubbed screenshots or logs only when they add value and do not
   expose private data
+- scrub the PR title, body, and attached artifacts so they do not reveal live
+  names, email addresses, alias addresses, phone numbers, or message text
 
 PR summaries should cover:
 
@@ -107,6 +113,8 @@ PR summaries should cover:
 - Use `Fixes #123` only when the merged change will actually close the issue.
 - If the worktree is dirty, commit only the files that belong to your completed
   change.
+- Review the staged diff and commit subject/body for accidental PII before
+  pushing.
 
 ## Reporting Bugs And Ideas
 

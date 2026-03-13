@@ -73,6 +73,10 @@ Important runtime constraint: setup and bridge commands must be run from
 - Do not add logging for OAuth credentials, raw message bodies, contact exports,
   or other private message content unless the task explicitly requires it and
   the risk is documented.
+- Do not place private message content or identifiers in commits, PR titles or
+  bodies, issue comments, docs examples, screenshots, or pasted logs. Use
+  redacted or synthetic data for names, email addresses, alias addresses, phone
+  numbers, and message text.
 
 ## Working Rules
 
@@ -93,6 +97,9 @@ Important runtime constraint: setup and bridge commands must be run from
 - Use Conventional Commits when practical: `feat`, `fix`, `docs`, `refactor`,
   `test`, `chore`, `perf`, `build`, `ci`.
 - Keep commit subjects imperative and specific.
+- Review commit messages, PR text, screenshots, and shared logs for PII before
+  publishing. Do not include real message bodies, contact names, phone numbers,
+  alias emails, OAuth artifacts, or contact exports.
 - If the worktree is dirty, commit only the files relevant to the task you
   completed.
 - PRs should explain:
@@ -144,3 +151,5 @@ Important runtime constraint: setup and bridge commands must be run from
   explicitly asks not to commit or push yet.
 - If there are unrelated local changes, commit only the files relevant to the
   requested task.
+- Before pushing, inspect the staged diff and commit metadata for accidental PII
+  or local-only secrets and remove them.

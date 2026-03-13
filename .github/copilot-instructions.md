@@ -24,9 +24,14 @@ cd ..
 - Group chats stay separate; direct messages may unify across sibling routes.
 - Gmail-to-chat sends only net-new text.
 - Do not log or commit OAuth secrets, raw message bodies, or contact exports.
+- Do not put live names, email addresses, alias emails, phone numbers, or raw
+  message text into commit messages, PR text, docs examples, screenshots, or
+  shared logs.
 
 ## Verification
 
 - Prefer targeted `unittest` runs first, then `./scripts/check.sh`.
 - Never claim manual Gmail OAuth, Apple Messages access, or Full Disk Access
   verification unless you actually performed it.
+- Finished work should be committed and pushed once verified, unless the user
+  explicitly asks to hold changes locally.
