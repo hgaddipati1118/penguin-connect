@@ -150,6 +150,16 @@ Every significant bridge action can be written to a durable JSONL file:
 
 The log is intended for operational debugging. It stores identifiers, statuses, timestamps, and message fingerprints. It does not store raw message text.
 
+Useful sync events include:
+
+- `sync_run_started` / `sync_run_result`
+- `sync_conversation_started` / `sync_conversation_result`
+- `gmail_alias_activity_scan_result`
+- `gmail_pending_activity_recorded`
+- `gmail_pending_activity_cleared`
+
+The bridge also prints terminal progress summaries for each sync run plus a per-conversation result line so an operator can watch startup catch-up, backfill, and incremental work live without tailing JSON.
+
 ## Quote Parsing Audit
 
 To evaluate how well Gmail replies are reduced to net-new text, audit recent Gmail-to-chat deliveries against the current parser:

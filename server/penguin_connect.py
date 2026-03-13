@@ -215,6 +215,12 @@ def _conversation_log_fields(conv: sqlite3.Row | dict[str, Any]) -> dict[str, An
     }
 
 
+def _print_sync_terminal_summary(mode: str, summary_type: str, **fields: Any) -> None:
+    parts = [f"{key}={value}" for key, value in fields.items() if value is not None]
+    suffix = " ".join(parts) if parts else "no_details"
+    print(f"[PenguinConnect] Sync {mode} {summary_type}: {suffix}")
+
+
 def _provider_subject(source_provider: Optional[str], display_name: Optional[str]) -> str:
     return f"{_source_provider_label(source_provider)} · {(display_name or '').strip() or 'Conversation'}"
 
@@ -4208,12 +4214,21 @@ def _merge_recent_gmail_activity(
 def _record_pending_gmail_activity(
     conn: sqlite3.Connection,
     recent_by_conversation: dict[str, dict[str, Any]],
-) -> int:
+) -> dict[str, int]:
     recorded = 0
+    advanced = 0
     for conversation_id, row in recent_by_conversation.items():
         activity_at = row.get("last_message_at")
         if not activity_at:
             continue
+        existing = conn.execute(
+            """SELECT pending_gmail_activity_at
+               FROM penguin_connect_sync_state
+               WHERE conversation_id = ?""",
+            (conversation_id,),
+        ).fetchone()
+        previous_pending = existing["pending_gmail_activity_at"] if existing else None
+        next_pending = _max_iso_value(previous_pending, activity_at)
         conn.execute(
             """INSERT INTO penguin_connect_sync_state
                (conversation_id, pending_gmail_activity_at, updated_at)
@@ -4229,8 +4244,21 @@ def _record_pending_gmail_activity(
                  updated_at = datetime('now')""",
             (conversation_id, activity_at),
         )
-        recorded += 1
-    return recorded
+        if next_pending != previous_pending:
+            recorded += 1
+            if previous_pending:
+                advanced += 1
+            log_action(
+                "gmail_pending_activity_recorded",
+                conversation_id=conversation_id,
+                pending_gmail_activity_at=next_pending,
+                previous_pending_gmail_activity_at=previous_pending,
+                message_count=int(row.get("message_count") or 0),
+            )
+    return {
+        "recorded": recorded,
+        "advanced": advanced,
+    }
 
 
 def _clear_pending_gmail_activity_if_caught_up(
@@ -4257,6 +4285,13 @@ def _clear_pending_gmail_activity_if_caught_up(
                updated_at = datetime('now')
            WHERE conversation_id = ?""",
         (conversation_id,),
+    )
+    log_action(
+        "gmail_pending_activity_cleared",
+        conversation_id=conversation_id,
+        previous_pending_gmail_activity_at=row["pending_gmail_activity_at"],
+        last_gmail_ts=row["last_gmail_ts"],
+        force=force,
     )
     return True
 
@@ -4489,7 +4524,29 @@ def _list_recent_gmail_alias_activity(
             if mailbox_meta.get(key) is not None:
                 meta[key] = mailbox_meta[key]
 
-    _record_pending_gmail_activity(conn, recent_by_conversation)
+    pending_stats = _record_pending_gmail_activity(conn, recent_by_conversation)
+    detected_messages = sum(int(row.get("message_count") or 0) for row in recent_by_conversation.values())
+    if (
+        recent_by_conversation
+        or pending_stats["recorded"]
+        or meta.get("history_initialized")
+        or meta.get("history_reset")
+        or meta.get("gmail_activity_backstop_used")
+    ):
+        log_action(
+            "gmail_alias_activity_scan_result",
+            gmail_email=gmail_email,
+            detected_conversations=len(recent_by_conversation),
+            detected_messages=detected_messages,
+            pending_activity_recorded=pending_stats["recorded"],
+            pending_activity_advanced=pending_stats["advanced"],
+            history_initialized=bool(meta.get("history_initialized")),
+            history_reset=bool(meta.get("history_reset")),
+            gmail_activity_backstop_used=bool(meta.get("gmail_activity_backstop_used")),
+            gmail_activity_backstop_matches=meta.get("gmail_activity_backstop_matches"),
+            gmail_activity_backstop_scanned_messages=meta.get("gmail_activity_backstop_scanned_messages"),
+            last_gmail_history_id=meta.get("last_gmail_history_id"),
+        )
     return recent_by_conversation, meta
 
 
@@ -5706,6 +5763,17 @@ def _sync_conversations_unlocked(
         selected_conversations=len(conversations),
         selection=selection,
     )
+    _print_sync_terminal_summary(
+        mode,
+        "run_started",
+        selected=selection.get("selected_conversations"),
+        strategy=selection.get("selection_strategy"),
+        queued=selection.get("queued_conversations"),
+        hot_imessage=selection.get("hot_imessage_conversations"),
+        hot_gmail=selection.get("hot_gmail_conversations"),
+        pending_bootstrap=selection.get("pending_bootstrap_conversations"),
+        pending_full_verify=selection.get("pending_full_verify_conversations"),
+    )
 
     try:
         total = len(conversations)
@@ -5792,13 +5860,42 @@ def _sync_conversations_unlocked(
                     (conv["conversation_id"],),
                 )
                 conn.commit()
-                print(
-                    "[PenguinConnect] Sync "
-                    f"{mode} {index}/{total} complete: "
-                    f"imessage_imported={imsg.get('imessage_imported', 0)} "
-                    f"gmail_imported={imsg.get('gmail_imported', 0)} "
-                    f"email_to_imessage={gsync.get('email_to_imessage', 0)} "
-                    f"repairs={repaired}"
+                imessage_imported = int(imsg.get("imessage_imported", 0))
+                gmail_imported = int(imsg.get("gmail_imported", 0))
+                email_to_imessage = int(gsync.get("email_to_imessage", 0))
+                alias_drafts_deleted = int(gsync.get("alias_drafts_deleted", 0))
+                blocked_sender_count = int(gsync.get("blocked_sender_count", 0))
+                bootstrap_completed = bool(mode in {"backfill", "startup_catchup"} and not conv["initial_sync_completed_at"])
+                terminal_fields: dict[str, Any] = {}
+                if (
+                    imessage_imported
+                    or gmail_imported
+                    or email_to_imessage
+                    or repaired
+                    or alias_drafts_deleted
+                    or blocked_sender_count
+                ):
+                    terminal_fields.update(
+                        {
+                            "imessage_imported": imessage_imported,
+                            "gmail_imported": gmail_imported,
+                            "email_to_imessage": email_to_imessage,
+                            "repairs": repaired,
+                            "alias_drafts_deleted": alias_drafts_deleted,
+                            "blocked_senders": blocked_sender_count,
+                        }
+                    )
+                else:
+                    terminal_fields["result"] = "no_changes"
+                if bootstrap_completed:
+                    terminal_fields["bootstrap_completed"] = True
+                if conversation_verify_all:
+                    terminal_fields["full_verify_completed"] = True
+                _print_sync_terminal_summary(
+                    mode,
+                    f"{index}/{total}_complete",
+                    display=display,
+                    **terminal_fields,
                 )
                 log_action(
                     "sync_conversation_result",
@@ -5807,10 +5904,13 @@ def _sync_conversations_unlocked(
                     total=total,
                     success=True,
                     verify_all=conversation_verify_all,
-                    imessage_imported=imsg.get("imessage_imported", 0),
-                    gmail_imported=imsg.get("gmail_imported", 0),
-                    email_to_imessage=gsync.get("email_to_imessage", 0),
-                    blocked_sender_count=gsync.get("blocked_sender_count", 0),
+                    imessage_imported=imessage_imported,
+                    gmail_imported=gmail_imported,
+                    email_to_imessage=email_to_imessage,
+                    blocked_sender_count=blocked_sender_count,
+                    alias_drafts_deleted=alias_drafts_deleted,
+                    bootstrap_completed=bootstrap_completed,
+                    full_verify_completed=conversation_verify_all,
                     gmail_thread_repairs=repaired,
                     **_conversation_log_fields(conv),
                 )
@@ -5872,6 +5972,18 @@ def _sync_conversations_unlocked(
 
     _clear_gmail_rate_limit_pause(conn, gmail_email)
     log_action("sync_run_result", mode=mode, success=True, stats=stats)
+    _print_sync_terminal_summary(
+        mode,
+        "run_complete",
+        processed=stats.get("selected_conversations"),
+        imessage_imported=stats.get("imessage_imported"),
+        gmail_imported=stats.get("gmail_imported"),
+        email_to_imessage=stats.get("email_to_imessage"),
+        alias_drafts_deleted=stats.get("alias_drafts_deleted"),
+        full_verify_completed=stats.get("full_verify_completed"),
+        failed=stats.get("failed_conversations"),
+        skipped_locked=stats.get("skipped_locked_conversations"),
+    )
     _sync_runtime_finished(run_id, result=stats)
     return stats
 

@@ -209,6 +209,20 @@ PenguinConnect writes operational events to a local JSONL action log for debuggi
 
 Use this when you need to answer whether the bridge sent, skipped, retried, or rejected a message.
 
+Useful sync events:
+
+- `sync_run_started` / `sync_run_result`
+- `sync_conversation_started` / `sync_conversation_result`
+- `gmail_alias_activity_scan_result`
+- `gmail_pending_activity_recorded`
+- `gmail_pending_activity_cleared`
+
+The server also prints human-readable sync progress to stdout:
+
+- run start summary with selected count and strategy
+- per-conversation completion line showing imports, sends, repairs, draft cleanup, bootstrap/full-verify completion, or `result=no_changes`
+- run completion summary with aggregate totals
+
 ## Quote Parsing Audit
 
 To evaluate whether Gmail replies are being reduced to net-new content correctly:

@@ -1076,6 +1076,46 @@ class PenguinConnectTests(unittest.TestCase):
             penguin_connect._iso_from_gmail_internal_date(recent_internal_date),
         )
 
+    def test_record_pending_gmail_activity_logs_new_and_advanced_values(self):
+        with mock.patch("penguin_connect.log_action") as mock_log:
+            first = penguin_connect._record_pending_gmail_activity(
+                self.conn,
+                {"amc_test": {"last_message_at": "2026-03-07T07:15:00+00:00", "message_count": 1}},
+            )
+            second = penguin_connect._record_pending_gmail_activity(
+                self.conn,
+                {"amc_test": {"last_message_at": "2026-03-07T07:16:00+00:00", "message_count": 2}},
+            )
+
+        self.assertEqual(first, {"recorded": 1, "advanced": 0})
+        self.assertEqual(second, {"recorded": 1, "advanced": 1})
+        self.assertEqual(mock_log.call_count, 2)
+        self.assertEqual(mock_log.call_args_list[0].args[0], "gmail_pending_activity_recorded")
+        self.assertEqual(mock_log.call_args_list[0].kwargs["pending_gmail_activity_at"], "2026-03-07T07:15:00+00:00")
+        self.assertEqual(mock_log.call_args_list[1].kwargs["previous_pending_gmail_activity_at"], "2026-03-07T07:15:00+00:00")
+        self.assertEqual(mock_log.call_args_list[1].kwargs["pending_gmail_activity_at"], "2026-03-07T07:16:00+00:00")
+
+    def test_clear_pending_gmail_activity_logs_when_caught_up(self):
+        self.conn.execute(
+            """INSERT INTO penguin_connect_sync_state
+               (conversation_id, last_gmail_ts, pending_gmail_activity_at, last_synced_at, updated_at)
+               VALUES (?, ?, ?, datetime('now'), datetime('now'))""",
+            (
+                "amc_test",
+                "2026-03-07T07:16:00+00:00",
+                "2026-03-07T07:15:00+00:00",
+            ),
+        )
+
+        with mock.patch("penguin_connect.log_action") as mock_log:
+            cleared = penguin_connect._clear_pending_gmail_activity_if_caught_up(self.conn, "amc_test")
+
+        self.assertTrue(cleared)
+        self.assertEqual(mock_log.call_count, 1)
+        self.assertEqual(mock_log.call_args.args[0], "gmail_pending_activity_cleared")
+        self.assertEqual(mock_log.call_args.kwargs["conversation_id"], "amc_test")
+        self.assertEqual(mock_log.call_args.kwargs["previous_pending_gmail_activity_at"], "2026-03-07T07:15:00+00:00")
+
     def test_list_conversations_uses_cache_without_discovery(self):
         with mock.patch("penguin_connect.ensure_conversations_discovered") as mock_discover:
             result = penguin_connect.list_conversations(self.conn)
