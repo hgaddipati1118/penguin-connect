@@ -30,7 +30,6 @@ Current runtime is macOS-only because the first source adapter is Apple Messages
 - Incremental Gmail reply detection persists per-conversation pending sent activity until that conversation is actually synced, so one poll cannot silently drop an unsent alias reply behind the global mailbox cursor
 - Gmail-to-chat delivery strips quoted history and signatures aggressively and sends only net-new text
   - parsing is HTML-first and DOM-aware for Gmail/Slashy-style quote blocks, wrapped `On ... wrote:` headers, and common client quote containers
-  - built-in footer stripping also removes `Sent with Slashy` signatures from both HTML and plain-text reply bodies before send
 - Gmail-to-chat delivery retries failed sends up to 3 times; after the final failure the bridge posts a `PENGUIN_CONNECT` error reply into the Gmail thread with the failed message body
 - Durable local sync queue (SQLite): queued and leased jobs survive process pauses and resume with retries
 - Durable server action log: `~/penguinconnect-local-bridge-data/actions.jsonl`
@@ -105,7 +104,7 @@ Custom parsing option:
 - `PENGUIN_CONNECT_EMAIL_SIGNATURE_MARKERS`
   - optional `||`-separated list of line prefixes
   - when a normalized line starts with one of them, PenguinConnect strips that line and everything after it before Gmail-to-chat send
-  - use this for footer text that is specific to your workflow, for example `Sent with Slashy`
+  - use this for recurring legal disclaimers, CRM footers, or other trailing text the built-in parser misses
 
 ## Required Setup Order
 

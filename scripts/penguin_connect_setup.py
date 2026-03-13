@@ -156,7 +156,7 @@ def _configure_signature_markers(
         return
 
     print("[info] Enter phrases that start the content you want removed.")
-    print("[info] Example: External email:||Company Confidential||Sent with Slashy")
+    print("[info] Example: External email:||Company Confidential||Automated footer")
     raw_value = _prompt_text("Markers (separate multiple values with ||): ")
     markers = _normalize_signature_markers([raw_value])
     if not markers:
