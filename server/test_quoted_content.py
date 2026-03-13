@@ -125,6 +125,13 @@ class QuotedContentTests(unittest.TestCase):
         self.assertTrue(parsed.signature_removed)
         self.assertTrue(parsed.safe_for_send)
 
+    def test_strip_quoted_plain_text_removes_sent_with_slashy_footer(self):
+        parsed = strip_quoted_plain_text("Latest reply\n\nSent with Slashy.")
+
+        self.assertEqual(parsed.text, "Latest reply")
+        self.assertTrue(parsed.signature_removed)
+        self.assertTrue(parsed.safe_for_send)
+
 
 if __name__ == "__main__":
     unittest.main()

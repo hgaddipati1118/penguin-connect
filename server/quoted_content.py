@@ -38,7 +38,7 @@ _DISCLAIMER_START_RE = re.compile(
 _TRAILING_SIGNATURE_RE = re.compile(
     r"^(sent from my (iphone|ipad|mac|android|galaxy|pixel)|"
     r"get outlook for (ios|android)|sent with slashy|sent via superhuman|"
-    r"sent from gmail mobile|sent from proton mail)$",
+    r"sent from gmail mobile|sent from proton mail)[.!]*$",
     re.IGNORECASE,
 )
 _HEADER_LINE_PREFIXES = ("from:", "sent:", "date:", "to:", "cc:", "bcc:", "subject:")
