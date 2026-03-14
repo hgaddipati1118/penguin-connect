@@ -6,6 +6,7 @@ import base64
 from email import policy
 import email.utils
 import hashlib
+import html
 import json
 import mimetypes
 import os
@@ -165,6 +166,16 @@ def _parse_participants_json(raw_value: Optional[str]) -> list[str]:
 
 def _normalize_source_provider(value: Optional[str]) -> str:
     return (value or "imessage").strip().lower() or "imessage"
+
+
+def _parse_message_metadata(raw_value: Any) -> dict[str, Any]:
+    if isinstance(raw_value, dict):
+        return raw_value
+    try:
+        parsed = json.loads(raw_value or "{}")
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _source_provider_label(source_provider: Optional[str]) -> str:
@@ -3233,6 +3244,115 @@ def _provider_message_id_for_imessage(msg: dict[str, Any]) -> str:
     return f"imessage:{hashlib.sha1(payload.encode('utf-8')).hexdigest()}"
 
 
+def _render_message_text_html(text: str) -> str:
+    normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not normalized.strip():
+        return "<p>(empty message)</p>"
+    paragraphs = [segment.strip("\n") for segment in normalized.split("\n\n")]
+    html_parts: list[str] = []
+    for paragraph in paragraphs:
+        lines = paragraph.split("\n")
+        escaped_lines = [html.escape(line) for line in lines]
+        html_parts.append(f"<p>{'<br>'.join(escaped_lines)}</p>")
+    return "".join(html_parts)
+
+
+def _format_reply_header(timestamp: Optional[str], sender_name: Optional[str]) -> str:
+    sender = (sender_name or "").strip() or "Someone"
+    parsed = _parse_iso(timestamp)
+    if not parsed:
+        return f"On a previous message, {sender} wrote:"
+    local_ts = parsed.astimezone()
+    return f"On {local_ts.strftime('%b %-d, %Y at %-I:%M %p')}, {sender} wrote:"
+
+
+def _normalize_rendered_message_body(metadata: Optional[dict[str, Any]], body_text: Optional[str]) -> tuple[str, str]:
+    metadata = metadata if isinstance(metadata, dict) else {}
+    html_body = (metadata.get("email_body_html") or "").strip()
+    plain_body = (metadata.get("email_body_plain") or "").strip()
+    normalized_body_text = (body_text or "").strip()
+    if not plain_body:
+        plain_body = normalized_body_text
+    if not html_body:
+        html_body = _render_message_text_html(plain_body)
+    return plain_body, html_body
+
+
+def _build_nested_reply_bodies(
+    *,
+    body_text: str,
+    attachment_note: Optional[str],
+    quoted_plain: Optional[str],
+    quoted_html: Optional[str],
+    quoted_header: Optional[str],
+) -> tuple[str, str]:
+    base_plain_parts = [body_text.strip()] if body_text.strip() else []
+    if attachment_note:
+        if base_plain_parts:
+            base_plain_parts.append("")
+        base_plain_parts.append(attachment_note)
+    plain_body = "\n".join(base_plain_parts).strip() or "(empty message)"
+
+    html_parts = [_render_message_text_html(body_text)]
+    if attachment_note:
+        html_parts.append(f"<p>{html.escape(attachment_note)}</p>")
+    html_body = "".join(html_parts).strip() or "<p>(empty message)</p>"
+
+    normalized_quoted_plain = (quoted_plain or "").strip()
+    normalized_quoted_html = (quoted_html or "").strip()
+    normalized_header = (quoted_header or "").strip()
+    if normalized_quoted_plain and normalized_quoted_html and normalized_header:
+        plain_body = f"{plain_body}\n\n{normalized_header}\n{normalized_quoted_plain}".strip()
+        html_body = (
+            f"{html_body}<br><div class=\"gmail_quote\">"
+            f"<div class=\"gmail_attr\" style=\"font-size: 13px; color: #5f6368; margin-bottom: 8px;\">"
+            f"{html.escape(normalized_header)}</div>"
+            "<blockquote class=\"gmail_quote\" "
+            "style=\"margin: 0 0 0 0.8ex; border-left: 1px solid #ccc; padding-left: 1ex;\">"
+            f"{normalized_quoted_html}</blockquote></div>"
+        )
+    return plain_body, html_body
+
+
+def _find_prior_imessage_email_row(
+    conn: sqlite3.Connection,
+    conversation_id: str,
+    message_timestamp: Optional[str],
+    provider_message_id: str,
+) -> Optional[sqlite3.Row]:
+    if not message_timestamp:
+        return None
+    return conn.execute(
+        """SELECT provider_message_id, sender_name, body_text, message_timestamp, metadata
+           FROM penguin_connect_messages
+           WHERE conversation_id = ?
+             AND direction = 'imessage_to_email'
+             AND provider = 'imessage'
+             AND (
+                 message_timestamp < ?
+                 OR (message_timestamp = ? AND provider_message_id < ?)
+             )
+           ORDER BY message_timestamp DESC, provider_message_id DESC
+           LIMIT 1""",
+        (conversation_id, message_timestamp, message_timestamp, provider_message_id),
+    ).fetchone()
+
+
+def _quoted_reply_context_for_imessage_message(
+    conn: sqlite3.Connection,
+    conversation_id: str,
+    message_timestamp: Optional[str],
+    provider_message_id: str,
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    prior_row = _find_prior_imessage_email_row(conn, conversation_id, message_timestamp, provider_message_id)
+    if not prior_row:
+        return None, None, None
+    prior_metadata = _parse_message_metadata(prior_row["metadata"])
+    quoted_plain, quoted_html = _normalize_rendered_message_body(prior_metadata, prior_row["body_text"])
+    quoted_header = _format_reply_header(prior_row["message_timestamp"], prior_row["sender_name"])
+    return quoted_plain, quoted_html, quoted_header
+
+
 def _build_import_email(
     conversation_id: str,
     alias_email: str,
@@ -3246,15 +3366,23 @@ def _build_import_email(
     in_reply_to: Optional[str] = None,
     references: Optional[list[str]] = None,
     source_provider: str = "imessage",
+    quoted_plain: Optional[str] = None,
+    quoted_html: Optional[str] = None,
+    quoted_header: Optional[str] = None,
 ) -> str:
     provider_label = _source_provider_label(source_provider)
     sender_name = sender_name_override or msg.get("push_name") or msg.get("handle") or display_name or provider_label
     subject = _provider_subject(source_provider, subject_display_name or display_name)
-    body_lines = [msg.get("text") or ""]
+    body_text = (msg.get("text") or "").strip()
     attachments = msg.get("attachments") or []
-    if attachments:
-        body_lines.append("")
-        body_lines.append(f"[{len(attachments)} attachment(s) in {provider_label}]")
+    attachment_note = f"[{len(attachments)} attachment(s) in {provider_label}]" if attachments else None
+    plain_body, html_body = _build_nested_reply_bodies(
+        body_text=body_text,
+        attachment_note=attachment_note,
+        quoted_plain=quoted_plain,
+        quoted_html=quoted_html,
+        quoted_header=quoted_header,
+    )
 
     email_msg = EmailMessage()
     email_msg["From"] = email.utils.formataddr((sender_name, alias_email))
@@ -3278,7 +3406,8 @@ def _build_import_email(
     if ts:
         email_msg["Date"] = email.utils.format_datetime(ts)
 
-    email_msg.set_content("\n".join(body_lines).strip() or f"(empty {provider_label})")
+    email_msg.set_content(plain_body or f"(empty {provider_label})")
+    email_msg.add_alternative(html_body, subtype="html")
     attached_count = 0
     for attachment in attachments:
         if not isinstance(attachment, dict):
@@ -3889,6 +4018,21 @@ def _retry_pending_imessage_to_gmail(
             metadata["rfc_message_id"] = rfc_message_id
             metadata["rfc_in_reply_to"] = in_reply_to
             metadata["rfc_references"] = references
+            quoted_plain, quoted_html, quoted_header = _quoted_reply_context_for_imessage_message(
+                conn,
+                conv["conversation_id"],
+                row["message_timestamp"],
+                row["provider_message_id"],
+            )
+            plain_body, html_body = _build_nested_reply_bodies(
+                body_text=row["body_text"] or "",
+                attachment_note=None,
+                quoted_plain=quoted_plain,
+                quoted_html=quoted_html,
+                quoted_header=quoted_header,
+            )
+            metadata["email_body_plain"] = plain_body
+            metadata["email_body_html"] = html_body
             unread = not bool(row["is_read"])
             raw_email = _build_import_email(
                 conv["conversation_id"],
@@ -3902,6 +4046,9 @@ def _retry_pending_imessage_to_gmail(
                 in_reply_to=in_reply_to,
                 references=references,
                 source_provider=source_provider,
+                quoted_plain=quoted_plain,
+                quoted_html=quoted_html,
+                quoted_header=quoted_header,
             )
             imported_data, import_error, recovered_thread_id = _import_message_to_gmail_with_thread_recovery(
                 gmail_service,
@@ -4258,6 +4405,26 @@ def _sync_conversation_imessage_to_gmail(
                 "retry_count": 0,
                 "max_retries": _retry_max_retries(),
             }
+            quoted_plain, quoted_html, quoted_header = _quoted_reply_context_for_imessage_message(
+                conn,
+                conv["conversation_id"],
+                ts,
+                provider_id,
+            )
+            attachment_note = (
+                f"[{len(msg.get('attachments') or [])} attachment(s) in {_source_provider_label(source_provider)}]"
+                if msg.get("attachments")
+                else None
+            )
+            plain_body, html_body = _build_nested_reply_bodies(
+                body_text=text,
+                attachment_note=attachment_note,
+                quoted_plain=quoted_plain,
+                quoted_html=quoted_html,
+                quoted_header=quoted_header,
+            )
+            metadata["email_body_plain"] = plain_body
+            metadata["email_body_html"] = html_body
             cursor = conn.execute(
                 """INSERT OR IGNORE INTO penguin_connect_messages
                    (conversation_id, provider, provider_message_id, direction,
@@ -4297,6 +4464,9 @@ def _sync_conversation_imessage_to_gmail(
                 in_reply_to=in_reply_to,
                 references=references,
                 source_provider=source_provider,
+                quoted_plain=quoted_plain,
+                quoted_html=quoted_html,
+                quoted_header=quoted_header,
             )
             imported_data, import_error, recovered_thread_id = _import_message_to_gmail_with_thread_recovery(
                 gmail_service,

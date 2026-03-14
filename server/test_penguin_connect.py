@@ -1922,6 +1922,33 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(second_msg["In-Reply-To"], "<first@example.test>")
         self.assertEqual(second_msg["References"], "<root@example.test> <first@example.test>")
 
+    def test_build_import_email_includes_gmail_quote_html_for_nested_replies(self):
+        raw = penguin_connect._build_import_email(
+            "amc_test",
+            "owner+am-test@gmail.com",
+            "owner@gmail.com",
+            "Family Group",
+            {"text": "second", "timestamp": "2026-03-04T09:01:00+00:00", "attachments": []},
+            rfc_message_id="<second@example.test>",
+            in_reply_to="<first@example.test>",
+            references=["<first@example.test>"],
+            quoted_plain="first",
+            quoted_html="<p>first</p>",
+            quoted_header="On Mar 4, 2026 at 9:00 AM, Ethan wrote:",
+        )
+
+        parsed = BytesParser(policy=policy.default).parsebytes(base64.urlsafe_b64decode(raw))
+        html_part = parsed.get_body(preferencelist=("html",))
+        plain_part = parsed.get_body(preferencelist=("plain",))
+
+        self.assertIsNotNone(html_part)
+        self.assertIsNotNone(plain_part)
+        self.assertIn('class="gmail_quote"', html_part.get_content())
+        self.assertIn("On Mar 4, 2026 at 9:00 AM, Ethan wrote:", html_part.get_content())
+        self.assertIn("<blockquote", html_part.get_content())
+        self.assertIn("On Mar 4, 2026 at 9:00 AM, Ethan wrote:", plain_part.get_content())
+        self.assertIn("first", plain_part.get_content())
+
     def test_build_import_email_sets_provider_header_and_subject_prefix(self):
         raw = penguin_connect._build_import_email(
             "amc_test",
@@ -1961,6 +1988,72 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(len(parts), 1)
         self.assertEqual(parts[0].get_filename(), "family.png")
         self.assertEqual(parts[0].get_content_type(), "image/png")
+
+    def test_sync_conversation_persists_rendered_nested_email_body_metadata(self):
+        self.conn.execute(
+            """INSERT INTO penguin_connect_messages
+               (conversation_id, provider, provider_message_id, gmail_message_id, gmail_thread_id, direction,
+                sender_email, sender_name, subject, body_text, message_timestamp, is_read, metadata)
+               VALUES (?, 'imessage', ?, ?, ?, 'imessage_to_email', ?, ?, ?, ?, ?, 1, ?)""",
+            (
+                "amc_test",
+                "imessage:1",
+                "gm-1",
+                "th-1",
+                "owner+am-test@gmail.com",
+                "Ethan",
+                "iMessage · Family Group",
+                "first",
+                "2026-03-04T09:00:00+00:00",
+                json.dumps(
+                    {
+                        "rfc_message_id": "<first@example.test>",
+                        "email_body_plain": "first",
+                        "email_body_html": "<p>first</p>",
+                        "delivery_status": "delivered",
+                    }
+                ),
+            ),
+        )
+        self.conn.commit()
+        conv = self._conversation_row()
+        gmail_service = mock.Mock()
+        gmail_service.users.return_value.messages.return_value.import_.return_value.execute.return_value = {
+            "id": "gm-2",
+            "threadId": "th-1",
+        }
+
+        with mock.patch(
+            "penguin_connect.fetch_imessage_messages",
+            return_value=[
+                {
+                    "native_message_id": "2",
+                    "timestamp": "2026-03-04T09:01:00+00:00",
+                    "text": "second",
+                    "is_from_me": False,
+                    "attachments": [],
+                    "chat_id": "chat-123",
+                }
+            ],
+        ), mock.patch("penguin_connect._get_imessage_unread_count", return_value=0):
+            result = penguin_connect._sync_conversation_imessage_to_gmail(
+                self.conn,
+                gmail_service,
+                conv,
+                mode="incremental",
+                days=7,
+            )
+
+        self.assertEqual(result["gmail_imported"], 1)
+        row = self.conn.execute(
+            """SELECT metadata FROM penguin_connect_messages
+               WHERE conversation_id = ? AND provider_message_id = ?""",
+            ("amc_test", "imessage:2"),
+        ).fetchone()
+        metadata = json.loads(row["metadata"])
+        self.assertIn("On Mar 4, 2026 at 1:00 AM, Ethan wrote:", metadata["email_body_plain"])
+        self.assertIn('class="gmail_quote"', metadata["email_body_html"])
+        self.assertIn("<p>first</p>", metadata["email_body_html"])
 
     def test_imessage_sync_uses_contact_name_for_dm_subject_and_sender(self):
         self.conn.execute(
