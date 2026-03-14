@@ -157,6 +157,83 @@ class ScriptTests(unittest.TestCase):
         self.assertIn('"External email:"', contents)
         self.assertIn('"Company Confidential"', contents)
 
+    def test_setup_runs_excluded_chat_manager_with_gmail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            venv_python = repo_root / "server" / "venv" / "bin" / "python"
+            venv_python.parent.mkdir(parents=True, exist_ok=True)
+            venv_python.write_text("", encoding="utf-8")
+
+            with mock.patch("penguin_connect_setup._confirm", return_value=True), mock.patch(
+                "penguin_connect_setup._run"
+            ) as mock_run:
+                penguin_connect_setup._configure_excluded_chats(
+                    repo_root,
+                    venv_python,
+                    "owner@gmail.com",
+                    assume_yes=False,
+                    env_file={},
+                )
+
+        mock_run.assert_called_once_with(
+            [
+                str(venv_python),
+                "scripts/penguin_connect_excluded_chats.py",
+                "--gmail",
+                "owner@gmail.com",
+            ],
+            cwd=repo_root,
+        )
+
+    def test_setup_runs_excluded_chat_manager_with_configured_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            venv_python = repo_root / "server" / "venv" / "bin" / "python"
+            venv_python.parent.mkdir(parents=True, exist_ok=True)
+            venv_python.write_text("", encoding="utf-8")
+            excluded_path = repo_root / "config" / "excluded.json"
+
+            with mock.patch("penguin_connect_setup._confirm", return_value=True), mock.patch(
+                "penguin_connect_setup._run"
+            ) as mock_run:
+                penguin_connect_setup._configure_excluded_chats(
+                    repo_root,
+                    venv_python,
+                    "owner@gmail.com",
+                    assume_yes=False,
+                    env_file={"PENGUIN_CONNECT_EXCLUDED_CHATS_FILE": str(excluded_path)},
+                )
+
+        mock_run.assert_called_once_with(
+            [
+                str(venv_python),
+                "scripts/penguin_connect_excluded_chats.py",
+                "--gmail",
+                "owner@gmail.com",
+                "--file",
+                str(excluded_path),
+            ],
+            cwd=repo_root,
+        )
+
+    def test_setup_yes_mode_skips_excluded_chat_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            venv_python = repo_root / "server" / "venv" / "bin" / "python"
+            venv_python.parent.mkdir(parents=True, exist_ok=True)
+            venv_python.write_text("", encoding="utf-8")
+
+            with mock.patch("penguin_connect_setup._run") as mock_run:
+                penguin_connect_setup._configure_excluded_chats(
+                    repo_root,
+                    venv_python,
+                    "owner@gmail.com",
+                    assume_yes=True,
+                    env_file={},
+                )
+
+        mock_run.assert_not_called()
+
     def test_excluded_chats_script_parses_toggle_ranges(self):
         selected = penguin_connect_excluded_chats._parse_selection("1,3-5", 6)
         self.assertEqual(selected, {1, 3, 4, 5})

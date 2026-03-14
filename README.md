@@ -62,6 +62,8 @@ cd ..
 ./scripts/check.sh
 ```
 
+During guided setup, the wizard also offers an interactive Apple Messages chat exclusion step and saves selections in `./.penguin_connect_excluded_chats.json` by default.
+
 Important: run setup and bridge commands from `Terminal.app` with Full Disk Access enabled, otherwise Apple Messages `chat.db` reads will fail.
 
 ## Useful Commands

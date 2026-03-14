@@ -4,9 +4,10 @@
 This script explains and runs the setup sequence in one place:
 1) Bootstrap local env + Python deps
 2) Ensure local bridge is running
-3) Connect Gmail via OAuth helper
-4) Run doctor checks
-5) Run sync smoke test
+3) Review excluded Apple Messages chats
+4) Connect Gmail via OAuth helper
+5) Run doctor checks
+6) Run sync smoke test
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from typing import Optional
 from penguin_connect_local_api import resolve_local_api_base
 
 DEFAULT_SIGNATURE_MARKERS_FILE = ".penguin_connect_signature_markers.json"
+DEFAULT_EXCLUDED_CHATS_FILE = ".penguin_connect_excluded_chats.json"
 
 
 def _header(text: str) -> None:
@@ -126,6 +128,13 @@ def _resolve_signature_markers_path(repo_root: Path, env_file: dict[str, str]) -
     return repo_root / DEFAULT_SIGNATURE_MARKERS_FILE
 
 
+def _resolve_excluded_chats_path(repo_root: Path, env_file: dict[str, str]) -> Path:
+    configured = _env_value("PENGUIN_CONNECT_EXCLUDED_CHATS_FILE", env_file).strip()
+    if configured:
+        return Path(configured).expanduser()
+    return repo_root / DEFAULT_EXCLUDED_CHATS_FILE
+
+
 def _write_signature_markers_file(path: Path, markers: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"signature_markers": markers}
@@ -219,7 +228,7 @@ def _wait_for_health(api_base: str, timeout_seconds: int) -> bool:
 
 
 def _bootstrap(repo_root: Path, skip_install: bool) -> Path:
-    _header("Step 1/5: Bootstrap Local Environment")
+    _header("Step 1/6: Bootstrap Local Environment")
     env_file = repo_root / ".env"
     env_example = repo_root / ".env.example"
 
@@ -249,7 +258,7 @@ def _bootstrap(repo_root: Path, skip_install: bool) -> Path:
 
 
 def _ensure_server_running(repo_root: Path, api_base: str, no_open_terminal: bool, assume_yes: bool) -> None:
-    _header("Step 2/5: Ensure Local Bridge Is Running")
+    _header("Step 2/6: Ensure Local Bridge Is Running")
 
     if _wait_for_health(api_base, timeout_seconds=2):
         print(f"[ok] Local API is already reachable at {api_base}")
@@ -299,6 +308,49 @@ def _resolve_gmail(args_gmail: str | None, assume_yes: bool) -> str:
         print("Please enter a valid Gmail address.")
 
 
+def _configure_excluded_chats(
+    repo_root: Path,
+    venv_python: Path,
+    gmail: str,
+    *,
+    assume_yes: bool,
+    env_file: dict[str, str],
+) -> None:
+    _header("Step 3/6: Review Excluded Chats")
+
+    if not gmail:
+        print("[skip] Skipping excluded chat review because no Gmail address is available yet.")
+        return
+
+    excluded_chats_path = _resolve_excluded_chats_path(repo_root, env_file)
+    should_configure = _confirm(
+        "Review Apple Messages chats to exclude from PenguinConnect sync?",
+        default_yes=False,
+        assume_yes=assume_yes,
+    )
+    if not should_configure:
+        print(f"[skip] Keeping the current excluded chat list in {excluded_chats_path}")
+        return
+
+    cmd = [
+        str(venv_python),
+        "scripts/penguin_connect_excluded_chats.py",
+        "--gmail",
+        gmail,
+    ]
+    configured_path = _env_value("PENGUIN_CONNECT_EXCLUDED_CHATS_FILE", env_file).strip()
+    if configured_path:
+        cmd.extend(["--file", str(excluded_chats_path)])
+
+    try:
+        _run(cmd, cwd=repo_root)
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            "Excluded chat review failed. Fix Apple Messages access, then rerun setup or run "
+            "scripts/penguin_connect_excluded_chats.py later."
+        ) from exc
+
+
 def _connect_gmail(
     repo_root: Path,
     venv_python: Path,
@@ -309,7 +361,7 @@ def _connect_gmail(
     assume_yes: bool,
     skip_connect: bool,
 ) -> None:
-    _header("Step 3/5: Connect Gmail")
+    _header("Step 4/6: Connect Gmail")
     if skip_connect:
         print("[skip] Skipping Gmail connect (--skip-connect).")
         return
@@ -345,7 +397,7 @@ def _connect_gmail(
 
 
 def _run_doctor(repo_root: Path, venv_python: Path, skip_doctor: bool) -> None:
-    _header("Step 4/5: Run Doctor Checks")
+    _header("Step 5/6: Run Doctor Checks")
     if skip_doctor:
         print("[skip] Skipping doctor checks (--skip-doctor).")
         return
@@ -354,7 +406,7 @@ def _run_doctor(repo_root: Path, venv_python: Path, skip_doctor: bool) -> None:
 
 
 def _run_sync_smoke(api_base: str, skip_sync_smoke: bool) -> None:
-    _header("Step 5/5: Run Sync Smoke Test")
+    _header("Step 6/6: Run Sync Smoke Test")
     if skip_sync_smoke:
         print("[skip] Skipping sync smoke (--skip-sync-smoke).")
         return
@@ -395,9 +447,10 @@ def _print_explain_plan(repo_root: Path, args: argparse.Namespace) -> None:
         "4. Ensure local bridge API is running at /penguin-connect/health "
         "(bootstrap may use PENGUIN_CONNECT_ALLOW_MISSING_GMAIL_STARTUP=1 before OAuth connect)."
     )
-    print("5. Connect Gmail using scripts/penguin_connect_connect.py.")
-    print("6. Run scripts/penguin_connect_doctor.py and show final status.")
-    print("7. Run sync smoke test via /penguin-connect/conversations/sync.")
+    print("5. Optionally review Apple Messages chats to exclude and save them in a local JSON file.")
+    print("6. Connect Gmail using scripts/penguin_connect_connect.py.")
+    print("7. Run scripts/penguin_connect_doctor.py and show final status.")
+    print("8. Run sync smoke test via /penguin-connect/conversations/sync.")
     print("\nExpected command entry point:")
     cmd = ["./scripts/penguin_connect_setup.py"]
     if args.gmail:
@@ -488,8 +541,15 @@ def main() -> int:
     if args.skip_inbox:
         print("[info] --skip-inbox is deprecated and has no effect.")
 
-    gmail_required = not args.skip_connect
-    gmail = _resolve_gmail(args.gmail, assume_yes=args.yes) if gmail_required else ""
+    gmail = _resolve_gmail(args.gmail, assume_yes=args.yes) if (not args.skip_connect or args.gmail) else ""
+
+    _configure_excluded_chats(
+        repo_root=repo_root,
+        venv_python=venv_python,
+        gmail=gmail,
+        assume_yes=args.yes,
+        env_file=env_values,
+    )
 
     _connect_gmail(
         repo_root=repo_root,

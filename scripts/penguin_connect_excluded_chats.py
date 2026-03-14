@@ -228,6 +228,7 @@ def _apply_to_local_cache(exclusions: list[dict[str, Any]]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Manage PenguinConnect excluded chats")
+    parser.add_argument("--gmail", help="Gmail address to use when deriving conversation IDs before connect")
     parser.add_argument("--search", help="Filter Apple Messages chats by text")
     parser.add_argument("--limit", type=int, default=200, help="Max Apple Messages chats to browse (default 200)")
     parser.add_argument(
@@ -241,7 +242,7 @@ def main() -> int:
 
     file_path = Path(args.file).expanduser() if args.file else resolve_excluded_chats_path()
     exclusions = load_excluded_chats(file_path)
-    gmail_email = _connected_gmail_email()
+    gmail_email = ((args.gmail or "").strip().lower() or _connected_gmail_email())
 
     result = browse_sources.browse_imessage_chats(search=args.search, limit=args.limit)
     if not result.get("available"):

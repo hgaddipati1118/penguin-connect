@@ -15,9 +15,11 @@ cd /path/to/penguin-connect
 ./scripts/penguin_connect_setup.py --gmail you@gmail.com
 ```
 
+The guided setup flow now prompts to review Apple Messages chats you want PenguinConnect to exclude before the first Gmail connect. It writes selections to `./.penguin_connect_excluded_chats.json` unless `PENGUIN_CONNECT_EXCLUDED_CHATS_FILE` is set.
+
 Optional flags:
 
-- `--yes` for default-yes non-interactive execution
+- `--yes` for non-interactive execution with default prompt answers; the optional excluded-chat review stays skipped in this mode
 - `--client-secrets /abs/path/client_secret.json` to force OAuth JSON path
 - `--signature-marker "External email:"` to save a custom signature/disclaimer cutoff marker into the local JSON preferences file
 - `--skip-sync-smoke` to skip final sync endpoint smoke test
@@ -152,6 +154,12 @@ Example setup with custom footer removal:
   --gmail you@gmail.com \
   --signature-marker "External email:" \
   --signature-marker "Company Confidential"
+```
+
+If you skip the interactive exclusion prompt or want to revisit it later, run:
+
+```bash
+./scripts/penguin_connect_excluded_chats.py --gmail you@gmail.com
 ```
 
 ## 3) Verify and Catch Up
