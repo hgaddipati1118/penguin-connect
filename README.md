@@ -34,6 +34,7 @@ flowchart LR
 - One active alias email per conversation
 - Direct-message unification across sibling `iMessage`, `SMS`, and `RCS` routes
 - Group chats stay separate per exact Apple Messages chat
+- Incremental sync prioritizes currently active conversations while startup catch-up stays in background batches
 - Gmail-to-chat delivery sends net-new text only and strips quoted history aggressively
 - Gmail `UNREAD` labels mirror Apple Messages unread state at the conversation level
 - Durable local SQLite queue and JSONL action log survive process restarts
@@ -85,6 +86,11 @@ Health check:
 ```bash
 curl -s http://127.0.0.1:9000/penguin-connect/health | jq
 ```
+
+Operational note:
+- Leave `PENGUIN_CONNECT_INCREMENTAL_CONVERSATIONS_PER_RUN` unset to let incremental runs expand to all currently hot conversations up to the built-in cap.
+- Set `PENGUIN_CONNECT_INCREMENTAL_CONVERSATIONS_PER_RUN` if you want to clamp each incremental batch manually.
+- Startup catch-up runs in small background batches so recent-message incremental sync can keep getting worker time.
 
 Production-style preflight:
 
