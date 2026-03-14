@@ -236,6 +236,12 @@ Install login auto-start:
 ./scripts/install_launchd_penguin_connect_bridge.sh
 ```
 
+That command installs a launchd watchdog that runs at login and every 5 minutes. It only starts the bridge when nothing is listening on the configured local port.
+
+The watchdog is intentionally start-only. It never kills a running bridge, so Gmail rate-limit cooldowns or temporary health warnings do not trigger forced restarts.
+
+If you later change `PENGUIN_CONNECT_PORT`, rerun the installer so the watchdog uses the updated port.
+
 ## Operational Commands
 
 ```bash

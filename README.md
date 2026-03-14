@@ -99,6 +99,14 @@ Production-style preflight:
 ./scripts/penguin_connect_doctor.py
 ```
 
+Install login auto-start plus a start-only watchdog:
+
+```bash
+./scripts/install_launchd_penguin_connect_bridge.sh
+```
+
+That installer now sets up a launchd watchdog that runs at login and every 5 minutes, starting the bridge in `Terminal.app` only when nothing is listening on the configured local port. It never kills a running bridge, so Gmail cooldowns or temporary health warnings do not trigger restarts. If you later change `PENGUIN_CONNECT_PORT`, rerun the installer so the watchdog follows the new port.
+
 Quote-parsing audit:
 
 ```bash

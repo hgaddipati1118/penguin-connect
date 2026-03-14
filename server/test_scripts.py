@@ -11,6 +11,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import penguin_connect_local_api
+import penguin_connect_bridge_watchdog
 import import_contacts
 import penguin_connect_backfill
 import penguin_connect_excluded_chats
@@ -36,6 +37,52 @@ class ScriptTests(unittest.TestCase):
     def test_resolve_local_api_base_handles_invalid_port(self):
         base = penguin_connect_local_api.resolve_local_api_base({"PENGUIN_CONNECT_PORT": "99999"})
         self.assertEqual(base, "http://127.0.0.1:9000")
+
+    def test_bridge_watchdog_starts_only_when_listener_and_health_are_missing(self):
+        status = penguin_connect_bridge_watchdog.inspect_bridge_status(
+            {"PENGUIN_CONNECT_PORT": "9000"},
+            listener_probe=lambda host, port, timeout: False,
+            health_fetcher=lambda api_base, timeout: (False, None, None),
+        )
+
+        self.assertTrue(status.should_start)
+        self.assertEqual(status.detail, "bridge_missing")
+
+    def test_bridge_watchdog_does_not_start_when_listener_is_alive(self):
+        status = penguin_connect_bridge_watchdog.inspect_bridge_status(
+            {"PENGUIN_CONNECT_PORT": "9000"},
+            listener_probe=lambda host, port, timeout: True,
+            health_fetcher=lambda api_base, timeout: (False, None, None),
+        )
+
+        self.assertFalse(status.should_start)
+        self.assertEqual(status.detail, "listener_present")
+
+    def test_bridge_watchdog_does_not_start_when_health_is_reachable_without_listener_probe(self):
+        status = penguin_connect_bridge_watchdog.inspect_bridge_status(
+            {"PENGUIN_CONNECT_PORT": "9000"},
+            listener_probe=lambda host, port, timeout: False,
+            health_fetcher=lambda api_base, timeout: (True, 200, False),
+        )
+
+        self.assertFalse(status.should_start)
+        self.assertEqual(status.detail, "health_reachable_without_listener_probe")
+
+    def test_bridge_watchdog_launches_terminal_starter_only_when_missing(self):
+        launcher = mock.Mock()
+
+        status = penguin_connect_bridge_watchdog.run_watchdog_once(
+            {"PENGUIN_CONNECT_PORT": "9000"},
+            launcher=launcher,
+            listener_probe=lambda host, port, timeout: False,
+            health_fetcher=lambda api_base, timeout: (False, None, None),
+        )
+
+        self.assertTrue(status.should_start)
+        launcher.assert_called_once_with(
+            penguin_connect_bridge_watchdog.REPO_ROOT,
+            allow_missing_gmail_startup=False,
+        )
 
     def test_import_contacts_counts_only_inserted_rows(self):
         contacts = [
