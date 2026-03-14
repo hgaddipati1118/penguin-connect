@@ -72,6 +72,7 @@ DEFAULT_GMAIL_HTTP_TIMEOUT_SECONDS = 60
 MIN_GMAIL_HTTP_TIMEOUT_SECONDS = 5
 MAX_GMAIL_HTTP_TIMEOUT_SECONDS = 300
 DEFAULT_INCREMENTAL_CONVERSATIONS_PER_RUN = 1
+DEFAULT_STARTUP_CATCHUP_CONVERSATIONS_PER_RUN = 5
 MAX_INCREMENTAL_CONVERSATIONS_PER_RUN = 20
 DEFAULT_INCREMENTAL_ACTIVITY_WINDOW_MINUTES = 360
 MAX_INCREMENTAL_ACTIVITY_WINDOW_MINUTES = 24 * 60
@@ -344,11 +345,11 @@ def _incremental_conversations_per_run() -> int:
 def _startup_catchup_conversations_per_run() -> Optional[int]:
     raw = (os.environ.get("PENGUIN_CONNECT_STARTUP_CATCHUP_CONVERSATIONS_PER_RUN") or "").strip()
     if not raw:
-        return None
+        return DEFAULT_STARTUP_CATCHUP_CONVERSATIONS_PER_RUN
     try:
         value = int(raw)
     except Exception:
-        return None
+        return DEFAULT_STARTUP_CATCHUP_CONVERSATIONS_PER_RUN
     if value <= 0:
         return None
     return value
@@ -2054,7 +2055,14 @@ def _lease_next_sync_job(
                WHERE job_type = ?
                  AND status = 'queued'
                  AND next_run_at <= ?
-               ORDER BY next_run_at ASC, id ASC
+               ORDER BY CASE json_extract(payload_json, '$.mode')
+                          WHEN 'incremental' THEN 0
+                          WHEN 'backfill' THEN 1
+                          WHEN 'startup_catchup' THEN 2
+                          ELSE 3
+                        END ASC,
+                        next_run_at ASC,
+                        id ASC
                LIMIT 1""",
             (SYNC_JOB_TYPE, now_iso),
         ).fetchone()

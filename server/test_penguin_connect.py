@@ -133,7 +133,7 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(pause, 0.8)
 
     def test_startup_catchup_limit_defaults_to_all_pending_conversations(self):
-        self.assertIsNone(penguin_connect._startup_catchup_conversations_per_run())
+        self.assertEqual(penguin_connect._startup_catchup_conversations_per_run(), 5)
 
     def test_startup_catchup_limit_honors_env_override(self):
         with mock.patch.dict(
@@ -150,6 +150,45 @@ class PenguinConnectTests(unittest.TestCase):
             clear=False,
         ):
             self.assertIsNone(penguin_connect._startup_catchup_conversations_per_run())
+
+    def test_sync_job_worker_prioritizes_incremental_before_startup_without_dedupe_key(self):
+        startup = penguin_connect.enqueue_sync_job(
+            self.conn,
+            mode="startup_catchup",
+            days=7,
+            hours=None,
+            verify_all=False,
+            dedupe=False,
+        )
+        incremental = penguin_connect.enqueue_sync_job(
+            self.conn,
+            mode="incremental",
+            days=7,
+            hours=None,
+            verify_all=False,
+            dedupe=False,
+        )
+        self.conn.commit()
+
+        seen_modes = []
+
+        def fake_sync(_conn, mode="incremental", days=7, hours=None, verify_all=False):
+            seen_modes.append(mode)
+            return {"success": True, "mode": mode, "days": days, "hours": hours, "verify_all": verify_all}
+
+        with mock.patch("penguin_connect.sync_conversations", side_effect=fake_sync):
+            result = penguin_connect.run_sync_job_worker_once(self.conn, owner="background-worker")
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["mode"], "incremental")
+        self.assertEqual(result["queue_job_id"], incremental["job_id"])
+        self.assertEqual(seen_modes, ["incremental"])
+
+        startup_row = self.conn.execute(
+            "SELECT status FROM penguin_connect_jobs WHERE id = ?",
+            (startup["job_id"],),
+        ).fetchone()
+        self.assertEqual(startup_row["status"], "queued")
 
     def test_build_gmail_service_uses_configured_http_timeout(self):
         token_json = {

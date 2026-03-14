@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query
@@ -29,6 +30,15 @@ from penguin_connect import (
 from db import DB_PATH, get_connection, init_db
 from startup_checks import StartupReadinessError, assert_startup_ready
 from watcher import get_sync_status, refresh_contacts_now, start_watchers, stop_watchers
+
+
+def _startup_catchup_batch_pause_seconds() -> float:
+    raw = (os.environ.get("PENGUIN_CONNECT_STARTUP_CATCHUP_BATCH_PAUSE_SECONDS") or "").strip()
+    try:
+        value = float(raw) if raw else 5.0
+    except Exception:
+        value = 5.0
+    return max(1.0, min(value, 60.0))
 
 class PenguinConnectGmailConnectRequest(BaseModel):
     gmail_email: str
@@ -90,23 +100,33 @@ async def lifespan(_app: FastAPI):
     )
 
     def _run_startup_sync() -> None:
+        pause_seconds = _startup_catchup_batch_pause_seconds()
         try:
-            result = penguinconnect_run_startup_catchup()
-            log_action("startup_catchup_result", result=result)
-            if result.get("success"):
-                if result.get("skipped"):
-                    reason = result.get("reason")
-                    if reason == "gmail_rate_limited":
-                        retry_after = result.get("retry_after_seconds")
-                        print(f"[PenguinConnect] Startup catch-up paused for Gmail rate limits ({retry_after}s)")
-                    elif reason in {"queue_idle", "queue_busy"}:
-                        pass
-                    else:
-                        print("[PenguinConnect] Startup catch-up waiting for initial backfill")
-                else:
+            while True:
+                result = penguinconnect_run_startup_catchup()
+                log_action("startup_catchup_result", result=result)
+                if result.get("success"):
+                    if result.get("skipped"):
+                        reason = result.get("reason")
+                        if reason == "gmail_rate_limited":
+                            retry_after = result.get("retry_after_seconds")
+                            print(f"[PenguinConnect] Startup catch-up paused for Gmail rate limits ({retry_after}s)")
+                        elif reason not in {"queue_idle", "queue_busy"}:
+                            print("[PenguinConnect] Startup catch-up waiting for initial backfill")
+                        break
+
+                    pending_bootstrap = int(result.get("pending_bootstrap_conversations") or 0)
+                    pending_full_verify = int(result.get("pending_full_verify_conversations") or 0)
+                    if pending_bootstrap > 0 or pending_full_verify > 0:
+                        time.sleep(pause_seconds)
+                        continue
+
                     print("[PenguinConnect] Startup catch-up completed")
-            elif result.get("error") != "gmail_not_connected":
-                print(f"[PenguinConnect] Startup catch-up warning: {result.get('error')}")
+                    break
+
+                if result.get("error") != "gmail_not_connected":
+                    print(f"[PenguinConnect] Startup catch-up warning: {result.get('error')}")
+                break
         except Exception as exc:
             log_action("startup_catchup_exception", error=str(exc).strip() or exc.__class__.__name__)
             print(f"[PenguinConnect] Startup catch-up failed: {exc}")
