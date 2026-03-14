@@ -26,6 +26,12 @@ class SyncIntegrationTests(unittest.TestCase):
         with penguin_connect._conversation_sync_state_lock:
             penguin_connect._active_conversation_syncs.clear()
         self.tmpdir = tempfile.TemporaryDirectory()
+        self.signature_markers_patcher = mock.patch.dict(
+            os.environ,
+            {"PENGUIN_CONNECT_SIGNATURE_MARKERS_FILE": str(Path(self.tmpdir.name) / "missing-signature-markers.json")},
+            clear=False,
+        )
+        self.signature_markers_patcher.start()
         self.old_db_path = db.DB_PATH
         self.old_data_dir = db.DATA_DIR
         self.old_apple_messages_db = db.APPLE_MESSAGES_DB
@@ -41,6 +47,7 @@ class SyncIntegrationTests(unittest.TestCase):
         with penguin_connect._conversation_sync_state_lock:
             penguin_connect._active_conversation_syncs.clear()
         self.send_imessage_patcher.stop()
+        self.signature_markers_patcher.stop()
         db.DB_PATH = self.old_db_path
         db.DATA_DIR = self.old_data_dir
         db.APPLE_MESSAGES_DB = self.old_apple_messages_db

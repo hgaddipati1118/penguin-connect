@@ -96,7 +96,7 @@ Place the JSON in one of:
 
 - `./client_secret.json`
 - `./google_client_secret.json`
-- `~/penguinconnect-data/google_client_secret.json`
+- `~/penguinconnect-local-bridge-data/google_client_secret.json`
 - or set `PENGUIN_CONNECT_GOOGLE_CLIENT_SECRETS=/abs/path/to/client_secret.json`
 
 ## 2) Connect Gmail to Local Bridge
@@ -205,6 +205,9 @@ Those recurring full verifications also refresh contact-derived display names, s
   - `PENGUIN_CONNECT_RETRY_BASE_SECONDS=30`
   - `PENGUIN_CONNECT_RETRY_MAX_BACKOFF_SECONDS=900`
   - `PENGUIN_CONNECT_MAX_RETRIES=8`
+  - `PENGUIN_CONNECT_GMAIL_TO_SOURCE_MAX_RETRIES=3`
+- stale alias draft cleanup window:
+  - `PENGUIN_CONNECT_ALIAS_DRAFT_DELETE_MINUTES=30`
 
 Install login auto-start:
 

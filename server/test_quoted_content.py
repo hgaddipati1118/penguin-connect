@@ -8,6 +8,19 @@ from quoted_content import extract_latest_email_text, strip_quoted_html_text, st
 
 
 class QuotedContentTests(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.signature_markers_patcher = mock.patch.dict(
+            "os.environ",
+            {"PENGUIN_CONNECT_SIGNATURE_MARKERS_FILE": str(Path(self.tmpdir.name) / "missing-signature-markers.json")},
+            clear=False,
+        )
+        self.signature_markers_patcher.start()
+
+    def tearDown(self):
+        self.signature_markers_patcher.stop()
+        self.tmpdir.cleanup()
+
     def test_strip_quoted_plain_text_keeps_only_latest_reply(self):
         parsed = strip_quoted_plain_text(
             "Latest reply\n\nSent from my iPhone\n\nOn Tue, Mar 10, 2026 at 10:00 AM Alice <alice@example.com> wrote:\n> Older line\n> Another line"

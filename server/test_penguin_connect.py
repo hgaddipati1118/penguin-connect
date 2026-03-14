@@ -25,6 +25,13 @@ class PenguinConnectTests(unittest.TestCase):
             penguin_connect._sync_runtime = penguin_connect._new_sync_runtime_state()
         with penguin_connect._conversation_sync_state_lock:
             penguin_connect._active_conversation_syncs.clear()
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.signature_markers_patcher = mock.patch.dict(
+            os.environ,
+            {"PENGUIN_CONNECT_SIGNATURE_MARKERS_FILE": str(Path(self.tmpdir.name) / "missing-signature-markers.json")},
+            clear=False,
+        )
+        self.signature_markers_patcher.start()
         self.send_imessage_patcher = mock.patch(
             "penguin_connect.send_imessage",
             side_effect=AssertionError("Tests must mock send_imessage explicitly"),
@@ -62,6 +69,8 @@ class PenguinConnectTests(unittest.TestCase):
             penguin_connect._active_conversation_syncs.clear()
         self.send_imessage_patcher.stop()
         self.conn.close()
+        self.signature_markers_patcher.stop()
+        self.tmpdir.cleanup()
 
     def _conversation_row(self):
         return self.conn.execute(
