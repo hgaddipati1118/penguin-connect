@@ -2207,6 +2207,56 @@ def _mark_sync_job_failed(
     return failure_result
 
 
+def _requeue_sync_job_rate_limited(
+    conn: sqlite3.Connection,
+    job: sqlite3.Row,
+    *,
+    result: Optional[dict[str, Any]] = None,
+    retry_after_seconds: Optional[int] = None,
+) -> dict[str, Any]:
+    now_dt = datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat()
+    retry_seconds = int(retry_after_seconds or 0)
+    if retry_seconds <= 0:
+        retry_seconds = _gmail_rate_limit_pause_seconds()
+    next_run_at = (now_dt + timedelta(seconds=retry_seconds)).isoformat()
+    payload = _load_sync_job_payload(job)
+    queued_result = dict(result or {})
+    queued_result.update(
+        {
+            "success": True,
+            "skipped": True,
+            "reason": "gmail_rate_limited",
+            "queue_job_id": int(job["id"]),
+            "queue_job_attempt": int(job["attempt_count"] or 0) + 1,
+            "queue_job_status": "queued",
+            "queue_job_retry_scheduled": True,
+            "queue_job_next_run_at": next_run_at,
+            "queue_job_retry_after_seconds": retry_seconds,
+            "mode": payload.get("mode"),
+        }
+    )
+    conn.execute(
+        """UPDATE penguin_connect_jobs
+           SET status = 'queued',
+               lease_until = NULL,
+               lease_owner = NULL,
+               last_error = ?,
+               next_run_at = ?,
+               result_json = ?,
+               updated_at = ?
+           WHERE id = ?""",
+        (
+            "gmail_rate_limited",
+            next_run_at,
+            json.dumps(queued_result),
+            now_iso,
+            job["id"],
+        ),
+    )
+    return queued_result
+
+
 def _load_sync_job_payload(job: sqlite3.Row) -> dict[str, Any]:
     try:
         payload = json.loads(job["payload_json"] or "{}")
@@ -2272,24 +2322,13 @@ def run_sync_job_worker_once(
     if result.get("success"):
         if result.get("skipped") and result.get("reason") == "gmail_rate_limited":
             retry_after = result.get("retry_after_seconds")
-            queued = _mark_sync_job_failed(
+            queued = _requeue_sync_job_rate_limited(
                 conn,
                 job,
-                error_text="gmail_rate_limited",
                 result=result,
                 retry_after_seconds=retry_after,
             )
-            if queued.get("queue_job_status") == "failed":
-                return queued
-            queued.pop("error", None)
-            queued.update(
-                {
-                    "success": True,
-                    "skipped": True,
-                    "reason": "gmail_rate_limited",
-                    "retry_after_seconds": queued.get("queue_job_retry_after_seconds", retry_after),
-                }
-            )
+            queued["retry_after_seconds"] = queued.get("queue_job_retry_after_seconds", retry_after)
             return queued
         _mark_sync_job_succeeded(conn, int(job["id"]), result)
         result["queue_job_status"] = "succeeded"

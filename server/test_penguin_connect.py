@@ -4402,6 +4402,45 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertIsNone(incremental_row["finished_at"])
         self.assertEqual(startup_row["status"], "succeeded")
 
+    def test_sync_job_worker_requeues_gmail_rate_limit_without_counting_failure(self):
+        queued = penguin_connect.enqueue_sync_job(
+            self.conn,
+            mode="incremental",
+            days=7,
+            hours=None,
+            verify_all=False,
+            dedupe=True,
+        )
+        self.conn.commit()
+
+        with mock.patch(
+            "penguin_connect.sync_conversations",
+            return_value={
+                "success": True,
+                "mode": "incremental",
+                "skipped": True,
+                "reason": "gmail_rate_limited",
+                "retry_after_seconds": 120,
+            },
+        ):
+            result = penguin_connect.run_sync_job_worker_once(self.conn, owner="test-worker")
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["reason"], "gmail_rate_limited")
+        self.assertEqual(result["queue_job_status"], "queued")
+        self.assertTrue(result["queue_job_retry_scheduled"])
+        self.assertEqual(result["queue_job_retry_after_seconds"], 120)
+        row = self.conn.execute(
+            "SELECT status, attempt_count, last_error, next_run_at, finished_at FROM penguin_connect_jobs WHERE id = ?",
+            (queued["job_id"],),
+        ).fetchone()
+        self.assertEqual(row["status"], "queued")
+        self.assertEqual(row["attempt_count"], 0)
+        self.assertEqual(row["last_error"], "gmail_rate_limited")
+        self.assertIsNotNone(row["next_run_at"])
+        self.assertIsNone(row["finished_at"])
+
     def test_incremental_sync_processes_one_recent_conversation_per_run(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
