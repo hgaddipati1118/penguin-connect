@@ -25,24 +25,40 @@ class _FakeThread:
 class WatcherTests(unittest.TestCase):
     def setUp(self):
         watcher._thread = None
+        watcher._watchdog_thread = None
         watcher._last_error_code = None
         watcher._next_contacts_refresh_at = None
+        watcher._poller_generation = 0
         watcher._shutdown_event = threading.Event()
         with watcher._status_lock:
             watcher._sync_status["penguin_connect"] = {
                 "last_sync": None,
                 "polling": False,
+                "last_poll_started_at": None,
+                "last_poll_result_at": None,
+                "watcher_thread_alive": False,
+                "watchdog_thread_alive": False,
+                "watchdog_restart_count": 0,
+                "last_watchdog_restart_at": None,
             }
 
     def tearDown(self):
         watcher._thread = None
+        watcher._watchdog_thread = None
         watcher._last_error_code = None
         watcher._next_contacts_refresh_at = None
+        watcher._poller_generation = 0
         watcher._shutdown_event = threading.Event()
         with watcher._status_lock:
             watcher._sync_status["penguin_connect"] = {
                 "last_sync": None,
                 "polling": False,
+                "last_poll_started_at": None,
+                "last_poll_result_at": None,
+                "watcher_thread_alive": False,
+                "watchdog_thread_alive": False,
+                "watchdog_restart_count": 0,
+                "last_watchdog_restart_at": None,
             }
 
     def test_poll_interval_seconds_clamps_to_supported_range(self):
@@ -90,6 +106,8 @@ class WatcherTests(unittest.TestCase):
 
         status = watcher.get_sync_status()
         self.assertIsNotNone(status["penguin_connect"]["last_sync"])
+        self.assertIsNotNone(status["penguin_connect"]["last_poll_started_at"])
+        self.assertIsNotNone(status["penguin_connect"]["last_poll_result_at"])
         self.assertIsNone(watcher._last_error_code)
 
     def test_polling_loop_treats_queue_busy_as_non_error(self):
@@ -167,9 +185,37 @@ class WatcherTests(unittest.TestCase):
             status = watcher.get_sync_status()
             watcher.stop_watchers()
 
-        self.assertEqual(mock_thread.call_count, 1)
+        self.assertEqual(mock_thread.call_count, 2)
         self.assertTrue(status["penguin_connect"]["polling"])
+        self.assertTrue(status["penguin_connect"]["watcher_thread_alive"])
+        self.assertTrue(status["penguin_connect"]["watchdog_thread_alive"])
         self.assertFalse(watcher.get_sync_status()["penguin_connect"]["polling"])
+
+    def test_watchdog_restarts_dead_poller(self):
+        watcher._thread = _FakeThread()
+        watcher._watchdog_thread = _FakeThread()
+        stale_at = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat()
+        with watcher._status_lock:
+            watcher._sync_status["penguin_connect"].update(
+                {
+                    "polling": True,
+                    "last_poll_started_at": stale_at,
+                    "last_poll_result_at": stale_at,
+                }
+            )
+
+        replacement = _FakeThread()
+        with mock.patch("watcher.threading.Thread", return_value=replacement) as mock_thread, mock.patch(
+            "watcher.log_action"
+        ), mock.patch("watcher._poll_interval_seconds", return_value=30):
+            restarted = watcher._restart_polling_thread("thread_dead_or_stale")
+
+        self.assertTrue(restarted)
+        self.assertEqual(mock_thread.call_count, 1)
+        self.assertTrue(replacement.is_alive())
+        status = watcher.get_sync_status()
+        self.assertEqual(status["penguin_connect"]["watchdog_restart_count"], 1)
+        self.assertIsNotNone(status["penguin_connect"]["last_watchdog_restart_at"])
 
 
 if __name__ == "__main__":

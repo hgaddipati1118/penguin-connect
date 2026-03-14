@@ -13,18 +13,48 @@ _sync_status = {
     "penguin_connect": {
         "last_sync": None,
         "polling": False,
+        "last_poll_started_at": None,
+        "last_poll_result_at": None,
+        "watcher_thread_alive": False,
+        "watchdog_thread_alive": False,
+        "watchdog_restart_count": 0,
+        "last_watchdog_restart_at": None,
     }
 }
 _status_lock = threading.Lock()
 _shutdown_event = threading.Event()
 _thread: threading.Thread | None = None
+_watchdog_thread: threading.Thread | None = None
 _last_error_code: str | None = None
 _next_contacts_refresh_at: datetime | None = None
+_poller_generation = 0
 
 
 def _update_sync_status() -> None:
     with _status_lock:
         _sync_status["penguin_connect"]["last_sync"] = datetime.now(timezone.utc).isoformat()
+
+
+def _mark_poll_started() -> None:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with _status_lock:
+        _sync_status["penguin_connect"]["last_poll_started_at"] = now_iso
+        _sync_status["penguin_connect"]["watcher_thread_alive"] = True
+
+
+def _mark_poll_result() -> None:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with _status_lock:
+        _sync_status["penguin_connect"]["last_poll_result_at"] = now_iso
+        _sync_status["penguin_connect"]["watcher_thread_alive"] = True
+
+
+def _set_thread_health(*, watcher_alive: bool | None = None, watchdog_alive: bool | None = None) -> None:
+    with _status_lock:
+        if watcher_alive is not None:
+            _sync_status["penguin_connect"]["watcher_thread_alive"] = watcher_alive
+        if watchdog_alive is not None:
+            _sync_status["penguin_connect"]["watchdog_thread_alive"] = watchdog_alive
 
 
 def _poll_interval_seconds() -> int:
@@ -39,6 +69,22 @@ def _poll_initial_delay_seconds(interval: int) -> int:
     except Exception:
         delay = interval
     return max(0, min(delay, 300))
+
+
+def _watchdog_stale_after_seconds(interval: int) -> int:
+    raw = os.environ.get("PENGUIN_CONNECT_WATCHDOG_STALE_AFTER_SECONDS", "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except Exception:
+            value = 0
+        if value > 0:
+            return max(60, min(value, 3600))
+    return max(interval * 12, 600)
+
+
+def _watchdog_check_interval_seconds(interval: int) -> int:
+    return max(10, min(interval, 60))
 
 
 def _schedule_next_contacts_refresh(now: datetime | None = None) -> str:
@@ -77,20 +123,86 @@ def refresh_contacts_now() -> dict:
     return _maybe_refresh_contacts(force=True)
 
 
-def _penguin_connect_polling_loop() -> None:
+def _poller_should_exit(generation: int) -> bool:
+    return _shutdown_event.is_set() or generation != _poller_generation
+
+
+def _restart_polling_thread(reason: str) -> bool:
+    global _thread, _poller_generation
+    if _shutdown_event.is_set():
+        return False
+    if _thread and _thread.is_alive():
+        return False
+
+    _poller_generation += 1
+    generation = _poller_generation
+    _thread = threading.Thread(
+        target=_penguin_connect_polling_loop,
+        args=(generation,),
+        daemon=True,
+        name=f"penguin-connect-poller-{generation}",
+    )
+    _thread.start()
+    restart_at = datetime.now(timezone.utc).isoformat()
+    with _status_lock:
+        info = _sync_status["penguin_connect"]
+        info["polling"] = True
+        info["watcher_thread_alive"] = True
+        info["watchdog_restart_count"] = int(info.get("watchdog_restart_count") or 0) + 1
+        info["last_watchdog_restart_at"] = restart_at
+    log_action("watcher_restarted", reason=reason, generation=generation)
+    return True
+
+
+def _watchdog_loop() -> None:
+    interval = _poll_interval_seconds()
+    stale_after = _watchdog_stale_after_seconds(interval)
+    check_interval = _watchdog_check_interval_seconds(interval)
+    _set_thread_health(watchdog_alive=True)
+
+    while not _shutdown_event.wait(check_interval):
+        alive = bool(_thread and _thread.is_alive())
+        _set_thread_health(watcher_alive=alive, watchdog_alive=True)
+
+        if alive:
+            last_activity_iso = None
+            with _status_lock:
+                info = _sync_status["penguin_connect"]
+                last_activity_iso = info.get("last_poll_result_at") or info.get("last_poll_started_at")
+            last_activity_dt = None
+            if last_activity_iso:
+                try:
+                    last_activity_dt = datetime.fromisoformat(last_activity_iso)
+                except Exception:
+                    last_activity_dt = None
+            if last_activity_dt and (datetime.now(timezone.utc) - last_activity_dt).total_seconds() <= stale_after:
+                continue
+            if last_activity_dt is None:
+                continue
+
+        _restart_polling_thread("thread_dead_or_stale")
+
+    _set_thread_health(watchdog_alive=False)
+
+
+def _penguin_connect_polling_loop(generation: int | None = None) -> None:
     global _last_error_code
+    current_generation = _poller_generation if generation is None else generation
     interval = _poll_interval_seconds()
     initial_delay = _poll_initial_delay_seconds(interval)
 
     if _shutdown_event.wait(initial_delay):
+        _set_thread_health(watcher_alive=False)
         return
 
-    while not _shutdown_event.is_set():
+    while not _poller_should_exit(current_generation):
         try:
             from penguin_connect import run_incremental_sync
 
+            _mark_poll_started()
             log_action("watcher_poll_tick", interval_seconds=interval)
             result = run_incremental_sync()
+            _mark_poll_result()
             log_action(
                 "watcher_poll_result",
                 success=bool(result.get("success")),
@@ -132,6 +244,7 @@ def _penguin_connect_polling_loop() -> None:
                     print(f"[Watcher] PenguinConnect incremental sync warning: {err}")
                 _last_error_code = err
         except Exception as exc:
+            _mark_poll_result()
             log_action("watcher_poll_exception", error=str(exc).strip() or exc.__class__.__name__)
             print(f"[Watcher] PenguinConnect polling error: {exc}")
 
@@ -151,28 +264,42 @@ def _penguin_connect_polling_loop() -> None:
 
         _shutdown_event.wait(interval)
 
+    _set_thread_health(watcher_alive=False)
+
 
 def start_watchers() -> None:
-    global _thread
+    global _thread, _watchdog_thread, _poller_generation
     _shutdown_event.clear()
     if _next_contacts_refresh_at is None:
         _schedule_next_contacts_refresh()
 
-    if _thread and _thread.is_alive():
+    if _thread and _thread.is_alive() and _watchdog_thread and _watchdog_thread.is_alive():
         return
 
-    _thread = threading.Thread(target=_penguin_connect_polling_loop, daemon=True, name="penguin-connect-poller")
+    _poller_generation += 1
+    generation = _poller_generation
+    _thread = threading.Thread(
+        target=_penguin_connect_polling_loop,
+        args=(generation,),
+        daemon=True,
+        name=f"penguin-connect-poller-{generation}",
+    )
     _thread.start()
+    if not _watchdog_thread or not _watchdog_thread.is_alive():
+        _watchdog_thread = threading.Thread(target=_watchdog_loop, daemon=True, name="penguin-connect-watchdog")
+        _watchdog_thread.start()
 
     with _status_lock:
         _sync_status["penguin_connect"]["polling"] = True
+        _sync_status["penguin_connect"]["watcher_thread_alive"] = True
+        _sync_status["penguin_connect"]["watchdog_thread_alive"] = True
 
     log_action("watcher_started", poll_interval_seconds=_poll_interval_seconds())
     print("[Watcher] PenguinConnect: polling every PENGUIN_CONNECT_POLL_SECONDS")
 
 
 def stop_watchers() -> None:
-    global _thread
+    global _thread, _watchdog_thread
     _shutdown_event.set()
 
     if _thread:
@@ -181,9 +308,19 @@ def stop_watchers() -> None:
         except Exception:
             pass
 
+    if _watchdog_thread:
+        try:
+            _watchdog_thread.join(timeout=5)
+        except Exception:
+            pass
+
     _thread = None
+    _watchdog_thread = None
     with _status_lock:
-        _sync_status["penguin_connect"]["polling"] = False
+        info = _sync_status["penguin_connect"]
+        info["polling"] = False
+        info["watcher_thread_alive"] = False
+        info["watchdog_thread_alive"] = False
 
     log_action("watcher_stopped")
     print("[Watcher] Stopped")
