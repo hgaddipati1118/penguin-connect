@@ -145,7 +145,6 @@ CREATE TABLE IF NOT EXISTS penguin_connect_jobs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_conv_status ON penguin_connect_conversations(gmail_email, source_provider, status);
-CREATE INDEX IF NOT EXISTS idx_penguin_connect_conv_excluded ON penguin_connect_conversations(gmail_email, status, exclude_from_sync);
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_alias_conv ON penguin_connect_aliases(conversation_id, status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_penguin_connect_alias_one_active
 ON penguin_connect_aliases(conversation_id) WHERE status = 'active';

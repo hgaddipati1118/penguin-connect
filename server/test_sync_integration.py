@@ -1419,6 +1419,52 @@ class SyncIntegrationTests(unittest.TestCase):
         self.assertEqual(sync_state["conversation_id"], new_id)
         self.assertNotEqual(old_id, new_id)
 
+    def test_init_db_adds_exclude_from_sync_to_existing_conversations_table(self):
+        conn = db.get_connection()
+        conn.close()
+
+        legacy_schema = db.SCHEMA.replace("    exclude_from_sync INTEGER NOT NULL DEFAULT 0,\n", "").replace(
+            "CREATE INDEX IF NOT EXISTS idx_penguin_connect_conv_status ON penguin_connect_conversations(gmail_email, source_provider, status);\n",
+            "",
+        )
+
+        raw_conn = sqlite3.connect(str(db.DB_PATH))
+        try:
+            raw_conn.executescript(legacy_schema)
+            raw_conn.execute(
+                """INSERT INTO penguin_connect_conversations
+                   (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants, alias_email, status)
+                   VALUES (?, 'imessage', ?, ?, ?, 'group', '[]', ?, 'active')""",
+                ("owner@gmail.com", "amc_legacy_excluded", "chat-legacy-excluded", "Legacy Group", "owner+legacy@gmail.com"),
+            )
+            raw_conn.commit()
+        finally:
+            raw_conn.close()
+
+        db.init_db()
+
+        migrated_conn = db.get_connection()
+        try:
+            columns = {
+                row["name"] for row in migrated_conn.execute("PRAGMA table_info(penguin_connect_conversations)").fetchall()
+            }
+            row = migrated_conn.execute(
+                """SELECT exclude_from_sync
+                   FROM penguin_connect_conversations
+                   WHERE imessage_chat_id = ?""",
+                ("chat-legacy-excluded",),
+            ).fetchone()
+            indexes = {
+                index_row["name"]
+                for index_row in migrated_conn.execute("PRAGMA index_list(penguin_connect_conversations)").fetchall()
+            }
+        finally:
+            migrated_conn.close()
+
+        self.assertIn("exclude_from_sync", columns)
+        self.assertEqual(row["exclude_from_sync"], 0)
+        self.assertIn("idx_penguin_connect_conv_excluded", indexes)
+
     def test_init_db_migrates_apple_messages_routes_to_guid_and_service_provider(self):
         conn = db.get_connection()
         conn.close()
