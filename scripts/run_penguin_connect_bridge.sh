@@ -29,7 +29,7 @@ if [ -f "$REPO_DIR/.env" ]; then
   load_env_defaults "$REPO_DIR/.env"
 fi
 
-PORT="${PENGUIN_CONNECT_PORT:-8888}"
+PORT="${PENGUIN_CONNECT_PORT:-9000}"
 RESTART_ON_CRASH="${PENGUIN_CONNECT_RESTART_ON_CRASH:-1}"
 PYTHON_BIN="$REPO_DIR/server/venv/bin/python"
 

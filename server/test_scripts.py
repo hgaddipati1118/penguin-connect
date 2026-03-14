@@ -34,7 +34,7 @@ class ScriptTests(unittest.TestCase):
 
     def test_resolve_local_api_base_handles_invalid_port(self):
         base = penguin_connect_local_api.resolve_local_api_base({"PENGUIN_CONNECT_PORT": "99999"})
-        self.assertEqual(base, "http://127.0.0.1:8888")
+        self.assertEqual(base, "http://127.0.0.1:9000")
 
     def test_import_contacts_counts_only_inserted_rows(self):
         contacts = [
@@ -122,7 +122,7 @@ class ScriptTests(unittest.TestCase):
             ],
         ) as mock_call, mock.patch("penguin_connect_backfill.time.sleep") as mock_sleep:
             code, result = penguin_connect_backfill.run_backfill(
-                api_base="http://127.0.0.1:8888",
+                api_base="http://127.0.0.1:9000",
                 payload={"mode": "backfill", "verify_all": True, "days": 30},
                 max_attempts=3,
                 wait_on_rate_limit=True,
@@ -138,7 +138,7 @@ class ScriptTests(unittest.TestCase):
     def test_setup_persists_signature_markers_to_env(self):
         with tempfile.TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env"
-            env_path.write_text("PENGUIN_CONNECT_PORT=8888\n", encoding="utf-8")
+            env_path.write_text("PENGUIN_CONNECT_PORT=9000\n", encoding="utf-8")
             env_values = penguin_connect_setup._read_env_file(env_path)
 
             penguin_connect_setup._configure_signature_markers(

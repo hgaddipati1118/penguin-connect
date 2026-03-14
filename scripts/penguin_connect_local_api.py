@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 
-DEFAULT_LOCAL_API_PORT = 8888
+DEFAULT_LOCAL_API_PORT = 9000
 
 
 def resolve_local_api_base(env: Mapping[str, str] | None = None) -> str:

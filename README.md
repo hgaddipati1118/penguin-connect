@@ -140,7 +140,7 @@ or:
 Health check:
 
 ```bash
-curl -s http://127.0.0.1:8888/penguin-connect/health | jq
+curl -s http://127.0.0.1:9000/penguin-connect/health | jq
 ```
 
 ## Production Preflight
@@ -151,13 +151,13 @@ Before running for users, run this from Terminal.app with Full Disk Access:
 ./scripts/check.sh
 ./scripts/penguin_connect_doctor.py
 
-curl -sS http://127.0.0.1:8888/penguin-connect/health | jq
-curl -sS http://127.0.0.1:8888/penguin-connect/conversations | jq '.connected, (.conversations | length)'
-curl -sS -X POST http://127.0.0.1:8888/penguin-connect/conversations/sync \
+curl -sS http://127.0.0.1:9000/penguin-connect/health | jq
+curl -sS http://127.0.0.1:9000/penguin-connect/conversations | jq '.connected, (.conversations | length)'
+curl -sS -X POST http://127.0.0.1:9000/penguin-connect/conversations/sync \
   -H 'Content-Type: application/json' \
   -d '{"mode":"incremental","days":7}' | jq
 
-curl -sS -X POST http://127.0.0.1:8888/penguin-connect/conversations/sync \
+curl -sS -X POST http://127.0.0.1:9000/penguin-connect/conversations/sync \
   -H 'Content-Type: application/json' \
   -d '{"mode":"backfill","verify_all":true}' | jq
 ```

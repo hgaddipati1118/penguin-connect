@@ -54,7 +54,7 @@ Optional flags:
 
 - macOS 13+
 - Terminal.app with Full Disk Access
-- Backend running locally on `127.0.0.1:8888`
+- Backend running locally on `127.0.0.1:9000`
 - Python deps installed in `server/venv`
 
 Important:
@@ -133,7 +133,7 @@ If you connected Gmail before this scope update, reconnect once to refresh saved
 Verify:
 
 ```bash
-curl -s http://127.0.0.1:8888/penguin-connect/gmail/status | jq
+curl -s http://127.0.0.1:9000/penguin-connect/gmail/status | jq
 ```
 
 Example setup with custom footer removal:
@@ -156,13 +156,13 @@ Run doctor:
 Check local health endpoint:
 
 ```bash
-curl -s http://127.0.0.1:8888/penguin-connect/health | jq
+curl -s http://127.0.0.1:9000/penguin-connect/health | jq
 ```
 
 Run startup catch-up:
 
 ```bash
-curl -s -X POST http://127.0.0.1:8888/penguin-connect/conversations/sync \
+curl -s -X POST http://127.0.0.1:9000/penguin-connect/conversations/sync \
   -H 'Content-Type: application/json' \
   -d '{"mode":"startup_catchup"}' | jq
 ```
@@ -215,14 +215,14 @@ Install login auto-start:
 ## Operational Commands
 
 ```bash
-curl -s http://127.0.0.1:8888/penguin-connect/conversations | jq
-curl -s http://127.0.0.1:8888/penguin-connect/conversations/<conversation_id>/alias | jq
-curl -s -X POST http://127.0.0.1:8888/penguin-connect/conversations/sync \
+curl -s http://127.0.0.1:9000/penguin-connect/conversations | jq
+curl -s http://127.0.0.1:9000/penguin-connect/conversations/<conversation_id>/alias | jq
+curl -s -X POST http://127.0.0.1:9000/penguin-connect/conversations/sync \
   -H 'Content-Type: application/json' \
   -d '{"mode":"incremental"}' | jq
 ./scripts/penguin_connect_backfill.py --max-attempts 20
 ./scripts/penguin_connect_audit_quote_parsing.py --limit 100
-curl -s -X POST http://127.0.0.1:8888/penguin-connect/conversations/<conversation_id>/send \
+curl -s -X POST http://127.0.0.1:9000/penguin-connect/conversations/<conversation_id>/send \
   -H 'Content-Type: application/json' \
   -d '{"sender_email":"you@gmail.com","message":"hello"}' | jq
 ```

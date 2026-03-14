@@ -6,7 +6,7 @@ local bridge by POSTing token_json to /penguin-connect/gmail/connect.
 
 Usage:
   python scripts/penguin_connect_connect.py --gmail user@gmail.com
-  python scripts/penguin_connect_connect.py --gmail user@gmail.com --api-base http://127.0.0.1:8888
+  python scripts/penguin_connect_connect.py --gmail user@gmail.com --api-base http://127.0.0.1:9000
   python scripts/penguin_connect_connect.py --gmail user@gmail.com --client-secrets /path/to/client_secret.json
 """
 
