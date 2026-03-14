@@ -28,7 +28,10 @@ class PenguinConnectTests(unittest.TestCase):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.signature_markers_patcher = mock.patch.dict(
             os.environ,
-            {"PENGUIN_CONNECT_SIGNATURE_MARKERS_FILE": str(Path(self.tmpdir.name) / "missing-signature-markers.json")},
+            {
+                "PENGUIN_CONNECT_SIGNATURE_MARKERS_FILE": str(Path(self.tmpdir.name) / "missing-signature-markers.json"),
+                "PENGUIN_CONNECT_EXCLUDED_CHATS_FILE": str(Path(self.tmpdir.name) / "missing-excluded-chats.json"),
+            },
             clear=False,
         )
         self.signature_markers_patcher.start()
@@ -1298,6 +1301,94 @@ class PenguinConnectTests(unittest.TestCase):
         mock_discover.assert_called_once_with(self.conn, "owner@gmail.com")
         self.assertTrue(result["connected"])
         self.assertEqual(result["conversations"], [])
+
+    def test_list_conversations_marks_entries_excluded_from_file(self):
+        exclusions_path = Path(os.environ["PENGUIN_CONNECT_EXCLUDED_CHATS_FILE"])
+        exclusions_path.write_text(
+            json.dumps({"excluded_chats": [{"conversation_id": "amc_test", "display_name": "Family Group"}]}),
+            encoding="utf-8",
+        )
+
+        result = penguin_connect.list_conversations(self.conn)
+
+        self.assertTrue(result["conversations"][0]["excluded"])
+        stored = self.conn.execute(
+            "SELECT exclude_from_sync FROM penguin_connect_conversations WHERE conversation_id = ?",
+            ("amc_test",),
+        ).fetchone()
+        self.assertEqual(stored["exclude_from_sync"], 1)
+
+    def test_selection_skips_excluded_conversations(self):
+        self.conn.execute(
+            "UPDATE penguin_connect_conversations SET exclude_from_sync = 1 WHERE conversation_id = ?",
+            ("amc_test",),
+        )
+
+        conversations, selection = penguin_connect._select_conversations_for_sync(
+            self.conn,
+            "owner@gmail.com",
+            "backfill",
+            days=7,
+            hours=None,
+            verify_all=True,
+        )
+
+        self.assertEqual(conversations, [])
+        self.assertEqual(selection["discovered_conversations"], 0)
+        self.assertEqual(selection["selected_conversations"], 0)
+
+    def test_send_manual_message_blocks_excluded_conversation(self):
+        exclusions_path = Path(os.environ["PENGUIN_CONNECT_EXCLUDED_CHATS_FILE"])
+        exclusions_path.write_text(
+            json.dumps({"excluded_chats": [{"conversation_id": "amc_test", "display_name": "Family Group"}]}),
+            encoding="utf-8",
+        )
+
+        result = penguin_connect.send_manual_message(
+            self.conn,
+            conversation_id="amc_test",
+            sender_email="owner@gmail.com",
+            body_text="hello",
+        )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error"], "conversation_excluded")
+
+    def test_discovery_marks_excluded_chats_from_config(self):
+        self.conn.execute("DELETE FROM penguin_connect_conversations WHERE gmail_email = ?", ("owner@gmail.com",))
+        exclusions_path = Path(os.environ["PENGUIN_CONNECT_EXCLUDED_CHATS_FILE"])
+        exclusions_path.write_text(
+            json.dumps({"excluded_chats": [{"thread_key": "chat:chat-skip", "display_name": "Skip Me"}]}),
+            encoding="utf-8",
+        )
+        chats = [
+            {
+                "chat_id": "chat-skip",
+                "chat_guid": "chat-skip",
+                "chat_identifier": "chat-skip",
+                "name": "Skip Me",
+                "chat_type": "group",
+                "participants": ["+15125550123", "+15125550124"],
+                "message_count": 2,
+                "last_message_at": "2026-03-08T10:00:00+00:00",
+                "last_message_preview": "latest",
+                "service": "iMessage",
+                "source_provider": "imessage",
+            }
+        ]
+
+        with mock.patch("penguin_connect.browse_imessage_chats", return_value={"available": True, "chats": chats}):
+            discovered = penguin_connect.ensure_conversations_discovered(self.conn, "owner@gmail.com")
+
+        self.assertEqual(discovered, 1)
+        row = self.conn.execute(
+            """SELECT exclude_from_sync, alias_email
+               FROM penguin_connect_conversations
+               WHERE gmail_email = ?""",
+            ("owner@gmail.com",),
+        ).fetchone()
+        self.assertEqual(row["exclude_from_sync"], 1)
+        self.assertIsNone(row["alias_email"])
 
     def test_discovery_unifies_apple_messages_dm_routes_by_participant(self):
         self.conn.execute("DELETE FROM penguin_connect_conversations WHERE gmail_email = ?", ("owner@gmail.com",))
@@ -5043,6 +5134,90 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(row["body_text"], "retry durable send")
         self.assertEqual(metadata["delivery_status"], "delivered")
         self.assertEqual(metadata["send_result"], "imessage_ok")
+
+    def test_sync_unlocked_globally_retries_pending_imessage_imports_without_selection(self):
+        self.conn.execute(
+            """INSERT INTO penguin_connect_conversations
+               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+                alias_email, status)
+               VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
+            (
+                "owner@gmail.com",
+                "amc_pending",
+                "chat-pending",
+                "Pending Group",
+                "owner+am-pending@gmail.com",
+            ),
+        )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_messages
+               (conversation_id, provider, provider_message_id, direction, sender_email, sender_name, subject,
+                body_text, message_timestamp, is_read, metadata)
+               VALUES (?, 'imessage', 'im-pending-1', 'imessage_to_email', ?, ?, ?, ?, ?, 1, ?)""",
+            (
+                "amc_pending",
+                "owner+am-pending@gmail.com",
+                "Tester",
+                "iMessage · Pending Group",
+                "pending retry body",
+                "2026-03-10T10:00:00+00:00",
+                json.dumps({"delivery_status": "pending", "retry_count": 0, "max_retries": 3}),
+            ),
+        )
+        self.conn.commit()
+        gmail_service = mock.Mock()
+
+        with mock.patch(
+            "penguin_connect.ensure_conversations_discovered",
+            return_value=0,
+        ), mock.patch(
+            "penguin_connect._build_gmail_service",
+            return_value=(gmail_service, None),
+        ), mock.patch(
+            "penguin_connect._refresh_send_as_aliases",
+            return_value=(["owner@gmail.com"], "owner@gmail.com"),
+        ), mock.patch(
+            "penguin_connect._select_conversations_for_sync",
+            return_value=(
+                [],
+                {
+                    "discovered_conversations": 2,
+                    "selected_conversations": 0,
+                    "selection_strategy": "test_selection",
+                },
+            ),
+        ), mock.patch(
+            "penguin_connect._import_message_to_gmail_with_thread_recovery",
+            return_value=({"id": "gm-retried-1", "threadId": "th-retried-1"}, None, "th-retried-1"),
+        ), mock.patch(
+            "penguin_connect._sleep_after_gmail_write",
+        ):
+            stats = penguin_connect._sync_conversations_unlocked(self.conn, mode="incremental", days=7)
+
+        self.assertTrue(stats["success"])
+        self.assertEqual(stats["selected_conversations"], 0)
+        self.assertEqual(stats["global_imessage_retry_conversations"], 1)
+        self.assertEqual(stats["global_imessage_retry_imported"], 1)
+        self.assertEqual(stats["gmail_imported"], 1)
+
+        row = self.conn.execute(
+            """SELECT gmail_message_id, gmail_thread_id, metadata
+               FROM penguin_connect_messages
+               WHERE conversation_id = ? AND provider_message_id = ?""",
+            ("amc_pending", "im-pending-1"),
+        ).fetchone()
+        self.assertIsNotNone(row)
+        metadata = json.loads(row["metadata"] or "{}")
+        self.assertEqual(row["gmail_message_id"], "gm-retried-1")
+        self.assertEqual(row["gmail_thread_id"], "th-retried-1")
+        self.assertEqual(metadata["delivery_status"], "delivered")
+
+        conv = self.conn.execute(
+            "SELECT gmail_thread_id, last_synced_at FROM penguin_connect_conversations WHERE conversation_id = ?",
+            ("amc_pending",),
+        ).fetchone()
+        self.assertEqual(conv["gmail_thread_id"], "th-retried-1")
+        self.assertIsNotNone(conv["last_synced_at"])
 
     def test_fetch_imessage_messages_applies_limit_with_since(self):
         with tempfile.TemporaryDirectory() as tmp:

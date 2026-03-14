@@ -1,0 +1,26 @@
+{
+  "excluded_chats": [
+    {
+      "thread_key": "dm:4155550101",
+      "display_name": "Personal Number",
+      "chat_type": "dm",
+      "source_provider": "apple_messages",
+      "participants": [
+        "+1 (415) 555-0101"
+      ],
+      "reason": "Keep this direct thread out of the Gmail bridge"
+    },
+    {
+      "thread_key": "chat:iMessage;-;chat123",
+      "chat_id": "iMessage;-;chat123",
+      "display_name": "Family Group",
+      "chat_type": "group",
+      "source_provider": "imessage",
+      "participants": [
+        "+1 (415) 555-0101",
+        "+1 (415) 555-0102"
+      ],
+      "reason": "Leave this group chat local-only"
+    }
+  ]
+}

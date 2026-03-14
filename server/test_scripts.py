@@ -13,6 +13,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 import penguin_connect_local_api
 import import_contacts
 import penguin_connect_backfill
+import penguin_connect_excluded_chats
 import penguin_connect_setup
 import penguin_connect_verify_contact_resolution
 
@@ -155,6 +156,42 @@ class ScriptTests(unittest.TestCase):
         self.assertIn('"signature_markers"', contents)
         self.assertIn('"External email:"', contents)
         self.assertIn('"Company Confidential"', contents)
+
+    def test_excluded_chats_script_parses_toggle_ranges(self):
+        selected = penguin_connect_excluded_chats._parse_selection("1,3-5", 6)
+        self.assertEqual(selected, {1, 3, 4, 5})
+
+    def test_excluded_chats_script_toggle_preserves_existing_hidden_entries(self):
+        rows = [
+            {
+                "index": 1,
+                "entry": {
+                    "conversation_id": "amc_visible",
+                    "thread_key": "chat:visible",
+                    "display_name": "Visible",
+                },
+                "existing_entry": None,
+            }
+        ]
+        existing_entries = [
+            {
+                "conversation_id": "amc_hidden",
+                "thread_key": "chat:hidden",
+                "display_name": "Hidden",
+            }
+        ]
+
+        updated = penguin_connect_excluded_chats._toggle_entries(
+            rows,
+            existing_entries,
+            selected_indexes={1},
+            reason="quiet thread",
+        )
+
+        by_id = {entry["conversation_id"]: entry for entry in updated}
+        self.assertIn("amc_hidden", by_id)
+        self.assertIn("amc_visible", by_id)
+        self.assertEqual(by_id["amc_visible"]["reason"], "quiet thread")
 
 
 if __name__ == "__main__":

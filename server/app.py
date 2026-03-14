@@ -146,7 +146,7 @@ def get_status():
     try:
         total_conversations = conn.execute("SELECT COUNT(*) FROM penguin_connect_conversations").fetchone()[0]
         active_conversations = conn.execute(
-            "SELECT COUNT(*) FROM penguin_connect_conversations WHERE status = 'active'"
+            "SELECT COUNT(*) FROM penguin_connect_conversations WHERE status = 'active' AND COALESCE(exclude_from_sync, 0) = 0"
         ).fetchone()[0]
         gmail = penguinconnect_get_gmail_connection_status(conn)
         sync_metrics = penguinconnect_get_sync_metrics(conn)
@@ -241,6 +241,7 @@ def get_penguinconnect_conversations():
     conn = get_connection()
     try:
         result = penguinconnect_list_conversations(conn)
+        conn.commit()
         return result
     except sqlite3.OperationalError as exc:
         raise _map_sqlite_error(exc)
@@ -351,7 +352,10 @@ def reconnect_penguinconnect_conversation(conversation_id: str):
             error=result.get("error"),
         )
         if not result.get("success"):
-            raise HTTPException(status_code=404, detail=result.get("error", "conversation_not_found"))
+            error = result.get("error", "conversation_not_found")
+            if error == "conversation_not_found":
+                raise HTTPException(status_code=404, detail=error)
+            raise HTTPException(status_code=400, detail=error)
         conn.commit()
         return result
     finally:

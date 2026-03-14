@@ -80,6 +80,15 @@ Optional reply-cleanup setting:
   - when a reply line starts with one of those markers, PenguinConnect strips that line and everything after it before sending to Apple Messages
   - useful for recurring legal disclaimers, CRM footers, or signatures the built-in parser misses
 
+Optional chat-exclusion setting:
+
+- `PENGUIN_CONNECT_EXCLUDED_CHATS_FILE`
+  - optional path to a local JSON file with an `excluded_chats` array
+  - default path: `./.penguin_connect_excluded_chats.json`
+  - see `./excluded_chats.example.json` for the file format
+  - matching entries are still visible in local state, but PenguinConnect skips discovery/import alias provisioning, conversation sync, and manual sends for them
+  - use `./scripts/penguin_connect_excluded_chats.py` for an interactive browse-and-toggle workflow
+
 ## 1) Get Google OAuth Client JSON
 
 You need a Desktop OAuth client JSON from Google Cloud.
@@ -225,6 +234,7 @@ curl -s -X POST http://127.0.0.1:9000/penguin-connect/conversations/sync \
   -d '{"mode":"incremental"}' | jq
 ./scripts/penguin_connect_backfill.py --max-attempts 20
 ./scripts/penguin_connect_audit_quote_parsing.py --limit 100
+./scripts/penguin_connect_excluded_chats.py
 curl -s -X POST http://127.0.0.1:9000/penguin-connect/conversations/<conversation_id>/send \
   -H 'Content-Type: application/json' \
   -d '{"sender_email":"you@gmail.com","message":"hello"}' | jq

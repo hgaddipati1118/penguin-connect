@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS penguin_connect_conversations (
     participants TEXT,
     alias_email TEXT,
     status TEXT NOT NULL DEFAULT 'active',
+    exclude_from_sync INTEGER NOT NULL DEFAULT 0,
     gmail_thread_id TEXT,
     last_synced_at TEXT,
     created_at TEXT DEFAULT (datetime('now')),
@@ -144,6 +145,7 @@ CREATE TABLE IF NOT EXISTS penguin_connect_jobs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_conv_status ON penguin_connect_conversations(gmail_email, source_provider, status);
+CREATE INDEX IF NOT EXISTS idx_penguin_connect_conv_excluded ON penguin_connect_conversations(gmail_email, status, exclude_from_sync);
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_alias_conv ON penguin_connect_aliases(conversation_id, status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_penguin_connect_alias_one_active
 ON penguin_connect_aliases(conversation_id) WHERE status = 'active';
@@ -678,6 +680,7 @@ def _rebuild_conversations_table_for_provider_uniqueness(conn: sqlite3.Connectio
                 participants TEXT,
                 alias_email TEXT,
                 status TEXT NOT NULL DEFAULT 'active',
+                exclude_from_sync INTEGER NOT NULL DEFAULT 0,
                 gmail_thread_id TEXT,
                 last_synced_at TEXT,
                 created_at TEXT DEFAULT (datetime('now')),
@@ -698,6 +701,7 @@ def _rebuild_conversations_table_for_provider_uniqueness(conn: sqlite3.Connectio
                 participants,
                 alias_email,
                 status,
+                exclude_from_sync,
                 gmail_thread_id,
                 last_synced_at,
                 created_at,
@@ -716,6 +720,7 @@ def _rebuild_conversations_table_for_provider_uniqueness(conn: sqlite3.Connectio
                 participants,
                 alias_email,
                 status,
+                0,
                 gmail_thread_id,
                 last_synced_at,
                 created_at,
@@ -786,6 +791,7 @@ def _migrate_legacy_conversation_ids(conn: sqlite3.Connection) -> int:
                    participants,
                    alias_email,
                    status,
+                   exclude_from_sync,
                    gmail_thread_id,
                    last_synced_at,
                    created_at,
@@ -803,6 +809,7 @@ def _migrate_legacy_conversation_ids(conn: sqlite3.Connection) -> int:
                    participants,
                    alias_email,
                    status,
+                   exclude_from_sync,
                    gmail_thread_id,
                    last_synced_at,
                    created_at,
@@ -883,6 +890,7 @@ def _migrate_apple_messages_conversation_routes(conn: sqlite3.Connection) -> int
                    participants,
                    alias_email,
                    status,
+                   exclude_from_sync,
                    gmail_thread_id,
                    last_synced_at,
                    created_at,
@@ -900,6 +908,7 @@ def _migrate_apple_messages_conversation_routes(conn: sqlite3.Connection) -> int
                    participants,
                    alias_email,
                    status,
+                   exclude_from_sync,
                    gmail_thread_id,
                    last_synced_at,
                    created_at,
@@ -1035,6 +1044,7 @@ def _repair_incomplete_bootstrap_state(conn: sqlite3.Connection) -> int:
            FROM penguin_connect_sync_state s
            JOIN penguin_connect_conversations c ON c.conversation_id = s.conversation_id
            WHERE c.status = 'active'
+             AND COALESCE(c.exclude_from_sync, 0) = 0
              AND s.initial_sync_completed_at IS NOT NULL
              AND s.initial_sync_empty_verified_at IS NULL
              AND NOT EXISTS (
@@ -1191,6 +1201,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN imessage_chat_identifier TEXT")
         if "imessage_service_name" not in conversation_columns:
             conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN imessage_service_name TEXT")
+        if "exclude_from_sync" not in conversation_columns:
+            conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN exclude_from_sync INTEGER NOT NULL DEFAULT 0")
         conn.execute(
             """UPDATE penguin_connect_conversations
                SET imessage_chat_identifier = COALESCE(NULLIF(imessage_chat_identifier, ''), imessage_chat_id)
@@ -1206,6 +1218,8 @@ def init_db() -> None:
                 conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN imessage_chat_identifier TEXT")
             if "imessage_service_name" not in conversation_columns:
                 conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN imessage_service_name TEXT")
+            if "exclude_from_sync" not in conversation_columns:
+                conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN exclude_from_sync INTEGER NOT NULL DEFAULT 0")
             conn.execute(
                 """UPDATE penguin_connect_conversations
                    SET imessage_chat_identifier = COALESCE(NULLIF(imessage_chat_identifier, ''), imessage_chat_id)
@@ -1216,6 +1230,10 @@ def init_db() -> None:
         conn.execute(
             """CREATE INDEX IF NOT EXISTS idx_penguin_connect_conv_provider_status
                ON penguin_connect_conversations(gmail_email, source_provider, status)"""
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_penguin_connect_conv_excluded
+               ON penguin_connect_conversations(gmail_email, status, exclude_from_sync)"""
         )
         if "initial_sync_completed_at" not in sync_columns:
             conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN initial_sync_completed_at TEXT")

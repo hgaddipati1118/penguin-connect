@@ -30,6 +30,12 @@ from browse_sources import (
     resolve_apple_messages_chat as _resolve_apple_messages_chat_route,
 )
 from channels import get_channel_adapter
+from conversation_exclusions import (
+    apply_excluded_chats_to_account,
+    build_excluded_chat_entry,
+    is_chat_excluded,
+    load_excluded_chats,
+)
 from db import schedule_next_full_verify_at
 from quoted_content import extract_latest_email_text
 
@@ -51,6 +57,7 @@ _active_conversation_syncs: dict[str, dict[str, Any]] = {}
 DEFAULT_RETRY_BASE_SECONDS = 30
 DEFAULT_RETRY_MAX_BACKOFF_SECONDS = 900
 DEFAULT_MAX_RETRIES = 8
+DEFAULT_IMESSAGE_GLOBAL_RETRY_CONVERSATIONS_PER_RUN = 10
 DEFAULT_GMAIL_TO_SOURCE_MAX_RETRIES = 3
 DEFAULT_MESSAGE_ID_DOMAIN = "penguinconnect.local"
 MAX_REFERENCE_CHAIN = 20
@@ -347,6 +354,10 @@ def _startup_catchup_conversations_per_run() -> Optional[int]:
     return value
 
 
+def _imessage_global_retry_conversations_per_run() -> int:
+    return DEFAULT_IMESSAGE_GLOBAL_RETRY_CONVERSATIONS_PER_RUN
+
+
 def _incremental_activity_window_minutes() -> int:
     return _env_int(
         "PENGUIN_CONNECT_INCREMENTAL_ACTIVITY_WINDOW_MINUTES",
@@ -593,7 +604,9 @@ def _select_conversations_for_sync(
                   s.last_synced_at AS sync_state_last_synced_at
            FROM penguin_connect_conversations c
            LEFT JOIN penguin_connect_sync_state s ON s.conversation_id = c.conversation_id
-           WHERE c.gmail_email = ? AND c.status = 'active'
+           WHERE c.gmail_email = ?
+             AND c.status = 'active'
+             AND COALESCE(c.exclude_from_sync, 0) = 0
            ORDER BY c.updated_at DESC""",
         (gmail_email,),
     ).fetchall()
@@ -1743,6 +1756,13 @@ def get_connected_account(conn: sqlite3.Connection) -> Optional[sqlite3.Row]:
     ).fetchone()
 
 
+def refresh_conversation_exclusions(conn: sqlite3.Connection, gmail_email: str) -> dict[str, Any]:
+    exclusions = load_excluded_chats()
+    result = apply_excluded_chats_to_account(conn, gmail_email, exclusions=exclusions)
+    result["configured_exclusions"] = len(exclusions)
+    return result
+
+
 def get_gmail_connection_status(conn: sqlite3.Connection) -> dict[str, Any]:
     account = get_connected_account(conn)
     if not account:
@@ -2516,7 +2536,7 @@ def _refresh_contact_display_names(conn: sqlite3.Connection) -> int:
     rows = conn.execute(
         """SELECT conversation_id, display_name, chat_type, participants
            FROM penguin_connect_conversations
-           WHERE status = 'active'"""
+           WHERE status = 'active' AND COALESCE(exclude_from_sync, 0) = 0"""
     ).fetchall()
     updated = 0
     for row in rows:
@@ -2610,6 +2630,7 @@ def ensure_conversations_discovered(
         )
         return 0
 
+    exclusions = load_excluded_chats()
     grouped_chats: dict[str, list[dict[str, Any]]] = {}
     ordered_thread_keys: list[str] = []
     for chat in discovered.get("chats", []):
@@ -2635,6 +2656,7 @@ def ensure_conversations_discovered(
         legacy_chat_id = (active_chat.get("chat_identifier") or chat_id).strip()
         participants = active_chat.get("participants") or []
         chat_type = active_chat.get("chat_type") or "group"
+        excluded = is_chat_excluded(active_chat, exclusions=exclusions, gmail_email=gmail_email)
         conversation_source_key = thread_key if source_provider == "apple_messages" else chat_id
         conversation_id = deterministic_conversation_id(gmail_email, conversation_source_key, source_provider)
 
@@ -2716,8 +2738,8 @@ def ensure_conversations_discovered(
         conn.execute(
             """INSERT INTO penguin_connect_conversations
                (gmail_email, source_provider, conversation_id, imessage_chat_id, imessage_chat_identifier,
-                imessage_service_name, display_name, chat_type, participants, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                imessage_service_name, display_name, chat_type, participants, status, exclude_from_sync, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                ON CONFLICT(conversation_id) DO UPDATE SET
                  source_provider = excluded.source_provider,
                  imessage_chat_id = excluded.imessage_chat_id,
@@ -2727,6 +2749,7 @@ def ensure_conversations_discovered(
                  chat_type = excluded.chat_type,
                  participants = excluded.participants,
                  status = excluded.status,
+                 exclude_from_sync = excluded.exclude_from_sync,
                  updated_at = datetime('now')""",
             (
                 gmail_email,
@@ -2739,6 +2762,7 @@ def ensure_conversations_discovered(
                 chat_type,
                 json.dumps(participants),
                 status,
+                1 if excluded else 0,
             ),
         )
 
@@ -2756,7 +2780,7 @@ def ensure_conversations_discovered(
                 continue
             _merge_conversation_into_target(conn, existing_row["conversation_id"], conversation_id)
 
-        if status == "active":
+        if status == "active" and not excluded:
             alias_row = _ensure_active_alias(conn, gmail_email, conversation_id, fresh=False)
             conn.execute(
                 "UPDATE penguin_connect_conversations SET alias_email = ? WHERE conversation_id = ?",
@@ -2827,9 +2851,11 @@ def list_conversations(conn: sqlite3.Connection) -> dict[str, Any]:
         if "locked" not in msg and "busy" not in msg:
             raise
 
+    refresh_conversation_exclusions(conn, account["gmail_email"])
+
     rows = conn.execute(
         """SELECT c.conversation_id, c.source_provider, c.imessage_chat_id, c.imessage_chat_identifier,
-                  c.imessage_service_name, c.display_name, c.chat_type,
+                  c.imessage_service_name, c.display_name, c.chat_type, c.exclude_from_sync,
                   c.participants, c.alias_email, c.status, c.gmail_thread_id,
                   c.last_synced_at, c.updated_at,
                   s.last_imessage_ts, s.last_gmail_ts, s.last_message_ts, s.initial_sync_completed_at
@@ -2860,6 +2886,7 @@ def list_conversations(conn: sqlite3.Connection) -> dict[str, Any]:
                 "participants": participants,
                 "alias_email": row["alias_email"],
                 "status": row["status"],
+                "excluded": bool(row["exclude_from_sync"]),
                 "gmail_thread_id": row["gmail_thread_id"],
                 "last_imessage_ts": row["last_imessage_ts"],
                 "last_gmail_ts": row["last_gmail_ts"],
@@ -2880,7 +2907,7 @@ def list_conversations(conn: sqlite3.Connection) -> dict[str, Any]:
 
 def get_conversation_alias(conn: sqlite3.Connection, conversation_id: str) -> dict[str, Any]:
     row = conn.execute(
-        """SELECT c.conversation_id, c.status, c.alias_email, a.created_at
+        """SELECT c.conversation_id, c.status, c.exclude_from_sync, c.alias_email, a.created_at
            FROM penguin_connect_conversations c
            LEFT JOIN penguin_connect_aliases a
              ON a.conversation_id = c.conversation_id AND a.status = 'active'
@@ -2894,6 +2921,7 @@ def get_conversation_alias(conn: sqlite3.Connection, conversation_id: str) -> di
         "found": True,
         "conversation_id": row["conversation_id"],
         "status": row["status"],
+        "excluded": bool(row["exclude_from_sync"]),
         "alias_email": row["alias_email"],
         "created_at": row["created_at"],
     }
@@ -2901,7 +2929,7 @@ def get_conversation_alias(conn: sqlite3.Connection, conversation_id: str) -> di
 
 def get_conversation_messages(conn: sqlite3.Connection, conversation_id: str, limit: int = 200) -> dict[str, Any]:
     conv = conn.execute(
-        """SELECT conversation_id, gmail_email, source_provider, display_name, status
+        """SELECT conversation_id, gmail_email, source_provider, display_name, status, exclude_from_sync
            FROM penguin_connect_conversations
            WHERE conversation_id = ?""",
         (conversation_id,),
@@ -2972,6 +3000,7 @@ def get_conversation_messages(conn: sqlite3.Connection, conversation_id: str, li
         "source_provider": conv["source_provider"] or "imessage",
         "display_name": conv["display_name"],
         "status": conv["status"],
+        "excluded": bool(conv["exclude_from_sync"]),
         "messages": messages,
     }
 
@@ -3735,6 +3764,7 @@ def _ensure_full_verify_schedule(conn: sqlite3.Connection, gmail_email: str) -> 
            JOIN penguin_connect_conversations c ON c.conversation_id = s.conversation_id
            WHERE c.gmail_email = ?
              AND c.status = 'active'
+             AND COALESCE(c.exclude_from_sync, 0) = 0
              AND s.initial_sync_completed_at IS NOT NULL
              AND s.next_full_verify_at IS NULL""",
         (gmail_email,),
@@ -3924,6 +3954,110 @@ def _retry_pending_imessage_to_gmail(
             break
 
     return imported, thread_id
+
+
+def _retry_pending_imessage_to_gmail_globally(
+    conn: sqlite3.Connection,
+    gmail_service,
+    gmail_email: str,
+    *,
+    mode: str,
+    run_id: Optional[str] = None,
+    verify_all: bool = False,
+) -> dict[str, int]:
+    limit = _imessage_global_retry_conversations_per_run()
+    if limit <= 0:
+        return {
+            "retried_conversations": 0,
+            "imported_messages": 0,
+            "skipped_locked_conversations": 0,
+        }
+
+    rows = conn.execute(
+        """SELECT c.*
+           FROM penguin_connect_conversations c
+           JOIN (
+             SELECT m.conversation_id,
+                    MIN(COALESCE(json_extract(m.metadata, '$.first_failed_at'), m.message_timestamp, '')) AS oldest_pending_at,
+                    MIN(m.id) AS oldest_pending_id
+             FROM penguin_connect_messages m
+             JOIN penguin_connect_conversations c2 ON c2.conversation_id = m.conversation_id
+             WHERE c2.gmail_email = ?
+               AND c2.status = 'active'
+               AND COALESCE(c2.exclude_from_sync, 0) = 0
+               AND m.provider = 'imessage'
+               AND m.direction = 'imessage_to_email'
+               AND m.gmail_message_id IS NULL
+               AND COALESCE(json_extract(m.metadata, '$.delivery_status'), 'pending') NOT IN
+                 ('delivered', 'failed_permanent', 'blocked', 'ignored')
+             GROUP BY m.conversation_id
+           ) pending ON pending.conversation_id = c.conversation_id
+           ORDER BY pending.oldest_pending_at ASC, pending.oldest_pending_id ASC
+           LIMIT ?""",
+        (gmail_email, limit),
+    ).fetchall()
+    if not rows:
+        return {
+            "retried_conversations": 0,
+            "imported_messages": 0,
+            "skipped_locked_conversations": 0,
+        }
+
+    imported_messages = 0
+    retried_conversations = 0
+    skipped_locked_conversations = 0
+    gmail_write_pause_seconds = _sync_gmail_write_pause_seconds(mode, verify_all)
+
+    for conv in rows:
+        conversation_run_id = run_id or _new_sync_run_id(mode)
+        acquired, _existing_lock = _try_acquire_conversation_sync(
+            conv["conversation_id"],
+            run_id=conversation_run_id,
+            mode=mode,
+        )
+        if not acquired:
+            skipped_locked_conversations += 1
+            continue
+        try:
+            imported, thread_id = _retry_pending_imessage_to_gmail(
+                conn,
+                gmail_service,
+                conv,
+                gmail_write_pause_seconds=gmail_write_pause_seconds,
+            )
+            canonical_thread_id = (
+                _resolve_canonical_gmail_thread_id(
+                    conn,
+                    conv["conversation_id"],
+                    thread_id or conv["gmail_thread_id"],
+                )
+                or thread_id
+            )
+            if canonical_thread_id and canonical_thread_id != conv["gmail_thread_id"]:
+                conn.execute(
+                    """UPDATE penguin_connect_conversations
+                       SET gmail_thread_id = ?, last_synced_at = datetime('now')
+                       WHERE conversation_id = ?""",
+                    (canonical_thread_id, conv["conversation_id"]),
+                )
+            elif imported:
+                conn.execute(
+                    """UPDATE penguin_connect_conversations
+                       SET last_synced_at = datetime('now')
+                       WHERE conversation_id = ?""",
+                    (conv["conversation_id"],),
+                )
+            conn.commit()
+            imported_messages += imported
+            retried_conversations += 1
+        finally:
+            _release_conversation_sync(conv["conversation_id"], run_id=conversation_run_id)
+
+    return {
+        "retried_conversations": retried_conversations,
+        "imported_messages": imported_messages,
+        "skipped_locked_conversations": skipped_locked_conversations,
+    }
 
 def _apple_messages_chat_routes_for_conversation(conv: sqlite3.Row | dict[str, Any]) -> list[str]:
     active_chat_id = (conv["imessage_chat_id"] or "").strip()
@@ -6028,6 +6162,9 @@ def _sync_conversations_unlocked(
         ensure_conversations_discovered(conn, gmail_email)
         conn.commit()
         sweep_result = None
+    exclusion_refresh = refresh_conversation_exclusions(conn, gmail_email)
+    if exclusion_refresh.get("updated"):
+        conn.commit()
     full_verify_schedule_backfilled = _ensure_full_verify_schedule(conn, gmail_email)
     if full_verify_schedule_backfilled:
         conn.commit()
@@ -6092,6 +6229,8 @@ def _sync_conversations_unlocked(
         "blocked_sender_count": 0,
         "gmail_thread_repairs": 0,
         "full_verify_completed": 0,
+        "global_imessage_retry_conversations": 0,
+        "global_imessage_retry_imported": 0,
     }
     if selection.get("selection_cutoff"):
         stats["selection_cutoff"] = selection["selection_cutoff"]
@@ -6143,6 +6282,18 @@ def _sync_conversations_unlocked(
     )
 
     try:
+        global_imessage_retry = _retry_pending_imessage_to_gmail_globally(
+            conn,
+            gmail_service,
+            gmail_email,
+            mode=mode,
+            run_id=run_id,
+            verify_all=bool(verify_all),
+        )
+        stats["global_imessage_retry_conversations"] = global_imessage_retry["retried_conversations"]
+        stats["global_imessage_retry_imported"] = global_imessage_retry["imported_messages"]
+        stats["gmail_imported"] += global_imessage_retry["imported_messages"]
+        stats["skipped_locked_conversations"] += global_imessage_retry["skipped_locked_conversations"]
         total = len(conversations)
         for index, conv in enumerate(conversations, start=1):
             display = conv["display_name"] or conv["conversation_id"]
@@ -6521,6 +6672,14 @@ def reconnect_conversation(conn: sqlite3.Connection, conversation_id: str) -> di
     if not conv:
         log_action("conversation_reconnect_result", conversation_id=conversation_id, success=False, error="conversation_not_found")
         return {"success": False, "error": "conversation_not_found"}
+    refresh_conversation_exclusions(conn, conv["gmail_email"])
+    conv = conn.execute(
+        "SELECT * FROM penguin_connect_conversations WHERE conversation_id = ?",
+        (conversation_id,),
+    ).fetchone()
+    if conv["exclude_from_sync"]:
+        log_action("conversation_reconnect_result", success=False, error="conversation_excluded", **_conversation_log_fields(conv))
+        return {"success": False, "error": "conversation_excluded"}
 
     alias_row = _ensure_active_alias(conn, conv["gmail_email"], conversation_id, fresh=True)
     # Reconnected conversations need a fresh bootstrap before incremental sync resumes.
@@ -6562,9 +6721,17 @@ def send_manual_message(
     if not conv:
         log_action("manual_send_result", conversation_id=conversation_id, success=False, error="conversation_not_found")
         return {"success": False, "error": "conversation_not_found"}
+    refresh_conversation_exclusions(conn, conv["gmail_email"])
+    conv = conn.execute(
+        "SELECT * FROM penguin_connect_conversations WHERE conversation_id = ?",
+        (conversation_id,),
+    ).fetchone()
     if conv["status"] != "active":
         log_action("manual_send_result", success=False, error="conversation_disconnected", **_conversation_log_fields(conv))
         return {"success": False, "error": "conversation_disconnected"}
+    if conv["exclude_from_sync"]:
+        log_action("manual_send_result", success=False, error="conversation_excluded", **_conversation_log_fields(conv))
+        return {"success": False, "error": "conversation_excluded"}
 
     account = conn.execute(
         "SELECT * FROM penguin_connect_accounts WHERE gmail_email = ? LIMIT 1",

@@ -97,6 +97,12 @@ Quote-parsing audit:
 ./scripts/penguin_connect_audit_quote_parsing.py --limit 100
 ```
 
+Manage excluded Apple Messages chats:
+
+```bash
+./scripts/penguin_connect_excluded_chats.py
+```
+
 ## Safety Model
 
 - Local-only runtime on `127.0.0.1`
@@ -111,6 +117,10 @@ The default action log path is `~/penguinconnect-local-bridge-data/actions.jsonl
 ## Optional Reply Cleanup Markers
 
 Set `PENGUIN_CONNECT_SIGNATURE_MARKERS_FILE` to point at a local JSON file with custom signature or disclaimer prefixes. If unset, PenguinConnect reads `./.penguin_connect_signature_markers.json` by default. An example file lives at [`signature_markers.example.json`](./signature_markers.example.json).
+
+## Optional Chat Exclusions
+
+Set `PENGUIN_CONNECT_EXCLUDED_CHATS_FILE` to point at a local JSON file with Apple Messages chats or logical conversations that PenguinConnect should skip. If unset, PenguinConnect reads `./.penguin_connect_excluded_chats.json` by default. An example file lives at [`excluded_chats.example.json`](./excluded_chats.example.json), and the interactive manager is [`scripts/penguin_connect_excluded_chats.py`](./scripts/penguin_connect_excluded_chats.py).
 
 ## Repository Guide
 
