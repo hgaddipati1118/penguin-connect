@@ -359,6 +359,17 @@ def _incremental_conversations_per_run() -> int:
     )
 
 
+def _incremental_selection_limit(hot_conversations: int) -> int:
+    base_limit = _incremental_conversations_per_run()
+    raw = (os.environ.get("PENGUIN_CONNECT_INCREMENTAL_CONVERSATIONS_PER_RUN") or "").strip()
+    if raw:
+        return base_limit
+    hot_limit = max(0, int(hot_conversations or 0))
+    if hot_limit <= 0:
+        return base_limit
+    return max(base_limit, min(hot_limit, MAX_INCREMENTAL_CONVERSATIONS_PER_RUN))
+
+
 def _startup_catchup_conversations_per_run() -> Optional[int]:
     raw = (os.environ.get("PENGUIN_CONNECT_STARTUP_CATCHUP_CONVERSATIONS_PER_RUN") or "").strip()
     if not raw:
@@ -700,7 +711,7 @@ def _select_conversations_for_sync(
         verify_due.sort(key=lambda conv: (_full_verify_due_sort_value(conv), _sync_due_sort_value(conv), conv["conversation_id"]))
 
         queued = hot + pending + round_robin
-        limit = _incremental_conversations_per_run()
+        limit = _incremental_selection_limit(len(hot))
         selected = queued[:limit]
         verify_due_ids = {conv["conversation_id"] for conv in verify_due}
         selected_ids = {conv["conversation_id"] for conv in selected}

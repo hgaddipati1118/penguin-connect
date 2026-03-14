@@ -151,6 +151,22 @@ class PenguinConnectTests(unittest.TestCase):
         ):
             self.assertIsNone(penguin_connect._startup_catchup_conversations_per_run())
 
+    def test_incremental_selection_limit_defaults_to_all_hot_up_to_cap(self):
+        self.assertEqual(penguin_connect._incremental_selection_limit(0), 1)
+        self.assertEqual(penguin_connect._incremental_selection_limit(4), 4)
+        self.assertEqual(
+            penguin_connect._incremental_selection_limit(99),
+            penguin_connect.MAX_INCREMENTAL_CONVERSATIONS_PER_RUN,
+        )
+
+    def test_incremental_selection_limit_honors_explicit_env_override(self):
+        with mock.patch.dict(
+            os.environ,
+            {"PENGUIN_CONNECT_INCREMENTAL_CONVERSATIONS_PER_RUN": "2"},
+            clear=False,
+        ):
+            self.assertEqual(penguin_connect._incremental_selection_limit(6), 2)
+
     def test_sync_job_worker_prioritizes_incremental_before_startup_without_dedupe_key(self):
         startup = penguin_connect.enqueue_sync_job(
             self.conn,
@@ -721,6 +737,78 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(selection["pending_bootstrap_conversations"], 1)
         self.assertEqual(selection["hot_conversations"], 1)
         self.assertEqual(selection["hot_imessage_conversations"], 1)
+        self.assertEqual(selection["selection_strategy"], "activity_prioritized_round_robin")
+
+    def test_incremental_selection_defaults_to_selecting_all_hot_conversations(self):
+        self.conn.execute(
+            """INSERT INTO penguin_connect_conversations
+               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+                alias_email, status)
+               VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
+            (
+                "owner@gmail.com",
+                "amc_hot_two",
+                "chat-hot-two",
+                "Hot Two",
+                "owner+am-hot-two@gmail.com",
+            ),
+        )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_sync_state
+               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
+            (
+                "amc_test",
+                "2026-03-04T10:00:00+00:00",
+                "2026-03-04T10:00:00+00:00",
+                "2026-03-04T10:05:00+00:00",
+            ),
+        )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_sync_state
+               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
+            (
+                "amc_hot_two",
+                "2026-03-04T10:00:00+00:00",
+                "2026-03-04T10:00:00+00:00",
+                "2026-03-04T10:05:00+00:00",
+            ),
+        )
+
+        with mock.patch(
+            "penguin_connect.list_recent_imessage_chat_activity",
+            return_value={
+                "available": True,
+                "chats": [
+                    {
+                        "chat_id": "chat-123",
+                        "first_message_at": "2026-03-07T07:10:00+00:00",
+                        "last_message_at": "2026-03-07T07:15:00+00:00",
+                        "message_count": 1,
+                    },
+                    {
+                        "chat_id": "chat-hot-two",
+                        "first_message_at": "2026-03-07T07:11:00+00:00",
+                        "last_message_at": "2026-03-07T07:16:00+00:00",
+                        "message_count": 1,
+                    },
+                ],
+            },
+        ):
+            conversations, selection = penguin_connect._select_conversations_for_sync(
+                self.conn,
+                "owner@gmail.com",
+                "incremental",
+                days=7,
+                hours=None,
+            )
+
+        self.assertEqual({row["conversation_id"] for row in conversations}, {"amc_test", "amc_hot_two"})
+        self.assertEqual(selection["selected_conversations"], 2)
+        self.assertEqual(selection["selection_limit"], 2)
+        self.assertEqual(selection["hot_conversations"], 2)
+        self.assertEqual(selection["hot_imessage_conversations"], 2)
         self.assertEqual(selection["selection_strategy"], "activity_prioritized_round_robin")
 
     def test_incremental_selection_includes_due_full_verify_without_starving_hot_work(self):

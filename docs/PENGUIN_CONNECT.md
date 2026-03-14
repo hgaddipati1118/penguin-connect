@@ -207,6 +207,8 @@ Those recurring full verifications also refresh contact-derived display names, s
 ## Polling and Auto-Start
 
 - default polling: `PENGUIN_CONNECT_POLL_SECONDS=30`
+- incremental sync batch cap: `PENGUIN_CONNECT_INCREMENTAL_CONVERSATIONS_PER_RUN`
+  - leave unset to let incremental runs expand to all currently hot conversations up to the built-in cap
 - optional startup catch-up cap: `PENGUIN_CONNECT_STARTUP_CATCHUP_CONVERSATIONS_PER_RUN` (unset means all pending bootstrap conversations)
 - backfill Gmail write pacing: `PENGUIN_CONNECT_BACKFILL_WRITE_PAUSE_SECONDS=0.15`
 - action log:
