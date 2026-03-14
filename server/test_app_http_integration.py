@@ -125,7 +125,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
             "app.penguinconnect_get_gmail_connection_status",
             return_value={"connected": True, "gmail_email": "owner@gmail.com"},
         ), mock.patch(
-            "app.penguinconnect_get_sync_metrics",
+            "app.penguinconnect_get_cached_sync_metrics",
             return_value={"totals": {"retry_queue_count": 1}},
         ), mock.patch(
             "app.penguinconnect_get_runtime_sync_status",

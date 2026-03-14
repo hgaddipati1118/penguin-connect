@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 from email import policy
 import email.utils
 import hashlib
@@ -82,6 +83,7 @@ DEFAULT_GMAIL_ACTIVITY_BACKSTOP_MAX_MESSAGES = 250
 DEFAULT_GMAIL_API_MAX_RETRIES = 3
 DEFAULT_GMAIL_API_MAX_BACKOFF_SECONDS = 30
 DEFAULT_GMAIL_RATE_LIMIT_PAUSE_SECONDS = 120
+DEFAULT_SEND_AS_REFRESH_SECONDS = 6 * 60 * 60
 DEFAULT_GMAIL_BACKFILL_WRITE_PAUSE_SECONDS = 0.15
 MAX_GMAIL_BACKFILL_WRITE_PAUSE_SECONDS = 5.0
 DEFAULT_CONTACT_REFRESH_MINUTES_MIN = 30
@@ -95,6 +97,12 @@ DEFAULT_SYNC_JOB_RETRY_MAX_BACKOFF_SECONDS = 1800
 FULL_IMESSAGE_SYNC_SINCE = datetime(2001, 1, 1, tzinfo=timezone.utc).isoformat()
 FULL_GMAIL_SYNC_SINCE = datetime(1970, 1, 1, tzinfo=timezone.utc).isoformat()
 _sync_runtime_lock = threading.Lock()
+_sync_metrics_cache_lock = threading.Lock()
+_sync_metrics_cache: dict[str, Any] = {
+    "value": None,
+    "refreshed_at_monotonic": 0.0,
+    "refreshing": False,
+}
 _UNSET = object()
 _USE_DEFAULT_DISCOVERY_LIMIT = object()
 _IMESSAGE_CHANNEL = get_channel_adapter("imessage")
@@ -402,6 +410,10 @@ def _gmail_api_max_retries() -> int:
 
 def _gmail_rate_limit_pause_seconds() -> int:
     return _env_int("PENGUIN_CONNECT_GMAIL_RATE_LIMIT_PAUSE_SECONDS", DEFAULT_GMAIL_RATE_LIMIT_PAUSE_SECONDS, 10, 3600)
+
+
+def _send_as_refresh_seconds() -> int:
+    return DEFAULT_SEND_AS_REFRESH_SECONDS
 
 
 def _gmail_api_max_backoff_seconds() -> int:
@@ -2420,6 +2432,36 @@ def _build_gmail_service(gmail_email: str, keychain_service: Optional[str] = Non
 
 
 def _refresh_send_as_aliases(conn: sqlite3.Connection, gmail_service, gmail_email: str) -> tuple[list[str], str]:
+    account = conn.execute(
+        """SELECT primary_send_as, send_as_aliases, updated_at
+           FROM penguin_connect_accounts
+           WHERE gmail_email = ?
+           ORDER BY updated_at DESC, id DESC
+           LIMIT 1""",
+        (gmail_email,),
+    ).fetchone()
+    cached_aliases: list[str] = []
+    if account:
+        try:
+            parsed_aliases = json.loads(account["send_as_aliases"] or "[]")
+        except Exception:
+            parsed_aliases = []
+        if isinstance(parsed_aliases, list):
+            cached_aliases = sorted(
+                {
+                    _normalize_email(item)
+                    for item in parsed_aliases
+                    if isinstance(item, str) and _normalize_email(item)
+                }
+            )
+    cached_aliases = sorted(set(cached_aliases + [gmail_email]))
+    cached_primary = _normalize_email(account["primary_send_as"]) if account and account["primary_send_as"] else gmail_email
+    account_updated_at = _parse_iso(account["updated_at"]) if account else None
+    if cached_aliases and account_updated_at:
+        age_seconds = (datetime.now(timezone.utc) - account_updated_at).total_seconds()
+        if age_seconds <= _send_as_refresh_seconds():
+            return cached_aliases, cached_primary or gmail_email
+
     aliases: list[str] = []
     primary = gmail_email
     try:
@@ -2433,8 +2475,12 @@ def _refresh_send_as_aliases(conn: sqlite3.Connection, gmail_service, gmail_emai
             if row.get("verificationStatus") in ("accepted", "verified") or row.get("isPrimary"):
                 aliases.append(email_addr)
     except _GmailRetryableError:
+        if cached_aliases:
+            return cached_aliases, cached_primary or gmail_email
         raise
     except Exception:
+        if cached_aliases:
+            return cached_aliases, cached_primary or gmail_email
         aliases = [gmail_email]
 
     aliases = sorted(set(aliases + [gmail_email]))
@@ -6593,14 +6639,38 @@ def _sync_conversations_unlocked(
     )
 
     try:
-        global_imessage_retry = _retry_pending_imessage_to_gmail_globally(
-            conn,
-            gmail_service,
-            gmail_email,
-            mode=mode,
-            run_id=run_id,
-            verify_all=bool(verify_all),
-        )
+        try:
+            global_imessage_retry = _retry_pending_imessage_to_gmail_globally(
+                conn,
+                gmail_service,
+                gmail_email,
+                mode=mode,
+                run_id=run_id,
+                verify_all=bool(verify_all),
+            )
+        except _GmailRetryableError as exc:
+            conn.rollback()
+            paused_until = _set_gmail_rate_limit_pause(conn, gmail_email, exc.retry_after_seconds)
+            stats.update(
+                {
+                    "skipped": True,
+                    "reason": "gmail_rate_limited",
+                    "retry_after_seconds": exc.retry_after_seconds,
+                    "rate_limited_until": paused_until,
+                }
+            )
+            log_action(
+                "sync_run_result",
+                mode=mode,
+                success=True,
+                skipped=True,
+                reason="gmail_rate_limited",
+                retry_after_seconds=exc.retry_after_seconds,
+                rate_limited_until=paused_until,
+                stats=stats,
+            )
+            _sync_runtime_finished(run_id, result=stats)
+            return stats
         stats["global_imessage_retry_conversations"] = global_imessage_retry["retried_conversations"]
         stats["global_imessage_retry_imported"] = global_imessage_retry["imported_messages"]
         stats["gmail_imported"] += global_imessage_retry["imported_messages"]
@@ -6868,7 +6938,6 @@ def get_sync_metrics(conn: sqlite3.Connection) -> dict[str, Any]:
         "imessage_to_email": "imessage_to_gmail",
         "email_to_imessage": "gmail_to_imessage",
     }
-
     rows = conn.execute(
         """SELECT direction, gmail_message_id, message_timestamp, metadata
            FROM penguin_connect_messages
@@ -6938,6 +7007,89 @@ def get_sync_metrics(conn: sqlite3.Connection) -> dict[str, Any]:
             ),
         },
     }
+
+
+def _fast_sync_metrics_placeholder(conn: sqlite3.Connection) -> dict[str, Any]:
+    now_dt = datetime.now(timezone.utc)
+    return {
+        "generated_at": now_dt.isoformat(),
+        "snapshot_complete": False,
+        "retry_policy": {
+            "base_seconds": _retry_base_seconds(),
+            "max_backoff_seconds": _retry_max_backoff_seconds(),
+            "max_retries": _retry_max_retries(),
+        },
+        "durable_queue": get_sync_queue_metrics(conn),
+        "directions": {
+            "imessage_to_gmail": {
+                "retry_queue_count": None,
+                "failed_permanent_count": None,
+                "failed_with_error_count": None,
+                "blocked_count": None,
+                "ignored_count": None,
+                "delivered_count": None,
+                "oldest_pending_at": None,
+                "oldest_pending_age_seconds": None,
+            },
+            "gmail_to_imessage": {
+                "retry_queue_count": None,
+                "failed_permanent_count": None,
+                "failed_with_error_count": None,
+                "blocked_count": None,
+                "ignored_count": None,
+                "delivered_count": None,
+                "oldest_pending_at": None,
+                "oldest_pending_age_seconds": None,
+            },
+        },
+        "totals": {
+            "retry_queue_count": None,
+            "failed_permanent_count": None,
+            "failed_with_error_count": None,
+        },
+    }
+
+
+def _refresh_sync_metrics_cache_worker() -> None:
+    from db import get_connection
+
+    try:
+        conn = get_connection()
+        try:
+            metrics = get_sync_metrics(conn)
+        finally:
+            conn.close()
+        with _sync_metrics_cache_lock:
+            _sync_metrics_cache["value"] = metrics
+            _sync_metrics_cache["refreshed_at_monotonic"] = time.monotonic()
+            _sync_metrics_cache["refreshing"] = False
+    except Exception:
+        with _sync_metrics_cache_lock:
+            _sync_metrics_cache["refreshing"] = False
+
+
+def get_cached_sync_metrics(conn: sqlite3.Connection, *, max_age_seconds: int = 60) -> dict[str, Any]:
+    with _sync_metrics_cache_lock:
+        cached = _sync_metrics_cache.get("value")
+        refreshed_at = float(_sync_metrics_cache.get("refreshed_at_monotonic") or 0.0)
+        refreshing = bool(_sync_metrics_cache.get("refreshing"))
+        fresh = bool(cached) and (time.monotonic() - refreshed_at) <= max_age_seconds
+        if fresh:
+            return copy.deepcopy(cached)
+        if not refreshing:
+            _sync_metrics_cache["refreshing"] = True
+            threading.Thread(
+                target=_refresh_sync_metrics_cache_worker,
+                daemon=True,
+                name="penguin-connect-sync-metrics-cache",
+            ).start()
+        if cached:
+            stale = copy.deepcopy(cached)
+            stale["snapshot_complete"] = False
+            stale["stale"] = True
+            return stale
+
+    return _fast_sync_metrics_placeholder(conn)
 
 
 def disconnect_conversation(conn: sqlite3.Connection, conversation_id: str) -> dict[str, Any]:

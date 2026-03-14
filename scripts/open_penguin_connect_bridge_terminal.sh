@@ -33,6 +33,8 @@ CMD_ESCAPED="${CMD_ESCAPED//\"/\\\"}"
 tell application "Terminal"
   if not running then launch
   activate
-  do script "$CMD_ESCAPED"
+  set targetTab to do script ""
+  delay 0.2
+  do script "$CMD_ESCAPED" in targetTab
 end tell
 OSA

@@ -15,12 +15,12 @@ from pydantic import BaseModel
 from action_log import action_log_path, log_action
 from penguin_connect import (
     connect_gmail_account as penguinconnect_connect_gmail_account,
+    get_cached_sync_metrics as penguinconnect_get_cached_sync_metrics,
     disconnect_conversation as penguinconnect_disconnect_conversation,
     get_conversation_alias as penguinconnect_get_conversation_alias,
     get_conversation_messages as penguinconnect_get_conversation_messages,
     get_gmail_connection_status as penguinconnect_get_gmail_connection_status,
     get_runtime_sync_status as penguinconnect_get_runtime_sync_status,
-    get_sync_metrics as penguinconnect_get_sync_metrics,
     list_conversations as penguinconnect_list_conversations,
     reconnect_conversation as penguinconnect_reconnect_conversation,
     run_startup_catchup as penguinconnect_run_startup_catchup,
@@ -169,7 +169,7 @@ def get_status():
             "SELECT COUNT(*) FROM penguin_connect_conversations WHERE status = 'active' AND COALESCE(exclude_from_sync, 0) = 0"
         ).fetchone()[0]
         gmail = penguinconnect_get_gmail_connection_status(conn)
-        sync_metrics = penguinconnect_get_sync_metrics(conn)
+        sync_metrics = penguinconnect_get_cached_sync_metrics(conn)
     finally:
         conn.close()
 
@@ -214,7 +214,7 @@ def get_penguinconnect_health():
         status_counts = {r["status"]: r["count"] for r in conv_rows}
         active = status_counts.get("active", 0)
         disconnected = status_counts.get("disconnected", 0)
-        sync_metrics = penguinconnect_get_sync_metrics(conn)
+        sync_metrics = penguinconnect_get_cached_sync_metrics(conn)
         sync_status = _apply_runtime_sync_status(get_sync_status())
 
         return {

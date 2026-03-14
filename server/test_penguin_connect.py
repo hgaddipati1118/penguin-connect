@@ -3941,6 +3941,61 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertIn("queued", queue)
         self.assertIn("leased", queue)
 
+    def test_get_sync_metrics_handles_invalid_metadata_json(self):
+        self.conn.execute(
+            """INSERT INTO penguin_connect_messages
+               (conversation_id, provider, provider_message_id, direction, sender_email, message_timestamp, is_read, metadata)
+               VALUES (?, 'imessage', 'im2', 'imessage_to_email', 'owner+am-test@gmail.com', ?, 1, ?)""",
+            ("amc_test", "2026-03-04T12:00:00+00:00", "{not-json"),
+        )
+
+        metrics = penguin_connect.get_sync_metrics(self.conn)
+
+        self.assertEqual(metrics["directions"]["imessage_to_gmail"]["retry_queue_count"], 1)
+        self.assertEqual(metrics["totals"]["retry_queue_count"], 1)
+
+    def test_refresh_send_as_aliases_uses_fresh_cached_values(self):
+        self.conn.execute(
+            """UPDATE penguin_connect_accounts
+               SET primary_send_as = ?, send_as_aliases = ?, updated_at = ?
+               WHERE gmail_email = ?""",
+            (
+                "ops@company.com",
+                json.dumps(["owner@gmail.com", "ops@company.com"]),
+                datetime.now(timezone.utc).isoformat(),
+                "owner@gmail.com",
+            ),
+        )
+        gmail_service = mock.Mock()
+
+        aliases, primary = penguin_connect._refresh_send_as_aliases(self.conn, gmail_service, "owner@gmail.com")
+
+        self.assertEqual(aliases, ["ops@company.com", "owner@gmail.com"])
+        self.assertEqual(primary, "ops@company.com")
+        gmail_service.users.assert_not_called()
+
+    def test_refresh_send_as_aliases_falls_back_to_cached_values_on_rate_limit(self):
+        self.conn.execute(
+            """UPDATE penguin_connect_accounts
+               SET primary_send_as = ?, send_as_aliases = ?, updated_at = ?
+               WHERE gmail_email = ?""",
+            (
+                "ops@company.com",
+                json.dumps(["owner@gmail.com", "ops@company.com"]),
+                (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
+                "owner@gmail.com",
+            ),
+        )
+        gmail_service = mock.Mock()
+        gmail_service.users.return_value.settings.return_value.sendAs.return_value.list.return_value.execute.side_effect = (
+            penguin_connect._GmailRetryableError(120, 429, "userRateLimitExceeded")
+        )
+
+        aliases, primary = penguin_connect._refresh_send_as_aliases(self.conn, gmail_service, "owner@gmail.com")
+
+        self.assertEqual(aliases, ["ops@company.com", "owner@gmail.com"])
+        self.assertEqual(primary, "ops@company.com")
+
     def test_run_incremental_sync_maps_imessage_db_unreadable(self):
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
@@ -5539,6 +5594,45 @@ class PenguinConnectTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(conv["gmail_thread_id"], "th-retried-1")
         self.assertIsNotNone(conv["last_synced_at"])
+
+    def test_global_imessage_retry_rate_limit_sets_shared_pause(self):
+        gmail_service = mock.Mock()
+
+        with mock.patch(
+            "penguin_connect.ensure_conversations_discovered",
+            return_value=1,
+        ), mock.patch(
+            "penguin_connect._build_gmail_service",
+            return_value=(gmail_service, None),
+        ), mock.patch(
+            "penguin_connect._refresh_send_as_aliases",
+            return_value=(["owner@gmail.com"], "owner@gmail.com"),
+        ), mock.patch(
+            "penguin_connect._select_conversations_for_sync",
+            return_value=(
+                [],
+                {
+                    "discovered_conversations": 1,
+                    "selected_conversations": 0,
+                    "selection_strategy": "test_selection",
+                },
+            ),
+        ), mock.patch(
+            "penguin_connect._retry_pending_imessage_to_gmail_globally",
+            side_effect=penguin_connect._GmailRetryableError(480, 429, "userRateLimitExceeded"),
+        ):
+            stats = penguin_connect._sync_conversations_unlocked(self.conn, mode="incremental", days=7)
+
+        self.assertTrue(stats["success"])
+        self.assertTrue(stats["skipped"])
+        self.assertEqual(stats["reason"], "gmail_rate_limited")
+        self.assertEqual(stats["retry_after_seconds"], 480)
+        poll_state = self.conn.execute(
+            "SELECT gmail_rate_limited_until FROM penguin_connect_poll_state WHERE gmail_email = ?",
+            ("owner@gmail.com",),
+        ).fetchone()
+        self.assertIsNotNone(poll_state)
+        self.assertIsNotNone(poll_state["gmail_rate_limited_until"])
 
     def test_fetch_imessage_messages_applies_limit_with_since(self):
         with tempfile.TemporaryDirectory() as tmp:

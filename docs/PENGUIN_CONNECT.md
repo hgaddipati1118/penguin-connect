@@ -258,6 +258,10 @@ curl -s -X POST http://127.0.0.1:9000/penguin-connect/conversations/<conversatio
   -d '{"sender_email":"you@gmail.com","message":"hello"}' | jq
 ```
 
+Operational note:
+- `/api/status` and `/penguin-connect/health` return a cached sync-metrics snapshot so they stay responsive during large backfills and Gmail cooldowns.
+- When `sync_metrics.snapshot_complete` is `false`, the durable queue and runtime state are current, while the detailed delivery counters are still refreshing in the background.
+
 ## Action Log
 
 PenguinConnect writes operational events to a local JSONL action log for debugging and incident review.
