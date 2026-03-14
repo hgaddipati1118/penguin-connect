@@ -3221,6 +3221,72 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(metadata["delivery_status"], "ignored")
         self.assertEqual(metadata["labels"], ["DRAFT"])
 
+    def test_gmail_duplicate_sent_messages_in_same_thread_only_send_once(self):
+        conv = self._conversation_row()
+
+        def build_full_msg(message_id: str, internal_date: str) -> dict:
+            payload_data = base64.urlsafe_b64encode(b"same reply body").decode("utf-8").rstrip("=")
+            return {
+                "id": message_id,
+                "threadId": "thread-dup-1",
+                "historyId": f"h-{message_id}",
+                "labelIds": ["SENT", "INBOX", "UNREAD"],
+                "internalDate": internal_date,
+                "snippet": "same reply body",
+                "payload": {
+                    "mimeType": "text/plain",
+                    "headers": [
+                        {"name": "From", "value": "Owner <owner@gmail.com>"},
+                        {"name": "To", "value": "Owner <owner+am-test@gmail.com>"},
+                        {"name": "Subject", "value": "Duplicate"},
+                        {"name": "Message-ID", "value": f"<{message_id}@example.test>"},
+                    ],
+                    "body": {"data": payload_data},
+                },
+            }
+
+        full_messages = {
+            "gmail-dup-1": build_full_msg("gmail-dup-1", "1700007200000"),
+            "gmail-dup-2": build_full_msg("gmail-dup-2", "1700007202000"),
+        }
+        gmail_service = mock.Mock()
+        gmail_service.users.return_value.messages.return_value.get.side_effect = (
+            lambda **kwargs: mock.Mock(execute=mock.Mock(return_value=full_messages[kwargs["id"]]))
+        )
+
+        with mock.patch(
+            "penguin_connect._list_gmail_messages_to_alias",
+            return_value=[{"id": "gmail-dup-1"}, {"id": "gmail-dup-2"}],
+        ), mock.patch("penguin_connect.send_imessage", return_value=(True, None)) as mock_send:
+            result = penguin_connect._sync_conversation_gmail_to_imessage(
+                self.conn,
+                gmail_service,
+                conv,
+                gmail_email="owner@gmail.com",
+                allowed_senders=["owner@gmail.com"],
+                days=7,
+            )
+
+        self.assertEqual(result["email_to_imessage"], 1)
+        mock_send.assert_called_once()
+
+        first = self.conn.execute(
+            """SELECT metadata FROM penguin_connect_messages
+               WHERE conversation_id = ? AND provider_message_id = ?""",
+            ("amc_test", "gmail:gmail-dup-1"),
+        ).fetchone()
+        second = self.conn.execute(
+            """SELECT metadata FROM penguin_connect_messages
+               WHERE conversation_id = ? AND provider_message_id = ?""",
+            ("amc_test", "gmail:gmail-dup-2"),
+        ).fetchone()
+        first_metadata = json.loads(first["metadata"] or "{}")
+        second_metadata = json.loads(second["metadata"] or "{}")
+        self.assertEqual(first_metadata["delivery_status"], "delivered")
+        self.assertEqual(second_metadata["delivery_status"], "ignored")
+        self.assertEqual(second_metadata["reason"], "duplicate_recent_gmail_message")
+        self.assertEqual(second_metadata["duplicate_of_provider_message_id"], "gmail:gmail-dup-1")
+
     def test_cleanup_stale_alias_drafts_deletes_old_split_drafts_only(self):
         conv = self._conversation_row()
         self.conn.execute(

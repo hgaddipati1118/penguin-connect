@@ -5092,6 +5092,47 @@ def _latest_synced_source_message_ts(conn: sqlite3.Connection, conversation_id: 
     return latest
 
 
+def _normalized_gmail_delivery_body(text: Optional[str]) -> str:
+    return " ".join((text or "").split())
+
+
+def _find_recent_gmail_to_source_duplicate(
+    conn: sqlite3.Connection,
+    conversation_id: str,
+    *,
+    gmail_thread_id: Optional[str],
+    sender_email: Optional[str],
+    body_text: Optional[str],
+    message_ts: Optional[str],
+    window_seconds: int = 180,
+) -> Optional[sqlite3.Row]:
+    normalized_body = _normalized_gmail_delivery_body(body_text)
+    message_dt = _parse_iso(message_ts)
+    if not gmail_thread_id or not normalized_body or not message_dt:
+        return None
+
+    sender = _normalize_email(sender_email)
+    window_start = (message_dt - timedelta(seconds=max(1, window_seconds))).isoformat()
+    rows = conn.execute(
+        """SELECT provider_message_id, gmail_message_id, gmail_thread_id, sender_email, body_text, message_timestamp, metadata
+           FROM penguin_connect_messages
+           WHERE conversation_id = ?
+             AND provider = 'gmail'
+             AND direction = 'email_to_imessage'
+             AND gmail_thread_id = ?
+             AND lower(COALESCE(sender_email, '')) = lower(?)
+             AND message_timestamp >= ?
+           ORDER BY message_timestamp DESC
+           LIMIT 25""",
+        (conversation_id, gmail_thread_id, sender, window_start),
+    ).fetchall()
+    for row in rows:
+        if _normalized_gmail_delivery_body(row["body_text"]) != normalized_body:
+            continue
+        return row
+    return None
+
+
 def _fail_stale_gmail_to_source_delivery(
     conn: sqlite3.Connection,
     conv: sqlite3.Row | dict[str, Any],
@@ -5745,6 +5786,67 @@ def _sync_conversation_gmail_to_imessage(
             continue
 
         provider_message_id = f"gmail:{message_id}"
+        duplicate_row = _find_recent_gmail_to_source_duplicate(
+            conn,
+            conv["conversation_id"],
+            gmail_thread_id=thread_id,
+            sender_email=sender,
+            body_text=body_text,
+            message_ts=message_ts,
+        )
+        if duplicate_row:
+            log_action(
+                "gmail_to_imessage_message",
+                success=False,
+                ignored=True,
+                duplicate=True,
+                reason="duplicate_recent_gmail_message",
+                duplicate_of_provider_message_id=duplicate_row["provider_message_id"],
+                duplicate_of_gmail_message_id=duplicate_row["gmail_message_id"],
+                gmail_message_id=message_id,
+                gmail_thread_id=thread_id,
+                gmail_body_source=parsed_body.source,
+                gmail_quoted_content_removed=parsed_body.quoted_content_removed,
+                gmail_signature_removed=parsed_body.signature_removed,
+                attachment_count=len(attachment_meta),
+                sender_email=sender,
+                **_conversation_log_fields(conv),
+                **message_fingerprint(body_text),
+            )
+            conn.execute(
+                """INSERT OR IGNORE INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction,
+                    sender_email, sender_name, subject, body_text, message_timestamp,
+                    is_read, metadata, gmail_message_id, gmail_thread_id)
+                   VALUES (?, 'gmail', ?, 'email_to_imessage', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    conv["conversation_id"],
+                    provider_message_id,
+                    sender,
+                    stored_sender_name,
+                    headers.get("subject") or "",
+                    body_text[:20000],
+                    message_ts,
+                    0 if "UNREAD" in label_ids else 1,
+                    json.dumps(
+                        {
+                            **meta,
+                            "ignored": True,
+                            "delivery_status": "ignored",
+                            "reason": "duplicate_recent_gmail_message",
+                            "duplicate_of_provider_message_id": duplicate_row["provider_message_id"],
+                            "duplicate_of_gmail_message_id": duplicate_row["gmail_message_id"],
+                        }
+                    ),
+                    message_id,
+                    thread_id,
+                ),
+            )
+            conn.commit()
+            last_gmail_ts = max(last_gmail_ts or message_ts, message_ts)
+            history_id = full.get("historyId") or history_id
+            continue
+
         stale_row = {
             "provider_message_id": provider_message_id,
             "gmail_message_id": message_id,
