@@ -1989,6 +1989,68 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(parts[0].get_filename(), "family.png")
         self.assertEqual(parts[0].get_content_type(), "image/png")
 
+    def test_build_import_email_sanitizes_attachment_filename_headers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = os.path.join(tmp, "photo.png")
+            with open(image_path, "wb") as f:
+                f.write(b"\x89PNG\r\n\x1a\nfake")
+            raw = penguin_connect._build_import_email(
+                "amc_test",
+                "owner+am-test@gmail.com",
+                "owner@gmail.com",
+                "Family Group",
+                {
+                    "text": "photo attached",
+                    "timestamp": "2026-03-04T09:00:00+00:00",
+                    "attachments": [
+                        {"filename": image_path, "mime_type": "image/png", "transfer_name": "sticker_1.png\rsticker_2.png"}
+                    ],
+                },
+            )
+
+        parsed = BytesParser(policy=policy.default).parsebytes(base64.urlsafe_b64decode(raw))
+        parts = [p for p in parsed.iter_attachments()]
+        self.assertEqual(len(parts), 1)
+        self.assertEqual(parts[0].get_filename(), "sticker_1.png_sticker_2.png")
+
+    def test_sync_conversation_marks_email_build_failures_without_raising(self):
+        conv = self._conversation_row()
+        gmail_service = mock.Mock()
+
+        with mock.patch(
+            "penguin_connect.fetch_imessage_messages",
+            return_value=[
+                {
+                    "native_message_id": "2",
+                    "timestamp": "2026-03-04T09:01:00+00:00",
+                    "text": "second",
+                    "is_from_me": False,
+                    "attachments": [],
+                    "chat_id": "chat-123",
+                }
+            ],
+        ), mock.patch("penguin_connect._get_imessage_unread_count", return_value=0), mock.patch(
+            "penguin_connect._build_import_email",
+            side_effect=ValueError("bad header"),
+        ):
+            result = penguin_connect._sync_conversation_imessage_to_gmail(
+                self.conn,
+                gmail_service,
+                conv,
+                mode="incremental",
+                days=7,
+            )
+
+        self.assertEqual(result["gmail_imported"], 0)
+        row = self.conn.execute(
+            """SELECT metadata FROM penguin_connect_messages
+               WHERE conversation_id = ? AND provider_message_id = ?""",
+            ("amc_test", "imessage:2"),
+        ).fetchone()
+        metadata = json.loads(row["metadata"])
+        self.assertEqual(metadata["delivery_status"], "pending")
+        self.assertIn("email_build_failed:bad header", metadata["last_error"])
+
     def test_sync_conversation_persists_rendered_nested_email_body_metadata(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_messages

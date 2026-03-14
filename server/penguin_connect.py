@@ -168,6 +168,12 @@ def _normalize_source_provider(value: Optional[str]) -> str:
     return (value or "imessage").strip().lower() or "imessage"
 
 
+def _sanitize_header_value(value: Optional[str], *, fallback: str = "") -> str:
+    normalized = str(value or "").replace("\r", " ").replace("\n", " ").replace("\x00", " ").strip()
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized or fallback
+
+
 def _parse_message_metadata(raw_value: Any) -> dict[str, Any]:
     if isinstance(raw_value, dict):
         return raw_value
@@ -3100,7 +3106,7 @@ def _load_imessage_attachment_for_email(attachment: dict[str, Any]) -> Optional[
         return None
 
     transfer_name = (attachment.get("transfer_name") or "").strip()
-    filename = transfer_name or path.name or "attachment"
+    filename = _safe_attachment_filename(transfer_name or path.name or "attachment", 1)
     mime_type = (attachment.get("mime_type") or "").strip().lower()
     if not mime_type:
         guessed, _ = mimetypes.guess_type(filename)
@@ -3371,8 +3377,17 @@ def _build_import_email(
     quoted_header: Optional[str] = None,
 ) -> str:
     provider_label = _source_provider_label(source_provider)
-    sender_name = sender_name_override or msg.get("push_name") or msg.get("handle") or display_name or provider_label
-    subject = _provider_subject(source_provider, subject_display_name or display_name)
+    sender_name = _sanitize_header_value(
+        sender_name_override or msg.get("push_name") or msg.get("handle") or display_name or provider_label,
+        fallback=provider_label,
+    )
+    subject = _sanitize_header_value(
+        _provider_subject(source_provider, subject_display_name or display_name),
+        fallback=_provider_subject(source_provider, display_name),
+    )
+    safe_alias_email = _sanitize_header_value(alias_email)
+    safe_primary_email = _sanitize_header_value(primary_email)
+    safe_conversation_id = _sanitize_header_value(conversation_id)
     body_text = (msg.get("text") or "").strip()
     attachments = msg.get("attachments") or []
     attachment_note = f"[{len(attachments)} attachment(s) in {provider_label}]" if attachments else None
@@ -3385,11 +3400,11 @@ def _build_import_email(
     )
 
     email_msg = EmailMessage()
-    email_msg["From"] = email.utils.formataddr((sender_name, alias_email))
-    email_msg["To"] = primary_email
+    email_msg["From"] = email.utils.formataddr((sender_name, safe_alias_email))
+    email_msg["To"] = safe_primary_email
     email_msg["Subject"] = subject
-    email_msg["Reply-To"] = alias_email
-    email_msg["X-PenguinConnect-Conversation-ID"] = conversation_id
+    email_msg["Reply-To"] = safe_alias_email
+    email_msg["X-PenguinConnect-Conversation-ID"] = safe_conversation_id
     email_msg["X-PenguinConnect-Source-Provider"] = _normalize_source_provider(source_provider)
     email_msg[PENGUINCONNECT_HEADER] = "imessage_to_email"
     normalized_msg_id = _normalize_rfc_message_id(rfc_message_id)
@@ -3451,11 +3466,18 @@ def _build_gmail_delivery_error_email(
         references = _append_reference_id(references, in_reply_to)
 
     email_msg = EmailMessage()
-    email_msg["From"] = email.utils.formataddr(("PENGUIN_CONNECT", conv["alias_email"]))
-    email_msg["To"] = conv["gmail_email"]
-    email_msg["Subject"] = (row["subject"] or _provider_subject(_conversation_source_provider(conv), conv["display_name"])).strip()
-    email_msg["Reply-To"] = conv["alias_email"]
-    email_msg["X-PenguinConnect-Conversation-ID"] = conv["conversation_id"]
+    alias_email = _sanitize_header_value(conv["alias_email"])
+    gmail_email = _sanitize_header_value(conv["gmail_email"])
+    conversation_id = _sanitize_header_value(conv["conversation_id"])
+    subject = _sanitize_header_value(
+        (row["subject"] or _provider_subject(_conversation_source_provider(conv), conv["display_name"])).strip(),
+        fallback=_provider_subject(_conversation_source_provider(conv), conv["display_name"]),
+    )
+    email_msg["From"] = email.utils.formataddr(("PENGUIN_CONNECT", alias_email))
+    email_msg["To"] = gmail_email
+    email_msg["Subject"] = subject
+    email_msg["Reply-To"] = alias_email
+    email_msg["X-PenguinConnect-Conversation-ID"] = conversation_id
     email_msg["X-PenguinConnect-Source-Provider"] = _normalize_source_provider(_conversation_source_provider(conv))
     email_msg[PENGUINCONNECT_HEADER] = DELIVERY_ERROR_HEADER_VALUE
     email_msg["Message-ID"] = notice_rfc_message_id
@@ -3504,11 +3526,18 @@ def _build_gmail_delivery_rejection_email(
         references = _append_reference_id(references, in_reply_to)
 
     email_msg = EmailMessage()
-    email_msg["From"] = email.utils.formataddr(("PENGUIN_CONNECT", conv["alias_email"]))
-    email_msg["To"] = conv["gmail_email"]
-    email_msg["Subject"] = (row["subject"] or _provider_subject(_conversation_source_provider(conv), conv["display_name"])).strip()
-    email_msg["Reply-To"] = conv["alias_email"]
-    email_msg["X-PenguinConnect-Conversation-ID"] = conv["conversation_id"]
+    alias_email = _sanitize_header_value(conv["alias_email"])
+    gmail_email = _sanitize_header_value(conv["gmail_email"])
+    conversation_id = _sanitize_header_value(conv["conversation_id"])
+    subject = _sanitize_header_value(
+        (row["subject"] or _provider_subject(_conversation_source_provider(conv), conv["display_name"])).strip(),
+        fallback=_provider_subject(_conversation_source_provider(conv), conv["display_name"]),
+    )
+    email_msg["From"] = email.utils.formataddr(("PENGUIN_CONNECT", alias_email))
+    email_msg["To"] = gmail_email
+    email_msg["Subject"] = subject
+    email_msg["Reply-To"] = alias_email
+    email_msg["X-PenguinConnect-Conversation-ID"] = conversation_id
     email_msg["X-PenguinConnect-Source-Provider"] = _normalize_source_provider(_conversation_source_provider(conv))
     email_msg[PENGUINCONNECT_HEADER] = DELIVERY_REJECTION_HEADER_VALUE
     email_msg["Message-ID"] = notice_rfc_message_id
@@ -4034,22 +4063,46 @@ def _retry_pending_imessage_to_gmail(
             metadata["email_body_plain"] = plain_body
             metadata["email_body_html"] = html_body
             unread = not bool(row["is_read"])
-            raw_email = _build_import_email(
-                conv["conversation_id"],
-                conv["alias_email"],
-                conv["gmail_email"],
-                subject_name,
-                msg,
-                sender_name_override=row["sender_name"] or None,
-                subject_display_name=subject_name,
-                rfc_message_id=rfc_message_id,
-                in_reply_to=in_reply_to,
-                references=references,
-                source_provider=source_provider,
-                quoted_plain=quoted_plain,
-                quoted_html=quoted_html,
-                quoted_header=quoted_header,
-            )
+            try:
+                raw_email = _build_import_email(
+                    conv["conversation_id"],
+                    conv["alias_email"],
+                    conv["gmail_email"],
+                    subject_name,
+                    msg,
+                    sender_name_override=row["sender_name"] or None,
+                    subject_display_name=subject_name,
+                    rfc_message_id=rfc_message_id,
+                    in_reply_to=in_reply_to,
+                    references=references,
+                    source_provider=source_provider,
+                    quoted_plain=quoted_plain,
+                    quoted_html=quoted_html,
+                    quoted_header=quoted_header,
+                )
+            except Exception as exc:
+                metadata = _mark_delivery_failure(metadata, "email_build", f"email_build_failed:{exc}", now_dt)
+                conn.execute(
+                    """UPDATE penguin_connect_messages
+                       SET metadata = ?
+                       WHERE conversation_id = ? AND provider_message_id = ?""",
+                    (json.dumps(metadata), conv["conversation_id"], row["provider_message_id"]),
+                )
+                log_action(
+                    "imessage_to_gmail_retry_result",
+                    success=False,
+                    error=f"email_build_failed:{exc}",
+                    provider_message_id=row["provider_message_id"],
+                    source_message_timestamp=row["message_timestamp"],
+                    gmail_thread_id=row["gmail_thread_id"] or thread_id,
+                    **_conversation_log_fields(conv),
+                    **message_fingerprint(row["body_text"] or ""),
+                )
+                conn.commit()
+                processed += 1
+                if processed >= 500:
+                    break
+                continue
             imported_data, import_error, recovered_thread_id = _import_message_to_gmail_with_thread_recovery(
                 gmail_service,
                 raw_email,
@@ -4452,22 +4505,52 @@ def _sync_conversation_imessage_to_gmail(
             # on network calls or Gmail backoff sleeps.
             conn.commit()
 
-            raw_email = _build_import_email(
-                conv["conversation_id"],
-                conv["alias_email"],
-                conv["gmail_email"],
-                subject_name,
-                msg,
-                sender_name_override=sender_name,
-                subject_display_name=subject_name,
-                rfc_message_id=rfc_message_id,
-                in_reply_to=in_reply_to,
-                references=references,
-                source_provider=source_provider,
-                quoted_plain=quoted_plain,
-                quoted_html=quoted_html,
-                quoted_header=quoted_header,
-            )
+            try:
+                raw_email = _build_import_email(
+                    conv["conversation_id"],
+                    conv["alias_email"],
+                    conv["gmail_email"],
+                    subject_name,
+                    msg,
+                    sender_name_override=sender_name,
+                    subject_display_name=subject_name,
+                    rfc_message_id=rfc_message_id,
+                    in_reply_to=in_reply_to,
+                    references=references,
+                    source_provider=source_provider,
+                    quoted_plain=quoted_plain,
+                    quoted_html=quoted_html,
+                    quoted_header=quoted_header,
+                )
+            except Exception as exc:
+                metadata = _mark_delivery_failure(
+                    metadata,
+                    "email_build",
+                    f"email_build_failed:{exc}",
+                    datetime.now(timezone.utc),
+                )
+                conn.execute(
+                    """UPDATE penguin_connect_messages
+                       SET metadata = ?
+                       WHERE conversation_id = ? AND provider_message_id = ?""",
+                    (json.dumps(metadata), conv["conversation_id"], provider_id),
+                )
+                log_action(
+                    "imessage_to_gmail_message",
+                    success=False,
+                    error=f"email_build_failed:{exc}",
+                    provider_message_id=provider_id,
+                    gmail_thread_id=thread_id,
+                    source_message_timestamp=ts,
+                    is_from_me=bool(is_from_me),
+                    unread=bool(unread),
+                    attachment_count=len(msg.get("attachments") or []),
+                    **_conversation_log_fields(conv),
+                    **message_fingerprint(text),
+                )
+                conn.commit()
+                last_ts = max(last_ts or ts, ts)
+                continue
             imported_data, import_error, recovered_thread_id = _import_message_to_gmail_with_thread_recovery(
                 gmail_service,
                 raw_email,
