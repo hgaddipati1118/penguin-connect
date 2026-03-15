@@ -9,6 +9,7 @@ import email.utils
 import hashlib
 import html
 import json
+import math
 import mimetypes
 import os
 import re
@@ -87,6 +88,11 @@ DEFAULT_GMAIL_RATE_LIMIT_MAX_PAUSE_SECONDS = 30 * 60
 DEFAULT_SEND_AS_REFRESH_SECONDS = 6 * 60 * 60
 DEFAULT_GMAIL_BACKFILL_WRITE_PAUSE_SECONDS = 0.15
 MAX_GMAIL_BACKFILL_WRITE_PAUSE_SECONDS = 5.0
+DEFAULT_GMAIL_WRITE_BUDGET_UNITS_PER_MINUTE = 3000
+DEFAULT_GMAIL_BACKFILL_WRITE_BUDGET_UNITS_PER_MINUTE = 1200
+MAX_GMAIL_WRITE_BUDGET_UNITS_PER_MINUTE = 15000
+DEFAULT_GMAIL_WRITE_OPERATION_COST_UNITS = 25
+MAX_GMAIL_WRITE_OPERATION_COST_UNITS = 250
 DEFAULT_CONTACT_REFRESH_MINUTES_MIN = 30
 DEFAULT_CONTACT_REFRESH_MINUTES_MAX = 60
 SYNC_JOB_TYPE = "sync_conversations"
@@ -603,6 +609,9 @@ def _upsert_poll_state(
     last_gmail_history_id=_UNSET,
     gmail_rate_limited_until=_UNSET,
     gmail_rate_limit_streak=_UNSET,
+    gmail_write_budget_tokens=_UNSET,
+    gmail_backfill_budget_tokens=_UNSET,
+    gmail_write_budget_updated_at=_UNSET,
 ):
     gmail_email = _normalize_email(gmail_email)
     existing = _get_poll_state(conn, gmail_email)
@@ -613,6 +622,18 @@ def _upsert_poll_state(
             gmail_rate_limited_until = existing["gmail_rate_limited_until"]
         if gmail_rate_limit_streak is _UNSET:
             gmail_rate_limit_streak = existing["gmail_rate_limit_streak"] if "gmail_rate_limit_streak" in existing.keys() else 0
+        if gmail_write_budget_tokens is _UNSET:
+            gmail_write_budget_tokens = (
+                existing["gmail_write_budget_tokens"] if "gmail_write_budget_tokens" in existing.keys() else None
+            )
+        if gmail_backfill_budget_tokens is _UNSET:
+            gmail_backfill_budget_tokens = (
+                existing["gmail_backfill_budget_tokens"] if "gmail_backfill_budget_tokens" in existing.keys() else None
+            )
+        if gmail_write_budget_updated_at is _UNSET:
+            gmail_write_budget_updated_at = (
+                existing["gmail_write_budget_updated_at"] if "gmail_write_budget_updated_at" in existing.keys() else None
+            )
     else:
         if last_gmail_history_id is _UNSET:
             last_gmail_history_id = None
@@ -620,16 +641,35 @@ def _upsert_poll_state(
             gmail_rate_limited_until = None
         if gmail_rate_limit_streak is _UNSET:
             gmail_rate_limit_streak = 0
+        if gmail_write_budget_tokens is _UNSET:
+            gmail_write_budget_tokens = None
+        if gmail_backfill_budget_tokens is _UNSET:
+            gmail_backfill_budget_tokens = None
+        if gmail_write_budget_updated_at is _UNSET:
+            gmail_write_budget_updated_at = None
     conn.execute(
         """INSERT INTO penguin_connect_poll_state
-           (gmail_email, last_gmail_history_id, gmail_rate_limited_until, gmail_rate_limit_streak, created_at, updated_at)
-           VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+           (gmail_email, last_gmail_history_id, gmail_rate_limited_until, gmail_rate_limit_streak,
+            gmail_write_budget_tokens, gmail_backfill_budget_tokens, gmail_write_budget_updated_at,
+            created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
            ON CONFLICT(gmail_email) DO UPDATE SET
              last_gmail_history_id = excluded.last_gmail_history_id,
              gmail_rate_limited_until = excluded.gmail_rate_limited_until,
              gmail_rate_limit_streak = excluded.gmail_rate_limit_streak,
+             gmail_write_budget_tokens = excluded.gmail_write_budget_tokens,
+             gmail_backfill_budget_tokens = excluded.gmail_backfill_budget_tokens,
+             gmail_write_budget_updated_at = excluded.gmail_write_budget_updated_at,
              updated_at = datetime('now')""",
-        (gmail_email, last_gmail_history_id, gmail_rate_limited_until, gmail_rate_limit_streak),
+        (
+            gmail_email,
+            last_gmail_history_id,
+            gmail_rate_limited_until,
+            gmail_rate_limit_streak,
+            gmail_write_budget_tokens,
+            gmail_backfill_budget_tokens,
+            gmail_write_budget_updated_at,
+        ),
     )
 
 
@@ -1108,6 +1148,172 @@ def _gmail_backfill_write_pause_seconds() -> float:
         0.0,
         MAX_GMAIL_BACKFILL_WRITE_PAUSE_SECONDS,
     )
+
+
+def _gmail_write_budget_units_per_minute() -> int:
+    return _env_int(
+        "PENGUIN_CONNECT_GMAIL_WRITE_BUDGET_UNITS_PER_MINUTE",
+        DEFAULT_GMAIL_WRITE_BUDGET_UNITS_PER_MINUTE,
+        DEFAULT_GMAIL_WRITE_OPERATION_COST_UNITS,
+        MAX_GMAIL_WRITE_BUDGET_UNITS_PER_MINUTE,
+    )
+
+
+def _gmail_backfill_write_budget_units_per_minute(total_units: Optional[int] = None) -> int:
+    total_budget = max(DEFAULT_GMAIL_WRITE_OPERATION_COST_UNITS, int(total_units or _gmail_write_budget_units_per_minute()))
+    raw = os.environ.get("PENGUIN_CONNECT_GMAIL_BACKFILL_WRITE_BUDGET_UNITS_PER_MINUTE", "")
+    try:
+        value = int(raw)
+    except Exception:
+        value = DEFAULT_GMAIL_BACKFILL_WRITE_BUDGET_UNITS_PER_MINUTE
+    return max(DEFAULT_GMAIL_WRITE_OPERATION_COST_UNITS, min(value, total_budget))
+
+
+def _gmail_write_operation_cost_units() -> int:
+    return _env_int(
+        "PENGUIN_CONNECT_GMAIL_WRITE_OPERATION_COST_UNITS",
+        DEFAULT_GMAIL_WRITE_OPERATION_COST_UNITS,
+        1,
+        MAX_GMAIL_WRITE_OPERATION_COST_UNITS,
+    )
+
+
+def _sync_uses_backfill_gmail_budget(mode: str, verify_all: bool) -> bool:
+    normalized_mode = (mode or "").strip().lower()
+    return bool(verify_all or normalized_mode in {"backfill", "startup_catchup"})
+
+
+def _sync_gmail_write_budget_lane(mode: str, verify_all: bool) -> str:
+    return "backfill" if _sync_uses_backfill_gmail_budget(mode, verify_all) else "incremental"
+
+
+def _coerce_non_negative_float(value: Any, fallback: float) -> float:
+    try:
+        return max(0.0, float(value))
+    except Exception:
+        return max(0.0, float(fallback))
+
+
+def _refilled_gmail_write_budget_tokens(
+    poll_state: Optional[sqlite3.Row],
+    *,
+    total_capacity_units: float,
+    backfill_capacity_units: float,
+    now_dt: Optional[datetime] = None,
+) -> tuple[float, float]:
+    now_dt = now_dt or datetime.now(timezone.utc)
+    total_tokens = float(total_capacity_units)
+    backfill_tokens = float(backfill_capacity_units)
+    if not poll_state:
+        return total_tokens, backfill_tokens
+
+    total_tokens = _coerce_non_negative_float(
+        poll_state["gmail_write_budget_tokens"] if "gmail_write_budget_tokens" in poll_state.keys() else None,
+        total_capacity_units,
+    )
+    backfill_tokens = _coerce_non_negative_float(
+        poll_state["gmail_backfill_budget_tokens"] if "gmail_backfill_budget_tokens" in poll_state.keys() else None,
+        backfill_capacity_units,
+    )
+    updated_at = _parse_iso(
+        poll_state["gmail_write_budget_updated_at"] if "gmail_write_budget_updated_at" in poll_state.keys() else None
+    )
+    if not updated_at:
+        return float(total_capacity_units), float(backfill_capacity_units)
+
+    elapsed_seconds = max(0.0, (now_dt - updated_at).total_seconds())
+    total_rate_per_second = float(total_capacity_units) / 60.0
+    backfill_rate_per_second = float(backfill_capacity_units) / 60.0
+    total_tokens = min(float(total_capacity_units), total_tokens + (elapsed_seconds * total_rate_per_second))
+    backfill_tokens = min(float(backfill_capacity_units), backfill_tokens + (elapsed_seconds * backfill_rate_per_second))
+    return total_tokens, backfill_tokens
+
+
+def _reserve_gmail_write_budget(
+    conn: sqlite3.Connection,
+    gmail_email: str,
+    lane: str,
+    *,
+    cost_units: Optional[int] = None,
+    now_dt: Optional[datetime] = None,
+) -> dict[str, Any]:
+    normalized_lane = "backfill" if (lane or "").strip().lower() == "backfill" else "incremental"
+    now_dt = now_dt or datetime.now(timezone.utc)
+    total_capacity_units = float(_gmail_write_budget_units_per_minute())
+    backfill_capacity_units = float(_gmail_backfill_write_budget_units_per_minute(int(total_capacity_units)))
+    operation_cost_units = max(1.0, float(cost_units or _gmail_write_operation_cost_units()))
+    poll_state = _get_poll_state(conn, gmail_email)
+    total_tokens, backfill_tokens = _refilled_gmail_write_budget_tokens(
+        poll_state,
+        total_capacity_units=total_capacity_units,
+        backfill_capacity_units=backfill_capacity_units,
+        now_dt=now_dt,
+    )
+    enough_total = total_tokens >= operation_cost_units
+    enough_backfill = normalized_lane != "backfill" or backfill_tokens >= operation_cost_units
+    budget_updated_at = now_dt.isoformat()
+
+    if enough_total and enough_backfill:
+        remaining_total_tokens = total_tokens - operation_cost_units
+        remaining_backfill_tokens = (
+            backfill_tokens - operation_cost_units if normalized_lane == "backfill" else backfill_tokens
+        )
+        _upsert_poll_state(
+            conn,
+            gmail_email,
+            gmail_write_budget_tokens=remaining_total_tokens,
+            gmail_backfill_budget_tokens=remaining_backfill_tokens,
+            gmail_write_budget_updated_at=budget_updated_at,
+        )
+        return {
+            "granted": True,
+            "lane": normalized_lane,
+            "retry_after_seconds": 0,
+            "total_tokens_remaining": remaining_total_tokens,
+            "backfill_tokens_remaining": remaining_backfill_tokens,
+        }
+
+    total_rate_per_second = total_capacity_units / 60.0
+    wait_total_seconds = (
+        max(0.0, (operation_cost_units - total_tokens) / total_rate_per_second) if total_rate_per_second > 0 else 60.0
+    )
+    wait_backfill_seconds = 0.0
+    if normalized_lane == "backfill":
+        backfill_rate_per_second = backfill_capacity_units / 60.0
+        wait_backfill_seconds = (
+            max(0.0, (operation_cost_units - backfill_tokens) / backfill_rate_per_second)
+            if backfill_rate_per_second > 0
+            else 60.0
+        )
+    retry_after_seconds = max(1, int(math.ceil(max(wait_total_seconds, wait_backfill_seconds))))
+    _upsert_poll_state(
+        conn,
+        gmail_email,
+        gmail_write_budget_tokens=total_tokens,
+        gmail_backfill_budget_tokens=backfill_tokens,
+        gmail_write_budget_updated_at=budget_updated_at,
+    )
+    return {
+        "granted": False,
+        "lane": normalized_lane,
+        "retry_after_seconds": retry_after_seconds,
+        "total_tokens_remaining": total_tokens,
+        "backfill_tokens_remaining": backfill_tokens,
+    }
+
+
+def _wait_for_gmail_write_budget(
+    conn: sqlite3.Connection,
+    gmail_email: str,
+    lane: str,
+    *,
+    cost_units: Optional[int] = None,
+) -> dict[str, Any]:
+    while True:
+        reservation = _reserve_gmail_write_budget(conn, gmail_email, lane, cost_units=cost_units)
+        if reservation["granted"]:
+            return reservation
+        time.sleep(min(float(reservation["retry_after_seconds"]), 10.0))
 
 
 def _sync_gmail_write_pause_seconds(
@@ -3900,12 +4106,21 @@ def _build_gmail_delivery_rejection_email(
     return raw, notice_rfc_message_id
 
 
-def _import_message_to_gmail(gmail_service, raw_message: str, gmail_thread_id: Optional[str], unread: bool):
+def _import_message_to_gmail(
+    conn: sqlite3.Connection,
+    gmail_service,
+    gmail_email: str,
+    gmail_write_lane: str,
+    raw_message: str,
+    gmail_thread_id: Optional[str],
+    unread: bool,
+):
     labels = ["INBOX"]
     if unread:
         labels.append("UNREAD")
 
     body: dict[str, Any] = {"raw": raw_message, "labelIds": labels}
+    _wait_for_gmail_write_budget(conn, gmail_email, gmail_write_lane)
 
     try:
         return _gmail_execute(
@@ -3990,7 +4205,10 @@ def _rewrite_raw_message_for_thread_repair(
 
 
 def _insert_message_to_gmail(
+    conn: sqlite3.Connection,
     gmail_service,
+    gmail_email: str,
+    gmail_write_lane: str,
     raw_message: str,
     gmail_thread_id: str,
     label_ids: list[str],
@@ -4000,6 +4218,7 @@ def _insert_message_to_gmail(
         "labelIds": _filter_repair_label_ids(label_ids),
         "threadId": gmail_thread_id,
     }
+    _wait_for_gmail_write_budget(conn, gmail_email, gmail_write_lane)
     try:
         data = _gmail_execute(
             lambda: gmail_service.users().messages().insert(
@@ -4015,7 +4234,14 @@ def _insert_message_to_gmail(
         return None, "gmail_insert_failed"
 
 
-def _trash_message_in_gmail(gmail_service, gmail_message_id: str) -> Optional[str]:
+def _trash_message_in_gmail(
+    conn: sqlite3.Connection,
+    gmail_service,
+    gmail_email: str,
+    gmail_write_lane: str,
+    gmail_message_id: str,
+) -> Optional[str]:
+    _wait_for_gmail_write_budget(conn, gmail_email, gmail_write_lane)
     try:
         _gmail_execute(
             lambda gmail_message_id=gmail_message_id: gmail_service.users().messages().trash(
@@ -4031,7 +4257,10 @@ def _trash_message_in_gmail(gmail_service, gmail_message_id: str) -> Optional[st
 
 
 def _import_message_to_gmail_with_thread_recovery(
+    conn: sqlite3.Connection,
     gmail_service,
+    gmail_email: str,
+    gmail_write_lane: str,
     raw_message: str,
     gmail_thread_id: Optional[str],
     unread: bool,
@@ -4041,18 +4270,42 @@ def _import_message_to_gmail_with_thread_recovery(
     if parent_rfc_message_id and not thread_id:
         thread_id = _resolve_gmail_thread_by_rfc_message_id(gmail_service, parent_rfc_message_id) or thread_id
 
-    imported_data, import_error = _import_message_to_gmail(gmail_service, raw_message, thread_id, unread)
+    imported_data, import_error = _import_message_to_gmail(
+        conn,
+        gmail_service,
+        gmail_email,
+        gmail_write_lane,
+        raw_message,
+        thread_id,
+        unread,
+    )
     if imported_data:
         return imported_data, None, thread_id or imported_data.get("threadId")
 
     if import_error == "gmail_invalid_thread":
         resolved = _resolve_gmail_thread_by_rfc_message_id(gmail_service, parent_rfc_message_id)
         if resolved and resolved != thread_id:
-            imported_data, import_error = _import_message_to_gmail(gmail_service, raw_message, resolved, unread)
+            imported_data, import_error = _import_message_to_gmail(
+                conn,
+                gmail_service,
+                gmail_email,
+                gmail_write_lane,
+                raw_message,
+                resolved,
+                unread,
+            )
             if imported_data:
                 return imported_data, None, resolved or imported_data.get("threadId")
 
-        imported_data, import_error = _import_message_to_gmail(gmail_service, raw_message, None, unread)
+        imported_data, import_error = _import_message_to_gmail(
+            conn,
+            gmail_service,
+            gmail_email,
+            gmail_write_lane,
+            raw_message,
+            None,
+            unread,
+        )
         if imported_data:
             return imported_data, None, imported_data.get("threadId")
 
@@ -4064,6 +4317,9 @@ def _repair_split_gmail_messages(
     gmail_service,
     conversation_id: str,
     canonical_thread_id: Optional[str],
+    *,
+    gmail_email: str,
+    gmail_write_lane: str,
 ) -> int:
     canonical = (canonical_thread_id or "").strip()
     if not canonical or not _thread_is_bridge_owned(conn, conversation_id, canonical):
@@ -4114,7 +4370,15 @@ def _repair_split_gmail_messages(
             references,
             original_gmail_message_id,
         )
-        inserted, insert_error = _insert_message_to_gmail(gmail_service, repaired_raw, canonical, label_ids)
+        inserted, insert_error = _insert_message_to_gmail(
+            conn,
+            gmail_service,
+            gmail_email,
+            gmail_write_lane,
+            repaired_raw,
+            canonical,
+            label_ids,
+        )
         if insert_error or not inserted:
             metadata["gmail_repair_state"] = "insert_failed"
             metadata["gmail_repair_error"] = insert_error or "gmail_insert_failed"
@@ -4123,7 +4387,13 @@ def _repair_split_gmail_messages(
 
         new_gmail_message_id = (inserted.get("id") or "").strip()
         repaired_thread_id = (inserted.get("threadId") or canonical).strip() or canonical
-        trash_error = _trash_message_in_gmail(gmail_service, original_gmail_message_id)
+        trash_error = _trash_message_in_gmail(
+            conn,
+            gmail_service,
+            gmail_email,
+            gmail_write_lane,
+            original_gmail_message_id,
+        )
         metadata["gmail_original_message_id"] = original_gmail_message_id
         metadata["gmail_original_thread_id"] = row["gmail_thread_id"]
         metadata["repaired_from_rfc_message_id"] = metadata.get("rfc_message_id")
@@ -4336,6 +4606,7 @@ def _retry_pending_imessage_to_gmail(
     gmail_service,
     conv: sqlite3.Row,
     gmail_write_pause_seconds: float = 0.0,
+    gmail_write_lane: str = "backfill",
 ) -> tuple[int, Optional[str]]:
     imported = 0
     now_dt = datetime.now(timezone.utc)
@@ -4462,7 +4733,10 @@ def _retry_pending_imessage_to_gmail(
                     break
                 continue
             imported_data, import_error, recovered_thread_id = _import_message_to_gmail_with_thread_recovery(
+                conn,
                 gmail_service,
+                conv["gmail_email"],
+                gmail_write_lane,
                 raw_email,
                 row["gmail_thread_id"] or thread_id,
                 unread,
@@ -4595,6 +4869,7 @@ def _retry_pending_imessage_to_gmail_globally(
                 gmail_service,
                 conv,
                 gmail_write_pause_seconds=gmail_write_pause_seconds,
+                gmail_write_lane="backfill",
             )
             canonical_thread_id = (
                 _resolve_canonical_gmail_thread_id(
@@ -4747,6 +5022,7 @@ def _sync_conversation_imessage_to_gmail(
         conn=conn,
         gmail_email=conv["gmail_email"],
     )
+    gmail_write_lane = _sync_gmail_write_budget_lane(mode, verify_all)
     imported = 0
     thread_id = None
     if not verify_all:
@@ -4967,7 +5243,10 @@ def _sync_conversation_imessage_to_gmail(
                 )
                 continue
             imported_data, import_error, recovered_thread_id = _import_message_to_gmail_with_thread_recovery(
+                conn,
                 gmail_service,
+                conv["gmail_email"],
+                gmail_write_lane,
                 raw_email,
                 thread_id,
                 unread,
@@ -5062,6 +5341,7 @@ def _sync_conversation_imessage_to_gmail(
             gmail_service,
             conv,
             gmail_write_pause_seconds=gmail_write_pause_seconds,
+            gmail_write_lane=gmail_write_lane,
         )
         imported += retried_imported
         thread_id = (
@@ -5803,7 +6083,10 @@ def _maybe_send_gmail_delivery_error_notice(
     )
     raw_email, notice_rfc_message_id = _build_gmail_delivery_error_email(conv, row, metadata)
     imported_data, import_error, recovered_thread_id = _import_message_to_gmail_with_thread_recovery(
+        conn,
         gmail_service,
+        conv["gmail_email"],
+        "incremental",
         raw_email,
         thread_id,
         True,
@@ -5869,7 +6152,10 @@ def _maybe_send_gmail_delivery_rejection_notice(
     )
     raw_email, notice_rfc_message_id = _build_gmail_delivery_rejection_email(conv, row, metadata)
     imported_data, import_error, recovered_thread_id = _import_message_to_gmail_with_thread_recovery(
+        conn,
         gmail_service,
+        conv["gmail_email"],
+        "incremental",
         raw_email,
         thread_id,
         True,
@@ -7099,7 +7385,14 @@ def _sync_conversations_unlocked(
                 canonical_thread_id = _resolve_canonical_gmail_thread_id(
                     conn, conv["conversation_id"], conv["gmail_thread_id"]
                 )
-                repaired = _repair_split_gmail_messages(conn, gmail_service, conv["conversation_id"], canonical_thread_id)
+                repaired = _repair_split_gmail_messages(
+                    conn,
+                    gmail_service,
+                    conv["conversation_id"],
+                    canonical_thread_id,
+                    gmail_email=conv["gmail_email"],
+                    gmail_write_lane=_sync_gmail_write_budget_lane(mode, conversation_verify_all),
+                )
 
                 stats["imessage_imported"] += imsg.get("imessage_imported", 0)
                 stats["gmail_imported"] += imsg.get("gmail_imported", 0)

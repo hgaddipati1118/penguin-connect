@@ -204,6 +204,8 @@ When Gmail returns a rate limit cooldown, PenguinConnect now requeues the curren
 
 Repeated Gmail rate limits now behave more like Slashy backend sync retries: PenguinConnect increases the cooldown window exponentially up to a cap and also slows startup/backfill Gmail writes before the next attempt. A successful sync that actually writes to Gmail resets that pressure; a successful no-write pass decays it gradually instead of dropping straight back to the most aggressive pace.
 
+PenguinConnect now also applies a local per-account Gmail write budget before each bridge-owned Gmail write. Incremental work can spend the full shared budget, while startup/backfill must also fit inside a smaller backfill bucket. That keeps catch-up work from consuming all Gmail write capacity and leaves reserved headroom for fresh-message incremental sync.
+
 PenguinConnect also cleans up stale Gmail drafts addressed to a conversation alias when they live in a non-canonical thread and the conversation already has a bridge-owned canonical thread. This prevents duplicate draft-only threads from lingering in Gmail while still leaving active in-progress drafts alone until they age past the safety window. The default safety window is 30 minutes and can be adjusted with `PENGUIN_CONNECT_ALIAS_DRAFT_DELETE_MINUTES`.
 
 PenguinConnect also refreshes the local Contacts cache on startup and then again every 30 to 60 minutes while the watcher is running. That refresh pass repairs active conversation display names when a raw-handle group title such as `Sai Mandhan, +15126629638` can now resolve fully from contacts.
@@ -221,6 +223,9 @@ Those recurring full verifications also refresh contact-derived display names, s
 - startup/backfill incremental-yield import chunk: `PENGUIN_CONNECT_STARTUP_INCREMENTAL_PREEMPTION_IMPORT_COUNT=5`
 - backfill Gmail write pacing base: `PENGUIN_CONNECT_BACKFILL_WRITE_PAUSE_SECONDS=0.15`
   - repeated Gmail throttles automatically scale that pause up to 5 seconds until sync recovers
+- total Gmail write budget per minute: `PENGUIN_CONNECT_GMAIL_WRITE_BUDGET_UNITS_PER_MINUTE=3000`
+- startup/backfill Gmail write budget per minute: `PENGUIN_CONNECT_GMAIL_BACKFILL_WRITE_BUDGET_UNITS_PER_MINUTE=1200`
+- Gmail write budget cost per reserved write: `PENGUIN_CONNECT_GMAIL_WRITE_OPERATION_COST_UNITS=25`
 - Gmail rate-limit cooldown base/max: `PENGUIN_CONNECT_GMAIL_RATE_LIMIT_PAUSE_SECONDS=120`, `PENGUIN_CONNECT_GMAIL_RATE_LIMIT_MAX_PAUSE_SECONDS=1800`
 - action log:
   - `PENGUIN_CONNECT_ACTION_LOG_PATH`

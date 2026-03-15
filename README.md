@@ -93,6 +93,7 @@ Operational note:
 - Startup catch-up runs in small background batches so recent-message incremental sync can keep getting worker time.
 - While startup catch-up or backfill is importing iMessage history, the worker now yields after every 5 Gmail imports if a queued incremental job is waiting.
 - Preempted startup/backfill conversation imports resume from the saved Apple Messages cursor instead of rescanning from the beginning.
+- Gmail writes now flow through a per-account quota budget, and startup/backfill can only spend the smaller backfill bucket so incremental work keeps reserved headroom.
 - Repeated Gmail rate limits now slow startup/backfill automatically by extending the cooldown window and increasing the per-write pause until successful syncs recover.
 
 Production-style preflight:

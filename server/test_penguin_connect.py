@@ -149,6 +149,138 @@ class PenguinConnectTests(unittest.TestCase):
 
         self.assertEqual(pause, 1.2)
 
+    def test_reserve_gmail_write_budget_consumes_backfill_and_total_tokens(self):
+        now_dt = datetime(2026, 3, 15, 20, 0, 0, tzinfo=timezone.utc)
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PENGUIN_CONNECT_GMAIL_WRITE_BUDGET_UNITS_PER_MINUTE": "120",
+                "PENGUIN_CONNECT_GMAIL_BACKFILL_WRITE_BUDGET_UNITS_PER_MINUTE": "60",
+                "PENGUIN_CONNECT_GMAIL_WRITE_OPERATION_COST_UNITS": "25",
+            },
+            clear=False,
+        ):
+            reservation = penguin_connect._reserve_gmail_write_budget(
+                self.conn,
+                "owner@gmail.com",
+                "backfill",
+                now_dt=now_dt,
+            )
+
+        self.assertTrue(reservation["granted"])
+        self.assertEqual(reservation["total_tokens_remaining"], 95.0)
+        self.assertEqual(reservation["backfill_tokens_remaining"], 35.0)
+        row = self.conn.execute(
+            """SELECT gmail_write_budget_tokens, gmail_backfill_budget_tokens, gmail_write_budget_updated_at
+               FROM penguin_connect_poll_state
+               WHERE gmail_email = ?""",
+            ("owner@gmail.com",),
+        ).fetchone()
+        self.assertEqual(row["gmail_write_budget_tokens"], 95.0)
+        self.assertEqual(row["gmail_backfill_budget_tokens"], 35.0)
+        self.assertEqual(row["gmail_write_budget_updated_at"], now_dt.isoformat())
+
+    def test_reserve_gmail_write_budget_preserves_backfill_reserve_for_incremental_lane(self):
+        now_dt = datetime(2026, 3, 15, 20, 0, 0, tzinfo=timezone.utc)
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PENGUIN_CONNECT_GMAIL_WRITE_BUDGET_UNITS_PER_MINUTE": "120",
+                "PENGUIN_CONNECT_GMAIL_BACKFILL_WRITE_BUDGET_UNITS_PER_MINUTE": "60",
+                "PENGUIN_CONNECT_GMAIL_WRITE_OPERATION_COST_UNITS": "25",
+            },
+            clear=False,
+        ):
+            reservation = penguin_connect._reserve_gmail_write_budget(
+                self.conn,
+                "owner@gmail.com",
+                "incremental",
+                now_dt=now_dt,
+            )
+
+        self.assertTrue(reservation["granted"])
+        self.assertEqual(reservation["total_tokens_remaining"], 95.0)
+        self.assertEqual(reservation["backfill_tokens_remaining"], 60.0)
+
+    def test_reserve_gmail_write_budget_returns_retry_after_when_backfill_reserve_is_empty(self):
+        now_dt = datetime(2026, 3, 15, 20, 0, 0, tzinfo=timezone.utc)
+        self.conn.execute(
+            """INSERT INTO penguin_connect_poll_state
+               (gmail_email, gmail_write_budget_tokens, gmail_backfill_budget_tokens, gmail_write_budget_updated_at)
+               VALUES (?, ?, ?, ?)""",
+            ("owner@gmail.com", 120.0, 10.0, now_dt.isoformat()),
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PENGUIN_CONNECT_GMAIL_WRITE_BUDGET_UNITS_PER_MINUTE": "120",
+                "PENGUIN_CONNECT_GMAIL_BACKFILL_WRITE_BUDGET_UNITS_PER_MINUTE": "60",
+                "PENGUIN_CONNECT_GMAIL_WRITE_OPERATION_COST_UNITS": "25",
+            },
+            clear=False,
+        ):
+            reservation = penguin_connect._reserve_gmail_write_budget(
+                self.conn,
+                "owner@gmail.com",
+                "backfill",
+                now_dt=now_dt,
+            )
+
+        self.assertFalse(reservation["granted"])
+        self.assertEqual(reservation["retry_after_seconds"], 15)
+
+    def test_reserve_gmail_write_budget_refills_tokens_from_elapsed_time(self):
+        base_dt = datetime(2026, 3, 15, 20, 0, 0, tzinfo=timezone.utc)
+        self.conn.execute(
+            """INSERT INTO penguin_connect_poll_state
+               (gmail_email, gmail_write_budget_tokens, gmail_backfill_budget_tokens, gmail_write_budget_updated_at)
+               VALUES (?, ?, ?, ?)""",
+            ("owner@gmail.com", 0.0, 0.0, base_dt.isoformat()),
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PENGUIN_CONNECT_GMAIL_WRITE_BUDGET_UNITS_PER_MINUTE": "120",
+                "PENGUIN_CONNECT_GMAIL_BACKFILL_WRITE_BUDGET_UNITS_PER_MINUTE": "60",
+                "PENGUIN_CONNECT_GMAIL_WRITE_OPERATION_COST_UNITS": "25",
+            },
+            clear=False,
+        ):
+            reservation = penguin_connect._reserve_gmail_write_budget(
+                self.conn,
+                "owner@gmail.com",
+                "incremental",
+                now_dt=base_dt + timedelta(seconds=30),
+            )
+
+        self.assertTrue(reservation["granted"])
+        self.assertEqual(reservation["total_tokens_remaining"], 35.0)
+        self.assertEqual(reservation["backfill_tokens_remaining"], 30.0)
+
+    def test_import_message_to_gmail_waits_for_budget_before_import(self):
+        gmail_service = mock.Mock()
+        gmail_service.users.return_value.messages.return_value.import_.return_value.execute.return_value = {
+            "id": "gm-1",
+            "threadId": "th-1",
+        }
+
+        with mock.patch("penguin_connect._wait_for_gmail_write_budget") as mock_wait:
+            data, error = penguin_connect._import_message_to_gmail(
+                self.conn,
+                gmail_service,
+                "owner@gmail.com",
+                "backfill",
+                "raw-message",
+                None,
+                True,
+            )
+
+        self.assertIsNone(error)
+        self.assertEqual(data["id"], "gm-1")
+        mock_wait.assert_called_once_with(self.conn, "owner@gmail.com", "backfill")
+
     def test_set_gmail_rate_limit_pause_escalates_by_streak(self):
         with mock.patch.dict(
             os.environ,
