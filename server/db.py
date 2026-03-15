@@ -104,6 +104,7 @@ CREATE TABLE IF NOT EXISTS penguin_connect_messages (
 CREATE TABLE IF NOT EXISTS penguin_connect_sync_state (
     conversation_id TEXT PRIMARY KEY REFERENCES penguin_connect_conversations(conversation_id) ON DELETE CASCADE,
     last_imessage_ts TEXT,
+    last_imessage_native_message_id TEXT,
     last_gmail_ts TEXT,
     last_message_ts TEXT,
     last_gmail_history_id TEXT,
@@ -199,6 +200,41 @@ def _max_iso_value(*values: str | None) -> str | None:
         if raw:
             return raw
     return None
+
+
+def _native_message_sort_value(value: str | None) -> int:
+    raw = (value or "").strip()
+    if not raw:
+        return -1
+    if ":" in raw:
+        raw = raw.rsplit(":", 1)[-1].strip()
+    try:
+        return int(raw)
+    except Exception:
+        return -1
+
+
+def _merge_imessage_cursor(
+    existing_ts: str | None,
+    existing_native_message_id: str | None,
+    candidate_ts: str | None,
+    candidate_native_message_id: str | None,
+) -> tuple[str | None, str | None]:
+    existing_dt = _parse_iso_value(existing_ts)
+    candidate_dt = _parse_iso_value(candidate_ts)
+    if existing_dt and candidate_dt:
+        if candidate_dt > existing_dt:
+            return candidate_ts, candidate_native_message_id
+        if existing_dt > candidate_dt:
+            return existing_ts, existing_native_message_id
+        if _native_message_sort_value(candidate_native_message_id) > _native_message_sort_value(existing_native_message_id):
+            return candidate_ts, candidate_native_message_id
+        return existing_ts, existing_native_message_id
+    if candidate_dt:
+        return candidate_ts, candidate_native_message_id
+    if existing_dt:
+        return existing_ts, existing_native_message_id
+    return candidate_ts or existing_ts, candidate_native_message_id or existing_native_message_id
 
 
 def _min_iso_value(*values: str | None) -> str | None:
@@ -548,23 +584,25 @@ def _merge_conversation_into_existing_target(
     conn.execute("DELETE FROM penguin_connect_messages WHERE conversation_id = ?", (source_id,))
 
     source_state = conn.execute(
-        """SELECT last_imessage_ts, last_gmail_ts, last_message_ts, last_gmail_history_id,
+        """SELECT last_imessage_ts, last_imessage_native_message_id, last_gmail_ts, last_message_ts, last_gmail_history_id,
                   initial_sync_completed_at, initial_sync_empty_verified_at
            FROM penguin_connect_sync_state
            WHERE conversation_id = ?""",
         (source_id,),
     ).fetchone()
     target_state = conn.execute(
-        """SELECT last_imessage_ts, last_gmail_ts, last_message_ts, last_gmail_history_id,
+        """SELECT last_imessage_ts, last_imessage_native_message_id, last_gmail_ts, last_message_ts, last_gmail_history_id,
                   initial_sync_completed_at, initial_sync_empty_verified_at
            FROM penguin_connect_sync_state
            WHERE conversation_id = ?""",
         (target_id,),
     ).fetchone()
     if source_state:
-        merged_last_imessage = _max_iso_value(
+        merged_last_imessage, merged_last_imessage_native_message_id = _merge_imessage_cursor(
             target_state["last_imessage_ts"] if target_state else None,
+            target_state["last_imessage_native_message_id"] if target_state else None,
             source_state["last_imessage_ts"],
+            source_state["last_imessage_native_message_id"],
         )
         merged_last_gmail = _max_iso_value(
             target_state["last_gmail_ts"] if target_state else None,
@@ -588,11 +626,12 @@ def _merge_conversation_into_existing_target(
         )
         conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, last_message_ts,
+               (conversation_id, last_imessage_ts, last_imessage_native_message_id, last_gmail_ts, last_message_ts,
                 last_gmail_history_id, initial_sync_completed_at, initial_sync_empty_verified_at, last_synced_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                ON CONFLICT(conversation_id) DO UPDATE SET
                  last_imessage_ts = excluded.last_imessage_ts,
+                 last_imessage_native_message_id = excluded.last_imessage_native_message_id,
                  last_gmail_ts = excluded.last_gmail_ts,
                  last_message_ts = excluded.last_message_ts,
                  last_gmail_history_id = excluded.last_gmail_history_id,
@@ -603,6 +642,7 @@ def _merge_conversation_into_existing_target(
             (
                 target_id,
                 merged_last_imessage,
+                merged_last_imessage_native_message_id,
                 merged_last_gmail,
                 merged_last_message,
                 merged_history_id,
@@ -1239,6 +1279,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN initial_sync_completed_at TEXT")
         if "initial_sync_empty_verified_at" not in sync_columns:
             conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN initial_sync_empty_verified_at TEXT")
+        if "last_imessage_native_message_id" not in sync_columns:
+            conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN last_imessage_native_message_id TEXT")
         if "last_message_ts" not in sync_columns:
             conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN last_message_ts TEXT")
         if "pending_gmail_activity_at" not in sync_columns:
@@ -1267,6 +1309,21 @@ def init_db() -> None:
                  ELSE COALESCE(last_imessage_ts, last_gmail_ts, last_message_ts)
                END
                WHERE last_message_ts IS NULL"""
+        )
+        conn.execute(
+            """UPDATE penguin_connect_sync_state
+               SET last_imessage_native_message_id = (
+                 SELECT json_extract(m.metadata, '$.native_message_id')
+                 FROM penguin_connect_messages m
+                 WHERE m.conversation_id = penguin_connect_sync_state.conversation_id
+                   AND m.provider = 'imessage'
+                   AND m.direction = 'imessage_to_email'
+                   AND m.message_timestamp = penguin_connect_sync_state.last_imessage_ts
+                 ORDER BY CAST(json_extract(m.metadata, '$.native_message_id') AS INTEGER) DESC, m.id DESC
+                 LIMIT 1
+               )
+               WHERE last_imessage_native_message_id IS NULL
+                 AND last_imessage_ts IS NOT NULL"""
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_penguin_connect_sync_bootstrap ON penguin_connect_sync_state(initial_sync_completed_at)"

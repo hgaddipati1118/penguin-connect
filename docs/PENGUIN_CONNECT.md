@@ -196,6 +196,8 @@ The incremental watcher and startup worker now lease only their own queued job m
 
 If startup catch-up or backfill is actively importing iMessage history, PenguinConnect now checks for a queued incremental job after every 5 successful Gmail imports and yields early when fresh hot-work is waiting. Override that chunk size with `PENGUIN_CONNECT_STARTUP_INCREMENTAL_PREEMPTION_IMPORT_COUNT`.
 
+When that yield happens during an initial Apple Messages bootstrap, the next startup/backfill pass resumes from the saved `(last_imessage_ts, last_imessage_native_message_id)` cursor instead of rescanning the conversation from the beginning.
+
 Queue, selection, and per-message sync state are committed before PenguinConnect moves on to the next remote Gmail or Apple Messages call. That keeps the concurrent startup and watcher lanes from holding SQLite write locks across network waits or send retries.
 
 When Gmail returns a rate limit cooldown, PenguinConnect now requeues the current sync job for the cooldown window instead of counting that pause as a failed sync attempt. Expect queued jobs with `last_error=gmail_rate_limited` during those windows.

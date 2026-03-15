@@ -412,7 +412,20 @@ def _iso_to_apple_ns(iso_ts):
         return None
 
 
-def fetch_imessage_messages(chat_id, limit=50, since=None):
+def _native_message_rowid(value):
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    if ":" in raw:
+        raw = raw.rsplit(":", 1)[-1].strip()
+    try:
+        rowid = int(raw)
+    except Exception:
+        return None
+    return rowid if rowid > 0 else None
+
+
+def fetch_imessage_messages(chat_id, limit=50, since=None, since_native_message_id=None):
     if not os.path.exists(IMESSAGE_DB):
         return []
 
@@ -424,14 +437,23 @@ def fetch_imessage_messages(chat_id, limit=50, since=None):
             return []
 
         since_ns = _iso_to_apple_ns(since)
-        date_filter = "AND m.date > ?" if since_ns else ""
+        since_rowid = _native_message_rowid(since_native_message_id)
+        if since_ns and since_rowid:
+            date_filter = "AND (m.date > ? OR (m.date = ? AND m.ROWID > ?))"
+        elif since_ns:
+            date_filter = "AND m.date > ?"
+        else:
+            date_filter = ""
         limit_clause = "LIMIT ?"
         order_direction = "ASC" if since_ns else "DESC"
 
         safe_limit = max(1, min(int(limit or 50), 1000))
         params = [chat_rowid]
         if since_ns:
-            params.append(since_ns)
+            if since_rowid:
+                params.extend([since_ns, since_ns, since_rowid])
+            else:
+                params.append(since_ns)
         params.append(safe_limit)
 
         cur.execute(
@@ -453,7 +475,7 @@ def fetch_imessage_messages(chat_id, limit=50, since=None):
               AND ((m.text IS NOT NULL AND m.text != '')
                    OR m.attributedBody IS NOT NULL
                    OR maj.attachment_id IS NOT NULL)
-            ORDER BY m.date {order_direction}
+            ORDER BY m.date {order_direction}, m.ROWID {order_direction}
             {limit_clause}
             """,
             params,

@@ -319,8 +319,13 @@ def list_recent_imessage_chat_activity(since, limit=500):
     return _IMESSAGE_CHANNEL.list_recent_activity(since, limit=limit)
 
 
-def fetch_imessage_messages(chat_id, limit=50, since=None):
-    return _IMESSAGE_CHANNEL.fetch_messages(chat_id, limit=limit, since=since)
+def fetch_imessage_messages(chat_id, limit=50, since=None, since_native_message_id=None):
+    return _IMESSAGE_CHANNEL.fetch_messages(
+        chat_id,
+        limit=limit,
+        since=since,
+        since_native_message_id=since_native_message_id,
+    )
 
 
 def send_imessage(
@@ -1776,7 +1781,7 @@ def _load_conversations_by_ids(conn: sqlite3.Connection, conversation_ids: set[s
 
 def _merge_sync_state_into_target(conn: sqlite3.Connection, source_id: str, target_id: str) -> None:
     source_state = conn.execute(
-        """SELECT last_imessage_ts, last_gmail_ts, last_gmail_history_id,
+        """SELECT last_imessage_ts, last_imessage_native_message_id, last_gmail_ts, last_gmail_history_id,
                   pending_gmail_activity_at, initial_sync_completed_at
            FROM penguin_connect_sync_state
            WHERE conversation_id = ?""",
@@ -1789,6 +1794,7 @@ def _merge_sync_state_into_target(conn: sqlite3.Connection, source_id: str, targ
         conn,
         target_id,
         source_state["last_imessage_ts"],
+        source_state["last_imessage_native_message_id"],
         source_state["last_gmail_ts"],
         source_state["last_gmail_history_id"],
         pending_gmail_activity_at=source_state["pending_gmail_activity_at"],
@@ -3557,6 +3563,43 @@ def _provider_message_id_for_imessage(msg: dict[str, Any]) -> str:
     return f"imessage:{hashlib.sha1(payload.encode('utf-8')).hexdigest()}"
 
 
+def _imessage_native_message_sort_value(value: Optional[str]) -> int:
+    raw = (value or "").strip()
+    if not raw:
+        return -1
+    if ":" in raw:
+        raw = raw.rsplit(":", 1)[-1].strip()
+    try:
+        return int(raw)
+    except Exception:
+        return -1
+
+
+def _merge_imessage_sync_cursor(
+    existing_ts: Optional[str],
+    existing_native_message_id: Optional[str],
+    candidate_ts: Optional[str],
+    candidate_native_message_id: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    existing_dt = _parse_iso(existing_ts)
+    candidate_dt = _parse_iso(candidate_ts)
+    if existing_dt and candidate_dt:
+        if candidate_dt > existing_dt:
+            return candidate_ts, candidate_native_message_id
+        if existing_dt > candidate_dt:
+            return existing_ts, existing_native_message_id
+        if _imessage_native_message_sort_value(candidate_native_message_id) > _imessage_native_message_sort_value(
+            existing_native_message_id
+        ):
+            return candidate_ts, candidate_native_message_id
+        return existing_ts, existing_native_message_id
+    if candidate_dt:
+        return candidate_ts, candidate_native_message_id
+    if existing_dt:
+        return existing_ts, existing_native_message_id
+    return candidate_ts or existing_ts, candidate_native_message_id or existing_native_message_id
+
+
 def _render_message_text_html(text: str) -> str:
     normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n")
     if not normalized.strip():
@@ -4118,6 +4161,7 @@ def _upsert_sync_state(
     conn: sqlite3.Connection,
     conversation_id: str,
     last_imessage_ts: Optional[str],
+    last_imessage_native_message_id: Optional[str],
     last_gmail_ts: Optional[str],
     last_gmail_history_id: Optional[str],
     pending_gmail_activity_at: Optional[str] = None,
@@ -4135,14 +4179,19 @@ def _upsert_sync_state(
 
     last_message_ts = _max_iso(last_imessage_ts, last_gmail_ts)
     existing = conn.execute(
-        """SELECT last_imessage_ts, last_gmail_ts, last_message_ts,
+        """SELECT last_imessage_ts, last_imessage_native_message_id, last_gmail_ts, last_message_ts,
                   last_gmail_history_id, pending_gmail_activity_at
            FROM penguin_connect_sync_state
            WHERE conversation_id = ?""",
         (conversation_id,),
     ).fetchone()
     if existing:
-        last_imessage_ts = _max_iso(existing["last_imessage_ts"], last_imessage_ts)
+        last_imessage_ts, last_imessage_native_message_id = _merge_imessage_sync_cursor(
+            existing["last_imessage_ts"],
+            existing["last_imessage_native_message_id"],
+            last_imessage_ts,
+            last_imessage_native_message_id,
+        )
         last_gmail_ts = _max_iso(existing["last_gmail_ts"], last_gmail_ts)
         last_message_ts = _max_iso(existing["last_message_ts"], _max_iso(last_imessage_ts, last_gmail_ts))
         if not last_gmail_history_id:
@@ -4151,11 +4200,12 @@ def _upsert_sync_state(
 
     conn.execute(
         """INSERT INTO penguin_connect_sync_state
-           (conversation_id, last_imessage_ts, last_gmail_ts, last_message_ts,
+           (conversation_id, last_imessage_ts, last_imessage_native_message_id, last_gmail_ts, last_message_ts,
             last_gmail_history_id, pending_gmail_activity_at, last_synced_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+           VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
            ON CONFLICT(conversation_id) DO UPDATE SET
              last_imessage_ts = excluded.last_imessage_ts,
+             last_imessage_native_message_id = excluded.last_imessage_native_message_id,
              last_gmail_ts = excluded.last_gmail_ts,
              last_message_ts = excluded.last_message_ts,
              last_gmail_history_id = excluded.last_gmail_history_id,
@@ -4165,6 +4215,7 @@ def _upsert_sync_state(
         (
             conversation_id,
             last_imessage_ts,
+            last_imessage_native_message_id,
             last_gmail_ts,
             last_message_ts,
             last_gmail_history_id,
@@ -4611,6 +4662,7 @@ def _fetch_apple_messages_messages_for_conversation(
     *,
     limit: int,
     since: Optional[str],
+    since_native_message_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     safe_limit = max(1, min(int(limit or 50), 1000))
     route_ids = _apple_messages_chat_routes_for_conversation(conv)
@@ -4620,7 +4672,12 @@ def _fetch_apple_messages_messages_for_conversation(
     merged: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     for chat_id in route_ids:
-        for message in fetch_imessage_messages(chat_id, limit=safe_limit, since=since):
+        for message in fetch_imessage_messages(
+            chat_id,
+            limit=safe_limit,
+            since=since,
+            since_native_message_id=since_native_message_id,
+        ):
             routed_message = dict(message)
             routed_message["chat_id"] = chat_id
             provider_message_id = _provider_message_id_for_imessage(routed_message)
@@ -4629,7 +4686,12 @@ def _fetch_apple_messages_messages_for_conversation(
             seen_ids.add(provider_message_id)
             merged.append(routed_message)
 
-    merged.sort(key=lambda message: message.get("timestamp") or "")
+    merged.sort(
+        key=lambda message: (
+            message.get("timestamp") or "",
+            _imessage_native_message_sort_value(message.get("native_message_id")),
+        )
+    )
     if len(merged) > safe_limit:
         merged = merged[:safe_limit]
     return merged
@@ -4666,10 +4728,11 @@ def _sync_conversation_imessage_to_gmail(
 
     cutoff = _parse_iso(cutoff_iso) or _sync_window_cutoff(days, hours)
     since = None
+    since_native_message_id = state["last_imessage_native_message_id"] if state else None
     if verify_all:
         since = FULL_IMESSAGE_SYNC_SINCE
     elif _conversation_needs_initial_bootstrap(state):
-        since = FULL_IMESSAGE_SYNC_SINCE
+        since = state["last_imessage_ts"] if state and state["last_imessage_ts"] else FULL_IMESSAGE_SYNC_SINCE
     elif mode == "backfill":
         since = cutoff.isoformat()
     elif state and state["last_imessage_ts"]:
@@ -4694,12 +4757,14 @@ def _sync_conversation_imessage_to_gmail(
             gmail_write_pause_seconds=gmail_write_pause_seconds,
         )
     last_ts = state["last_imessage_ts"] if state else None
+    last_native_message_id = since_native_message_id
     thread_id = _resolve_canonical_gmail_thread_id(conn, conv["conversation_id"], thread_id or conv["gmail_thread_id"]) or thread_id
     parent_rfc_message_id, reference_chain = _load_conversation_rfc_context(
         conn, conv["conversation_id"], preferred_thread_id=thread_id
     )
 
     next_since = since
+    next_since_native_message_id = since_native_message_id
     batch_size = 500
     saw_messages = False
     eligible_message_count = 0
@@ -4709,11 +4774,22 @@ def _sync_conversation_imessage_to_gmail(
     preempt_check_count = _startup_incremental_preemption_import_count()
 
     while True:
-        messages = _fetch_apple_messages_messages_for_conversation(conv, limit=batch_size, since=next_since)
+        messages = _fetch_apple_messages_messages_for_conversation(
+            conv,
+            limit=batch_size,
+            since=next_since,
+            since_native_message_id=next_since_native_message_id,
+        )
         if not messages:
             break
         saw_messages = True
-        messages = sorted(messages, key=lambda m: m.get("timestamp") or "")
+        messages = sorted(
+            messages,
+            key=lambda m: (
+                m.get("timestamp") or "",
+                _imessage_native_message_sort_value(m.get("native_message_id")),
+            ),
+        )
 
         for msg in messages:
             ts = msg.get("timestamp")
@@ -4746,11 +4822,21 @@ def _sync_conversation_imessage_to_gmail(
                     conn.commit()
             if existing and existing["gmail_message_id"]:
                 thread_id = existing["gmail_thread_id"] or thread_id
-                last_ts = max(last_ts or ts, ts)
+                last_ts, last_native_message_id = _merge_imessage_sync_cursor(
+                    last_ts,
+                    last_native_message_id,
+                    ts,
+                    msg.get("native_message_id"),
+                )
                 continue
             if existing:
                 # Existing pending messages are handled by the retry queue with backoff.
-                last_ts = max(last_ts or ts, ts)
+                last_ts, last_native_message_id = _merge_imessage_sync_cursor(
+                    last_ts,
+                    last_native_message_id,
+                    ts,
+                    msg.get("native_message_id"),
+                )
                 continue
 
             is_from_me = 1 if msg.get("is_from_me") else 0
@@ -4816,7 +4902,12 @@ def _sync_conversation_imessage_to_gmail(
                 ),
             )
             if cursor.rowcount <= 0:
-                last_ts = max(last_ts or ts, ts)
+                last_ts, last_native_message_id = _merge_imessage_sync_cursor(
+                    last_ts,
+                    last_native_message_id,
+                    ts,
+                    msg.get("native_message_id"),
+                )
                 continue
             stored += 1
             # Persist the pending row before the remote Gmail import so this
@@ -4868,7 +4959,12 @@ def _sync_conversation_imessage_to_gmail(
                     **message_fingerprint(text),
                 )
                 conn.commit()
-                last_ts = max(last_ts or ts, ts)
+                last_ts, last_native_message_id = _merge_imessage_sync_cursor(
+                    last_ts,
+                    last_native_message_id,
+                    ts,
+                    msg.get("native_message_id"),
+                )
                 continue
             imported_data, import_error, recovered_thread_id = _import_message_to_gmail_with_thread_recovery(
                 gmail_service,
@@ -4931,7 +5027,12 @@ def _sync_conversation_imessage_to_gmail(
                 )
 
             conn.commit()
-            last_ts = max(last_ts or ts, ts)
+            last_ts, last_native_message_id = _merge_imessage_sync_cursor(
+                last_ts,
+                last_native_message_id,
+                ts,
+                msg.get("native_message_id"),
+            )
             if (
                 mode in {"backfill", "startup_catchup"}
                 and imported > 0
@@ -4946,9 +5047,14 @@ def _sync_conversation_imessage_to_gmail(
         if not verify_all or len(messages) < batch_size:
             break
         batch_last_ts = messages[-1].get("timestamp")
-        if not batch_last_ts or batch_last_ts == next_since:
+        batch_last_native_message_id = messages[-1].get("native_message_id")
+        if not batch_last_ts or (
+            batch_last_ts == next_since
+            and (batch_last_native_message_id or "") == (next_since_native_message_id or "")
+        ):
             break
         next_since = batch_last_ts
+        next_since_native_message_id = batch_last_native_message_id
 
     if verify_all:
         retried_imported, retried_thread_id = _retry_pending_imessage_to_gmail(
@@ -4982,7 +5088,14 @@ def _sync_conversation_imessage_to_gmail(
             (canonical_thread_id, conv["conversation_id"]),
         )
 
-    _upsert_sync_state(conn, conv["conversation_id"], last_ts if saw_messages else (None if verify_all else since), None, None)
+    _upsert_sync_state(
+        conn,
+        conv["conversation_id"],
+        last_ts if saw_messages else (None if verify_all else since),
+        last_native_message_id,
+        None,
+        None,
+    )
 
     _reconcile_conversation_gmail_read_state(conn, gmail_service, conv["conversation_id"], unread_count)
 
@@ -6127,7 +6240,7 @@ def _sync_conversation_gmail_to_imessage(
             _apply_canonical_thread_reconciliation(conn, conv["conversation_id"], canonical_thread_id)
             conn.commit()
             deleted_alias_drafts = _cleanup_stale_alias_drafts(conn, gmail_service, conv, canonical_thread_id)
-        _upsert_sync_state(conn, conv["conversation_id"], None, None if verify_all else since, None)
+        _upsert_sync_state(conn, conv["conversation_id"], None, None, None if verify_all else since, None)
         _clear_pending_gmail_activity_if_caught_up(conn, conv["conversation_id"], force=True)
         return {
             "email_to_imessage": converted,
@@ -6721,7 +6834,7 @@ def _sync_conversation_gmail_to_imessage(
         conn.commit()
         deleted_alias_drafts = _cleanup_stale_alias_drafts(conn, gmail_service, conv, canonical_thread_id)
 
-    _upsert_sync_state(conn, conv["conversation_id"], None, last_gmail_ts, history_id)
+    _upsert_sync_state(conn, conv["conversation_id"], None, None, last_gmail_ts, history_id)
     _clear_pending_gmail_activity_if_caught_up(conn, conv["conversation_id"])
     return {
         "email_to_imessage": converted,

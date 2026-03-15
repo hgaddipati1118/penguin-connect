@@ -31,8 +31,19 @@ class IMessageChannelAdapter:
     def list_recent_activity(self, since: str, limit: int = 500) -> dict[str, Any]:
         return list_recent_imessage_chat_activity(since, limit=limit)
 
-    def fetch_messages(self, chat_id: str, limit: int = 50, since: Optional[str] = None) -> list[dict[str, Any]]:
-        return fetch_imessage_messages(chat_id, limit=limit, since=since)
+    def fetch_messages(
+        self,
+        chat_id: str,
+        limit: int = 50,
+        since: Optional[str] = None,
+        since_native_message_id: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        return fetch_imessage_messages(
+            chat_id,
+            limit=limit,
+            since=since,
+            since_native_message_id=since_native_message_id,
+        )
 
     def send_message(
         self,

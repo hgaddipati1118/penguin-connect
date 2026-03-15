@@ -415,17 +415,31 @@ class PenguinConnectTests(unittest.TestCase):
         cid = "amc_test"
         newer = "2026-03-04T10:00:00+00:00"
         older = "2026-03-03T10:00:00+00:00"
-        penguin_connect._upsert_sync_state(self.conn, cid, newer, newer, "123")
-        penguin_connect._upsert_sync_state(self.conn, cid, older, older, None)
+        penguin_connect._upsert_sync_state(self.conn, cid, newer, "101", newer, "123")
+        penguin_connect._upsert_sync_state(self.conn, cid, older, "99", older, None)
 
         state = self.conn.execute(
-            "SELECT last_imessage_ts, last_gmail_ts, last_message_ts, last_gmail_history_id FROM penguin_connect_sync_state WHERE conversation_id = ?",
+            "SELECT last_imessage_ts, last_imessage_native_message_id, last_gmail_ts, last_message_ts, last_gmail_history_id FROM penguin_connect_sync_state WHERE conversation_id = ?",
             (cid,),
         ).fetchone()
         self.assertEqual(state["last_imessage_ts"], newer)
+        self.assertEqual(state["last_imessage_native_message_id"], "101")
         self.assertEqual(state["last_gmail_ts"], newer)
         self.assertEqual(state["last_message_ts"], newer)
         self.assertEqual(state["last_gmail_history_id"], "123")
+
+    def test_upsert_sync_state_keeps_higher_native_cursor_for_equal_timestamp(self):
+        cid = "amc_test"
+        same_ts = "2026-03-04T10:00:00+00:00"
+        penguin_connect._upsert_sync_state(self.conn, cid, same_ts, "101", None, None)
+        penguin_connect._upsert_sync_state(self.conn, cid, same_ts, "102", None, None)
+
+        state = self.conn.execute(
+            "SELECT last_imessage_ts, last_imessage_native_message_id FROM penguin_connect_sync_state WHERE conversation_id = ?",
+            (cid,),
+        ).fetchone()
+        self.assertEqual(state["last_imessage_ts"], same_ts)
+        self.assertEqual(state["last_imessage_native_message_id"], "102")
 
     def test_initial_sync_bootstrapped_requires_completed_initial_sync(self):
         self.conn.execute(
@@ -1561,6 +1575,7 @@ class PenguinConnectTests(unittest.TestCase):
         penguin_connect._upsert_sync_state(
             self.conn,
             first_selected_id,
+            None,
             None,
             "2026-03-07T07:15:00+00:00" if first_selected_id == "amc_test" else "2026-03-07T07:16:00+00:00",
             None,
@@ -2756,6 +2771,90 @@ class PenguinConnectTests(unittest.TestCase):
             ("amc_test",),
         ).fetchone()[0]
         self.assertEqual(count, 5)
+
+    def test_startup_catchup_partial_bootstrap_resumes_from_native_cursor(self):
+        conv = self._conversation_row()
+        gmail_service = mock.Mock()
+        same_ts = "2026-03-04T09:00:00+00:00"
+        first_msg = {
+            "text": "first",
+            "timestamp": same_ts,
+            "is_from_me": False,
+            "handle": "+14155550111",
+            "attachments": [],
+            "native_message_id": "1",
+        }
+        second_msg = {
+            "text": "second",
+            "timestamp": same_ts,
+            "is_from_me": False,
+            "handle": "+14155550111",
+            "attachments": [],
+            "native_message_id": "2",
+        }
+        fetch_calls: list[tuple[object, object]] = []
+
+        def fake_fetch(_chat_id, limit=50, since=None, since_native_message_id=None):
+            fetch_calls.append((since, since_native_message_id))
+            if since_native_message_id in (None, ""):
+                return [first_msg, second_msg]
+            if since_native_message_id == "1":
+                return [second_msg]
+            return []
+
+        import_side_effect = [
+            ({"id": "gm-1", "threadId": "th-resume"}, None, "th-resume"),
+            ({"id": "gm-2", "threadId": "th-resume"}, None, "th-resume"),
+        ]
+
+        with mock.patch.dict(
+            os.environ,
+            {"PENGUIN_CONNECT_STARTUP_INCREMENTAL_PREEMPTION_IMPORT_COUNT": "1"},
+            clear=False,
+        ), mock.patch(
+            "penguin_connect.fetch_imessage_messages",
+            side_effect=fake_fetch,
+        ), mock.patch(
+            "penguin_connect._get_imessage_unread_count", return_value=0
+        ), mock.patch(
+            "penguin_connect._build_import_email", return_value=b"raw"
+        ), mock.patch(
+            "penguin_connect._import_message_to_gmail_with_thread_recovery",
+            side_effect=import_side_effect,
+        ), mock.patch(
+            "penguin_connect._sleep_after_gmail_write"
+        ), mock.patch(
+            "penguin_connect._ready_incremental_sync_job_waiting",
+            side_effect=[True, False, False],
+        ):
+            first_result = penguin_connect._sync_conversation_imessage_to_gmail(
+                self.conn,
+                gmail_service,
+                conv,
+                mode="startup_catchup",
+                days=7,
+            )
+            second_result = penguin_connect._sync_conversation_imessage_to_gmail(
+                self.conn,
+                gmail_service,
+                conv,
+                mode="startup_catchup",
+                days=7,
+            )
+
+        self.assertTrue(first_result["preempted_for_incremental"])
+        self.assertEqual(first_result["gmail_imported"], 1)
+        self.assertFalse(second_result["preempted_for_incremental"])
+        self.assertEqual(second_result["gmail_imported"], 1)
+        self.assertEqual(fetch_calls[1], (same_ts, "1"))
+        state = self.conn.execute(
+            """SELECT last_imessage_ts, last_imessage_native_message_id
+               FROM penguin_connect_sync_state
+               WHERE conversation_id = ?""",
+            ("amc_test",),
+        ).fetchone()
+        self.assertEqual(state["last_imessage_ts"], same_ts)
+        self.assertEqual(state["last_imessage_native_message_id"], "2")
 
     def test_imessage_sync_recovers_thread_by_parent_rfc_message_id(self):
         self.conn.execute(

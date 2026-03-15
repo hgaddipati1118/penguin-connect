@@ -1513,6 +1513,92 @@ class SyncIntegrationTests(unittest.TestCase):
         self.assertIn("gmail_rate_limit_streak", columns)
         self.assertEqual(row["gmail_rate_limit_streak"], 0)
 
+    def test_init_db_backfills_last_imessage_native_message_id_for_existing_sync_rows(self):
+        conn = db.get_connection()
+        conn.close()
+        if db.DB_PATH.exists():
+            db.DB_PATH.unlink()
+
+        legacy_schema = db.SCHEMA.replace("    last_imessage_native_message_id TEXT,\n", "")
+
+        raw_conn = sqlite3.connect(str(db.DB_PATH))
+        try:
+            raw_conn.executescript(legacy_schema)
+            raw_conn.execute(
+                """INSERT INTO penguin_connect_conversations
+                   (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants, alias_email, status)
+                   VALUES (?, 'imessage', ?, ?, ?, 'group', '[]', ?, 'active')""",
+                ("owner@gmail.com", "amc_resume_cursor", "chat-resume", "Resume Cursor", "owner+resume@gmail.com"),
+            )
+            same_ts = "2026-03-04T10:00:00+00:00"
+            raw_conn.execute(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction, sender_email, sender_name, subject,
+                    body_text, message_timestamp, is_read, metadata)
+                   VALUES (?, 'imessage', ?, 'imessage_to_email', ?, ?, ?, ?, ?, 1, ?)""",
+                (
+                    "amc_resume_cursor",
+                    "imessage:1",
+                    "owner+resume@gmail.com",
+                    "Sender",
+                    "Subject",
+                    "first",
+                    same_ts,
+                    json.dumps({"native_message_id": "1"}),
+                ),
+            )
+            raw_conn.execute(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction, sender_email, sender_name, subject,
+                    body_text, message_timestamp, is_read, metadata)
+                   VALUES (?, 'imessage', ?, 'imessage_to_email', ?, ?, ?, ?, ?, 1, ?)""",
+                (
+                    "amc_resume_cursor",
+                    "imessage:2",
+                    "owner+resume@gmail.com",
+                    "Sender",
+                    "Subject",
+                    "second",
+                    same_ts,
+                    json.dumps({"native_message_id": "2"}),
+                ),
+            )
+            raw_conn.execute(
+                """INSERT INTO penguin_connect_sync_state
+                   (conversation_id, last_imessage_ts, last_gmail_ts, last_message_ts, last_synced_at, updated_at)
+                   VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
+                ("amc_resume_cursor", same_ts, None, same_ts),
+            )
+            raw_conn.commit()
+        finally:
+            raw_conn.close()
+
+        db.init_db()
+
+        migrated_conn = db.get_connection()
+        try:
+            columns = {
+                row["name"] for row in migrated_conn.execute("PRAGMA table_info(penguin_connect_sync_state)").fetchall()
+            }
+            conv = migrated_conn.execute(
+                """SELECT conversation_id
+                   FROM penguin_connect_conversations
+                   WHERE display_name = ?""",
+                ("Resume Cursor",),
+            ).fetchone()
+            row = migrated_conn.execute(
+                """SELECT last_imessage_ts, last_imessage_native_message_id
+                   FROM penguin_connect_sync_state
+                   WHERE conversation_id = ?""",
+                (conv["conversation_id"],),
+            ).fetchone()
+        finally:
+            migrated_conn.close()
+
+        self.assertIn("last_imessage_native_message_id", columns)
+        self.assertEqual(row["last_imessage_ts"], same_ts)
+        self.assertEqual(row["last_imessage_native_message_id"], "2")
+
     def test_init_db_migrates_apple_messages_routes_to_guid_and_service_provider(self):
         conn = db.get_connection()
         conn.close()
