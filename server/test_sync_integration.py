@@ -1465,6 +1465,54 @@ class SyncIntegrationTests(unittest.TestCase):
         self.assertEqual(row["exclude_from_sync"], 0)
         self.assertIn("idx_penguin_connect_conv_excluded", indexes)
 
+    def test_init_db_adds_gmail_rate_limit_streak_to_existing_poll_state_table(self):
+        conn = db.get_connection()
+        conn.close()
+
+        legacy_schema = db.SCHEMA.replace("    gmail_rate_limit_streak INTEGER NOT NULL DEFAULT 0,\n", "")
+
+        raw_conn = sqlite3.connect(str(db.DB_PATH))
+        try:
+            raw_conn.executescript(legacy_schema)
+            raw_conn.execute(
+                """INSERT INTO penguin_connect_accounts
+                   (gmail_email, keychain_service, send_as_aliases, status)
+                   VALUES (?, ?, ?, 'connected')""",
+                (
+                    "owner@gmail.com",
+                    "penguinconnect-local-bridge.gmail.owner@gmail.com",
+                    '["owner@gmail.com"]',
+                ),
+            )
+            raw_conn.execute(
+                """INSERT INTO penguin_connect_poll_state
+                   (gmail_email, gmail_rate_limited_until)
+                   VALUES (?, ?)""",
+                ("owner@gmail.com", "2026-03-14T00:00:00+00:00"),
+            )
+            raw_conn.commit()
+        finally:
+            raw_conn.close()
+
+        db.init_db()
+
+        migrated_conn = db.get_connection()
+        try:
+            columns = {
+                row["name"] for row in migrated_conn.execute("PRAGMA table_info(penguin_connect_poll_state)").fetchall()
+            }
+            row = migrated_conn.execute(
+                """SELECT gmail_rate_limit_streak
+                   FROM penguin_connect_poll_state
+                   WHERE gmail_email = ?""",
+                ("owner@gmail.com",),
+            ).fetchone()
+        finally:
+            migrated_conn.close()
+
+        self.assertIn("gmail_rate_limit_streak", columns)
+        self.assertEqual(row["gmail_rate_limit_streak"], 0)
+
     def test_init_db_migrates_apple_messages_routes_to_guid_and_service_provider(self):
         conn = db.get_connection()
         conn.close()

@@ -83,6 +83,7 @@ DEFAULT_GMAIL_ACTIVITY_BACKSTOP_MAX_MESSAGES = 250
 DEFAULT_GMAIL_API_MAX_RETRIES = 3
 DEFAULT_GMAIL_API_MAX_BACKOFF_SECONDS = 30
 DEFAULT_GMAIL_RATE_LIMIT_PAUSE_SECONDS = 120
+DEFAULT_GMAIL_RATE_LIMIT_MAX_PAUSE_SECONDS = 30 * 60
 DEFAULT_SEND_AS_REFRESH_SECONDS = 6 * 60 * 60
 DEFAULT_GMAIL_BACKFILL_WRITE_PAUSE_SECONDS = 0.15
 MAX_GMAIL_BACKFILL_WRITE_PAUSE_SECONDS = 5.0
@@ -412,6 +413,16 @@ def _gmail_rate_limit_pause_seconds() -> int:
     return _env_int("PENGUIN_CONNECT_GMAIL_RATE_LIMIT_PAUSE_SECONDS", DEFAULT_GMAIL_RATE_LIMIT_PAUSE_SECONDS, 10, 3600)
 
 
+def _gmail_rate_limit_max_pause_seconds() -> int:
+    minimum = _gmail_rate_limit_pause_seconds()
+    return _env_int(
+        "PENGUIN_CONNECT_GMAIL_RATE_LIMIT_MAX_PAUSE_SECONDS",
+        DEFAULT_GMAIL_RATE_LIMIT_MAX_PAUSE_SECONDS,
+        minimum,
+        24 * 3600,
+    )
+
+
 def _send_as_refresh_seconds() -> int:
     return DEFAULT_SEND_AS_REFRESH_SECONDS
 
@@ -480,6 +491,7 @@ def _upsert_poll_state(
     *,
     last_gmail_history_id=_UNSET,
     gmail_rate_limited_until=_UNSET,
+    gmail_rate_limit_streak=_UNSET,
 ):
     gmail_email = _normalize_email(gmail_email)
     existing = _get_poll_state(conn, gmail_email)
@@ -488,20 +500,25 @@ def _upsert_poll_state(
             last_gmail_history_id = existing["last_gmail_history_id"]
         if gmail_rate_limited_until is _UNSET:
             gmail_rate_limited_until = existing["gmail_rate_limited_until"]
+        if gmail_rate_limit_streak is _UNSET:
+            gmail_rate_limit_streak = existing["gmail_rate_limit_streak"] if "gmail_rate_limit_streak" in existing.keys() else 0
     else:
         if last_gmail_history_id is _UNSET:
             last_gmail_history_id = None
         if gmail_rate_limited_until is _UNSET:
             gmail_rate_limited_until = None
+        if gmail_rate_limit_streak is _UNSET:
+            gmail_rate_limit_streak = 0
     conn.execute(
         """INSERT INTO penguin_connect_poll_state
-           (gmail_email, last_gmail_history_id, gmail_rate_limited_until, created_at, updated_at)
-           VALUES (?, ?, ?, datetime('now'), datetime('now'))
+           (gmail_email, last_gmail_history_id, gmail_rate_limited_until, gmail_rate_limit_streak, created_at, updated_at)
+           VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
            ON CONFLICT(gmail_email) DO UPDATE SET
              last_gmail_history_id = excluded.last_gmail_history_id,
              gmail_rate_limited_until = excluded.gmail_rate_limited_until,
+             gmail_rate_limit_streak = excluded.gmail_rate_limit_streak,
              updated_at = datetime('now')""",
-        (gmail_email, last_gmail_history_id, gmail_rate_limited_until),
+        (gmail_email, last_gmail_history_id, gmail_rate_limited_until, gmail_rate_limit_streak),
     )
 
 
@@ -512,11 +529,76 @@ def _clear_gmail_rate_limit_pause(conn: sqlite3.Connection, gmail_email: str):
     _upsert_poll_state(conn, gmail_email, gmail_rate_limited_until=None)
 
 
-def _set_gmail_rate_limit_pause(conn: sqlite3.Connection, gmail_email: str, retry_after_seconds: Optional[int]) -> str:
-    pause_seconds = max(_gmail_rate_limit_pause_seconds(), int(retry_after_seconds or 0))
+def _gmail_rate_limit_streak(poll_state: Optional[sqlite3.Row]) -> int:
+    if not poll_state:
+        return 0
+    try:
+        return max(0, int(poll_state["gmail_rate_limit_streak"] if "gmail_rate_limit_streak" in poll_state.keys() else 0))
+    except Exception:
+        return 0
+
+
+def _gmail_rate_limit_pause_for_streak(streak: int, retry_after_seconds: Optional[int]) -> int:
+    base_pause = _gmail_rate_limit_pause_seconds()
+    max_pause = _gmail_rate_limit_max_pause_seconds()
+    effective_streak = max(0, min(int(streak or 0) - 1, 16))
+    adaptive_pause = min(base_pause * (2 ** effective_streak), max_pause)
+    return max(int(retry_after_seconds or 0), adaptive_pause)
+
+
+def _gmail_backfill_write_pause_for_streak(streak: int) -> float:
+    base_pause = _gmail_backfill_write_pause_seconds()
+    if streak <= 0:
+        return base_pause
+    effective_streak = max(0, min(int(streak), 16))
+    return min(base_pause * (2 ** effective_streak), MAX_GMAIL_BACKFILL_WRITE_PAUSE_SECONDS)
+
+
+def _current_gmail_rate_limit_streak(conn: sqlite3.Connection, gmail_email: str) -> int:
+    return _gmail_rate_limit_streak(_get_poll_state(conn, gmail_email))
+
+
+def _record_gmail_sync_success(
+    conn: sqlite3.Connection,
+    gmail_email: str,
+    *,
+    wrote_to_gmail: bool,
+) -> None:
+    poll_state = _get_poll_state(conn, gmail_email)
+    if not poll_state:
+        return
+    current_streak = _gmail_rate_limit_streak(poll_state)
+    next_streak = 0 if wrote_to_gmail else max(0, current_streak - 1)
+    if next_streak == current_streak and not poll_state["gmail_rate_limited_until"]:
+        return
+    _upsert_poll_state(
+        conn,
+        gmail_email,
+        gmail_rate_limited_until=None,
+        gmail_rate_limit_streak=next_streak,
+    )
+
+
+def _set_gmail_rate_limit_pause(
+    conn: sqlite3.Connection,
+    gmail_email: str,
+    retry_after_seconds: Optional[int],
+) -> dict[str, Any]:
+    poll_state = _get_poll_state(conn, gmail_email)
+    streak = _gmail_rate_limit_streak(poll_state) + 1
+    pause_seconds = _gmail_rate_limit_pause_for_streak(streak, retry_after_seconds)
     paused_until = (datetime.now(timezone.utc) + timedelta(seconds=pause_seconds)).isoformat()
-    _upsert_poll_state(conn, gmail_email, gmail_rate_limited_until=paused_until)
-    return paused_until
+    _upsert_poll_state(
+        conn,
+        gmail_email,
+        gmail_rate_limited_until=paused_until,
+        gmail_rate_limit_streak=streak,
+    )
+    return {
+        "paused_until": paused_until,
+        "retry_after_seconds": pause_seconds,
+        "rate_limit_streak": streak,
+    }
 
 
 def _active_gmail_rate_limit_pause(conn: sqlite3.Connection, gmail_email: str) -> Optional[dict[str, Any]]:
@@ -531,6 +613,7 @@ def _active_gmail_rate_limit_pause(conn: sqlite3.Connection, gmail_email: str) -
     return {
         "paused_until": paused_until.isoformat(),
         "retry_after_seconds": max(1, int((paused_until - now_dt).total_seconds())),
+        "rate_limit_streak": _gmail_rate_limit_streak(poll_state),
     }
 
 
@@ -541,8 +624,9 @@ def _gmail_rate_limit_skip_result(
     gmail_email: str,
     retry_after_seconds: int,
     paused_until: str,
+    rate_limit_streak: Optional[int] = None,
 ) -> dict[str, Any]:
-    return {
+    result = {
         "success": True,
         "mode": mode,
         "days": days,
@@ -553,6 +637,9 @@ def _gmail_rate_limit_skip_result(
         "retry_after_seconds": retry_after_seconds,
         "rate_limited_until": paused_until,
     }
+    if rate_limit_streak is not None:
+        result["rate_limit_streak"] = max(0, int(rate_limit_streak))
+    return result
 
 
 def _extract_gmail_error_status(exc: Exception) -> Optional[int]:
@@ -916,9 +1003,17 @@ def _gmail_backfill_write_pause_seconds() -> float:
     )
 
 
-def _sync_gmail_write_pause_seconds(mode: str, verify_all: bool) -> float:
+def _sync_gmail_write_pause_seconds(
+    mode: str,
+    verify_all: bool,
+    *,
+    conn: Optional[sqlite3.Connection] = None,
+    gmail_email: Optional[str] = None,
+) -> float:
     normalized_mode = (mode or "").strip().lower()
     if verify_all or normalized_mode in {"backfill", "startup_catchup"}:
+        if conn is not None and gmail_email:
+            return _gmail_backfill_write_pause_for_streak(_current_gmail_rate_limit_streak(conn, gmail_email))
         return _gmail_backfill_write_pause_seconds()
     return 0.0
 
@@ -4310,7 +4405,12 @@ def _retry_pending_imessage_to_gmail_globally(
     imported_messages = 0
     retried_conversations = 0
     skipped_locked_conversations = 0
-    gmail_write_pause_seconds = _sync_gmail_write_pause_seconds(mode, verify_all)
+    gmail_write_pause_seconds = _sync_gmail_write_pause_seconds(
+        mode,
+        verify_all,
+        conn=conn,
+        gmail_email=gmail_email,
+    )
 
     for conv in rows:
         conversation_run_id = run_id or _new_sync_run_id(mode)
@@ -4462,7 +4562,12 @@ def _sync_conversation_imessage_to_gmail(
         since = cutoff.isoformat()
 
     stored = 0
-    gmail_write_pause_seconds = _sync_gmail_write_pause_seconds(mode, verify_all)
+    gmail_write_pause_seconds = _sync_gmail_write_pause_seconds(
+        mode,
+        verify_all,
+        conn=conn,
+        gmail_email=conv["gmail_email"],
+    )
     imported = 0
     thread_id = None
     if not verify_all:
@@ -6539,6 +6644,7 @@ def _sync_conversations_unlocked(
             gmail_email,
             pause["retry_after_seconds"],
             pause["paused_until"],
+            pause.get("rate_limit_streak"),
         )
 
     try:
@@ -6555,14 +6661,15 @@ def _sync_conversations_unlocked(
         )
         conn.commit()
     except _GmailRetryableError as exc:
-        paused_until = _set_gmail_rate_limit_pause(conn, gmail_email, exc.retry_after_seconds)
+        pause_state = _set_gmail_rate_limit_pause(conn, gmail_email, exc.retry_after_seconds)
         return _gmail_rate_limit_skip_result(
             mode,
             days,
             hours,
             gmail_email,
-            exc.retry_after_seconds,
-            paused_until,
+            pause_state["retry_after_seconds"],
+            pause_state["paused_until"],
+            pause_state["rate_limit_streak"],
         )
 
     verify_all_conversation_ids = set(selection.get("verify_all_conversation_ids", []))
@@ -6575,7 +6682,12 @@ def _sync_conversations_unlocked(
         "gmail_email": gmail_email,
         "primary_send_as": primary_send_as,
         "send_as_aliases": send_as_aliases,
-        "gmail_backfill_write_pause_seconds": _sync_gmail_write_pause_seconds(mode, verify_all),
+        "gmail_backfill_write_pause_seconds": _sync_gmail_write_pause_seconds(
+            mode,
+            verify_all,
+            conn=conn,
+            gmail_email=gmail_email,
+        ),
         "discovered_conversations": selection["discovered_conversations"],
         "selected_conversations": selection["selected_conversations"],
         "selection_strategy": selection["selection_strategy"],
@@ -6650,13 +6762,14 @@ def _sync_conversations_unlocked(
             )
         except _GmailRetryableError as exc:
             conn.rollback()
-            paused_until = _set_gmail_rate_limit_pause(conn, gmail_email, exc.retry_after_seconds)
+            pause_state = _set_gmail_rate_limit_pause(conn, gmail_email, exc.retry_after_seconds)
             stats.update(
                 {
                     "skipped": True,
                     "reason": "gmail_rate_limited",
-                    "retry_after_seconds": exc.retry_after_seconds,
-                    "rate_limited_until": paused_until,
+                    "retry_after_seconds": pause_state["retry_after_seconds"],
+                    "rate_limited_until": pause_state["paused_until"],
+                    "rate_limit_streak": pause_state["rate_limit_streak"],
                 }
             )
             log_action(
@@ -6665,8 +6778,8 @@ def _sync_conversations_unlocked(
                 success=True,
                 skipped=True,
                 reason="gmail_rate_limited",
-                retry_after_seconds=exc.retry_after_seconds,
-                rate_limited_until=paused_until,
+                retry_after_seconds=pause_state["retry_after_seconds"],
+                rate_limited_until=pause_state["paused_until"],
                 stats=stats,
             )
             _sync_runtime_finished(run_id, result=stats)
@@ -6829,13 +6942,14 @@ def _sync_conversations_unlocked(
                 )
             except _GmailRetryableError as exc:
                 conn.rollback()
-                paused_until = _set_gmail_rate_limit_pause(conn, gmail_email, exc.retry_after_seconds)
+                pause_state = _set_gmail_rate_limit_pause(conn, gmail_email, exc.retry_after_seconds)
                 stats.update(
                     {
                         "skipped": True,
                         "reason": "gmail_rate_limited",
-                        "retry_after_seconds": exc.retry_after_seconds,
-                        "rate_limited_until": paused_until,
+                        "retry_after_seconds": pause_state["retry_after_seconds"],
+                        "rate_limited_until": pause_state["paused_until"],
+                        "rate_limit_streak": pause_state["rate_limit_streak"],
                     }
                 )
                 log_action(
@@ -6844,8 +6958,8 @@ def _sync_conversations_unlocked(
                     success=True,
                     skipped=True,
                     reason="gmail_rate_limited",
-                    retry_after_seconds=exc.retry_after_seconds,
-                    rate_limited_until=paused_until,
+                    retry_after_seconds=pause_state["retry_after_seconds"],
+                    rate_limited_until=pause_state["paused_until"],
                     stats=stats,
                 )
                 _sync_runtime_finished(run_id, result=stats)
@@ -6883,7 +6997,12 @@ def _sync_conversations_unlocked(
         _sync_runtime_finished(run_id, error=str(exc).strip() or exc.__class__.__name__)
         raise
 
-    _clear_gmail_rate_limit_pause(conn, gmail_email)
+    _record_gmail_sync_success(
+        conn,
+        gmail_email,
+        wrote_to_gmail=bool(stats.get("gmail_imported")),
+    )
+    conn.commit()
     log_action("sync_run_result", mode=mode, success=True, stats=stats)
     _print_sync_terminal_summary(
         mode,

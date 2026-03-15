@@ -120,6 +120,7 @@ CREATE TABLE IF NOT EXISTS penguin_connect_poll_state (
     gmail_email TEXT PRIMARY KEY REFERENCES penguin_connect_accounts(gmail_email) ON DELETE CASCADE,
     last_gmail_history_id TEXT,
     gmail_rate_limited_until TEXT,
+    gmail_rate_limit_streak INTEGER NOT NULL DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -1283,6 +1284,9 @@ def init_db() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_penguin_connect_poll_rate_limit ON penguin_connect_poll_state(gmail_rate_limited_until)"
         )
+        poll_columns = {row[1] for row in conn.execute("PRAGMA table_info(penguin_connect_poll_state)").fetchall()}
+        if "gmail_rate_limit_streak" not in poll_columns:
+            conn.execute("ALTER TABLE penguin_connect_poll_state ADD COLUMN gmail_rate_limit_streak INTEGER NOT NULL DEFAULT 0")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_penguin_connect_jobs_finished ON penguin_connect_jobs(status, finished_at)"
         )

@@ -132,6 +132,91 @@ class PenguinConnectTests(unittest.TestCase):
             pause = penguin_connect._sync_gmail_write_pause_seconds("backfill", verify_all=False)
         self.assertEqual(pause, 0.8)
 
+    def test_backfill_gmail_write_pause_scales_with_rate_limit_streak(self):
+        self.conn.execute(
+            """INSERT INTO penguin_connect_poll_state
+               (gmail_email, gmail_rate_limit_streak)
+               VALUES (?, ?)""",
+            ("owner@gmail.com", 3),
+        )
+
+        pause = penguin_connect._sync_gmail_write_pause_seconds(
+            "startup_catchup",
+            verify_all=False,
+            conn=self.conn,
+            gmail_email="owner@gmail.com",
+        )
+
+        self.assertEqual(pause, 1.2)
+
+    def test_set_gmail_rate_limit_pause_escalates_by_streak(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PENGUIN_CONNECT_GMAIL_RATE_LIMIT_PAUSE_SECONDS": "30",
+                "PENGUIN_CONNECT_GMAIL_RATE_LIMIT_MAX_PAUSE_SECONDS": "90",
+            },
+            clear=False,
+        ):
+            first = penguin_connect._set_gmail_rate_limit_pause(self.conn, "owner@gmail.com", None)
+            second = penguin_connect._set_gmail_rate_limit_pause(self.conn, "owner@gmail.com", None)
+            third = penguin_connect._set_gmail_rate_limit_pause(self.conn, "owner@gmail.com", None)
+
+        self.assertEqual(first["retry_after_seconds"], 30)
+        self.assertEqual(first["rate_limit_streak"], 1)
+        self.assertEqual(second["retry_after_seconds"], 60)
+        self.assertEqual(second["rate_limit_streak"], 2)
+        self.assertEqual(third["retry_after_seconds"], 90)
+        self.assertEqual(third["rate_limit_streak"], 3)
+
+    def test_record_gmail_sync_success_resets_rate_limit_streak_after_write(self):
+        future_pause = (datetime.now(timezone.utc) + timedelta(seconds=120)).isoformat()
+        self.conn.execute(
+            """INSERT INTO penguin_connect_poll_state
+               (gmail_email, gmail_rate_limited_until, gmail_rate_limit_streak)
+               VALUES (?, ?, ?)""",
+            ("owner@gmail.com", future_pause, 4),
+        )
+
+        penguin_connect._record_gmail_sync_success(
+            self.conn,
+            "owner@gmail.com",
+            wrote_to_gmail=True,
+        )
+
+        row = self.conn.execute(
+            """SELECT gmail_rate_limited_until, gmail_rate_limit_streak
+               FROM penguin_connect_poll_state
+               WHERE gmail_email = ?""",
+            ("owner@gmail.com",),
+        ).fetchone()
+        self.assertIsNone(row["gmail_rate_limited_until"])
+        self.assertEqual(row["gmail_rate_limit_streak"], 0)
+
+    def test_record_gmail_sync_success_decays_rate_limit_streak_without_write(self):
+        future_pause = (datetime.now(timezone.utc) + timedelta(seconds=120)).isoformat()
+        self.conn.execute(
+            """INSERT INTO penguin_connect_poll_state
+               (gmail_email, gmail_rate_limited_until, gmail_rate_limit_streak)
+               VALUES (?, ?, ?)""",
+            ("owner@gmail.com", future_pause, 3),
+        )
+
+        penguin_connect._record_gmail_sync_success(
+            self.conn,
+            "owner@gmail.com",
+            wrote_to_gmail=False,
+        )
+
+        row = self.conn.execute(
+            """SELECT gmail_rate_limited_until, gmail_rate_limit_streak
+               FROM penguin_connect_poll_state
+               WHERE gmail_email = ?""",
+            ("owner@gmail.com",),
+        ).fetchone()
+        self.assertIsNone(row["gmail_rate_limited_until"])
+        self.assertEqual(row["gmail_rate_limit_streak"], 2)
+
     def test_startup_catchup_limit_defaults_to_all_pending_conversations(self):
         self.assertEqual(penguin_connect._startup_catchup_conversations_per_run(), 5)
 
@@ -4604,9 +4689,9 @@ class PenguinConnectTests(unittest.TestCase):
         future_pause = (datetime.now(timezone.utc) + timedelta(seconds=120)).isoformat()
         self.conn.execute(
             """INSERT INTO penguin_connect_poll_state
-               (gmail_email, gmail_rate_limited_until)
-               VALUES (?, ?)""",
-            ("owner@gmail.com", future_pause),
+               (gmail_email, gmail_rate_limited_until, gmail_rate_limit_streak)
+               VALUES (?, ?, ?)""",
+            ("owner@gmail.com", future_pause, 2),
         )
 
         with mock.patch("penguin_connect.ensure_conversations_discovered", return_value=1), mock.patch(
@@ -4618,6 +4703,7 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertTrue(stats["skipped"])
         self.assertEqual(stats["reason"], "gmail_rate_limited")
         self.assertGreaterEqual(stats["retry_after_seconds"], 1)
+        self.assertEqual(stats["rate_limit_streak"], 2)
         mock_refresh.assert_not_called()
 
     def test_gmail_execute_retries_retryable_errors(self):
@@ -5628,11 +5714,12 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(stats["reason"], "gmail_rate_limited")
         self.assertEqual(stats["retry_after_seconds"], 480)
         poll_state = self.conn.execute(
-            "SELECT gmail_rate_limited_until FROM penguin_connect_poll_state WHERE gmail_email = ?",
+            "SELECT gmail_rate_limited_until, gmail_rate_limit_streak FROM penguin_connect_poll_state WHERE gmail_email = ?",
             ("owner@gmail.com",),
         ).fetchone()
         self.assertIsNotNone(poll_state)
         self.assertIsNotNone(poll_state["gmail_rate_limited_until"])
+        self.assertEqual(poll_state["gmail_rate_limit_streak"], 1)
 
     def test_fetch_imessage_messages_applies_limit_with_since(self):
         with tempfile.TemporaryDirectory() as tmp:
