@@ -896,6 +896,126 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(selection["hot_imessage_conversations"], 2)
         self.assertEqual(selection["selection_strategy"], "activity_prioritized_round_robin")
 
+    def test_incremental_selection_matches_routed_group_activity_by_service_route(self):
+        self.conn.execute(
+            """UPDATE penguin_connect_conversations
+               SET imessage_chat_id = ?, imessage_chat_identifier = ?, imessage_service_name = ?, source_provider = ?
+               WHERE conversation_id = ?""",
+            ("RCS;+;chat-123", "chat-123", "RCS", "rcs", "amc_test"),
+        )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_sync_state
+               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
+            (
+                "amc_test",
+                "2026-03-04T10:00:00+00:00",
+                "2026-03-04T10:00:00+00:00",
+                "2026-03-04T10:05:00+00:00",
+            ),
+        )
+
+        with mock.patch(
+            "penguin_connect.list_recent_imessage_chat_activity",
+            return_value={
+                "available": True,
+                "chats": [
+                    {
+                        "chat_id": "chat-123",
+                        "chat_identifier": "chat-123",
+                        "service": "RCS",
+                        "first_message_at": "2026-03-07T07:10:00+00:00",
+                        "last_message_at": "2026-03-07T07:15:00+00:00",
+                        "message_count": 1,
+                    }
+                ],
+            },
+        ):
+            conversations, selection = penguin_connect._select_conversations_for_sync(
+                self.conn,
+                "owner@gmail.com",
+                "incremental",
+                days=7,
+                hours=None,
+            )
+
+        self.assertEqual([row["conversation_id"] for row in conversations], ["amc_test"])
+        self.assertEqual(selection["hot_conversations"], 1)
+        self.assertEqual(selection["hot_imessage_conversations"], 1)
+
+    def test_incremental_selection_keeps_group_routes_service_specific(self):
+        self.conn.execute(
+            """UPDATE penguin_connect_conversations
+               SET imessage_chat_id = ?, imessage_chat_identifier = ?, imessage_service_name = ?, source_provider = ?
+               WHERE conversation_id = ?""",
+            ("RCS;+;chat-123", "chat-123", "RCS", "rcs", "amc_test"),
+        )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_conversations
+               (gmail_email, source_provider, conversation_id, imessage_chat_id, imessage_chat_identifier,
+                imessage_service_name, display_name, chat_type, participants, alias_email, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'group', '[]', ?, 'active')""",
+            (
+                "owner@gmail.com",
+                "sms",
+                "amc_sms_group",
+                "SMS;+;chat-123",
+                "chat-123",
+                "SMS",
+                "Sibling SMS Group",
+                "owner+am-sms-group@gmail.com",
+            ),
+        )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_sync_state
+               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
+            (
+                "amc_test",
+                "2026-03-04T10:00:00+00:00",
+                "2026-03-04T10:00:00+00:00",
+                "2026-03-04T10:05:00+00:00",
+            ),
+        )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_sync_state
+               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
+            (
+                "amc_sms_group",
+                "2026-03-04T10:00:00+00:00",
+                "2026-03-04T10:00:00+00:00",
+                "2026-03-04T10:05:00+00:00",
+            ),
+        )
+
+        with mock.patch(
+            "penguin_connect.list_recent_imessage_chat_activity",
+            return_value={
+                "available": True,
+                "chats": [
+                    {
+                        "chat_id": "chat-123",
+                        "chat_identifier": "chat-123",
+                        "service": "RCS",
+                        "first_message_at": "2026-03-07T07:10:00+00:00",
+                        "last_message_at": "2026-03-07T07:15:00+00:00",
+                        "message_count": 1,
+                    }
+                ],
+            },
+        ):
+            conversations, selection = penguin_connect._select_conversations_for_sync(
+                self.conn,
+                "owner@gmail.com",
+                "incremental",
+                days=7,
+                hours=None,
+            )
+
+        self.assertEqual([row["conversation_id"] for row in conversations], ["amc_test"])
+        self.assertEqual(selection["hot_conversations"], 1)
+
     def test_incremental_selection_includes_due_full_verify_without_starving_hot_work(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
@@ -1086,6 +1206,54 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(selection["selected_conversations"], 1)
         self.assertEqual(selection["selection_limit"], 1)
 
+    def test_startup_catchup_prioritizes_pending_routed_group_activity(self):
+        self.conn.execute(
+            """UPDATE penguin_connect_conversations
+               SET imessage_chat_id = ?, imessage_chat_identifier = ?, imessage_service_name = ?, source_provider = ?
+               WHERE conversation_id = ?""",
+            ("RCS;+;chat-123", "chat-123", "RCS", "rcs", "amc_test"),
+        )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_conversations
+               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+                alias_email, status)
+               VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
+            (
+                "owner@gmail.com",
+                "amc_pending_cold",
+                "chat-pending-cold",
+                "Pending Cold",
+                "owner+am-pending-cold@gmail.com",
+            ),
+        )
+
+        with mock.patch(
+            "penguin_connect.list_recent_imessage_chat_activity",
+            return_value={
+                "available": True,
+                "chats": [
+                    {
+                        "chat_id": "chat-123",
+                        "chat_identifier": "chat-123",
+                        "service": "RCS",
+                        "first_message_at": "2026-03-07T07:10:00+00:00",
+                        "last_message_at": "2026-03-07T07:15:00+00:00",
+                        "message_count": 2,
+                    }
+                ],
+            },
+        ):
+            conversations, selection = penguin_connect._select_conversations_for_sync(
+                self.conn,
+                "owner@gmail.com",
+                "startup_catchup",
+                days=7,
+                hours=None,
+            )
+
+        self.assertEqual([row["conversation_id"] for row in conversations], ["amc_test", "amc_pending_cold"])
+        self.assertEqual(selection["selection_strategy"], "pending_bootstrap_recent_imessage_activity")
+
     def test_startup_catchup_selects_due_full_verify_after_bootstrap(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
@@ -1171,6 +1339,54 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual([row["conversation_id"] for row in conversations], ["amc_gmail_hot"])
         self.assertEqual(selection["hot_gmail_conversations"], 1)
         self.assertEqual(selection["selection_strategy"], "activity_prioritized_round_robin")
+
+    def test_backfill_selection_matches_routed_group_activity_by_service_route(self):
+        self.conn.execute(
+            """UPDATE penguin_connect_conversations
+               SET imessage_chat_id = ?, imessage_chat_identifier = ?, imessage_service_name = ?, source_provider = ?
+               WHERE conversation_id = ?""",
+            ("RCS;+;chat-123", "chat-123", "RCS", "rcs", "amc_test"),
+        )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_conversations
+               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+                alias_email, status)
+               VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
+            (
+                "owner@gmail.com",
+                "amc_cold",
+                "chat-cold",
+                "Cold Group",
+                "owner+am-cold@gmail.com",
+            ),
+        )
+
+        with mock.patch(
+            "penguin_connect.list_recent_imessage_chat_activity",
+            return_value={
+                "available": True,
+                "chats": [
+                    {
+                        "chat_id": "chat-123",
+                        "chat_identifier": "chat-123",
+                        "service": "RCS",
+                        "first_message_at": "2026-03-07T07:10:00+00:00",
+                        "last_message_at": "2026-03-07T07:15:00+00:00",
+                        "message_count": 2,
+                    }
+                ],
+            },
+        ):
+            conversations, selection = penguin_connect._select_conversations_for_sync(
+                self.conn,
+                "owner@gmail.com",
+                "backfill",
+                days=7,
+                hours=None,
+            )
+
+        self.assertEqual([row["conversation_id"] for row in conversations], ["amc_test"])
+        self.assertEqual(selection["selection_strategy"], "recent_imessage_activity")
 
     def test_incremental_selection_prioritizes_gmail_hot_over_imessage_hot(self):
         self.conn.execute(
@@ -2495,6 +2711,51 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertIsNotNone(first_msg["Message-ID"])
         self.assertEqual(second_msg["In-Reply-To"], first_msg["Message-ID"])
         self.assertIn(first_msg["Message-ID"], second_msg["References"])
+
+    def test_startup_catchup_imessage_sync_yields_after_five_gmail_imports_for_incremental(self):
+        conv = self._conversation_row()
+        gmail_service = mock.Mock()
+        msgs = [
+            {
+                "text": f"hello {index}",
+                "timestamp": f"2026-03-04T09:0{index}:00+00:00",
+                "is_from_me": False,
+                "handle": "+14155550111",
+                "attachments": [],
+                "native_message_id": str(index),
+            }
+            for index in range(1, 7)
+        ]
+
+        with mock.patch("penguin_connect.fetch_imessage_messages", return_value=msgs), mock.patch(
+            "penguin_connect._get_imessage_unread_count", return_value=0
+        ), mock.patch(
+            "penguin_connect._build_import_email", return_value=b"raw"
+        ), mock.patch(
+            "penguin_connect._import_message_to_gmail_with_thread_recovery",
+            side_effect=[({"id": f"gm-{index}", "threadId": "th-yield"}, None, "th-yield") for index in range(1, 6)],
+        ), mock.patch(
+            "penguin_connect._sleep_after_gmail_write"
+        ), mock.patch(
+            "penguin_connect._ready_incremental_sync_job_waiting", return_value=True
+        ) as mock_waiting:
+            result = penguin_connect._sync_conversation_imessage_to_gmail(
+                self.conn,
+                gmail_service,
+                conv,
+                mode="startup_catchup",
+                days=7,
+            )
+
+        self.assertTrue(result["preempted_for_incremental"])
+        self.assertFalse(result["bootstrap_ready"])
+        self.assertEqual(result["gmail_imported"], 5)
+        self.assertEqual(mock_waiting.call_count, 1)
+        count = self.conn.execute(
+            "SELECT COUNT(*) FROM penguin_connect_messages WHERE conversation_id = ? AND provider = 'imessage'",
+            ("amc_test",),
+        ).fetchone()[0]
+        self.assertEqual(count, 5)
 
     def test_imessage_sync_recovers_thread_by_parent_rfc_message_id(self):
         self.conn.execute(
@@ -4954,6 +5215,87 @@ class PenguinConnectTests(unittest.TestCase):
 
         self.assertTrue(stats["success"])
         self.assertIsNone(state)
+
+    def test_startup_catchup_run_yields_to_incremental_after_preempted_conversation(self):
+        self.conn.execute(
+            """INSERT INTO penguin_connect_conversations
+               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+                alias_email, status)
+               VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
+            (
+                "owner@gmail.com",
+                "amc_second",
+                "chat-456",
+                "Second Group",
+                "owner+am-second@gmail.com",
+            ),
+        )
+        selected = self.conn.execute(
+            """SELECT c.*,
+                      s.last_imessage_ts,
+                      s.last_gmail_ts,
+                      s.last_message_ts,
+                      s.last_gmail_history_id,
+                      s.pending_gmail_activity_at,
+                      s.initial_sync_completed_at,
+                      s.next_full_verify_at,
+                      s.full_verify_completed_at,
+                      s.last_synced_at AS sync_state_last_synced_at
+               FROM penguin_connect_conversations c
+               LEFT JOIN penguin_connect_sync_state s ON s.conversation_id = c.conversation_id
+               WHERE c.gmail_email = ?
+               ORDER BY c.conversation_id ASC""",
+            ("owner@gmail.com",),
+        ).fetchall()
+
+        with mock.patch(
+            "penguin_connect.self_heal_conversation_cache",
+            return_value={"success": True, "swept_conversations": 2, "before_count": 2, "after_count": 2},
+        ), mock.patch(
+            "penguin_connect.refresh_conversation_exclusions",
+            return_value={"updated": False},
+        ), mock.patch(
+            "penguin_connect._ensure_full_verify_schedule",
+            return_value=0,
+        ), mock.patch(
+            "penguin_connect._build_gmail_service", return_value=(mock.Mock(), None)
+        ), mock.patch(
+            "penguin_connect._refresh_send_as_aliases",
+            return_value=(["owner@gmail.com"], "owner@gmail.com"),
+        ), mock.patch(
+            "penguin_connect._select_conversations_for_sync",
+            return_value=(
+                selected,
+                {
+                    "discovered_conversations": len(selected),
+                    "selected_conversations": len(selected),
+                    "selection_strategy": "pending_bootstrap_round_robin",
+                },
+            ),
+        ), mock.patch(
+            "penguin_connect._retry_pending_imessage_to_gmail_globally",
+            return_value={"retried_conversations": 0, "imported_messages": 0, "skipped_locked_conversations": 0},
+        ), mock.patch(
+            "penguin_connect._sync_conversation_imessage_to_gmail",
+            side_effect=[
+                {"imessage_imported": 5, "gmail_imported": 5, "bootstrap_ready": False, "preempted_for_incremental": True}
+            ],
+        ) as mock_imsg, mock.patch(
+            "penguin_connect._sync_conversation_gmail_to_imessage",
+            return_value={"email_to_imessage": 0, "alias_drafts_deleted": 0, "blocked_sender_count": 0},
+        ), mock.patch(
+            "penguin_connect._repair_split_gmail_messages",
+            return_value=0,
+        ), mock.patch(
+            "penguin_connect._record_gmail_sync_success"
+        ):
+            stats = penguin_connect._sync_conversations_unlocked(self.conn, mode="startup_catchup", days=7, hours=5)
+
+        self.assertTrue(stats["success"])
+        self.assertTrue(stats["preempted_for_incremental"])
+        self.assertEqual(stats["preempted_after_conversations"], 1)
+        self.assertEqual(stats["processed_conversations"], 1)
+        self.assertEqual(mock_imsg.call_count, 1)
 
     def test_startup_catchup_marks_due_full_verify_complete_after_success(self):
         self.conn.execute(

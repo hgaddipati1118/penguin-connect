@@ -392,6 +392,15 @@ def _startup_catchup_conversations_per_run() -> Optional[int]:
     return value
 
 
+def _startup_incremental_preemption_import_count() -> int:
+    return _env_int(
+        "PENGUIN_CONNECT_STARTUP_INCREMENTAL_PREEMPTION_IMPORT_COUNT",
+        5,
+        1,
+        100,
+    )
+
+
 def _imessage_global_retry_conversations_per_run() -> int:
     return DEFAULT_IMESSAGE_GLOBAL_RETRY_CONVERSATIONS_PER_RUN
 
@@ -476,6 +485,103 @@ def _conversation_requires_full_verify(conv: sqlite3.Row, *, now_dt: Optional[da
     if not due_dt:
         return False
     return due_dt <= (now_dt or datetime.now(timezone.utc))
+
+
+def _apple_messages_identifier_is_group_chat(chat_identifier: str) -> bool:
+    return (chat_identifier or "").strip().startswith("chat")
+
+
+def _apple_messages_legacy_route_id(chat_identifier: str, service_name: str) -> Optional[str]:
+    identifier = (chat_identifier or "").strip()
+    service = (service_name or "").strip().lower()
+    if not identifier or not service:
+        return None
+    if ";" in identifier:
+        return identifier
+    direction = "+" if _apple_messages_identifier_is_group_chat(identifier) else "-"
+    if service == "imessage":
+        return f"iMessage;{direction};{identifier}"
+    if service == "sms":
+        return f"SMS;{direction};{identifier}"
+    if service == "rcs":
+        return f"RCS;{direction};{identifier}"
+    return None
+
+
+def _activity_record_value(record: sqlite3.Row | dict[str, Any], key: str) -> Any:
+    if isinstance(record, dict):
+        return record.get(key)
+    try:
+        return record[key]
+    except Exception:
+        return None
+
+
+def _recent_imessage_activity_keys(record: sqlite3.Row | dict[str, Any]) -> set[str]:
+    chat_id = (_activity_record_value(record, "chat_id") or "").strip()
+    chat_guid = (_activity_record_value(record, "chat_guid") or "").strip()
+    chat_identifier = (_activity_record_value(record, "chat_identifier") or "").strip()
+    service_name = (
+        _activity_record_value(record, "service")
+        or _activity_record_value(record, "service_name")
+        or _activity_record_value(record, "imessage_service_name")
+        or ""
+    ).strip()
+    keys = {value for value in (chat_id, chat_guid) if value}
+    route_id = _apple_messages_legacy_route_id(chat_identifier, service_name)
+    if route_id:
+        keys.add(route_id)
+    if chat_identifier and not _apple_messages_identifier_is_group_chat(chat_identifier):
+        keys.add(chat_identifier)
+    return keys
+
+
+def _index_recent_imessage_activity(recent: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    indexed: dict[str, dict[str, Any]] = {}
+    for row in recent.get("chats", []):
+        if not isinstance(row, dict):
+            continue
+        for key in _recent_imessage_activity_keys(row):
+            existing = indexed.get(key)
+            if existing and _recent_activity_sort_value(existing.get("last_message_at")) >= _recent_activity_sort_value(
+                row.get("last_message_at")
+            ):
+                continue
+            indexed[key] = row
+    return indexed
+
+
+def _conversation_imessage_activity_keys(conv: sqlite3.Row | dict[str, Any]) -> set[str]:
+    chat_id = (_activity_record_value(conv, "imessage_chat_id") or "").strip()
+    chat_identifier = (_activity_record_value(conv, "imessage_chat_identifier") or "").strip()
+    service_name = (_activity_record_value(conv, "imessage_service_name") or "").strip()
+    source_provider = _normalize_source_provider(_activity_record_value(conv, "source_provider") or "imessage")
+    chat_type = (_activity_record_value(conv, "chat_type") or "").strip().lower()
+    keys = {value for value in (chat_id,) if value}
+    route_id = _apple_messages_legacy_route_id(chat_identifier, service_name)
+    if route_id:
+        keys.add(route_id)
+    if chat_identifier and not _apple_messages_identifier_is_group_chat(chat_identifier):
+        if source_provider == "apple_messages" or chat_type == "dm":
+            keys.add(chat_identifier)
+    return keys
+
+
+def _recent_imessage_activity_for_conversation(
+    conv: sqlite3.Row | dict[str, Any],
+    recent_by_key: dict[str, dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    best: Optional[dict[str, Any]] = None
+    for key in _conversation_imessage_activity_keys(conv):
+        row = recent_by_key.get(key)
+        if not row:
+            continue
+        if best and _recent_activity_sort_value(best.get("last_message_at")) >= _recent_activity_sort_value(
+            row.get("last_message_at")
+        ):
+            continue
+        best = row
+    return best
 
 
 def _get_poll_state(conn: sqlite3.Connection, gmail_email: str) -> Optional[sqlite3.Row]:
@@ -751,11 +857,7 @@ def _select_conversations_for_sync(
         now_dt = datetime.now(timezone.utc)
         hot_cutoff_iso = _incremental_activity_cutoff().isoformat()
         recent = list_recent_imessage_chat_activity(hot_cutoff_iso, limit=len(conversations))
-        recent_by_chat = {
-            row.get("chat_id"): row
-            for row in recent.get("chats", [])
-            if isinstance(row, dict) and row.get("chat_id")
-        }
+        recent_by_chat = _index_recent_imessage_activity(recent)
         gmail_activity, gmail_meta = ({}, {})
         if gmail_service is not None:
             gmail_activity, gmail_meta = _list_recent_gmail_alias_activity(conn, gmail_service, gmail_email, conversations)
@@ -770,7 +872,7 @@ def _select_conversations_for_sync(
 
         for conv in conversations:
             has_hot_imessage = False
-            recent_row = recent_by_chat.get(conv["imessage_chat_id"])
+            recent_row = _recent_imessage_activity_for_conversation(conv, recent_by_chat)
             if recent_row:
                 recent_ts = recent_row.get("last_message_at")
                 has_hot_imessage = bool(recent_ts and _recent_activity_sort_value(recent_ts) > _recent_activity_sort_value(conv["last_imessage_ts"]))
@@ -862,19 +964,19 @@ def _select_conversations_for_sync(
         ]
         if selected:
             recent = list_recent_imessage_chat_activity(hot_cutoff_iso, limit=len(selected) or 1)
-            recent_by_chat = {
-                row.get("chat_id"): row
-                for row in recent.get("chats", [])
-                if isinstance(row, dict) and row.get("chat_id")
+            recent_by_chat = _index_recent_imessage_activity(recent)
+            recent_for_conversation = {
+                conv["conversation_id"]: _recent_imessage_activity_for_conversation(conv, recent_by_chat)
+                for conv in selected
             }
-            hot = [conv for conv in selected if conv["imessage_chat_id"] in recent_by_chat]
+            hot = [conv for conv in selected if recent_for_conversation.get(conv["conversation_id"])]
             hot.sort(
                 key=lambda conv: (
-                    recent_by_chat[conv["imessage_chat_id"]].get("first_message_at") or "",
+                    recent_for_conversation[conv["conversation_id"]].get("first_message_at") or "",
                     conv["conversation_id"],
                 )
             )
-            cold = [conv for conv in selected if conv["imessage_chat_id"] not in recent_by_chat]
+            cold = [conv for conv in selected if not recent_for_conversation.get(conv["conversation_id"])]
             cold.sort(key=lambda conv: (_sync_due_sort_value(conv), conv["conversation_id"]))
             queued = hot + cold
             limit = _startup_catchup_conversations_per_run()
@@ -923,15 +1025,15 @@ def _select_conversations_for_sync(
         selection["selection_reason"] = recent.get("reason") or "recent_activity_unavailable"
         return conversations, selection
 
-    recent_by_chat = {
-        row.get("chat_id"): row
-        for row in recent.get("chats", [])
-        if isinstance(row, dict) and row.get("chat_id")
+    recent_by_chat = _index_recent_imessage_activity(recent)
+    recent_for_conversation = {
+        conv["conversation_id"]: _recent_imessage_activity_for_conversation(conv, recent_by_chat)
+        for conv in conversations
     }
-    selected = [conv for conv in conversations if conv["imessage_chat_id"] in recent_by_chat]
+    selected = [conv for conv in conversations if recent_for_conversation.get(conv["conversation_id"])]
     selected.sort(
         key=lambda conv: (
-            recent_by_chat[conv["imessage_chat_id"]].get("first_message_at") or "",
+            recent_for_conversation[conv["conversation_id"]].get("first_message_at") or "",
             conv["conversation_id"],
         )
     )
@@ -2454,6 +2556,20 @@ def _pending_sync_jobs_count(conn: sqlite3.Connection) -> int:
         (SYNC_JOB_TYPE,),
     ).fetchone()
     return int(row[0] if row else 0)
+
+
+def _ready_incremental_sync_job_waiting(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        """SELECT 1
+           FROM penguin_connect_jobs
+           WHERE job_type = ?
+             AND dedupe_key = ?
+             AND status = 'queued'
+             AND next_run_at <= ?
+           LIMIT 1""",
+        (SYNC_JOB_TYPE, "sync:incremental", _now_iso()),
+    ).fetchone()
+    return bool(row)
 
 
 def get_sync_queue_metrics(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -4589,6 +4705,8 @@ def _sync_conversation_imessage_to_gmail(
     eligible_message_count = 0
     full_history_checked = since == FULL_IMESSAGE_SYNC_SINCE
     unread_count = _get_apple_messages_unread_count_for_conversation(conv)
+    preempted_for_incremental = False
+    preempt_check_count = _startup_incremental_preemption_import_count()
 
     while True:
         messages = _fetch_apple_messages_messages_for_conversation(conv, limit=batch_size, since=next_since)
@@ -4814,7 +4932,17 @@ def _sync_conversation_imessage_to_gmail(
 
             conn.commit()
             last_ts = max(last_ts or ts, ts)
+            if (
+                mode in {"backfill", "startup_catchup"}
+                and imported > 0
+                and imported % preempt_check_count == 0
+                and _ready_incremental_sync_job_waiting(conn)
+            ):
+                preempted_for_incremental = True
+                break
 
+        if preempted_for_incremental:
+            break
         if not verify_all or len(messages) < batch_size:
             break
         batch_last_ts = messages[-1].get("timestamp")
@@ -4858,11 +4986,13 @@ def _sync_conversation_imessage_to_gmail(
 
     _reconcile_conversation_gmail_read_state(conn, gmail_service, conv["conversation_id"], unread_count)
 
-    bootstrap_empty_verified = full_history_checked and eligible_message_count == 0
-    bootstrap_ready = bootstrap_empty_verified or _conversation_has_materialized_imessage_history(
-        conn,
-        conv["conversation_id"],
-    )
+    bootstrap_empty_verified = False if preempted_for_incremental else (full_history_checked and eligible_message_count == 0)
+    bootstrap_ready = False
+    if not preempted_for_incremental:
+        bootstrap_ready = bootstrap_empty_verified or _conversation_has_materialized_imessage_history(
+            conn,
+            conv["conversation_id"],
+        )
 
     return {
         "imessage_imported": stored if saw_messages else 0,
@@ -4870,6 +5000,7 @@ def _sync_conversation_imessage_to_gmail(
         "gmail_write_pause_seconds": gmail_write_pause_seconds,
         "bootstrap_empty_verified": bootstrap_empty_verified,
         "bootstrap_ready": bootstrap_ready,
+        "preempted_for_incremental": preempted_for_incremental,
     }
 
 
@@ -6691,6 +6822,7 @@ def _sync_conversations_unlocked(
         "discovered_conversations": selection["discovered_conversations"],
         "selected_conversations": selection["selected_conversations"],
         "selection_strategy": selection["selection_strategy"],
+        "processed_conversations": 0,
         "imessage_imported": 0,
         "gmail_imported": 0,
         "email_to_imessage": 0,
@@ -6700,6 +6832,7 @@ def _sync_conversations_unlocked(
         "full_verify_completed": 0,
         "global_imessage_retry_conversations": 0,
         "global_imessage_retry_imported": 0,
+        "preempted_for_incremental": False,
     }
     if selection.get("selection_cutoff"):
         stats["selection_cutoff"] = selection["selection_cutoff"]
@@ -6940,6 +7073,16 @@ def _sync_conversations_unlocked(
                     gmail_thread_repairs=repaired,
                     **_conversation_log_fields(conv),
                 )
+                if imsg.get("preempted_for_incremental"):
+                    stats["preempted_for_incremental"] = True
+                    stats["preempted_after_conversations"] = index
+                    _print_sync_terminal_summary(
+                        mode,
+                        "yielding_to_incremental",
+                        display=display,
+                        processed=index,
+                    )
+                    break
             except _GmailRetryableError as exc:
                 conn.rollback()
                 pause_state = _set_gmail_rate_limit_pause(conn, gmail_email, exc.retry_after_seconds)
@@ -6990,6 +7133,7 @@ def _sync_conversations_unlocked(
                     **_conversation_log_fields(conv),
                 )
             finally:
+                stats["processed_conversations"] = index
                 _release_conversation_sync(conv["conversation_id"], run_id=run_id)
                 _sync_runtime_progress(run_id, index, None)
     except Exception as exc:
@@ -7007,7 +7151,7 @@ def _sync_conversations_unlocked(
     _print_sync_terminal_summary(
         mode,
         "run_complete",
-        processed=stats.get("selected_conversations"),
+        processed=stats.get("processed_conversations"),
         imessage_imported=stats.get("imessage_imported"),
         gmail_imported=stats.get("gmail_imported"),
         email_to_imessage=stats.get("email_to_imessage"),

@@ -194,6 +194,8 @@ Incremental sync can keep running while startup catch-up or backfill is in progr
 
 The incremental watcher and startup worker now lease only their own queued job mode, so a watcher poll cannot accidentally grab a long-running `startup_catchup` job and leave the real incremental work stranded in the queue.
 
+If startup catch-up or backfill is actively importing iMessage history, PenguinConnect now checks for a queued incremental job after every 5 successful Gmail imports and yields early when fresh hot-work is waiting. Override that chunk size with `PENGUIN_CONNECT_STARTUP_INCREMENTAL_PREEMPTION_IMPORT_COUNT`.
+
 Queue, selection, and per-message sync state are committed before PenguinConnect moves on to the next remote Gmail or Apple Messages call. That keeps the concurrent startup and watcher lanes from holding SQLite write locks across network waits or send retries.
 
 When Gmail returns a rate limit cooldown, PenguinConnect now requeues the current sync job for the cooldown window instead of counting that pause as a failed sync attempt. Expect queued jobs with `last_error=gmail_rate_limited` during those windows.
@@ -214,6 +216,7 @@ Those recurring full verifications also refresh contact-derived display names, s
 - incremental sync batch cap: `PENGUIN_CONNECT_INCREMENTAL_CONVERSATIONS_PER_RUN`
   - leave unset to let incremental runs expand to all currently hot conversations up to the built-in cap
 - optional startup catch-up cap: `PENGUIN_CONNECT_STARTUP_CATCHUP_CONVERSATIONS_PER_RUN` (unset means all pending bootstrap conversations)
+- startup/backfill incremental-yield import chunk: `PENGUIN_CONNECT_STARTUP_INCREMENTAL_PREEMPTION_IMPORT_COUNT=5`
 - backfill Gmail write pacing base: `PENGUIN_CONNECT_BACKFILL_WRITE_PAUSE_SECONDS=0.15`
   - repeated Gmail throttles automatically scale that pause up to 5 seconds until sync recovers
 - Gmail rate-limit cooldown base/max: `PENGUIN_CONNECT_GMAIL_RATE_LIMIT_PAUSE_SECONDS=120`, `PENGUIN_CONNECT_GMAIL_RATE_LIMIT_MAX_PAUSE_SECONDS=1800`
