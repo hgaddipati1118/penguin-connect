@@ -1,5 +1,6 @@
 import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -151,6 +152,29 @@ class AppHttpIntegrationTests(unittest.TestCase):
             pass
 
         mock_refresh.assert_called_once_with()
+
+    def test_app_startup_retries_transient_startup_catchup_skips(self):
+        results = [
+            {"success": True, "skipped": True, "reason": "gmail_rate_limited", "retry_after_seconds": 3},
+            {"success": True, "skipped": True, "reason": "queue_busy"},
+            {"success": True, "skipped": False, "pending_bootstrap_conversations": 0, "pending_full_verify_conversations": 0},
+        ]
+        finished = threading.Event()
+
+        def fake_run_startup_catchup():
+            result = results.pop(0)
+            if not results:
+                finished.set()
+            return result
+
+        with mock.patch("app.penguinconnect_run_startup_catchup", side_effect=fake_run_startup_catchup) as mock_run, mock.patch(
+            "app._startup_catchup_batch_pause_seconds",
+            return_value=7.0,
+        ), mock.patch("app.time.sleep") as mock_sleep, TestClient(app_module.app):
+            self.assertTrue(finished.wait(1))
+
+        self.assertEqual(mock_run.call_count, 3)
+        self.assertEqual(mock_sleep.call_args_list, [mock.call(3.0), mock.call(7.0)])
 
     def test_messages_endpoint_respects_limit_and_returns_latest_first(self):
         with TestClient(app_module.app) as client:

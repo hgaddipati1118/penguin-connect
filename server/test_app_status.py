@@ -15,6 +15,30 @@ def _build_conn() -> sqlite3.Connection:
 
 
 class AppStatusTests(unittest.TestCase):
+    def test_startup_catchup_retry_delay_uses_gmail_retry_after(self):
+        delay = app_module._startup_catchup_retry_delay(
+            {"success": True, "skipped": True, "reason": "gmail_rate_limited", "retry_after_seconds": 12},
+            5.0,
+        )
+
+        self.assertEqual(delay, 12.0)
+
+    def test_startup_catchup_retry_delay_uses_batch_pause_for_queue_busy(self):
+        delay = app_module._startup_catchup_retry_delay(
+            {"success": True, "skipped": True, "reason": "queue_busy"},
+            7.0,
+        )
+
+        self.assertEqual(delay, 7.0)
+
+    def test_startup_catchup_retry_delay_stops_on_queue_idle(self):
+        delay = app_module._startup_catchup_retry_delay(
+            {"success": True, "skipped": True, "reason": "queue_idle"},
+            7.0,
+        )
+
+        self.assertIsNone(delay)
+
     def test_status_includes_sync_metrics(self):
         conn = _build_conn()
         with mock.patch("app.get_connection", return_value=conn), mock.patch(

@@ -71,6 +71,30 @@ def _apply_runtime_sync_status(sync_status: dict) -> dict:
     sync_status.setdefault("penguin_connect", {}).update(runtime)
     return sync_status
 
+
+def _startup_catchup_retry_delay(result: dict, pause_seconds: float) -> float | None:
+    if not result.get("success"):
+        return None
+
+    if result.get("skipped"):
+        reason = (result.get("reason") or "").strip()
+        if reason == "gmail_rate_limited":
+            retry_after = result.get("retry_after_seconds")
+            try:
+                retry_seconds = float(retry_after)
+            except Exception:
+                retry_seconds = 0.0
+            return retry_seconds if retry_seconds > 0 else pause_seconds
+        if reason in {"queue_busy", "initial_backfill_required"}:
+            return pause_seconds
+        return None
+
+    pending_bootstrap = int(result.get("pending_bootstrap_conversations") or 0)
+    pending_full_verify = int(result.get("pending_full_verify_conversations") or 0)
+    if pending_bootstrap > 0 or pending_full_verify > 0:
+        return pause_seconds
+    return None
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
@@ -105,21 +129,24 @@ async def lifespan(_app: FastAPI):
             while True:
                 result = penguinconnect_run_startup_catchup()
                 log_action("startup_catchup_result", result=result)
+                retry_delay = _startup_catchup_retry_delay(result, pause_seconds)
                 if result.get("success"):
-                    if result.get("skipped"):
-                        reason = result.get("reason")
-                        if reason == "gmail_rate_limited":
+                    if retry_delay is not None:
+                        if result.get("reason") == "gmail_rate_limited":
                             retry_after = result.get("retry_after_seconds")
                             print(f"[PenguinConnect] Startup catch-up paused for Gmail rate limits ({retry_after}s)")
-                        elif reason not in {"queue_idle", "queue_busy"}:
+                        elif result.get("reason") == "initial_backfill_required":
                             print("[PenguinConnect] Startup catch-up waiting for initial backfill")
-                        break
-
-                    pending_bootstrap = int(result.get("pending_bootstrap_conversations") or 0)
-                    pending_full_verify = int(result.get("pending_full_verify_conversations") or 0)
-                    if pending_bootstrap > 0 or pending_full_verify > 0:
-                        time.sleep(pause_seconds)
+                        time.sleep(retry_delay)
                         continue
+
+                    if result.get("skipped"):
+                        reason = result.get("reason")
+                        if reason == "queue_idle":
+                            print("[PenguinConnect] Startup catch-up completed")
+                        elif reason not in {"queue_busy", "gmail_rate_limited", "initial_backfill_required"}:
+                            print(f"[PenguinConnect] Startup catch-up paused: {reason}")
+                        break
 
                     print("[PenguinConnect] Startup catch-up completed")
                     break
