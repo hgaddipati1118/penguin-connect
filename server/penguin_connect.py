@@ -93,7 +93,7 @@ DEFAULT_GMAIL_BACKFILL_WRITE_BUDGET_UNITS_PER_MINUTE = 1200
 MAX_GMAIL_WRITE_BUDGET_UNITS_PER_MINUTE = 15000
 DEFAULT_GMAIL_WRITE_OPERATION_COST_UNITS = 25
 MAX_GMAIL_WRITE_OPERATION_COST_UNITS = 250
-DEFAULT_BACKFILL_DAILY_GMAIL_IMPORT_CAP = 500
+DEFAULT_BACKFILL_DAILY_GMAIL_IMPORT_CAP = 50
 MAX_BACKFILL_DAILY_GMAIL_IMPORT_CAP = 100000
 DEFAULT_BACKFILL_RATE_LIMIT_GUARD_STREAK = 8
 MAX_BACKFILL_RATE_LIMIT_GUARD_STREAK = 1000
@@ -620,6 +620,8 @@ def _upsert_poll_state(
     gmail_write_budget_updated_at=_UNSET,
     gmail_backfill_daily_import_count=_UNSET,
     gmail_backfill_daily_window_started_at=_UNSET,
+    backfill_wave_days=_UNSET,
+    backfill_wave_started_at=_UNSET,
 ):
     gmail_email = _normalize_email(gmail_email)
     existing = _get_poll_state(conn, gmail_email)
@@ -654,6 +656,18 @@ def _upsert_poll_state(
                 if "gmail_backfill_daily_window_started_at" in existing.keys()
                 else None
             )
+        if backfill_wave_days is _UNSET:
+            backfill_wave_days = (
+                existing["backfill_wave_days"]
+                if "backfill_wave_days" in existing.keys()
+                else 1
+            )
+        if backfill_wave_started_at is _UNSET:
+            backfill_wave_started_at = (
+                existing["backfill_wave_started_at"]
+                if "backfill_wave_started_at" in existing.keys()
+                else None
+            )
     else:
         if last_gmail_history_id is _UNSET:
             last_gmail_history_id = None
@@ -671,13 +685,18 @@ def _upsert_poll_state(
             gmail_backfill_daily_import_count = 0
         if gmail_backfill_daily_window_started_at is _UNSET:
             gmail_backfill_daily_window_started_at = None
+        if backfill_wave_days is _UNSET:
+            backfill_wave_days = 1
+        if backfill_wave_started_at is _UNSET:
+            backfill_wave_started_at = None
     conn.execute(
         """INSERT INTO penguin_connect_poll_state
            (gmail_email, last_gmail_history_id, gmail_rate_limited_until, gmail_rate_limit_streak,
             gmail_write_budget_tokens, gmail_backfill_budget_tokens, gmail_write_budget_updated_at,
             gmail_backfill_daily_import_count, gmail_backfill_daily_window_started_at,
+            backfill_wave_days, backfill_wave_started_at,
             created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
            ON CONFLICT(gmail_email) DO UPDATE SET
              last_gmail_history_id = excluded.last_gmail_history_id,
              gmail_rate_limited_until = excluded.gmail_rate_limited_until,
@@ -687,6 +706,8 @@ def _upsert_poll_state(
              gmail_write_budget_updated_at = excluded.gmail_write_budget_updated_at,
              gmail_backfill_daily_import_count = excluded.gmail_backfill_daily_import_count,
              gmail_backfill_daily_window_started_at = excluded.gmail_backfill_daily_window_started_at,
+             backfill_wave_days = excluded.backfill_wave_days,
+             backfill_wave_started_at = excluded.backfill_wave_started_at,
              updated_at = datetime('now')""",
         (
             gmail_email,
@@ -698,6 +719,8 @@ def _upsert_poll_state(
             gmail_write_budget_updated_at,
             gmail_backfill_daily_import_count,
             gmail_backfill_daily_window_started_at,
+            backfill_wave_days,
+            backfill_wave_started_at,
         ),
     )
 
@@ -932,7 +955,8 @@ def _select_conversations_for_sync(
                   s.initial_sync_completed_at,
                   s.next_full_verify_at,
                   s.full_verify_completed_at,
-                  s.last_synced_at AS sync_state_last_synced_at
+                  s.last_synced_at AS sync_state_last_synced_at,
+                  s.backfill_synced_through_ts
            FROM penguin_connect_conversations c
            LEFT JOIN penguin_connect_sync_state s ON s.conversation_id = c.conversation_id
            WHERE c.gmail_email = ?
@@ -1053,7 +1077,20 @@ def _select_conversations_for_sync(
         return selected, selection
 
     if mode == "startup_catchup":
-        cutoff_iso = _sync_window_cutoff(days, hours).isoformat()
+        # Wave-based backfill: start with 1 day, then 2, then 3, etc.
+        poll_state = _get_poll_state(conn, gmail_email)
+        wave_days = max(1, int(
+            poll_state["backfill_wave_days"]
+            if poll_state and "backfill_wave_days" in poll_state.keys()
+            else 1
+        ))
+        wave_days = min(wave_days, days)
+        wave_started_at = (
+            poll_state["backfill_wave_started_at"]
+            if poll_state and "backfill_wave_started_at" in poll_state.keys()
+            else None
+        )
+        cutoff_iso = _sync_window_cutoff(wave_days, hours).isoformat()
         recent = list_recent_imessage_chat_activity(cutoff_iso, limit=len(conversations))
         if recent.get("available"):
             recent_by_chat = _index_recent_imessage_activity(recent)
@@ -1072,21 +1109,26 @@ def _select_conversations_for_sync(
         else:
             selected = sorted(conversations, key=lambda conv: (_sync_due_sort_value(conv), conv["conversation_id"]))
 
-        # Resume marker: skip conversations already synced within this backfill window
+        # Resume: skip conversations already backfilled through this wave's cutoff
         already_synced = sum(
             1 for conv in selected
-            if conv["sync_state_last_synced_at"] and conv["sync_state_last_synced_at"] >= cutoff_iso
+            if conv["backfill_synced_through_ts"] and conv["backfill_synced_through_ts"] <= cutoff_iso
         )
         selected = [
             conv for conv in selected
-            if not conv["sync_state_last_synced_at"] or conv["sync_state_last_synced_at"] < cutoff_iso
+            if not conv["backfill_synced_through_ts"] or conv["backfill_synced_through_ts"] > cutoff_iso
         ]
+        if not wave_started_at:
+            _upsert_poll_state(conn, gmail_email, backfill_wave_started_at=_now_iso())
+            conn.commit()
 
         selection["selected_conversations"] = len(selected)
         selection["already_synced_conversations"] = already_synced
+        selection["backfill_wave_days"] = wave_days
+        selection["backfill_max_days"] = days
         selection["pending_bootstrap_conversations"] = sum(1 for conv in selected if not conv["initial_sync_completed_at"])
         selection["bootstrapped_conversations"] = len(selected) - selection["pending_bootstrap_conversations"]
-        selection["selection_strategy"] = "recent_timestamp_activity"
+        selection["selection_strategy"] = "wave_backfill"
         selection["selection_cutoff"] = cutoff_iso
         return selected, selection
 
@@ -1410,7 +1452,7 @@ def _normalize_backfill_daily_import_window(
     )
     if not window_started_at:
         return 0, None
-    if (now_dt - window_started_at) >= timedelta(days=1):
+    if (now_dt - window_started_at) >= timedelta(hours=1):
         return 0, None
     return count, window_started_at.isoformat()
 
@@ -1440,7 +1482,7 @@ def _backfill_daily_import_pause(
     if not window_dt:
         window_dt = now_dt
         window_started_at = window_dt.isoformat()
-    retry_after_seconds = max(1, int(math.ceil(((window_dt + timedelta(days=1)) - now_dt).total_seconds())))
+    retry_after_seconds = max(1, int(math.ceil(((window_dt + timedelta(hours=1)) - now_dt).total_seconds())))
     return {
         "retry_after_seconds": retry_after_seconds,
         "backfill_daily_import_cap": cap,
@@ -5204,8 +5246,20 @@ def _sync_conversation_imessage_to_gmail(
     cutoff = _parse_iso(cutoff_iso) or _sync_window_cutoff(days, hours)
     since = None
     since_native_message_id = state["last_imessage_native_message_id"] if state else None
+    backfill_through = (
+        state["backfill_synced_through_ts"]
+        if state and "backfill_synced_through_ts" in state.keys() and state["backfill_synced_through_ts"]
+        else None
+    )
     if verify_all:
         since = FULL_IMESSAGE_SYNC_SINCE
+    elif mode == "startup_catchup" and _conversation_needs_initial_bootstrap(state):
+        # Wave backfill: start from cutoff, or from where previous wave left off
+        since = backfill_through or cutoff.isoformat()
+        since_native_message_id = None  # Reset cursor for backward expansion
+    elif mode == "incremental" and _conversation_needs_initial_bootstrap(state):
+        # Incremental: only sync last 1 day for un-bootstrapped conversations
+        since = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
     elif _conversation_needs_initial_bootstrap(state):
         since = state["last_imessage_ts"] if state and state["last_imessage_ts"] else FULL_IMESSAGE_SYNC_SINCE
     elif mode == "backfill":
@@ -5576,6 +5630,19 @@ def _sync_conversation_imessage_to_gmail(
         None,
         None,
     )
+
+    # Record how far back this conversation has been backfilled
+    if mode in {"startup_catchup", "incremental"} and since:
+        conn.execute(
+            """UPDATE penguin_connect_sync_state
+               SET backfill_synced_through_ts = CASE
+                   WHEN backfill_synced_through_ts IS NULL THEN ?
+                   WHEN ? < backfill_synced_through_ts THEN ?
+                   ELSE backfill_synced_through_ts
+               END
+               WHERE conversation_id = ?""",
+            (since, since, since, conv["conversation_id"]),
+        )
 
     _reconcile_conversation_gmail_read_state(conn, gmail_service, conv["conversation_id"], unread_count)
 
@@ -7495,7 +7562,7 @@ def _sync_conversations_unlocked(
 
     try:
         try:
-            if mode == "startup_catchup":
+            if mode in {"startup_catchup", "incremental"}:
                 global_imessage_retry = {"retried_conversations": 0, "imported_messages": 0, "skipped_locked_conversations": 0}
             else:
                 global_imessage_retry = _retry_pending_imessage_to_gmail_globally(
@@ -7536,6 +7603,10 @@ def _sync_conversations_unlocked(
         stats["skipped_locked_conversations"] += global_imessage_retry["skipped_locked_conversations"]
         total = len(conversations)
         for index, conv in enumerate(conversations, start=1):
+            # Yield DB between conversations so incremental sync can run
+            if mode in {"backfill", "startup_catchup"} and index > 1:
+                conn.commit()
+                time.sleep(0.1)
             display = conv["display_name"] or conv["conversation_id"]
             conversation_verify_all = bool(verify_all or conv["conversation_id"] in verify_all_conversation_ids)
             print(f"[PenguinConnect] Sync {mode} {index}/{total}: {display}")
@@ -7775,6 +7846,20 @@ def _sync_conversations_unlocked(
     if mode in {"backfill", "startup_catchup"} and int(stats.get("gmail_imported") or 0) > 0:
         _record_backfill_daily_gmail_imports(conn, gmail_email, int(stats["gmail_imported"]))
 
+    # Wave progression: if all conversations in this wave were processed (no cap break),
+    # advance to the next wave depth.
+    if mode == "startup_catchup" and selection.get("backfill_wave_days"):
+        wave_days = int(selection["backfill_wave_days"])
+        max_days = int(selection.get("backfill_max_days") or days)
+        cap_hit = bool(stats.get("gmail_imported") and _backfill_daily_gmail_import_cap()
+                       and int(stats["gmail_imported"]) >= _backfill_daily_gmail_import_cap())
+        if not cap_hit and int(selection.get("selected_conversations") or 0) == 0 and wave_days < max_days:
+            # Current wave is complete — no conversations left to process. Advance wave.
+            next_wave = wave_days + 1
+            _upsert_poll_state(conn, gmail_email, backfill_wave_days=next_wave, backfill_wave_started_at=None)
+            stats["backfill_wave_advanced"] = next_wave
+            _print_sync_terminal_summary(mode, "wave_advanced", wave=next_wave, max_days=max_days)
+
     _record_gmail_sync_success(
         conn,
         gmail_email,
@@ -7793,6 +7878,7 @@ def _sync_conversations_unlocked(
         full_verify_completed=stats.get("full_verify_completed"),
         failed=stats.get("failed_conversations"),
         skipped_locked=stats.get("skipped_locked_conversations"),
+        wave=selection.get("backfill_wave_days"),
     )
     _sync_runtime_finished(run_id, result=stats)
     return stats

@@ -1361,6 +1361,13 @@ def init_db() -> None:
             )
         if "gmail_backfill_daily_window_started_at" not in poll_columns:
             conn.execute("ALTER TABLE penguin_connect_poll_state ADD COLUMN gmail_backfill_daily_window_started_at TEXT")
+        if "backfill_wave_days" not in poll_columns:
+            conn.execute("ALTER TABLE penguin_connect_poll_state ADD COLUMN backfill_wave_days INTEGER NOT NULL DEFAULT 1")
+        if "backfill_wave_started_at" not in poll_columns:
+            conn.execute("ALTER TABLE penguin_connect_poll_state ADD COLUMN backfill_wave_started_at TEXT")
+        sync_state_columns = {row[1] for row in conn.execute("PRAGMA table_info(penguin_connect_sync_state)").fetchall()}
+        if "backfill_synced_through_ts" not in sync_state_columns:
+            conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN backfill_synced_through_ts TEXT")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_penguin_connect_jobs_finished ON penguin_connect_jobs(status, finished_at)"
         )

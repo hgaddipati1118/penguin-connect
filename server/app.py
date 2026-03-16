@@ -92,7 +92,8 @@ def _startup_catchup_retry_delay(result: dict, pause_seconds: float) -> float | 
     pending_bootstrap = int(result.get("pending_bootstrap_conversations") or 0)
     pending_full_verify = int(result.get("pending_full_verify_conversations") or 0)
     selected = int(result.get("selected_conversations") or 0)
-    if pending_bootstrap > 0 or pending_full_verify > 0 or selected > 0:
+    wave_advanced = bool(result.get("backfill_wave_advanced"))
+    if pending_bootstrap > 0 or pending_full_verify > 0 or selected > 0 or wave_advanced:
         return pause_seconds
     return None
 
