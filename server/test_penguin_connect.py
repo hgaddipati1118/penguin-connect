@@ -1372,13 +1372,12 @@ class PenguinConnectTests(unittest.TestCase):
                 hours=None,
             )
 
-        self.assertEqual([row["conversation_id"] for row in conversations], ["amc_test", "amc_pending_cold"])
+        self.assertEqual([row["conversation_id"] for row in conversations], ["amc_test"])
         self.assertEqual(selection["discovered_conversations"], 3)
-        self.assertEqual(selection["selected_conversations"], 2)
-        self.assertEqual(selection["bootstrapped_conversations"], 1)
-        self.assertEqual(selection["pending_bootstrap_conversations"], 2)
-        self.assertEqual(selection["selection_limit"], 2)
-        self.assertEqual(selection["selection_strategy"], "pending_bootstrap_recent_imessage_activity")
+        self.assertEqual(selection["selected_conversations"], 1)
+        self.assertEqual(selection["bootstrapped_conversations"], 0)
+        self.assertEqual(selection["pending_bootstrap_conversations"], 1)
+        self.assertEqual(selection["selection_strategy"], "recent_timestamp_activity")
         self.assertTrue(selection["selection_cutoff"])
 
     def test_startup_catchup_selection_honors_env_limit(self):
@@ -1423,9 +1422,8 @@ class PenguinConnectTests(unittest.TestCase):
             )
 
         self.assertEqual([row["conversation_id"] for row in conversations], ["amc_test"])
-        self.assertEqual(selection["queued_conversations"], 2)
         self.assertEqual(selection["selected_conversations"], 1)
-        self.assertEqual(selection["selection_limit"], 1)
+        self.assertEqual(selection["selection_strategy"], "recent_timestamp_activity")
 
     def test_startup_catchup_prioritizes_pending_routed_group_activity(self):
         self.conn.execute(
@@ -1472,31 +1470,38 @@ class PenguinConnectTests(unittest.TestCase):
                 hours=None,
             )
 
-        self.assertEqual([row["conversation_id"] for row in conversations], ["amc_test", "amc_pending_cold"])
-        self.assertEqual(selection["selection_strategy"], "pending_bootstrap_recent_imessage_activity")
+        self.assertEqual([row["conversation_id"] for row in conversations], ["amc_test"])
+        self.assertEqual(selection["selection_strategy"], "recent_timestamp_activity")
 
-    def test_startup_catchup_selects_due_full_verify_after_bootstrap(self):
+    def test_startup_catchup_skips_already_synced_conversations(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
                (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at,
-                next_full_verify_at, full_verify_completed_at, last_synced_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
+                last_synced_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, datetime('now'))""",
             (
                 "amc_test",
-                "2026-03-04T10:00:00+00:00",
-                "2026-03-04T10:00:00+00:00",
-                "2026-03-04T10:05:00+00:00",
-                "2026-03-07T10:05:00+00:00",
-                "2026-03-05T10:05:00+00:00",
+                "2026-03-15T10:00:00+00:00",
+                "2026-03-15T10:00:00+00:00",
+                "2026-03-15T10:05:00+00:00",
+                "2026-03-15T12:00:00+00:00",
             ),
         )
 
-        class FixedDateTime(datetime):
-            @classmethod
-            def now(cls, tz=None):
-                return cls(2026, 3, 8, 10, 5, tzinfo=tz or timezone.utc)
-
-        with mock.patch("penguin_connect.datetime", FixedDateTime):
+        with mock.patch(
+            "penguin_connect.list_recent_imessage_chat_activity",
+            return_value={
+                "available": True,
+                "chats": [
+                    {
+                        "chat_id": "chat-123",
+                        "first_message_at": "2026-03-15T07:10:00+00:00",
+                        "last_message_at": "2026-03-15T07:15:00+00:00",
+                        "message_count": 2,
+                    }
+                ],
+            },
+        ):
             conversations, selection = penguin_connect._select_conversations_for_sync(
                 self.conn,
                 "owner@gmail.com",
@@ -1505,11 +1510,10 @@ class PenguinConnectTests(unittest.TestCase):
                 hours=None,
             )
 
-        self.assertEqual([row["conversation_id"] for row in conversations], ["amc_test"])
-        self.assertEqual(selection["pending_bootstrap_conversations"], 0)
-        self.assertEqual(selection["pending_full_verify_conversations"], 1)
-        self.assertEqual(selection["selection_strategy"], "scheduled_full_verify_due")
-        self.assertEqual(selection["verify_all_conversation_ids"], ["amc_test"])
+        self.assertEqual([row["conversation_id"] for row in conversations], [])
+        self.assertEqual(selection["selected_conversations"], 0)
+        self.assertEqual(selection["already_synced_conversations"], 1)
+        self.assertEqual(selection["selection_strategy"], "recent_timestamp_activity")
 
     def test_incremental_selection_uses_recent_gmail_activity(self):
         self.conn.execute(
@@ -5710,13 +5714,14 @@ class PenguinConnectTests(unittest.TestCase):
             """INSERT INTO penguin_connect_sync_state
                (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at,
                 next_full_verify_at, last_synced_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
+               VALUES (?, ?, ?, ?, ?, ?, datetime('now'))""",
             (
                 "amc_test",
                 "2026-03-04T10:00:00+00:00",
                 "2026-03-04T10:00:00+00:00",
                 "2026-03-04T10:05:00+00:00",
                 "2026-03-07T10:05:00+00:00",
+                "2026-02-01T10:00:00+00:00",
             ),
         )
 
@@ -5763,23 +5768,27 @@ class PenguinConnectTests(unittest.TestCase):
         ), mock.patch(
             "penguin_connect._repair_split_gmail_messages",
             return_value=0,
+        ), mock.patch(
+            "penguin_connect.list_recent_imessage_chat_activity",
+            return_value={
+                "available": True,
+                "chats": [
+                    {
+                        "chat_id": "chat-123",
+                        "first_message_at": "2026-03-07T07:10:00+00:00",
+                        "last_message_at": "2026-03-07T07:15:00+00:00",
+                        "message_count": 2,
+                    }
+                ],
+            },
         ):
             stats = penguin_connect._sync_conversations_unlocked(self.conn, mode="startup_catchup", days=7)
 
-        state = self.conn.execute(
-            """SELECT next_full_verify_at, full_verify_completed_at
-               FROM penguin_connect_sync_state
-               WHERE conversation_id = ?""",
-            ("amc_test",),
-        ).fetchone()
-
         self.assertTrue(stats["success"])
-        self.assertEqual(stats["selection_strategy"], "scheduled_full_verify_due")
-        self.assertEqual(stats["full_verify_completed"], 1)
-        self.assertEqual(imessage_calls, [("amc_test", True)])
-        self.assertEqual(gmail_calls, [("amc_test", True, "owner@gmail.com", ("owner@gmail.com",))])
-        self.assertTrue(state["next_full_verify_at"])
-        self.assertTrue(state["full_verify_completed_at"])
+        self.assertEqual(stats["selection_strategy"], "recent_timestamp_activity")
+        self.assertEqual(stats["selected_conversations"], 1)
+        self.assertEqual(imessage_calls, [("amc_test", False)])
+        self.assertEqual(gmail_calls, [("amc_test", False, "owner@gmail.com", ("owner@gmail.com",))])
 
     def test_startup_catchup_backfills_missing_full_verify_schedule_before_selection(self):
         self.conn.execute(
@@ -5810,6 +5819,9 @@ class PenguinConnectTests(unittest.TestCase):
         ), mock.patch(
             "penguin_connect._repair_split_gmail_messages",
             return_value=0,
+        ), mock.patch(
+            "penguin_connect.list_recent_imessage_chat_activity",
+            return_value={"available": True, "chats": []},
         ):
             stats = penguin_connect._sync_conversations_unlocked(self.conn, mode="startup_catchup", days=7)
 
@@ -5821,7 +5833,7 @@ class PenguinConnectTests(unittest.TestCase):
         ).fetchone()
 
         self.assertTrue(stats["success"])
-        self.assertEqual(stats["selection_strategy"], "startup_idle")
+        self.assertEqual(stats["selection_strategy"], "recent_timestamp_activity")
         self.assertEqual(stats["selected_conversations"], 0)
         self.assertEqual(stats["full_verify_schedule_backfilled"], 1)
         self.assertTrue(state["next_full_verify_at"])
