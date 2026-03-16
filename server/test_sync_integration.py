@@ -1513,7 +1513,7 @@ class SyncIntegrationTests(unittest.TestCase):
         self.assertIn("gmail_rate_limit_streak", columns)
         self.assertEqual(row["gmail_rate_limit_streak"], 0)
 
-    def test_init_db_adds_gmail_write_budget_columns_to_existing_poll_state_table(self):
+    def test_init_db_adds_gmail_backfill_budget_columns_to_existing_poll_state_table(self):
         conn = db.get_connection()
         conn.close()
         if db.DB_PATH.exists():
@@ -1523,6 +1523,8 @@ class SyncIntegrationTests(unittest.TestCase):
             db.SCHEMA.replace("    gmail_write_budget_tokens REAL,\n", "")
             .replace("    gmail_backfill_budget_tokens REAL,\n", "")
             .replace("    gmail_write_budget_updated_at TEXT,\n", "")
+            .replace("    gmail_backfill_daily_import_count INTEGER NOT NULL DEFAULT 0,\n", "")
+            .replace("    gmail_backfill_daily_window_started_at TEXT,\n", "")
         )
 
         raw_conn = sqlite3.connect(str(db.DB_PATH))
@@ -1556,7 +1558,8 @@ class SyncIntegrationTests(unittest.TestCase):
                 row["name"] for row in migrated_conn.execute("PRAGMA table_info(penguin_connect_poll_state)").fetchall()
             }
             row = migrated_conn.execute(
-                """SELECT gmail_write_budget_tokens, gmail_backfill_budget_tokens, gmail_write_budget_updated_at
+                """SELECT gmail_write_budget_tokens, gmail_backfill_budget_tokens, gmail_write_budget_updated_at,
+                          gmail_backfill_daily_import_count, gmail_backfill_daily_window_started_at
                    FROM penguin_connect_poll_state
                    WHERE gmail_email = ?""",
                 ("owner@gmail.com",),
@@ -1567,9 +1570,13 @@ class SyncIntegrationTests(unittest.TestCase):
         self.assertIn("gmail_write_budget_tokens", columns)
         self.assertIn("gmail_backfill_budget_tokens", columns)
         self.assertIn("gmail_write_budget_updated_at", columns)
+        self.assertIn("gmail_backfill_daily_import_count", columns)
+        self.assertIn("gmail_backfill_daily_window_started_at", columns)
         self.assertIsNone(row["gmail_write_budget_tokens"])
         self.assertIsNone(row["gmail_backfill_budget_tokens"])
         self.assertIsNone(row["gmail_write_budget_updated_at"])
+        self.assertEqual(row["gmail_backfill_daily_import_count"], 0)
+        self.assertIsNone(row["gmail_backfill_daily_window_started_at"])
 
     def test_init_db_backfills_last_imessage_native_message_id_for_existing_sync_rows(self):
         conn = db.get_connection()

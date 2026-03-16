@@ -93,6 +93,12 @@ DEFAULT_GMAIL_BACKFILL_WRITE_BUDGET_UNITS_PER_MINUTE = 1200
 MAX_GMAIL_WRITE_BUDGET_UNITS_PER_MINUTE = 15000
 DEFAULT_GMAIL_WRITE_OPERATION_COST_UNITS = 25
 MAX_GMAIL_WRITE_OPERATION_COST_UNITS = 250
+DEFAULT_BACKFILL_DAILY_GMAIL_IMPORT_CAP = 500
+MAX_BACKFILL_DAILY_GMAIL_IMPORT_CAP = 100000
+DEFAULT_BACKFILL_RATE_LIMIT_GUARD_STREAK = 8
+MAX_BACKFILL_RATE_LIMIT_GUARD_STREAK = 1000
+DEFAULT_BACKFILL_RATE_LIMIT_GUARD_PAUSE_SECONDS = 60 * 60
+MAX_BACKFILL_RATE_LIMIT_GUARD_PAUSE_SECONDS = 24 * 60 * 60
 DEFAULT_CONTACT_REFRESH_MINUTES_MIN = 30
 DEFAULT_CONTACT_REFRESH_MINUTES_MAX = 60
 SYNC_JOB_TYPE = "sync_conversations"
@@ -612,6 +618,8 @@ def _upsert_poll_state(
     gmail_write_budget_tokens=_UNSET,
     gmail_backfill_budget_tokens=_UNSET,
     gmail_write_budget_updated_at=_UNSET,
+    gmail_backfill_daily_import_count=_UNSET,
+    gmail_backfill_daily_window_started_at=_UNSET,
 ):
     gmail_email = _normalize_email(gmail_email)
     existing = _get_poll_state(conn, gmail_email)
@@ -634,6 +642,18 @@ def _upsert_poll_state(
             gmail_write_budget_updated_at = (
                 existing["gmail_write_budget_updated_at"] if "gmail_write_budget_updated_at" in existing.keys() else None
             )
+        if gmail_backfill_daily_import_count is _UNSET:
+            gmail_backfill_daily_import_count = (
+                existing["gmail_backfill_daily_import_count"]
+                if "gmail_backfill_daily_import_count" in existing.keys()
+                else 0
+            )
+        if gmail_backfill_daily_window_started_at is _UNSET:
+            gmail_backfill_daily_window_started_at = (
+                existing["gmail_backfill_daily_window_started_at"]
+                if "gmail_backfill_daily_window_started_at" in existing.keys()
+                else None
+            )
     else:
         if last_gmail_history_id is _UNSET:
             last_gmail_history_id = None
@@ -647,12 +667,17 @@ def _upsert_poll_state(
             gmail_backfill_budget_tokens = None
         if gmail_write_budget_updated_at is _UNSET:
             gmail_write_budget_updated_at = None
+        if gmail_backfill_daily_import_count is _UNSET:
+            gmail_backfill_daily_import_count = 0
+        if gmail_backfill_daily_window_started_at is _UNSET:
+            gmail_backfill_daily_window_started_at = None
     conn.execute(
         """INSERT INTO penguin_connect_poll_state
            (gmail_email, last_gmail_history_id, gmail_rate_limited_until, gmail_rate_limit_streak,
             gmail_write_budget_tokens, gmail_backfill_budget_tokens, gmail_write_budget_updated_at,
+            gmail_backfill_daily_import_count, gmail_backfill_daily_window_started_at,
             created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
            ON CONFLICT(gmail_email) DO UPDATE SET
              last_gmail_history_id = excluded.last_gmail_history_id,
              gmail_rate_limited_until = excluded.gmail_rate_limited_until,
@@ -660,6 +685,8 @@ def _upsert_poll_state(
              gmail_write_budget_tokens = excluded.gmail_write_budget_tokens,
              gmail_backfill_budget_tokens = excluded.gmail_backfill_budget_tokens,
              gmail_write_budget_updated_at = excluded.gmail_write_budget_updated_at,
+             gmail_backfill_daily_import_count = excluded.gmail_backfill_daily_import_count,
+             gmail_backfill_daily_window_started_at = excluded.gmail_backfill_daily_window_started_at,
              updated_at = datetime('now')""",
         (
             gmail_email,
@@ -669,6 +696,8 @@ def _upsert_poll_state(
             gmail_write_budget_tokens,
             gmail_backfill_budget_tokens,
             gmail_write_budget_updated_at,
+            gmail_backfill_daily_import_count,
+            gmail_backfill_daily_window_started_at,
         ),
     )
 
@@ -790,6 +819,29 @@ def _gmail_rate_limit_skip_result(
     }
     if rate_limit_streak is not None:
         result["rate_limit_streak"] = max(0, int(rate_limit_streak))
+    return result
+
+
+def _timed_sync_skip_result(
+    mode: str,
+    days: int,
+    hours: Optional[int],
+    gmail_email: str,
+    reason: str,
+    retry_after_seconds: int,
+    **extra: Any,
+) -> dict[str, Any]:
+    result = {
+        "success": True,
+        "mode": mode,
+        "days": days,
+        "hours": hours,
+        "gmail_email": gmail_email,
+        "skipped": True,
+        "reason": reason,
+        "retry_after_seconds": max(1, int(retry_after_seconds)),
+    }
+    result.update(extra)
     return result
 
 
@@ -1178,6 +1230,37 @@ def _gmail_write_operation_cost_units() -> int:
     )
 
 
+def _backfill_daily_gmail_import_cap() -> Optional[int]:
+    raw = os.environ.get("PENGUIN_CONNECT_BACKFILL_DAILY_GMAIL_IMPORT_CAP", "")
+    try:
+        value = int(raw) if raw.strip() else DEFAULT_BACKFILL_DAILY_GMAIL_IMPORT_CAP
+    except Exception:
+        value = DEFAULT_BACKFILL_DAILY_GMAIL_IMPORT_CAP
+    if value <= 0:
+        return None
+    return max(1, min(value, MAX_BACKFILL_DAILY_GMAIL_IMPORT_CAP))
+
+
+def _backfill_rate_limit_guard_streak_threshold() -> Optional[int]:
+    raw = os.environ.get("PENGUIN_CONNECT_BACKFILL_RATE_LIMIT_GUARD_STREAK", "")
+    try:
+        value = int(raw) if raw.strip() else DEFAULT_BACKFILL_RATE_LIMIT_GUARD_STREAK
+    except Exception:
+        value = DEFAULT_BACKFILL_RATE_LIMIT_GUARD_STREAK
+    if value <= 0:
+        return None
+    return max(1, min(value, MAX_BACKFILL_RATE_LIMIT_GUARD_STREAK))
+
+
+def _backfill_rate_limit_guard_pause_seconds() -> int:
+    return _env_int(
+        "PENGUIN_CONNECT_BACKFILL_RATE_LIMIT_GUARD_PAUSE_SECONDS",
+        DEFAULT_BACKFILL_RATE_LIMIT_GUARD_PAUSE_SECONDS,
+        60,
+        MAX_BACKFILL_RATE_LIMIT_GUARD_PAUSE_SECONDS,
+    )
+
+
 def _sync_uses_backfill_gmail_budget(mode: str, verify_all: bool) -> bool:
     normalized_mode = (mode or "").strip().lower()
     return bool(verify_all or normalized_mode in {"backfill", "startup_catchup"})
@@ -1314,6 +1397,135 @@ def _wait_for_gmail_write_budget(
         if reservation["granted"]:
             return reservation
         time.sleep(min(float(reservation["retry_after_seconds"]), 10.0))
+
+
+def _coerce_non_negative_int(value: Any, fallback: int = 0) -> int:
+    try:
+        return max(0, int(value))
+    except Exception:
+        return max(0, int(fallback))
+
+
+def _normalize_backfill_daily_import_window(
+    poll_state: Optional[sqlite3.Row],
+    *,
+    now_dt: Optional[datetime] = None,
+) -> tuple[int, Optional[str]]:
+    now_dt = now_dt or datetime.now(timezone.utc)
+    if not poll_state:
+        return 0, None
+    count = _coerce_non_negative_int(
+        poll_state["gmail_backfill_daily_import_count"] if "gmail_backfill_daily_import_count" in poll_state.keys() else 0
+    )
+    window_started_at = _parse_iso(
+        poll_state["gmail_backfill_daily_window_started_at"]
+        if "gmail_backfill_daily_window_started_at" in poll_state.keys()
+        else None
+    )
+    if not window_started_at:
+        return 0, None
+    if (now_dt - window_started_at) >= timedelta(days=1):
+        return 0, None
+    return count, window_started_at.isoformat()
+
+
+def _backfill_daily_import_pause(
+    conn: sqlite3.Connection,
+    gmail_email: str,
+    *,
+    now_dt: Optional[datetime] = None,
+) -> Optional[dict[str, Any]]:
+    cap = _backfill_daily_gmail_import_cap()
+    if not cap:
+        return None
+    now_dt = now_dt or datetime.now(timezone.utc)
+    poll_state = _get_poll_state(conn, gmail_email)
+    count, window_started_at = _normalize_backfill_daily_import_window(poll_state, now_dt=now_dt)
+    if count < cap:
+        if poll_state and count == 0 and window_started_at is None:
+            _upsert_poll_state(
+                conn,
+                gmail_email,
+                gmail_backfill_daily_import_count=0,
+                gmail_backfill_daily_window_started_at=None,
+            )
+        return None
+    window_dt = _parse_iso(window_started_at)
+    if not window_dt:
+        window_dt = now_dt
+        window_started_at = window_dt.isoformat()
+    retry_after_seconds = max(1, int(math.ceil(((window_dt + timedelta(days=1)) - now_dt).total_seconds())))
+    return {
+        "retry_after_seconds": retry_after_seconds,
+        "backfill_daily_import_cap": cap,
+        "backfill_daily_import_count": count,
+        "backfill_daily_window_started_at": window_started_at,
+    }
+
+
+def _record_backfill_daily_gmail_imports(
+    conn: sqlite3.Connection,
+    gmail_email: str,
+    imported_count: int,
+    *,
+    now_dt: Optional[datetime] = None,
+) -> None:
+    imported_count = _coerce_non_negative_int(imported_count)
+    if imported_count <= 0:
+        return
+    now_dt = now_dt or datetime.now(timezone.utc)
+    poll_state = _get_poll_state(conn, gmail_email)
+    current_count, window_started_at = _normalize_backfill_daily_import_window(poll_state, now_dt=now_dt)
+    if not window_started_at:
+        window_started_at = now_dt.isoformat()
+        current_count = 0
+    _upsert_poll_state(
+        conn,
+        gmail_email,
+        gmail_backfill_daily_import_count=current_count + imported_count,
+        gmail_backfill_daily_window_started_at=window_started_at,
+    )
+
+
+def _backfill_sync_guard_result(
+    conn: sqlite3.Connection,
+    mode: str,
+    days: int,
+    hours: Optional[int],
+    gmail_email: str,
+) -> Optional[dict[str, Any]]:
+    if mode not in {"backfill", "startup_catchup"}:
+        return None
+
+    threshold = _backfill_rate_limit_guard_streak_threshold()
+    current_streak = _current_gmail_rate_limit_streak(conn, gmail_email)
+    if threshold and current_streak >= threshold:
+        retry_after_seconds = _backfill_rate_limit_guard_pause_seconds()
+        return _timed_sync_skip_result(
+            mode,
+            days,
+            hours,
+            gmail_email,
+            "backfill_rate_limit_guarded",
+            retry_after_seconds,
+            rate_limit_streak=current_streak,
+            guard_streak_threshold=threshold,
+        )
+
+    pause = _backfill_daily_import_pause(conn, gmail_email)
+    if pause:
+        return _timed_sync_skip_result(
+            mode,
+            days,
+            hours,
+            gmail_email,
+            "backfill_daily_cap_reached",
+            pause["retry_after_seconds"],
+            backfill_daily_import_cap=pause["backfill_daily_import_cap"],
+            backfill_daily_import_count=pause["backfill_daily_import_count"],
+            backfill_daily_window_started_at=pause["backfill_daily_window_started_at"],
+        )
+    return None
 
 
 def _sync_gmail_write_pause_seconds(
@@ -2628,10 +2840,11 @@ def _mark_sync_job_failed(
     return failure_result
 
 
-def _requeue_sync_job_rate_limited(
+def _requeue_sync_job_skipped(
     conn: sqlite3.Connection,
     job: sqlite3.Row,
     *,
+    reason: str,
     result: Optional[dict[str, Any]] = None,
     retry_after_seconds: Optional[int] = None,
 ) -> dict[str, Any]:
@@ -2647,7 +2860,7 @@ def _requeue_sync_job_rate_limited(
         {
             "success": True,
             "skipped": True,
-            "reason": "gmail_rate_limited",
+            "reason": reason,
             "queue_job_id": int(job["id"]),
             "queue_job_attempt": int(job["attempt_count"] or 0) + 1,
             "queue_job_status": "queued",
@@ -2668,7 +2881,7 @@ def _requeue_sync_job_rate_limited(
                updated_at = ?
            WHERE id = ?""",
         (
-            "gmail_rate_limited",
+            reason,
             next_run_at,
             json.dumps(queued_result),
             now_iso,
@@ -2741,11 +2954,12 @@ def run_sync_job_worker_once(
     result["queue_job_attempt"] = int(job["attempt_count"] or 0) + 1
 
     if result.get("success"):
-        if result.get("skipped") and result.get("reason") == "gmail_rate_limited":
+        if result.get("skipped") and int(result.get("retry_after_seconds") or 0) > 0:
             retry_after = result.get("retry_after_seconds")
-            queued = _requeue_sync_job_rate_limited(
+            queued = _requeue_sync_job_skipped(
                 conn,
                 job,
+                reason=(result.get("reason") or "skipped").strip() or "skipped",
                 result=result,
                 retry_after_seconds=retry_after,
             )
@@ -7177,6 +7391,10 @@ def _sync_conversations_unlocked(
             pause.get("rate_limit_streak"),
         )
 
+    backfill_guard = _backfill_sync_guard_result(conn, mode, days, hours, gmail_email)
+    if backfill_guard:
+        return backfill_guard
+
     try:
         send_as_aliases, primary_send_as = _refresh_send_as_aliases(conn, gmail_service, gmail_email)
         conn.commit()
@@ -7546,6 +7764,9 @@ def _sync_conversations_unlocked(
         log_action("sync_run_result", mode=mode, success=False, error=str(exc).strip() or exc.__class__.__name__)
         _sync_runtime_finished(run_id, error=str(exc).strip() or exc.__class__.__name__)
         raise
+
+    if mode in {"backfill", "startup_catchup"} and int(stats.get("gmail_imported") or 0) > 0:
+        _record_backfill_daily_gmail_imports(conn, gmail_email, int(stats["gmail_imported"]))
 
     _record_gmail_sync_success(
         conn,

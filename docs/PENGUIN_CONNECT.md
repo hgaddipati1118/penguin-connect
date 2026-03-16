@@ -206,6 +206,8 @@ Repeated Gmail rate limits now behave more like Slashy backend sync retries: Pen
 
 PenguinConnect now also applies a local per-account Gmail write budget before each bridge-owned Gmail write. Incremental work can spend the full shared budget, while startup/backfill must also fit inside a smaller backfill bucket. That keeps catch-up work from consuming all Gmail write capacity and leaves reserved headroom for fresh-message incremental sync.
 
+Startup/backfill now also stop after a rolling 24-hour Gmail import cap, and they stand down for a longer cooldown when the Gmail rate-limit streak gets too high. Those guards are backfill-only: incremental sync keeps running so fresh-message delivery is not blocked by old-history catch-up.
+
 PenguinConnect also cleans up stale Gmail drafts addressed to a conversation alias when they live in a non-canonical thread and the conversation already has a bridge-owned canonical thread. This prevents duplicate draft-only threads from lingering in Gmail while still leaving active in-progress drafts alone until they age past the safety window. The default safety window is 30 minutes and can be adjusted with `PENGUIN_CONNECT_ALIAS_DRAFT_DELETE_MINUTES`.
 
 PenguinConnect also refreshes the local Contacts cache on startup and then again every 30 to 60 minutes while the watcher is running. That refresh pass repairs active conversation display names when a raw-handle group title such as `Sai Mandhan, +15126629638` can now resolve fully from contacts.
@@ -226,6 +228,9 @@ Those recurring full verifications also refresh contact-derived display names, s
 - total Gmail write budget per minute: `PENGUIN_CONNECT_GMAIL_WRITE_BUDGET_UNITS_PER_MINUTE=3000`
 - startup/backfill Gmail write budget per minute: `PENGUIN_CONNECT_GMAIL_BACKFILL_WRITE_BUDGET_UNITS_PER_MINUTE=1200`
 - Gmail write budget cost per reserved write: `PENGUIN_CONNECT_GMAIL_WRITE_OPERATION_COST_UNITS=25`
+- startup/backfill rolling 24-hour Gmail import cap: `PENGUIN_CONNECT_BACKFILL_DAILY_GMAIL_IMPORT_CAP=500`
+- startup/backfill rate-limit guard streak: `PENGUIN_CONNECT_BACKFILL_RATE_LIMIT_GUARD_STREAK=8`
+- startup/backfill rate-limit guard pause: `PENGUIN_CONNECT_BACKFILL_RATE_LIMIT_GUARD_PAUSE_SECONDS=3600`
 - Gmail rate-limit cooldown base/max: `PENGUIN_CONNECT_GMAIL_RATE_LIMIT_PAUSE_SECONDS=120`, `PENGUIN_CONNECT_GMAIL_RATE_LIMIT_MAX_PAUSE_SECONDS=1800`
 - action log:
   - `PENGUIN_CONNECT_ACTION_LOG_PATH`

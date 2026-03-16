@@ -39,6 +39,14 @@ class AppStatusTests(unittest.TestCase):
 
         self.assertIsNone(delay)
 
+    def test_startup_catchup_retry_delay_uses_custom_retry_after_for_backfill_guard(self):
+        delay = app_module._startup_catchup_retry_delay(
+            {"success": True, "skipped": True, "reason": "backfill_daily_cap_reached", "retry_after_seconds": 3600},
+            7.0,
+        )
+
+        self.assertEqual(delay, 3600.0)
+
     def test_status_includes_sync_metrics(self):
         conn = _build_conn()
         with mock.patch("app.get_connection", return_value=conn), mock.patch(

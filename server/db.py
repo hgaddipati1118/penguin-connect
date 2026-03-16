@@ -125,6 +125,8 @@ CREATE TABLE IF NOT EXISTS penguin_connect_poll_state (
     gmail_write_budget_tokens REAL,
     gmail_backfill_budget_tokens REAL,
     gmail_write_budget_updated_at TEXT,
+    gmail_backfill_daily_import_count INTEGER NOT NULL DEFAULT 0,
+    gmail_backfill_daily_window_started_at TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -1353,6 +1355,12 @@ def init_db() -> None:
             conn.execute("ALTER TABLE penguin_connect_poll_state ADD COLUMN gmail_backfill_budget_tokens REAL")
         if "gmail_write_budget_updated_at" not in poll_columns:
             conn.execute("ALTER TABLE penguin_connect_poll_state ADD COLUMN gmail_write_budget_updated_at TEXT")
+        if "gmail_backfill_daily_import_count" not in poll_columns:
+            conn.execute(
+                "ALTER TABLE penguin_connect_poll_state ADD COLUMN gmail_backfill_daily_import_count INTEGER NOT NULL DEFAULT 0"
+            )
+        if "gmail_backfill_daily_window_started_at" not in poll_columns:
+            conn.execute("ALTER TABLE penguin_connect_poll_state ADD COLUMN gmail_backfill_daily_window_started_at TEXT")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_penguin_connect_jobs_finished ON penguin_connect_jobs(status, finished_at)"
         )

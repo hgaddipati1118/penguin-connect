@@ -95,6 +95,7 @@ Operational note:
 - Preempted startup/backfill conversation imports resume from the saved Apple Messages cursor instead of rescanning from the beginning.
 - Gmail writes now flow through a per-account quota budget, and startup/backfill can only spend the smaller backfill bucket so incremental work keeps reserved headroom.
 - Repeated Gmail rate limits now slow startup/backfill automatically by extending the cooldown window and increasing the per-write pause until successful syncs recover.
+- Startup/backfill also stop after a rolling 24-hour Gmail import cap and stand down for a longer pause once the Gmail rate-limit streak gets too high, so old-history catch-up cannot keep hammering the account while incremental work waits.
 
 Production-style preflight:
 

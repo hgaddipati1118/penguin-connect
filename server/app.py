@@ -77,14 +77,14 @@ def _startup_catchup_retry_delay(result: dict, pause_seconds: float) -> float | 
         return None
 
     if result.get("skipped"):
+        retry_after = result.get("retry_after_seconds")
+        try:
+            retry_seconds = float(retry_after)
+        except Exception:
+            retry_seconds = 0.0
+        if retry_seconds > 0:
+            return retry_seconds
         reason = (result.get("reason") or "").strip()
-        if reason == "gmail_rate_limited":
-            retry_after = result.get("retry_after_seconds")
-            try:
-                retry_seconds = float(retry_after)
-            except Exception:
-                retry_seconds = 0.0
-            return retry_seconds if retry_seconds > 0 else pause_seconds
         if reason in {"queue_busy", "initial_backfill_required"}:
             return pause_seconds
         return None
@@ -137,6 +137,10 @@ async def lifespan(_app: FastAPI):
                             print(f"[PenguinConnect] Startup catch-up paused for Gmail rate limits ({retry_after}s)")
                         elif result.get("reason") == "initial_backfill_required":
                             print("[PenguinConnect] Startup catch-up waiting for initial backfill")
+                        elif result.get("reason") == "backfill_daily_cap_reached":
+                            print("[PenguinConnect] Startup catch-up paused after hitting the daily backfill Gmail import cap")
+                        elif result.get("reason") == "backfill_rate_limit_guarded":
+                            print("[PenguinConnect] Startup catch-up paused because Gmail rate-limit pressure is too high")
                         time.sleep(retry_delay)
                         continue
 

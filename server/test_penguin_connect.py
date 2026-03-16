@@ -281,6 +281,81 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(data["id"], "gm-1")
         mock_wait.assert_called_once_with(self.conn, "owner@gmail.com", "backfill")
 
+    def test_record_backfill_daily_gmail_imports_increments_active_window(self):
+        base_dt = datetime(2026, 3, 16, 12, 0, 0, tzinfo=timezone.utc)
+        self.conn.execute(
+            """INSERT INTO penguin_connect_poll_state
+               (gmail_email, gmail_backfill_daily_import_count, gmail_backfill_daily_window_started_at)
+               VALUES (?, ?, ?)""",
+            ("owner@gmail.com", 12, base_dt.isoformat()),
+        )
+
+        penguin_connect._record_backfill_daily_gmail_imports(
+            self.conn,
+            "owner@gmail.com",
+            5,
+            now_dt=base_dt + timedelta(hours=2),
+        )
+
+        row = self.conn.execute(
+            """SELECT gmail_backfill_daily_import_count, gmail_backfill_daily_window_started_at
+               FROM penguin_connect_poll_state
+               WHERE gmail_email = ?""",
+            ("owner@gmail.com",),
+        ).fetchone()
+        self.assertEqual(row["gmail_backfill_daily_import_count"], 17)
+        self.assertEqual(row["gmail_backfill_daily_window_started_at"], base_dt.isoformat())
+
+    def test_record_backfill_daily_gmail_imports_resets_expired_window(self):
+        base_dt = datetime(2026, 3, 16, 12, 0, 0, tzinfo=timezone.utc)
+        self.conn.execute(
+            """INSERT INTO penguin_connect_poll_state
+               (gmail_email, gmail_backfill_daily_import_count, gmail_backfill_daily_window_started_at)
+               VALUES (?, ?, ?)""",
+            ("owner@gmail.com", 12, base_dt.isoformat()),
+        )
+
+        penguin_connect._record_backfill_daily_gmail_imports(
+            self.conn,
+            "owner@gmail.com",
+            5,
+            now_dt=base_dt + timedelta(days=1, minutes=1),
+        )
+
+        row = self.conn.execute(
+            """SELECT gmail_backfill_daily_import_count, gmail_backfill_daily_window_started_at
+               FROM penguin_connect_poll_state
+               WHERE gmail_email = ?""",
+            ("owner@gmail.com",),
+        ).fetchone()
+        self.assertEqual(row["gmail_backfill_daily_import_count"], 5)
+        self.assertEqual(row["gmail_backfill_daily_window_started_at"], (base_dt + timedelta(days=1, minutes=1)).isoformat())
+
+    def test_backfill_daily_import_pause_returns_retry_when_cap_hit(self):
+        base_dt = datetime(2026, 3, 16, 12, 0, 0, tzinfo=timezone.utc)
+        self.conn.execute(
+            """INSERT INTO penguin_connect_poll_state
+               (gmail_email, gmail_backfill_daily_import_count, gmail_backfill_daily_window_started_at)
+               VALUES (?, ?, ?)""",
+            ("owner@gmail.com", 500, base_dt.isoformat()),
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {"PENGUIN_CONNECT_BACKFILL_DAILY_GMAIL_IMPORT_CAP": "500"},
+            clear=False,
+        ):
+            pause = penguin_connect._backfill_daily_import_pause(
+                self.conn,
+                "owner@gmail.com",
+                now_dt=base_dt + timedelta(hours=4),
+            )
+
+        self.assertIsNotNone(pause)
+        self.assertEqual(pause["backfill_daily_import_cap"], 500)
+        self.assertEqual(pause["backfill_daily_import_count"], 500)
+        self.assertEqual(pause["retry_after_seconds"], 20 * 60 * 60)
+
     def test_set_gmail_rate_limit_pause_escalates_by_streak(self):
         with mock.patch.dict(
             os.environ,
@@ -5073,6 +5148,44 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertIsNotNone(row["next_run_at"])
         self.assertIsNone(row["finished_at"])
 
+    def test_sync_job_worker_requeues_backfill_daily_cap_skip_without_counting_failure(self):
+        queued = penguin_connect.enqueue_sync_job(
+            self.conn,
+            mode="startup_catchup",
+            days=7,
+            hours=None,
+            verify_all=False,
+            dedupe=True,
+        )
+        self.conn.commit()
+
+        with mock.patch(
+            "penguin_connect.sync_conversations",
+            return_value={
+                "success": True,
+                "mode": "startup_catchup",
+                "skipped": True,
+                "reason": "backfill_daily_cap_reached",
+                "retry_after_seconds": 3600,
+            },
+        ):
+            result = penguin_connect.run_sync_job_worker_once(self.conn, owner="test-worker")
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["reason"], "backfill_daily_cap_reached")
+        self.assertEqual(result["queue_job_status"], "queued")
+        self.assertEqual(result["queue_job_retry_after_seconds"], 3600)
+        row = self.conn.execute(
+            "SELECT status, attempt_count, last_error, next_run_at, finished_at FROM penguin_connect_jobs WHERE id = ?",
+            (queued["job_id"],),
+        ).fetchone()
+        self.assertEqual(row["status"], "queued")
+        self.assertEqual(row["attempt_count"], 0)
+        self.assertEqual(row["last_error"], "backfill_daily_cap_reached")
+        self.assertIsNotNone(row["next_run_at"])
+        self.assertIsNone(row["finished_at"])
+
     def test_incremental_sync_processes_one_recent_conversation_per_run(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
@@ -5196,6 +5309,70 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(stats["reason"], "gmail_rate_limited")
         self.assertGreaterEqual(stats["retry_after_seconds"], 1)
         self.assertEqual(stats["rate_limit_streak"], 2)
+        mock_refresh.assert_not_called()
+
+    def test_startup_catchup_skips_when_backfill_daily_cap_reached(self):
+        base_dt = datetime.now(timezone.utc) - timedelta(hours=4)
+        self.conn.execute(
+            """INSERT INTO penguin_connect_poll_state
+               (gmail_email, gmail_backfill_daily_import_count, gmail_backfill_daily_window_started_at)
+               VALUES (?, ?, ?)""",
+            ("owner@gmail.com", 500, base_dt.isoformat()),
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {"PENGUIN_CONNECT_BACKFILL_DAILY_GMAIL_IMPORT_CAP": "500"},
+            clear=False,
+        ), mock.patch(
+            "penguin_connect.self_heal_conversation_cache",
+            return_value={"success": True},
+        ), mock.patch(
+            "penguin_connect._build_gmail_service",
+            return_value=(mock.Mock(), None),
+        ), mock.patch(
+            "penguin_connect._refresh_send_as_aliases",
+        ) as mock_refresh:
+            stats = penguin_connect._sync_conversations_unlocked(self.conn, mode="startup_catchup", days=7)
+
+        self.assertTrue(stats["success"])
+        self.assertTrue(stats["skipped"])
+        self.assertEqual(stats["reason"], "backfill_daily_cap_reached")
+        self.assertGreaterEqual(stats["retry_after_seconds"], (19 * 60 * 60) + (59 * 60))
+        mock_refresh.assert_not_called()
+
+    def test_startup_catchup_skips_when_backfill_rate_limit_guard_threshold_hit(self):
+        self.conn.execute(
+            """INSERT INTO penguin_connect_poll_state
+               (gmail_email, gmail_rate_limit_streak)
+               VALUES (?, ?)""",
+            ("owner@gmail.com", 9),
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PENGUIN_CONNECT_BACKFILL_RATE_LIMIT_GUARD_STREAK": "8",
+                "PENGUIN_CONNECT_BACKFILL_RATE_LIMIT_GUARD_PAUSE_SECONDS": "3600",
+            },
+            clear=False,
+        ), mock.patch(
+            "penguin_connect.self_heal_conversation_cache",
+            return_value={"success": True},
+        ), mock.patch(
+            "penguin_connect._build_gmail_service",
+            return_value=(mock.Mock(), None),
+        ), mock.patch(
+            "penguin_connect._refresh_send_as_aliases",
+        ) as mock_refresh:
+            stats = penguin_connect._sync_conversations_unlocked(self.conn, mode="startup_catchup", days=7)
+
+        self.assertTrue(stats["success"])
+        self.assertTrue(stats["skipped"])
+        self.assertEqual(stats["reason"], "backfill_rate_limit_guarded")
+        self.assertEqual(stats["retry_after_seconds"], 3600)
+        self.assertEqual(stats["rate_limit_streak"], 9)
+        self.assertEqual(stats["guard_streak_threshold"], 8)
         mock_refresh.assert_not_called()
 
     def test_gmail_execute_retries_retryable_errors(self):
