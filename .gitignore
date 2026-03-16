@@ -22,6 +22,7 @@ __pycache__/
 # IDE
 .vscode/
 .idea/
+.serena/
 
 # Logs
 *.log

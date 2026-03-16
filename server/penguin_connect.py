@@ -1033,10 +1033,11 @@ def _select_conversations_for_sync(
         verify_due.sort(key=lambda conv: (_full_verify_due_sort_value(conv), _sync_due_sort_value(conv), conv["conversation_id"]))
 
         queued = hot + pending + round_robin
-        # Always include all hot conversations (those with recent iMessage/Gmail activity).
-        # Only apply the per-run limit to pending and round_robin.
-        extra_limit = _incremental_selection_limit(len(hot))
-        selected = hot + (pending + round_robin)[:extra_limit]
+        limit = _incremental_selection_limit(len(hot))
+        if hot:
+            selected = hot[:limit]
+        else:
+            selected = (pending + round_robin)[:limit]
         verify_due_ids = {conv["conversation_id"] for conv in verify_due}
         selected_ids = {conv["conversation_id"] for conv in selected}
         selected_verify_ids = [conv["conversation_id"] for conv in selected if conv["conversation_id"] in verify_due_ids]
@@ -1077,58 +1078,62 @@ def _select_conversations_for_sync(
         return selected, selection
 
     if mode == "startup_catchup":
-        # Wave-based backfill: start with 1 day, then 2, then 3, etc.
-        poll_state = _get_poll_state(conn, gmail_email)
-        wave_days = max(1, int(
-            poll_state["backfill_wave_days"]
-            if poll_state and "backfill_wave_days" in poll_state.keys()
-            else 1
-        ))
-        wave_days = min(wave_days, days)
-        wave_started_at = (
-            poll_state["backfill_wave_started_at"]
-            if poll_state and "backfill_wave_started_at" in poll_state.keys()
-            else None
-        )
-        cutoff_iso = _sync_window_cutoff(wave_days, hours).isoformat()
+        now_dt = datetime.now(timezone.utc)
+        cutoff_iso = _sync_window_cutoff(days, hours).isoformat()
         recent = list_recent_imessage_chat_activity(cutoff_iso, limit=len(conversations))
-        if recent.get("available"):
-            recent_by_chat = _index_recent_imessage_activity(recent)
-            recent_for_conversation = {
-                conv["conversation_id"]: _recent_imessage_activity_for_conversation(conv, recent_by_chat)
-                for conv in conversations
-            }
-            selected = [conv for conv in conversations if recent_for_conversation.get(conv["conversation_id"])]
-            selected.sort(
-                key=lambda conv: (
-                    recent_for_conversation[conv["conversation_id"]].get("first_message_at") or "",
-                    conv["conversation_id"],
-                ),
-                reverse=True,
+        pending_full_verify = sum(1 for conv in conversations if _conversation_requires_full_verify(conv, now_dt=now_dt))
+        if not recent.get("available"):
+            fallback = [conv for conv in conversations if not conv["initial_sync_completed_at"]]
+            fallback.sort(key=lambda conv: (_sync_due_sort_value(conv), conv["conversation_id"]))
+            limit = _startup_catchup_conversations_per_run()
+            selected = fallback if limit is None else fallback[:limit]
+            selection["queued_conversations"] = len(fallback)
+            selection["selected_conversations"] = len(selected)
+            selection["selection_limit"] = len(selected)
+            selection["already_synced_conversations"] = 0
+            selection["pending_bootstrap_conversations"] = sum(1 for conv in selected if not conv["initial_sync_completed_at"])
+            selection["bootstrapped_conversations"] = len(selected) - selection["pending_bootstrap_conversations"]
+            selection["pending_full_verify_conversations"] = pending_full_verify
+            selection["selection_strategy"] = "pending_bootstrap_round_robin"
+            selection["selection_cutoff"] = cutoff_iso
+            selection["selection_reason"] = recent.get("reason") or "recent_activity_unavailable"
+            return selected, selection
+
+        recent_by_chat = _index_recent_imessage_activity(recent)
+        queued_with_activity: list[tuple[sqlite3.Row, dict[str, Any]]] = []
+        already_synced = 0
+        for conv in conversations:
+            recent_row = _recent_imessage_activity_for_conversation(conv, recent_by_chat)
+            if not recent_row:
+                continue
+            recent_ts = recent_row.get("last_message_at") or recent_row.get("first_message_at")
+            if not recent_ts:
+                continue
+            if not conv["initial_sync_completed_at"]:
+                queued_with_activity.append((conv, recent_row))
+                continue
+            if _recent_activity_sort_value(recent_ts) > _recent_activity_sort_value(conv["last_imessage_ts"]):
+                queued_with_activity.append((conv, recent_row))
+            else:
+                already_synced += 1
+
+        queued_with_activity.sort(
+            key=lambda item: (
+                item[1].get("first_message_at") or item[1].get("last_message_at") or "",
+                item[0]["conversation_id"],
             )
-        else:
-            selected = sorted(conversations, key=lambda conv: (_sync_due_sort_value(conv), conv["conversation_id"]))
-
-        # Resume: skip conversations already backfilled through this wave's cutoff
-        already_synced = sum(
-            1 for conv in selected
-            if conv["backfill_synced_through_ts"] and conv["backfill_synced_through_ts"] <= cutoff_iso
         )
-        selected = [
-            conv for conv in selected
-            if not conv["backfill_synced_through_ts"] or conv["backfill_synced_through_ts"] > cutoff_iso
-        ]
-        if not wave_started_at:
-            _upsert_poll_state(conn, gmail_email, backfill_wave_started_at=_now_iso())
-            conn.commit()
-
+        queued = [conv for conv, _recent_row in queued_with_activity]
+        limit = _startup_catchup_conversations_per_run()
+        selected = queued if limit is None else queued[:limit]
+        selection["queued_conversations"] = len(queued)
         selection["selected_conversations"] = len(selected)
+        selection["selection_limit"] = len(selected)
         selection["already_synced_conversations"] = already_synced
-        selection["backfill_wave_days"] = wave_days
-        selection["backfill_max_days"] = days
         selection["pending_bootstrap_conversations"] = sum(1 for conv in selected if not conv["initial_sync_completed_at"])
         selection["bootstrapped_conversations"] = len(selected) - selection["pending_bootstrap_conversations"]
-        selection["selection_strategy"] = "wave_backfill"
+        selection["pending_full_verify_conversations"] = pending_full_verify
+        selection["selection_strategy"] = "recent_timestamp_activity"
         selection["selection_cutoff"] = cutoff_iso
         return selected, selection
 
@@ -1459,7 +1464,7 @@ def _normalize_backfill_daily_import_window(
     )
     if not window_started_at:
         return 0, None
-    if (now_dt - window_started_at) >= timedelta(hours=1):
+    if (now_dt - window_started_at) >= timedelta(hours=24):
         return 0, None
     return count, window_started_at.isoformat()
 
@@ -1489,7 +1494,7 @@ def _backfill_daily_import_pause(
     if not window_dt:
         window_dt = now_dt
         window_started_at = window_dt.isoformat()
-    retry_after_seconds = max(1, int(math.ceil(((window_dt + timedelta(hours=1)) - now_dt).total_seconds())))
+    retry_after_seconds = max(1, int(math.ceil(((window_dt + timedelta(hours=24)) - now_dt).total_seconds())))
     return {
         "retry_after_seconds": retry_after_seconds,
         "backfill_daily_import_cap": cap,
@@ -4567,9 +4572,21 @@ def _repair_split_gmail_messages(
     conversation_id: str,
     canonical_thread_id: Optional[str],
     *,
-    gmail_email: str,
-    gmail_write_lane: str,
+    gmail_email: Optional[str] = None,
+    gmail_write_lane: str = "incremental",
 ) -> int:
+    if not gmail_email:
+        row = conn.execute(
+            """SELECT gmail_email
+               FROM penguin_connect_conversations
+               WHERE conversation_id = ?
+               LIMIT 1""",
+            (conversation_id,),
+        ).fetchone()
+        gmail_email = row["gmail_email"] if row else None
+    if not gmail_email:
+        return 0
+
     canonical = (canonical_thread_id or "").strip()
     if not canonical or not _thread_is_bridge_owned(conn, conversation_id, canonical):
         return 0
@@ -4750,6 +4767,19 @@ def _conversation_has_materialized_imessage_history(conn: sqlite3.Connection, co
            WHERE conversation_id = ?
              AND direction = 'imessage_to_email'
              AND gmail_message_id IS NOT NULL
+           LIMIT 1""",
+        (conversation_id,),
+    ).fetchone()
+    return bool(row)
+
+
+def _conversation_has_stored_imessage_rows(conn: sqlite3.Connection, conversation_id: str) -> bool:
+    row = conn.execute(
+        """SELECT 1
+           FROM penguin_connect_messages
+           WHERE conversation_id = ?
+             AND provider = 'imessage'
+             AND direction = 'imessage_to_email'
            LIMIT 1""",
         (conversation_id,),
     ).fetchone()
@@ -5304,11 +5334,6 @@ def _sync_conversation_imessage_to_gmail(
     cutoff = _parse_iso(cutoff_iso) or _sync_window_cutoff(days, hours)
     since = None
     since_native_message_id = state["last_imessage_native_message_id"] if state else None
-    backfill_through = (
-        state["backfill_synced_through_ts"]
-        if state and "backfill_synced_through_ts" in state.keys() and state["backfill_synced_through_ts"]
-        else None
-    )
     if verify_all:
         if mode == "backfill":
             since = FULL_IMESSAGE_SYNC_SINCE
@@ -5317,21 +5342,21 @@ def _sync_conversation_imessage_to_gmail(
                 cutoff,
                 state,
             )
-    elif mode == "startup_catchup" and _conversation_needs_initial_bootstrap(state):
-        # Wave backfill: start from cutoff, or from where previous wave left off
-        since = backfill_through or cutoff.isoformat()
-        since_native_message_id = None  # Reset cursor for backward expansion
-    elif mode == "incremental" and _conversation_needs_initial_bootstrap(state):
-        # Incremental: only sync last 1 day for un-bootstrapped conversations
-        since = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
     elif _conversation_needs_initial_bootstrap(state):
-        since = state["last_imessage_ts"] if state and state["last_imessage_ts"] else FULL_IMESSAGE_SYNC_SINCE
+        if state and state["last_imessage_ts"] and _conversation_has_stored_imessage_rows(conn, conv["conversation_id"]):
+            since = state["last_imessage_ts"]
+            since_native_message_id = state["last_imessage_native_message_id"]
+        else:
+            since = FULL_IMESSAGE_SYNC_SINCE
+            since_native_message_id = None
     elif mode == "backfill":
         since = cutoff.isoformat()
     elif state and state["last_imessage_ts"]:
         since = state["last_imessage_ts"]
     else:
         since = cutoff.isoformat()
+
+    print(f"[PenguinConnect] Sync {mode} {conv['display_name'] or conv['conversation_id']}: since={since} native_id={since_native_message_id} bootstrap={_conversation_needs_initial_bootstrap(state)} last_imsg_ts={state['last_imessage_ts'] if state else None} initial_sync={state['initial_sync_completed_at'] if state else None} verify_all={verify_all}")
 
     stored = 0
     gmail_write_pause_seconds = _sync_gmail_write_pause_seconds(
@@ -5349,6 +5374,7 @@ def _sync_conversation_imessage_to_gmail(
             gmail_service,
             conv,
             gmail_write_pause_seconds=gmail_write_pause_seconds,
+            gmail_write_lane=gmail_write_lane,
         )
     last_ts = state["last_imessage_ts"] if state else None
     last_native_message_id = since_native_message_id
@@ -5584,6 +5610,8 @@ def _sync_conversation_imessage_to_gmail(
                 )
                 parent_rfc_message_id = rfc_message_id
                 reference_chain = _append_reference_id(references, rfc_message_id)
+                display = conv["display_name"] or conv["conversation_id"]
+                print(f"[PenguinConnect] Imported {mode} {display}: ts={ts} from_me={is_from_me} gmail_id={gmail_msg_id}")
                 log_action(
                     "imessage_to_gmail_message",
                     success=True,
@@ -7628,17 +7656,14 @@ def _sync_conversations_unlocked(
 
     try:
         try:
-            if mode in {"startup_catchup", "incremental"}:
-                global_imessage_retry = {"retried_conversations": 0, "imported_messages": 0, "skipped_locked_conversations": 0}
-            else:
-                global_imessage_retry = _retry_pending_imessage_to_gmail_globally(
-                    conn,
-                    gmail_service,
-                    gmail_email,
-                    mode=mode,
-                    run_id=run_id,
-                    verify_all=bool(verify_all),
-                )
+            global_imessage_retry = _retry_pending_imessage_to_gmail_globally(
+                conn,
+                gmail_service,
+                gmail_email,
+                mode=mode,
+                run_id=run_id,
+                verify_all=bool(verify_all),
+            )
         except _GmailRetryableError as exc:
             conn.rollback()
             pause_state = _set_gmail_rate_limit_pause(conn, gmail_email, exc.retry_after_seconds)

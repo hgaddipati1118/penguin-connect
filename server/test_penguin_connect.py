@@ -3255,7 +3255,7 @@ class PenguinConnectTests(unittest.TestCase):
         mock_send.assert_called_once()
         mock_notice.assert_called_once()
 
-        raw_notice = mock_notice.call_args.args[1]
+        raw_notice = mock_notice.call_args.args[4]
         padded_notice = raw_notice + "=" * (-len(raw_notice) % 4)
         notice_email = BytesParser(policy=policy.default).parsebytes(base64.urlsafe_b64decode(padded_notice))
         notice_body = notice_email.get_body(preferencelist=("plain",)).get_content()
@@ -4045,7 +4045,7 @@ class PenguinConnectTests(unittest.TestCase):
         mock_send.assert_not_called()
         mock_notice.assert_called_once()
 
-        raw_notice = mock_notice.call_args.args[1]
+        raw_notice = mock_notice.call_args.args[4]
         padded_notice = raw_notice + "=" * (-len(raw_notice) % 4)
         notice_email = BytesParser(policy=policy.default).parsebytes(base64.urlsafe_b64decode(padded_notice))
         notice_body = notice_email.get_body(preferencelist=("plain",)).get_content()
@@ -4067,7 +4067,7 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertIsNotNone(metadata["rejection_notice_sent_at"])
         self.assertEqual(metadata["rejection_notice_gmail_message_id"], "reject-notice-1")
         mock_notice.assert_called_once()
-        raw_email = mock_notice.call_args.args[1]
+        raw_email = mock_notice.call_args.args[4]
         parsed_notice = BytesParser(policy=policy.default).parsebytes(
             base64.urlsafe_b64decode(raw_email + ("=" * (-len(raw_email) % 4)))
         )
@@ -6304,7 +6304,7 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(stats["gmail_imported"], 1)
         self.assertEqual(stats["email_to_imessage"], 3)
         self.assertEqual(stats["gmail_thread_repairs"], 1)
-        self.assertEqual(tracked_conn.commit_calls, 4)
+        self.assertEqual(tracked_conn.commit_calls, 6)
         self.assertFalse(runtime["running"])
         self.assertEqual(runtime["processed_conversations"], 2)
         self.assertEqual(runtime["selected_conversations"], 2)

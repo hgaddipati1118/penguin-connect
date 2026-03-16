@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: pip install -r server/requirements.txt
+
+      - name: Compile check
+        run: |
+          python -m py_compile server/*.py server/channels/*.py scripts/*.py
+
+      - name: Run tests
+        run: |
+          cd server
+          python -m unittest -v
+
+      - name: Shell syntax check
+        run: |
+          bash -n start.sh
+          for f in scripts/*.sh; do bash -n "$f"; done

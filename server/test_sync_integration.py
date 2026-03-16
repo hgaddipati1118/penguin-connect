@@ -296,7 +296,7 @@ class SyncIntegrationTests(unittest.TestCase):
         allow_finish = threading.Event()
         sync_result = {}
 
-        def fake_import(_gmail_service, _raw_email, _thread_id, _unread, _in_reply_to):
+        def fake_import(*_args, **_kwargs):
             import_started.set()
             self.assertTrue(allow_finish.wait(1.0))
             return ({"id": "gmail-import-lock-1", "threadId": "thread-import-lock-1"}, None, "thread-import-lock-1")
