@@ -1181,6 +1181,13 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def _rewind_iso_boundary(value: Optional[str]) -> Optional[str]:
+    dt = _parse_iso(value)
+    if not dt:
+        return value
+    return (dt - timedelta(microseconds=1)).isoformat()
+
+
 def _max_iso_value(existing: Optional[str], candidate: Optional[str]) -> Optional[str]:
     existing_dt = _parse_iso(existing)
     candidate_dt = _parse_iso(candidate)
@@ -4843,6 +4850,74 @@ def _conversation_needs_initial_bootstrap(state: Optional[sqlite3.Row]) -> bool:
     return not bool(state and state["initial_sync_completed_at"])
 
 
+def _oldest_stored_message_boundary(
+    conn: sqlite3.Connection,
+    conversation_id: str,
+    *,
+    direction: str,
+    provider: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    where = ["conversation_id = ?", "direction = ?"]
+    params: list[Any] = [conversation_id, direction]
+    if provider:
+        where.append("provider = ?")
+        params.append(provider)
+    row = conn.execute(
+        f"""SELECT message_timestamp, provider_message_id, metadata
+            FROM penguin_connect_messages
+            WHERE {' AND '.join(where)}
+            ORDER BY message_timestamp ASC, id ASC
+            LIMIT 1""",
+        params,
+    ).fetchone()
+    if not row:
+        return None, None
+
+    native_message_id = None
+    if provider == "imessage":
+        try:
+            metadata = json.loads(row["metadata"] or "{}")
+        except Exception:
+            metadata = {}
+        native_message_id = (metadata.get("native_message_id") or "").strip() or None
+        if not native_message_id:
+            native_message_id = row["provider_message_id"]
+    return row["message_timestamp"], native_message_id
+
+
+def _sync_state_has_column(conn: sqlite3.Connection, column_name: str) -> bool:
+    rows = conn.execute("PRAGMA table_info(penguin_connect_sync_state)").fetchall()
+    return any(row[1] == column_name for row in rows)
+
+
+def _bounded_imessage_verify_since(
+    conn: sqlite3.Connection,
+    conversation_id: str,
+    state: Optional[sqlite3.Row],
+) -> tuple[str, Optional[str]]:
+    oldest_ts, _oldest_native_message_id = _oldest_stored_message_boundary(
+        conn,
+        conversation_id,
+        direction="imessage_to_email",
+        provider="imessage",
+    )
+    if oldest_ts:
+        # The source query treats `since` as exclusive, so rewind slightly to
+        # revisit the oldest known message without reopening material history.
+        return _rewind_iso_boundary(oldest_ts) or oldest_ts, None
+
+    backfill_through = (
+        state["backfill_synced_through_ts"]
+        if state and "backfill_synced_through_ts" in state.keys() and state["backfill_synced_through_ts"]
+        else None
+    )
+    if backfill_through:
+        return backfill_through, None
+    if state and state["last_imessage_ts"]:
+        return state["last_imessage_ts"], None
+    return FULL_IMESSAGE_SYNC_SINCE, None
+
+
 def _retry_pending_imessage_to_gmail(
     conn: sqlite3.Connection,
     gmail_service,
@@ -5252,7 +5327,14 @@ def _sync_conversation_imessage_to_gmail(
         else None
     )
     if verify_all:
-        since = FULL_IMESSAGE_SYNC_SINCE
+        if mode == "backfill":
+            since = FULL_IMESSAGE_SYNC_SINCE
+        else:
+            since, since_native_message_id = _bounded_imessage_verify_since(
+                conn,
+                conv["conversation_id"],
+                state,
+            )
     elif mode == "startup_catchup" and _conversation_needs_initial_bootstrap(state):
         # Wave backfill: start from cutoff, or from where previous wave left off
         since = backfill_through or cutoff.isoformat()
@@ -5632,7 +5714,9 @@ def _sync_conversation_imessage_to_gmail(
     )
 
     # Record how far back this conversation has been backfilled
-    if mode in {"startup_catchup", "incremental"} and since:
+    if mode in {"startup_catchup", "incremental"} and since and _sync_state_has_column(
+        conn, "backfill_synced_through_ts"
+    ):
         conn.execute(
             """UPDATE penguin_connect_sync_state
                SET backfill_synced_through_ts = CASE

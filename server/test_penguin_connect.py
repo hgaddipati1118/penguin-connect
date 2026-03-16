@@ -2428,7 +2428,7 @@ class PenguinConnectTests(unittest.TestCase):
             ],
         }
 
-        def fake_fetch(chat_id, limit=50, since=None):
+        def fake_fetch(chat_id, limit=50, since=None, since_native_message_id=None):
             return list(route_messages.get(chat_id, []))
 
         with mock.patch(
@@ -5987,17 +5987,21 @@ class PenguinConnectTests(unittest.TestCase):
 
         fetch_calls = []
 
-        def fake_fetch(chat_id, limit=50, since=None):
+        def fake_fetch(chat_id, limit=50, since=None, since_native_message_id=None):
             fetch_calls.append((chat_id, limit, since))
             if len(fetch_calls) == 1:
                 return [older_msg]
             return []
 
-        import_execute = gmail_service.users.return_value.messages.return_value.import_.return_value.execute
-        import_execute.return_value = {"id": "gm-old-1", "threadId": "th-old-1"}
-
         with mock.patch("penguin_connect.fetch_imessage_messages", side_effect=fake_fetch), mock.patch(
             "penguin_connect._get_imessage_unread_count", return_value=None
+        ), mock.patch(
+            "penguin_connect._build_import_email", return_value=b"raw"
+        ), mock.patch(
+            "penguin_connect._import_message_to_gmail_with_thread_recovery",
+            return_value=({"id": "gm-old-1", "threadId": "th-old-1"}, None, "th-old-1"),
+        ), mock.patch(
+            "penguin_connect._sleep_after_gmail_write"
         ):
             result = penguin_connect._sync_conversation_imessage_to_gmail(
                 self.conn,
@@ -6010,6 +6014,98 @@ class PenguinConnectTests(unittest.TestCase):
 
         self.assertEqual(result["imessage_imported"], 1)
         self.assertEqual(fetch_calls[0][2], penguin_connect.FULL_IMESSAGE_SYNC_SINCE)
+
+    def test_incremental_verify_all_starts_from_oldest_stored_imessage_timestamp(self):
+        self.conn.execute(
+            """INSERT INTO penguin_connect_sync_state
+               (conversation_id, last_imessage_ts, last_imessage_native_message_id,
+                initial_sync_completed_at, last_synced_at, updated_at)
+               VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
+            (
+                "amc_test",
+                "2026-03-13T23:58:13.115912+00:00",
+                "148721",
+                "2026-03-11T21:35:45.437649+00:00",
+            ),
+        )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_messages
+               (conversation_id, provider, provider_message_id, gmail_message_id, gmail_thread_id, direction,
+                sender_email, sender_name, subject, body_text, message_timestamp, is_read, metadata)
+               VALUES (?, 'imessage', ?, ?, ?, 'imessage_to_email', ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "amc_test",
+                "imessage:100",
+                "gm-old-1",
+                "th-old-1",
+                "owner+am-test@gmail.com",
+                "Older Sender",
+                "iMessage · Older Sender",
+                "older phone message",
+                "2026-03-04T09:00:00+00:00",
+                1,
+                json.dumps({"native_message_id": "100", "is_from_me": False}),
+            ),
+        )
+        conv = self._conversation_row()
+        gmail_service = mock.Mock()
+        fetch_calls = []
+
+        def fake_fetch(chat_id, limit=50, since=None, since_native_message_id=None):
+            fetch_calls.append((since, since_native_message_id))
+            return []
+
+        with mock.patch("penguin_connect.fetch_imessage_messages", side_effect=fake_fetch), mock.patch(
+            "penguin_connect._get_imessage_unread_count", return_value=None
+        ):
+            result = penguin_connect._sync_conversation_imessage_to_gmail(
+                self.conn,
+                gmail_service,
+                conv,
+                mode="incremental",
+                days=7,
+                verify_all=True,
+            )
+
+        self.assertEqual(result["imessage_imported"], 0)
+        self.assertEqual(fetch_calls[0], ("2026-03-04T08:59:59.999999+00:00", None))
+
+    def test_incremental_verify_all_falls_back_to_backfill_floor_without_stored_messages(self):
+        self.conn.execute(
+            """INSERT INTO penguin_connect_sync_state
+               (conversation_id, last_imessage_ts, last_imessage_native_message_id,
+                initial_sync_completed_at, backfill_synced_through_ts, last_synced_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
+            (
+                "amc_test",
+                "2026-03-13T23:58:13.115912+00:00",
+                "148721",
+                "2026-03-11T21:35:45.437649+00:00",
+                "2026-03-09T21:35:45.437649+00:00",
+            ),
+        )
+        conv = self._conversation_row()
+        gmail_service = mock.Mock()
+        fetch_calls = []
+
+        def fake_fetch(chat_id, limit=50, since=None, since_native_message_id=None):
+            fetch_calls.append((since, since_native_message_id))
+            return []
+
+        with mock.patch("penguin_connect.fetch_imessage_messages", side_effect=fake_fetch), mock.patch(
+            "penguin_connect._get_imessage_unread_count", return_value=None
+        ):
+            result = penguin_connect._sync_conversation_imessage_to_gmail(
+                self.conn,
+                gmail_service,
+                conv,
+                mode="incremental",
+                days=7,
+                verify_all=True,
+            )
+
+        self.assertEqual(result["imessage_imported"], 0)
+        self.assertEqual(fetch_calls[0], ("2026-03-09T21:35:45.437649+00:00", None))
 
     def test_imessage_initial_bootstrap_starts_from_origin_even_with_partial_state(self):
         self.conn.execute(
@@ -6026,7 +6122,7 @@ class PenguinConnectTests(unittest.TestCase):
         gmail_service = mock.Mock()
         fetch_calls = []
 
-        def fake_fetch(chat_id, limit=50, since=None):
+        def fake_fetch(chat_id, limit=50, since=None, since_native_message_id=None):
             fetch_calls.append((chat_id, limit, since))
             return []
 

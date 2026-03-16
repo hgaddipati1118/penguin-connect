@@ -113,6 +113,7 @@ CREATE TABLE IF NOT EXISTS penguin_connect_sync_state (
     initial_sync_empty_verified_at TEXT,
     next_full_verify_at TEXT,
     full_verify_completed_at TEXT,
+    backfill_synced_through_ts TEXT,
     last_synced_at TEXT,
     updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -127,6 +128,8 @@ CREATE TABLE IF NOT EXISTS penguin_connect_poll_state (
     gmail_write_budget_updated_at TEXT,
     gmail_backfill_daily_import_count INTEGER NOT NULL DEFAULT 0,
     gmail_backfill_daily_window_started_at TEXT,
+    backfill_wave_days INTEGER NOT NULL DEFAULT 1,
+    backfill_wave_started_at TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );
