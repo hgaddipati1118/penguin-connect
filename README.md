@@ -14,6 +14,10 @@ flowchart LR
     Gmail -->|sends net-new replies| Bridge
 ```
 
+## Demo
+
+https://github.com/hgaddipati1118/penguin-connect/raw/main/assets/PenguinConnect.mp4
+
 ## Why PenguinConnect
 
 - Keep Apple Messages access local instead of pushing `chat.db` into a hosted service.
