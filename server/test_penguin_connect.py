@@ -6015,7 +6015,7 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(result["imessage_imported"], 1)
         self.assertEqual(fetch_calls[0][2], penguin_connect.FULL_IMESSAGE_SYNC_SINCE)
 
-    def test_incremental_verify_all_starts_from_oldest_stored_imessage_timestamp(self):
+    def test_incremental_verify_all_stays_on_recent_cursor_not_oldest_history(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
                (conversation_id, last_imessage_ts, last_imessage_native_message_id,
@@ -6064,13 +6064,14 @@ class PenguinConnectTests(unittest.TestCase):
                 conv,
                 mode="incremental",
                 days=7,
+                cutoff_iso="2026-03-09T00:00:00+00:00",
                 verify_all=True,
             )
 
         self.assertEqual(result["imessage_imported"], 0)
-        self.assertEqual(fetch_calls[0], ("2026-03-04T08:59:59.999999+00:00", None))
+        self.assertEqual(fetch_calls[0], ("2026-03-13T23:58:13.115911+00:00", None))
 
-    def test_incremental_verify_all_falls_back_to_backfill_floor_without_stored_messages(self):
+    def test_incremental_verify_all_respects_recent_cutoff_and_does_not_shift_backfill_floor(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
                (conversation_id, last_imessage_ts, last_imessage_native_message_id,
@@ -6078,10 +6079,10 @@ class PenguinConnectTests(unittest.TestCase):
                VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
             (
                 "amc_test",
-                "2026-03-13T23:58:13.115912+00:00",
+                "2026-03-01T23:58:13.115912+00:00",
                 "148721",
                 "2026-03-11T21:35:45.437649+00:00",
-                "2026-03-09T21:35:45.437649+00:00",
+                "2026-02-28T21:35:45.437649+00:00",
             ),
         )
         conv = self._conversation_row()
@@ -6101,11 +6102,19 @@ class PenguinConnectTests(unittest.TestCase):
                 conv,
                 mode="incremental",
                 days=7,
+                cutoff_iso="2026-03-09T00:00:00+00:00",
                 verify_all=True,
             )
 
         self.assertEqual(result["imessage_imported"], 0)
-        self.assertEqual(fetch_calls[0], ("2026-03-09T21:35:45.437649+00:00", None))
+        self.assertEqual(fetch_calls[0], ("2026-03-09T00:00:00+00:00", None))
+        state = self.conn.execute(
+            """SELECT backfill_synced_through_ts
+               FROM penguin_connect_sync_state
+               WHERE conversation_id = ?""",
+            ("amc_test",),
+        ).fetchone()
+        self.assertEqual(state["backfill_synced_through_ts"], "2026-02-28T21:35:45.437649+00:00")
 
     def test_imessage_initial_bootstrap_starts_from_origin_even_with_partial_state(self):
         self.conn.execute(

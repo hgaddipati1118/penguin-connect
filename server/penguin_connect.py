@@ -4891,31 +4891,14 @@ def _sync_state_has_column(conn: sqlite3.Connection, column_name: str) -> bool:
 
 
 def _bounded_imessage_verify_since(
-    conn: sqlite3.Connection,
-    conversation_id: str,
+    cutoff: datetime,
     state: Optional[sqlite3.Row],
 ) -> tuple[str, Optional[str]]:
-    oldest_ts, _oldest_native_message_id = _oldest_stored_message_boundary(
-        conn,
-        conversation_id,
-        direction="imessage_to_email",
-        provider="imessage",
-    )
-    if oldest_ts:
-        # The source query treats `since` as exclusive, so rewind slightly to
-        # revisit the oldest known message without reopening material history.
-        return _rewind_iso_boundary(oldest_ts) or oldest_ts, None
-
-    backfill_through = (
-        state["backfill_synced_through_ts"]
-        if state and "backfill_synced_through_ts" in state.keys() and state["backfill_synced_through_ts"]
-        else None
-    )
-    if backfill_through:
-        return backfill_through, None
+    floor = cutoff.isoformat()
     if state and state["last_imessage_ts"]:
-        return state["last_imessage_ts"], None
-    return FULL_IMESSAGE_SYNC_SINCE, None
+        rewound_last = _rewind_iso_boundary(state["last_imessage_ts"]) or state["last_imessage_ts"]
+        return _max_iso_value(floor, rewound_last) or floor, None
+    return floor, None
 
 
 def _retry_pending_imessage_to_gmail(
@@ -5331,8 +5314,7 @@ def _sync_conversation_imessage_to_gmail(
             since = FULL_IMESSAGE_SYNC_SINCE
         else:
             since, since_native_message_id = _bounded_imessage_verify_since(
-                conn,
-                conv["conversation_id"],
+                cutoff,
                 state,
             )
     elif mode == "startup_catchup" and _conversation_needs_initial_bootstrap(state):
@@ -5714,7 +5696,7 @@ def _sync_conversation_imessage_to_gmail(
     )
 
     # Record how far back this conversation has been backfilled
-    if mode in {"startup_catchup", "incremental"} and since and _sync_state_has_column(
+    if not verify_all and mode in {"startup_catchup", "incremental"} and since and _sync_state_has_column(
         conn, "backfill_synced_through_ts"
     ):
         conn.execute(
