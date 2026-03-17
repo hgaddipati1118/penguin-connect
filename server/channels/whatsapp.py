@@ -221,9 +221,10 @@ class WhatsAppChannelAdapter:
 
                 attachments = None
                 if media_type:
+                    local_path = self._download_media(chat_id, row["id"])
                     attachments = [
                         {
-                            "filename": filename,
+                            "filename": local_path or filename,
                             "mime_type": media_type,
                             "size": 0,
                             "transfer_name": filename,
@@ -259,6 +260,24 @@ class WhatsAppChannelAdapter:
             return []
         finally:
             conn.close()
+
+    def _download_media(self, chat_jid: str, message_id: str) -> Optional[str]:
+        """Download media via the whatsapp-mcp bridge API, return local file path."""
+        try:
+            resp = httpx.post(
+                f"{_whatsapp_api_url()}/download",
+                json={"chat_jid": chat_jid, "message_id": str(message_id)},
+                timeout=30,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("success") and data.get("path"):
+                    path = Path(data["path"])
+                    if path.exists():
+                        return str(path)
+        except Exception:
+            pass
+        return None
 
     def send_message(
         self,
