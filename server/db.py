@@ -388,7 +388,10 @@ def _apple_messages_route_candidates(chat_key: str | None) -> list[dict[str, str
     if not APPLE_MESSAGES_DB.exists():
         return []
 
-    conn = sqlite3.connect(f"file:{APPLE_MESSAGES_DB}?mode=ro", uri=True)
+    try:
+        conn = sqlite3.connect(f"file:{APPLE_MESSAGES_DB}?mode=ro", uri=True)
+    except sqlite3.OperationalError:
+        return []
     conn.row_factory = sqlite3.Row
     try:
         return _apple_messages_route_candidates_with_connection(conn, chat_key)
@@ -466,7 +469,10 @@ def _resolve_apple_messages_route_for_conversation(
     if not lookup or not APPLE_MESSAGES_DB.exists():
         return None
 
-    messages_conn = sqlite3.connect(f"file:{APPLE_MESSAGES_DB}?mode=ro", uri=True)
+    try:
+        messages_conn = sqlite3.connect(f"file:{APPLE_MESSAGES_DB}?mode=ro", uri=True)
+    except sqlite3.OperationalError:
+        return None
     messages_conn.row_factory = sqlite3.Row
     try:
         candidates = _apple_messages_route_candidates_with_connection(messages_conn, lookup)

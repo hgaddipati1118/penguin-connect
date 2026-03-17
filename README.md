@@ -7,6 +7,8 @@
 
 PenguinConnect turns Gmail into a control surface for messaging conversations while keeping messaging-side access on your Mac. Today it bridges Gmail with Apple Messages (`iMessage`, `SMS`, `RCS`); the runtime is macOS-only and binds to `127.0.0.1`.
 
+Built as part of [Slashy](https://slashy.com) — an AI-native email client — so that Slashy has context on your text conversations too, not just email.
+
 ```mermaid
 flowchart LR
     Messages["Apple Messages<br/>iMessage / SMS / RCS"] -->|syncs messages| Bridge["PenguinConnect<br/>local bridge on your Mac"]
@@ -16,21 +18,26 @@ flowchart LR
 
 ## Demo
 
-https://github.com/hgaddipati1118/penguin-connect/raw/main/assets/PenguinConnect.mp4
+<video src="https://github.com/hgaddipati1118/penguin-connect/raw/main/assets/PenguinConnect.mp4" controls width="100%"></video>
 
 ## Why PenguinConnect
 
-- Keep Apple Messages access local instead of pushing `chat.db` into a hosted service.
-- Work from Gmail threads and per-conversation alias addresses.
-- Preserve safe routing rules: if Apple Messages route resolution is ambiguous, PenguinConnect does not send.
+I wanted a way to interact with my text messages from email. Email is already where work happens — why not bring messages there too?
+
+- **AI needs full context.** Email alone misses half the picture — important conversations happen over iMessage, SMS, and RCS. PenguinConnect brings them into Gmail so tools like [Slashy](https://slashy.com) can reason across both channels.
+- **Bidirectional sync unlocks cloud AI safely.** Because the bridge runs locally and syncs to your own Gmail, cloud-based AI tools can read and send messages through email without ever needing direct access to your messaging apps — no security vulnerability, no API keys to messaging services, no sensitive data in third-party systems.
+- **Your messages stay on your Mac.** No hosted service ever touches `chat.db`. The bridge runs on `127.0.0.1` and syncs to your own Gmail account.
+- **Work from Gmail threads** with per-conversation alias addresses — read, reply, and manage messages from one place.
+- **Safe routing.** If Apple Messages route resolution is ambiguous, PenguinConnect does not send.
 
 ## Current Status
 
-- Shipping source adapter: Apple Messages
-- Apple Messages services supported now: `iMessage`, `SMS`, `RCS`
-- Shared inbox surface: Gmail
-- Planned next adapters: WhatsApp, Telegram
+- Shipping source adapter: **Apple Messages** (`iMessage`, `SMS`, `RCS`)
+- Shared inbox surface: **Gmail**
+- Planned next adapters: **WhatsApp**, **Telegram**, and more
 - Runtime: macOS 13+, Python 3.11+, `Terminal.app` with Full Disk Access
+
+Want to help add a new messaging adapter or improve the bridge? Reach out at [harsha@slashy.com](mailto:harsha@slashy.com) or open an issue.
 
 ## Highlights
 
