@@ -2935,8 +2935,8 @@ class PenguinConnectTests(unittest.TestCase):
         first_msg = BytesParser(policy=policy.default).parsebytes(base64.urlsafe_b64decode(first_raw))
         second_msg = BytesParser(policy=policy.default).parsebytes(base64.urlsafe_b64decode(second_raw))
         self.assertIsNotNone(first_msg["Message-ID"])
-        self.assertEqual(second_msg["In-Reply-To"], first_msg["Message-ID"])
-        self.assertIn(first_msg["Message-ID"], second_msg["References"])
+        self.assertEqual(second_msg["In-Reply-To"].strip(), first_msg["Message-ID"].strip())
+        self.assertIn(first_msg["Message-ID"].strip(), second_msg["References"])
 
     def test_startup_catchup_imessage_sync_yields_after_five_gmail_imports_for_incremental(self):
         conv = self._conversation_row()
