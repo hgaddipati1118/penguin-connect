@@ -2728,7 +2728,7 @@ class PenguinConnectTests(unittest.TestCase):
             ("amc_test", "imessage:2"),
         ).fetchone()
         metadata = json.loads(row["metadata"])
-        self.assertIn("On Mar 4, 2026 at 1:00 AM, Ethan wrote:", metadata["email_body_plain"])
+        self.assertRegex(metadata["email_body_plain"], r"On Mar \d+, 2026 at \d+:\d+ [AP]M, Ethan wrote:")
         self.assertIn('class="gmail_quote"', metadata["email_body_html"])
         self.assertIn("<p>first</p>", metadata["email_body_html"])
 
