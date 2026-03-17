@@ -242,7 +242,7 @@ def _conversation_source_provider(conv: sqlite3.Row | dict[str, Any]) -> str:
 
 
 def _conversation_source_chat_id(conv: sqlite3.Row | dict[str, Any]) -> str:
-    for key in ("source_chat_id", "source_chat_id"):
+    for key in ("source_chat_id", "imessage_chat_id"):
         try:
             value = (conv[key] or "").strip()
         except Exception:
