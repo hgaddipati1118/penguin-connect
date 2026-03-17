@@ -119,6 +119,10 @@ _sync_metrics_cache: dict[str, Any] = {
 _UNSET = object()
 _USE_DEFAULT_DISCOVERY_LIMIT = object()
 _IMESSAGE_CHANNEL = get_channel_adapter("imessage")
+try:
+    _WHATSAPP_CHANNEL = get_channel_adapter("whatsapp")
+except KeyError:
+    _WHATSAPP_CHANNEL = None
 _MARKDOWN_LINK_RE = re.compile(r"(?<!\!)\[([^\]\n]+)\]\((https?://[^\s)]+)\)")
 
 
@@ -366,6 +370,22 @@ def _resolve_imessage_sender_and_subject(
     )
 
 
+def _resolve_sender_and_subject(
+    conn: sqlite3.Connection,
+    conv: sqlite3.Row,
+    msg: dict[str, Any],
+) -> tuple[str, str]:
+    source_provider = _conversation_source_provider(conv)
+    adapter = _source_adapter_for_provider(source_provider)
+    return adapter.resolve_sender_and_subject(
+        conn,
+        conv,
+        msg,
+        lookup_contact_name=_lookup_contact_name,
+        looks_like_unresolved_handle=_looks_like_unresolved_handle,
+    )
+
+
 def _normalize_sync_hours(hours: Optional[int]) -> Optional[int]:
     if hours is None:
         return None
@@ -575,6 +595,8 @@ def _conversation_imessage_activity_keys(conv: sqlite3.Row | dict[str, Any]) -> 
     source_provider = _normalize_source_provider(_activity_record_value(conv, "source_provider") or "imessage")
     chat_type = (_activity_record_value(conv, "chat_type") or "").strip().lower()
     keys = {value for value in (chat_id,) if value}
+    if source_provider == "whatsapp":
+        return keys
     route_id = _apple_messages_legacy_route_id(chat_identifier, service_name)
     if route_id:
         keys.add(route_id)
@@ -979,6 +1001,14 @@ def _select_conversations_for_sync(
         hot_cutoff_iso = _incremental_activity_cutoff().isoformat()
         recent = list_recent_imessage_chat_activity(hot_cutoff_iso, limit=len(conversations))
         recent_by_chat = _index_recent_imessage_activity(recent)
+        if _WHATSAPP_CHANNEL is not None:
+            wa_recent = _WHATSAPP_CHANNEL.list_recent_activity(hot_cutoff_iso, limit=len(conversations))
+            for wa_chat in wa_recent.get("chats", []):
+                jid = (wa_chat.get("chat_id") or "").strip()
+                if jid:
+                    existing = recent_by_chat.get(jid)
+                    if not existing or _recent_activity_sort_value(existing.get("last_message_at")) < _recent_activity_sort_value(wa_chat.get("last_message_at")):
+                        recent_by_chat[jid] = wa_chat
         gmail_activity, gmail_meta = ({}, {})
         if gmail_service is not None:
             gmail_activity, gmail_meta = _list_recent_gmail_alias_activity(conn, gmail_service, gmail_email, conversations)
@@ -3597,6 +3627,86 @@ def ensure_conversations_discovered(
     return count
 
 
+def ensure_whatsapp_conversations_discovered(
+    conn: sqlite3.Connection,
+    gmail_email: str,
+    *,
+    max_chats: int | None = 500,
+) -> int:
+    """Discover WhatsApp conversations and persist them into the conversation table."""
+    if _WHATSAPP_CHANNEL is None:
+        return 0
+    discovery_limit = max_chats
+    log_action("whatsapp_conversation_discovery_started", gmail_email=gmail_email, discovery_limit=discovery_limit)
+    discovered = _WHATSAPP_CHANNEL.list_conversations(limit=discovery_limit)
+    if not discovered.get("available"):
+        log_action(
+            "whatsapp_conversation_discovery_result",
+            gmail_email=gmail_email,
+            success=False,
+            discovered_count=0,
+            reason=discovered.get("reason") or "not_available",
+        )
+        return 0
+
+    exclusions = load_excluded_chats()
+    count = 0
+    for chat in discovered.get("chats", []):
+        chat_id = (chat.get("chat_id") or "").strip()
+        if not chat_id:
+            continue
+        source_provider = "whatsapp"
+        participants = chat.get("participants") or []
+        chat_type = chat.get("chat_type") or ("group" if chat_id.endswith("@g.us") else "dm")
+        display_name = chat.get("name") or chat_id.split("@")[0]
+        excluded = is_chat_excluded(chat, exclusions=exclusions, gmail_email=gmail_email)
+        conversation_id = deterministic_conversation_id(gmail_email, chat_id, source_provider)
+
+        conn.execute(
+            """INSERT INTO penguin_connect_conversations
+               (gmail_email, source_provider, conversation_id, imessage_chat_id, imessage_chat_identifier,
+                imessage_service_name, display_name, chat_type, participants, status, exclude_from_sync, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+               ON CONFLICT(conversation_id) DO UPDATE SET
+                 source_provider = excluded.source_provider,
+                 imessage_chat_id = excluded.imessage_chat_id,
+                 display_name = excluded.display_name,
+                 chat_type = excluded.chat_type,
+                 participants = excluded.participants,
+                 exclude_from_sync = excluded.exclude_from_sync,
+                 updated_at = datetime('now')""",
+            (
+                gmail_email,
+                source_provider,
+                conversation_id,
+                chat_id,
+                chat_id,
+                "WhatsApp",
+                display_name,
+                chat_type,
+                json.dumps(participants),
+                "active",
+                1 if excluded else 0,
+            ),
+        )
+
+        if not excluded:
+            alias_row = _ensure_active_alias(conn, gmail_email, conversation_id, fresh=False)
+            conn.execute(
+                "UPDATE penguin_connect_conversations SET alias_email = ? WHERE conversation_id = ?",
+                (alias_row["alias_email"], conversation_id),
+            )
+        count += 1
+
+    log_action(
+        "whatsapp_conversation_discovery_result",
+        gmail_email=gmail_email,
+        success=True,
+        discovered_count=count,
+    )
+    return count
+
+
 def self_heal_conversation_cache(conn: sqlite3.Connection, gmail_email: str) -> dict[str, Any]:
     log_action("conversation_self_heal_sweep_started", gmail_email=gmail_email)
     before_count = conn.execute(
@@ -4021,6 +4131,20 @@ def _provider_message_id_for_imessage(msg: dict[str, Any]) -> str:
         return f"imessage:{native_id}"
     payload = f"{msg.get('timestamp')}::{msg.get('is_from_me')}::{msg.get('text') or ''}"
     return f"imessage:{hashlib.sha1(payload.encode('utf-8')).hexdigest()}"
+
+
+def _provider_message_id_for_whatsapp(msg: dict[str, Any]) -> str:
+    native_id = (msg.get("native_message_id") or "").strip()
+    if native_id:
+        return f"whatsapp:{native_id}"
+    payload = f"{msg.get('timestamp')}::{msg.get('is_from_me')}::{msg.get('text') or ''}"
+    return f"whatsapp:{hashlib.sha1(payload.encode('utf-8')).hexdigest()}"
+
+
+def _provider_message_id(source_provider: str, msg: dict[str, Any]) -> str:
+    if source_provider == "whatsapp":
+        return _provider_message_id_for_whatsapp(msg)
+    return _provider_message_id_for_imessage(msg)
 
 
 def _imessage_native_message_sort_value(value: Optional[str]) -> int:
@@ -5302,6 +5426,36 @@ def _fetch_apple_messages_messages_for_conversation(
     return merged
 
 
+def _fetch_whatsapp_messages_for_conversation(
+    conv: sqlite3.Row | dict[str, Any],
+    *,
+    limit: int,
+    since: Optional[str],
+    since_native_message_id: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Fetch messages from the WhatsApp bridge DB for a conversation."""
+    if _WHATSAPP_CHANNEL is None:
+        return []
+    chat_id = _conversation_source_chat_id(conv)
+    if not chat_id:
+        return []
+    return _WHATSAPP_CHANNEL.fetch_messages(chat_id, limit=limit, since=since, since_native_message_id=since_native_message_id)
+
+
+def _fetch_source_messages_for_conversation(
+    conv: sqlite3.Row | dict[str, Any],
+    *,
+    limit: int,
+    since: Optional[str],
+    since_native_message_id: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """Provider-dispatch: fetch messages from the right adapter."""
+    source_provider = _conversation_source_provider(conv)
+    if source_provider == "whatsapp":
+        return _fetch_whatsapp_messages_for_conversation(conv, limit=limit, since=since, since_native_message_id=since_native_message_id)
+    return _fetch_apple_messages_messages_for_conversation(conv, limit=limit, since=since, since_native_message_id=since_native_message_id)
+
+
 def _get_apple_messages_unread_count_for_conversation(conv: sqlite3.Row | dict[str, Any]) -> Optional[int]:
     route_ids = _apple_messages_chat_routes_for_conversation(conv)
     if not route_ids:
@@ -5389,12 +5543,13 @@ def _sync_conversation_imessage_to_gmail(
     saw_messages = False
     eligible_message_count = 0
     full_history_checked = since == FULL_IMESSAGE_SYNC_SINCE
-    unread_count = _get_apple_messages_unread_count_for_conversation(conv)
+    source_provider = _conversation_source_provider(conv)
+    unread_count = _get_apple_messages_unread_count_for_conversation(conv) if source_provider != "whatsapp" else None
     preempted_for_incremental = False
     preempt_check_count = _startup_incremental_preemption_import_count()
 
     while True:
-        messages = _fetch_apple_messages_messages_for_conversation(
+        messages = _fetch_source_messages_for_conversation(
             conv,
             limit=batch_size,
             since=next_since,
@@ -5417,11 +5572,11 @@ def _sync_conversation_imessage_to_gmail(
             if not ts or (not text and not msg.get("attachments")):
                 continue
             eligible_message_count += 1
-            sender_name, subject_name = _resolve_imessage_sender_and_subject(conn, conv, msg)
             source_provider = _conversation_source_provider(conv)
+            sender_name, subject_name = _resolve_sender_and_subject(conn, conv, msg)
             desired_subject = _provider_subject(source_provider, subject_name)
 
-            provider_id = _provider_message_id_for_imessage(msg)
+            provider_id = _provider_message_id(source_provider, msg)
             existing = conn.execute(
                 """SELECT gmail_message_id, gmail_thread_id, sender_name, subject, metadata
                    FROM penguin_connect_messages
@@ -7520,6 +7675,7 @@ def _sync_conversations_unlocked(
         ).fetchone()[0]
         if not existing:
             ensure_conversations_discovered(conn, gmail_email)
+            ensure_whatsapp_conversations_discovered(conn, gmail_email)
             conn.commit()
         sweep_result = None
     exclusion_refresh = refresh_conversation_exclusions(conn, gmail_email)
