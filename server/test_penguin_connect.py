@@ -55,7 +55,7 @@ class PenguinConnectTests(unittest.TestCase):
         )
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants,
                 alias_email, status)
                VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
             (
@@ -597,7 +597,7 @@ class PenguinConnectTests(unittest.TestCase):
     def test_reconnect_requires_fresh_bootstrap_state(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               (conversation_id, last_source_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
                VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
             (
                 "amc_test",
@@ -626,11 +626,11 @@ class PenguinConnectTests(unittest.TestCase):
         penguin_connect._upsert_sync_state(self.conn, cid, older, "99", older, None)
 
         state = self.conn.execute(
-            "SELECT last_imessage_ts, last_imessage_native_message_id, last_gmail_ts, last_message_ts, last_gmail_history_id FROM penguin_connect_sync_state WHERE conversation_id = ?",
+            "SELECT last_source_ts, last_source_native_message_id, last_gmail_ts, last_message_ts, last_gmail_history_id FROM penguin_connect_sync_state WHERE conversation_id = ?",
             (cid,),
         ).fetchone()
-        self.assertEqual(state["last_imessage_ts"], newer)
-        self.assertEqual(state["last_imessage_native_message_id"], "101")
+        self.assertEqual(state["last_source_ts"], newer)
+        self.assertEqual(state["last_source_native_message_id"], "101")
         self.assertEqual(state["last_gmail_ts"], newer)
         self.assertEqual(state["last_message_ts"], newer)
         self.assertEqual(state["last_gmail_history_id"], "123")
@@ -642,16 +642,16 @@ class PenguinConnectTests(unittest.TestCase):
         penguin_connect._upsert_sync_state(self.conn, cid, same_ts, "102", None, None)
 
         state = self.conn.execute(
-            "SELECT last_imessage_ts, last_imessage_native_message_id FROM penguin_connect_sync_state WHERE conversation_id = ?",
+            "SELECT last_source_ts, last_source_native_message_id FROM penguin_connect_sync_state WHERE conversation_id = ?",
             (cid,),
         ).fetchone()
-        self.assertEqual(state["last_imessage_ts"], same_ts)
-        self.assertEqual(state["last_imessage_native_message_id"], "102")
+        self.assertEqual(state["last_source_ts"], same_ts)
+        self.assertEqual(state["last_source_native_message_id"], "102")
 
     def test_initial_sync_bootstrapped_requires_completed_initial_sync(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, last_synced_at, updated_at)
+               (conversation_id, last_source_ts, last_gmail_ts, last_synced_at, updated_at)
                VALUES (?, ?, ?, datetime('now'), datetime('now'))""",
             (
                 "amc_test",
@@ -924,7 +924,7 @@ class PenguinConnectTests(unittest.TestCase):
     def test_refresh_contact_display_names_updates_raw_group_title_after_contact_import(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants, alias_email, status)
+               (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants, alias_email, status)
                VALUES (?, ?, ?, ?, 'group', ?, ?, 'active')""",
             (
                 "owner@gmail.com",
@@ -992,7 +992,7 @@ class PenguinConnectTests(unittest.TestCase):
     def test_incremental_selection_prefers_recent_activity_across_all_conversations(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants,
                 alias_email, status)
                VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
             (
@@ -1005,7 +1005,7 @@ class PenguinConnectTests(unittest.TestCase):
         )
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               (conversation_id, last_source_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
                VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
             (
                 "amc_test",
@@ -1048,7 +1048,7 @@ class PenguinConnectTests(unittest.TestCase):
     def test_incremental_selection_defaults_to_selecting_all_hot_conversations(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants,
                 alias_email, status)
                VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
             (
@@ -1061,7 +1061,7 @@ class PenguinConnectTests(unittest.TestCase):
         )
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               (conversation_id, last_source_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
                VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
             (
                 "amc_test",
@@ -1072,7 +1072,7 @@ class PenguinConnectTests(unittest.TestCase):
         )
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               (conversation_id, last_source_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
                VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
             (
                 "amc_hot_two",
@@ -1120,13 +1120,13 @@ class PenguinConnectTests(unittest.TestCase):
     def test_incremental_selection_matches_routed_group_activity_by_service_route(self):
         self.conn.execute(
             """UPDATE penguin_connect_conversations
-               SET imessage_chat_id = ?, imessage_chat_identifier = ?, imessage_service_name = ?, source_provider = ?
+               SET source_chat_id = ?, source_chat_identifier = ?, source_service_name = ?, source_provider = ?
                WHERE conversation_id = ?""",
             ("RCS;+;chat-123", "chat-123", "RCS", "rcs", "amc_test"),
         )
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               (conversation_id, last_source_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
                VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
             (
                 "amc_test",
@@ -1167,14 +1167,14 @@ class PenguinConnectTests(unittest.TestCase):
     def test_incremental_selection_keeps_group_routes_service_specific(self):
         self.conn.execute(
             """UPDATE penguin_connect_conversations
-               SET imessage_chat_id = ?, imessage_chat_identifier = ?, imessage_service_name = ?, source_provider = ?
+               SET source_chat_id = ?, source_chat_identifier = ?, source_service_name = ?, source_provider = ?
                WHERE conversation_id = ?""",
             ("RCS;+;chat-123", "chat-123", "RCS", "rcs", "amc_test"),
         )
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, source_provider, conversation_id, imessage_chat_id, imessage_chat_identifier,
-                imessage_service_name, display_name, chat_type, participants, alias_email, status)
+               (gmail_email, source_provider, conversation_id, source_chat_id, source_chat_identifier,
+                source_service_name, display_name, chat_type, participants, alias_email, status)
                VALUES (?, ?, ?, ?, ?, ?, ?, 'group', '[]', ?, 'active')""",
             (
                 "owner@gmail.com",
@@ -1189,7 +1189,7 @@ class PenguinConnectTests(unittest.TestCase):
         )
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               (conversation_id, last_source_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
                VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
             (
                 "amc_test",
@@ -1200,7 +1200,7 @@ class PenguinConnectTests(unittest.TestCase):
         )
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               (conversation_id, last_source_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
                VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
             (
                 "amc_sms_group",
@@ -1240,7 +1240,7 @@ class PenguinConnectTests(unittest.TestCase):
     def test_incremental_selection_includes_due_full_verify_without_starving_hot_work(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants,
                 alias_email, status)
                VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
             (
@@ -1253,7 +1253,7 @@ class PenguinConnectTests(unittest.TestCase):
         )
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at,
+               (conversation_id, last_source_ts, last_gmail_ts, initial_sync_completed_at,
                 next_full_verify_at, full_verify_completed_at, last_synced_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
             (
@@ -1267,7 +1267,7 @@ class PenguinConnectTests(unittest.TestCase):
         )
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               (conversation_id, last_source_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
                VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
             (
                 "amc_hot",
@@ -1314,7 +1314,7 @@ class PenguinConnectTests(unittest.TestCase):
     def test_startup_catchup_selects_only_pending_bootstrap_conversations(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants,
                 alias_email, status)
                VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
             (
@@ -1327,7 +1327,7 @@ class PenguinConnectTests(unittest.TestCase):
         )
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               (conversation_id, last_source_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
                VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
             (
                 "amc_bootstrapped",
@@ -1338,7 +1338,7 @@ class PenguinConnectTests(unittest.TestCase):
         )
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants,
                 alias_email, status)
                VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
             (
@@ -1383,7 +1383,7 @@ class PenguinConnectTests(unittest.TestCase):
     def test_startup_catchup_selection_honors_env_limit(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants,
                 alias_email, status)
                VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
             (
@@ -1428,13 +1428,13 @@ class PenguinConnectTests(unittest.TestCase):
     def test_startup_catchup_prioritizes_pending_routed_group_activity(self):
         self.conn.execute(
             """UPDATE penguin_connect_conversations
-               SET imessage_chat_id = ?, imessage_chat_identifier = ?, imessage_service_name = ?, source_provider = ?
+               SET source_chat_id = ?, source_chat_identifier = ?, source_service_name = ?, source_provider = ?
                WHERE conversation_id = ?""",
             ("RCS;+;chat-123", "chat-123", "RCS", "rcs", "amc_test"),
         )
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants,
                 alias_email, status)
                VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
             (
@@ -1476,7 +1476,7 @@ class PenguinConnectTests(unittest.TestCase):
     def test_startup_catchup_skips_already_synced_conversations(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at,
+               (conversation_id, last_source_ts, last_gmail_ts, initial_sync_completed_at,
                 last_synced_at, updated_at)
                VALUES (?, ?, ?, ?, ?, datetime('now'))""",
             (
@@ -1518,7 +1518,7 @@ class PenguinConnectTests(unittest.TestCase):
     def test_incremental_selection_uses_recent_gmail_activity(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants,
                 alias_email, status)
                VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
             (
@@ -1531,7 +1531,7 @@ class PenguinConnectTests(unittest.TestCase):
         )
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               (conversation_id, last_source_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
                VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
             (
                 "amc_gmail_hot",
@@ -1568,13 +1568,13 @@ class PenguinConnectTests(unittest.TestCase):
     def test_backfill_selection_matches_routed_group_activity_by_service_route(self):
         self.conn.execute(
             """UPDATE penguin_connect_conversations
-               SET imessage_chat_id = ?, imessage_chat_identifier = ?, imessage_service_name = ?, source_provider = ?
+               SET source_chat_id = ?, source_chat_identifier = ?, source_service_name = ?, source_provider = ?
                WHERE conversation_id = ?""",
             ("RCS;+;chat-123", "chat-123", "RCS", "rcs", "amc_test"),
         )
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants,
                 alias_email, status)
                VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
             (
@@ -1616,7 +1616,7 @@ class PenguinConnectTests(unittest.TestCase):
     def test_incremental_selection_prioritizes_gmail_hot_over_imessage_hot(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants,
                 alias_email, status)
                VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
             (
@@ -1629,7 +1629,7 @@ class PenguinConnectTests(unittest.TestCase):
         )
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               (conversation_id, last_source_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?)""",
             (
                 "amc_test",
@@ -1642,7 +1642,7 @@ class PenguinConnectTests(unittest.TestCase):
         )
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               (conversation_id, last_source_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?)""",
             (
                 "amc_gmail_hot",
@@ -1699,7 +1699,7 @@ class PenguinConnectTests(unittest.TestCase):
     def test_incremental_selection_persists_unselected_gmail_hot_activity_until_synced(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants,
                 alias_email, status)
                VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
             (
@@ -1712,7 +1712,7 @@ class PenguinConnectTests(unittest.TestCase):
         )
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               (conversation_id, last_source_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?)""",
             (
                 "amc_test",
@@ -1725,7 +1725,7 @@ class PenguinConnectTests(unittest.TestCase):
         )
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               (conversation_id, last_source_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?)""",
             (
                 "amc_gmail_hot_b",
@@ -1819,7 +1819,7 @@ class PenguinConnectTests(unittest.TestCase):
     def test_list_recent_gmail_alias_activity_backstop_recovers_recent_sent_alias_messages(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               (conversation_id, last_source_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
                VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
             (
                 "amc_test",
@@ -1836,7 +1836,7 @@ class PenguinConnectTests(unittest.TestCase):
         )
         conv = self.conn.execute(
             """SELECT c.*,
-                      s.last_imessage_ts,
+                      s.last_source_ts,
                       s.last_gmail_ts,
                       s.last_message_ts,
                       s.last_gmail_history_id,
@@ -2079,8 +2079,8 @@ class PenguinConnectTests(unittest.TestCase):
             discovered = penguin_connect.ensure_conversations_discovered(self.conn, "owner@gmail.com")
 
         rows = self.conn.execute(
-            """SELECT conversation_id, source_provider, imessage_chat_id, imessage_chat_identifier,
-                      imessage_service_name, status
+            """SELECT conversation_id, source_provider, source_chat_id, source_chat_identifier,
+                      source_service_name, status
                FROM penguin_connect_conversations"""
         ).fetchall()
         expected_conversation_id = penguin_connect.deterministic_conversation_id(
@@ -2093,9 +2093,9 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["conversation_id"], expected_conversation_id)
         self.assertEqual(rows[0]["source_provider"], "apple_messages")
-        self.assertEqual(rows[0]["imessage_chat_id"], "RCS;-;+15127436385")
-        self.assertEqual(rows[0]["imessage_chat_identifier"], "+15127436385")
-        self.assertEqual(rows[0]["imessage_service_name"], "RCS")
+        self.assertEqual(rows[0]["source_chat_id"], "RCS;-;+15127436385")
+        self.assertEqual(rows[0]["source_chat_identifier"], "+15127436385")
+        self.assertEqual(rows[0]["source_service_name"], "RCS")
         self.assertEqual(rows[0]["status"], "active")
 
     def test_discovery_keeps_group_chats_separate(self):
@@ -2133,9 +2133,9 @@ class PenguinConnectTests(unittest.TestCase):
             discovered = penguin_connect.ensure_conversations_discovered(self.conn, "owner@gmail.com")
 
         rows = self.conn.execute(
-            """SELECT source_provider, display_name, imessage_chat_id
+            """SELECT source_provider, display_name, source_chat_id
                FROM penguin_connect_conversations
-               ORDER BY source_provider, imessage_chat_id"""
+               ORDER BY source_provider, source_chat_id"""
         ).fetchall()
 
         self.assertEqual(discovered, 2)
@@ -2180,8 +2180,8 @@ class PenguinConnectTests(unittest.TestCase):
         )
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, source_provider, conversation_id, imessage_chat_id, imessage_chat_identifier,
-                imessage_service_name, display_name, chat_type, participants, alias_email, status)
+               (gmail_email, source_provider, conversation_id, source_chat_id, source_chat_identifier,
+                source_service_name, display_name, chat_type, participants, alias_email, status)
                VALUES (?, 'imessage', ?, ?, ?, ?, ?, 'group', ?, ?, 'active')""",
             (
                 "owner@gmail.com",
@@ -2225,8 +2225,8 @@ class PenguinConnectTests(unittest.TestCase):
         self.conn.execute("DELETE FROM penguin_connect_conversations WHERE gmail_email = ?", ("owner@gmail.com",))
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, source_provider, conversation_id, imessage_chat_id, imessage_chat_identifier,
-                imessage_service_name, display_name, chat_type, participants, alias_email, status)
+               (gmail_email, source_provider, conversation_id, source_chat_id, source_chat_identifier,
+                source_service_name, display_name, chat_type, participants, alias_email, status)
                VALUES (?, 'apple_messages', ?, ?, ?, ?, ?, 'dm', ?, ?, 'active')""",
             (
                 "owner@gmail.com",
@@ -2270,7 +2270,7 @@ class PenguinConnectTests(unittest.TestCase):
             "apple_messages",
         )
         row = self.conn.execute(
-            """SELECT conversation_id, source_provider, imessage_chat_id, alias_email
+            """SELECT conversation_id, source_provider, source_chat_id, alias_email
                FROM penguin_connect_conversations
                WHERE gmail_email = ?""",
             ("owner@gmail.com",),
@@ -2283,7 +2283,7 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(discovered, 1)
         self.assertEqual(row["conversation_id"], expected_conversation_id)
         self.assertEqual(row["source_provider"], "apple_messages")
-        self.assertEqual(row["imessage_chat_id"], "RCS;-;+15127436385")
+        self.assertEqual(row["source_chat_id"], "RCS;-;+15127436385")
         self.assertEqual(alias_row["conversation_id"], expected_conversation_id)
 
     def test_self_heal_sweep_processes_rows_outside_default_discovery_window(self):
@@ -2291,8 +2291,8 @@ class PenguinConnectTests(unittest.TestCase):
         legacy_conversation_id = penguin_connect._legacy_conversation_id("owner@gmail.com", "+15127436385")
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, source_provider, conversation_id, imessage_chat_id, imessage_chat_identifier,
-                imessage_service_name, display_name, chat_type, participants, alias_email, status)
+               (gmail_email, source_provider, conversation_id, source_chat_id, source_chat_identifier,
+                source_service_name, display_name, chat_type, participants, alias_email, status)
                VALUES (?, 'imessage', ?, ?, ?, ?, ?, 'dm', ?, ?, 'active')""",
             (
                 "owner@gmail.com",
@@ -2358,7 +2358,7 @@ class PenguinConnectTests(unittest.TestCase):
             "apple_messages",
         )
         healed_row = self.conn.execute(
-            """SELECT conversation_id, source_provider, imessage_chat_id
+            """SELECT conversation_id, source_provider, source_chat_id
                FROM penguin_connect_conversations
                WHERE alias_email = ?""",
             ("owner+am-legacy@gmail.com",),
@@ -2378,14 +2378,14 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(sweep["legacy_non_guid_rows_remaining"], 0)
         self.assertEqual(healed_row["conversation_id"], expected_conversation_id)
         self.assertEqual(healed_row["source_provider"], "apple_messages")
-        self.assertEqual(healed_row["imessage_chat_id"], "RCS;-;+15127436385")
+        self.assertEqual(healed_row["source_chat_id"], "RCS;-;+15127436385")
         self.assertEqual(alias_row["conversation_id"], expected_conversation_id)
 
     def test_imessage_sync_reads_all_routes_for_unified_apple_messages_dm(self):
         self.conn.execute(
             """UPDATE penguin_connect_conversations
-               SET source_provider = ?, chat_type = 'dm', participants = ?, imessage_chat_id = ?,
-                   imessage_chat_identifier = ?, imessage_service_name = ?, display_name = ?
+               SET source_provider = ?, chat_type = 'dm', participants = ?, source_chat_id = ?,
+                   source_chat_identifier = ?, source_service_name = ?, display_name = ?
                WHERE conversation_id = ?""",
             (
                 "apple_messages",
@@ -2455,7 +2455,7 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual([row["provider_message_id"] for row in stored], ["imessage:201", "imessage:202"])
         metadata_rows = [json.loads(row["metadata"] or "{}") for row in stored]
         self.assertEqual(
-            [row["imessage_chat_id"] for row in metadata_rows],
+            [row["source_chat_id"] for row in metadata_rows],
             ["RCS;-;+15127436385", "SMS;-;+15127436385"],
         )
 
@@ -3059,13 +3059,13 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(second_result["gmail_imported"], 1)
         self.assertEqual(fetch_calls[1], (same_ts, "1"))
         state = self.conn.execute(
-            """SELECT last_imessage_ts, last_imessage_native_message_id
+            """SELECT last_source_ts, last_source_native_message_id
                FROM penguin_connect_sync_state
                WHERE conversation_id = ?""",
             ("amc_test",),
         ).fetchone()
-        self.assertEqual(state["last_imessage_ts"], same_ts)
-        self.assertEqual(state["last_imessage_native_message_id"], "2")
+        self.assertEqual(state["last_source_ts"], same_ts)
+        self.assertEqual(state["last_source_native_message_id"], "2")
 
     def test_imessage_sync_recovers_thread_by_parent_rfc_message_id(self):
         self.conn.execute(
@@ -3279,7 +3279,7 @@ class PenguinConnectTests(unittest.TestCase):
         conv = self._conversation_row()
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, last_synced_at, updated_at)
+               (conversation_id, last_source_ts, last_gmail_ts, last_synced_at, updated_at)
                VALUES (?, ?, ?, datetime('now'), datetime('now'))""",
             (
                 "amc_test",
@@ -3391,7 +3391,7 @@ class PenguinConnectTests(unittest.TestCase):
         conv = self._conversation_row()
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, last_synced_at, updated_at)
+               (conversation_id, last_source_ts, last_gmail_ts, last_synced_at, updated_at)
                VALUES (?, ?, ?, datetime('now'), datetime('now'))""",
             (
                 "amc_test",
@@ -5193,7 +5193,7 @@ class PenguinConnectTests(unittest.TestCase):
     def test_incremental_sync_processes_one_recent_conversation_per_run(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants,
                alias_email, status)
                VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
             (
@@ -5206,7 +5206,7 @@ class PenguinConnectTests(unittest.TestCase):
         )
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, last_synced_at, updated_at)
+               (conversation_id, last_source_ts, last_gmail_ts, last_synced_at, updated_at)
                VALUES (?, ?, ?, datetime('now'), datetime('now'))""",
             (
                 "amc_test",
@@ -5216,7 +5216,7 @@ class PenguinConnectTests(unittest.TestCase):
         )
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at,
+               (conversation_id, last_source_ts, last_gmail_ts, initial_sync_completed_at,
                 next_full_verify_at, last_synced_at, updated_at)
                VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
             (
@@ -5631,7 +5631,7 @@ class PenguinConnectTests(unittest.TestCase):
     def test_startup_catchup_run_yields_to_incremental_after_preempted_conversation(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants,
                 alias_email, status)
                VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
             (
@@ -5644,7 +5644,7 @@ class PenguinConnectTests(unittest.TestCase):
         )
         selected = self.conn.execute(
             """SELECT c.*,
-                      s.last_imessage_ts,
+                      s.last_source_ts,
                       s.last_gmail_ts,
                       s.last_message_ts,
                       s.last_gmail_history_id,
@@ -5712,7 +5712,7 @@ class PenguinConnectTests(unittest.TestCase):
     def test_startup_catchup_marks_due_full_verify_complete_after_success(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at,
+               (conversation_id, last_source_ts, last_gmail_ts, initial_sync_completed_at,
                 next_full_verify_at, last_synced_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, datetime('now'))""",
             (
@@ -5793,7 +5793,7 @@ class PenguinConnectTests(unittest.TestCase):
     def test_startup_catchup_backfills_missing_full_verify_schedule_before_selection(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
+               (conversation_id, last_source_ts, last_gmail_ts, initial_sync_completed_at, last_synced_at, updated_at)
                VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
             (
                 "amc_test",
@@ -5841,7 +5841,7 @@ class PenguinConnectTests(unittest.TestCase):
     def test_backfill_sync_selects_recent_conversations_oldest_first(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants,
                 alias_email, status)
                VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
             (
@@ -5854,7 +5854,7 @@ class PenguinConnectTests(unittest.TestCase):
         )
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants,
                 alias_email, status)
                VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
             (
@@ -5945,7 +5945,7 @@ class PenguinConnectTests(unittest.TestCase):
     def test_backfill_verify_all_selects_all_active_conversations(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants,
                 alias_email, status)
                VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
             (
@@ -6018,7 +6018,7 @@ class PenguinConnectTests(unittest.TestCase):
     def test_incremental_verify_all_stays_on_recent_cursor_not_oldest_history(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_imessage_native_message_id,
+               (conversation_id, last_source_ts, last_source_native_message_id,
                 initial_sync_completed_at, last_synced_at, updated_at)
                VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
             (
@@ -6074,7 +6074,7 @@ class PenguinConnectTests(unittest.TestCase):
     def test_incremental_verify_all_respects_recent_cutoff_and_does_not_shift_backfill_floor(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_imessage_native_message_id,
+               (conversation_id, last_source_ts, last_source_native_message_id,
                 initial_sync_completed_at, backfill_synced_through_ts, last_synced_at, updated_at)
                VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
             (
@@ -6119,7 +6119,7 @@ class PenguinConnectTests(unittest.TestCase):
     def test_imessage_initial_bootstrap_starts_from_origin_even_with_partial_state(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, last_synced_at, updated_at)
+               (conversation_id, last_source_ts, last_gmail_ts, last_synced_at, updated_at)
                VALUES (?, ?, ?, datetime('now'), datetime('now'))""",
             (
                 "amc_test",
@@ -6178,7 +6178,7 @@ class PenguinConnectTests(unittest.TestCase):
     def test_gmail_initial_bootstrap_starts_from_origin_even_with_partial_state(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_gmail_ts, last_synced_at, updated_at)
+               (conversation_id, last_source_ts, last_gmail_ts, last_synced_at, updated_at)
                VALUES (?, ?, ?, datetime('now'), datetime('now'))""",
             (
                 "amc_test",
@@ -6213,7 +6213,7 @@ class PenguinConnectTests(unittest.TestCase):
     def test_sync_runtime_tracks_progress_and_continues_after_conversation_error(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants,
                 alias_email, status)
                VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
             (
@@ -6467,7 +6467,7 @@ class PenguinConnectTests(unittest.TestCase):
     def test_sync_unlocked_globally_retries_pending_imessage_imports_without_selection(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants,
                 alias_email, status)
                VALUES (?, ?, ?, ?, 'group', '[]', ?, 'active')""",
             (

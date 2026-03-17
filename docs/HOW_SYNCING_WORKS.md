@@ -87,8 +87,8 @@ If the streak hits 8, backfill stands down entirely for an hour. This prevents o
 
 Every message import updates two cursor values in the database:
 
-- `last_imessage_ts`: The timestamp of the last successfully imported message
-- `last_imessage_native_message_id`: A tiebreaker for messages with identical timestamps
+- `last_source_ts`: The timestamp of the last successfully imported message
+- `last_source_native_message_id`: A tiebreaker for messages with identical timestamps
 
 On the next sync — whether it's a normal poll, a resume after preemption, or a restart after a crash — the query uses these cursors to fetch only messages newer than the last import. No rescanning, no duplicates.
 

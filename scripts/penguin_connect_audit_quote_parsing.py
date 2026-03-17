@@ -43,7 +43,7 @@ def _audit(limit: int, *, rewrite_db: bool = False) -> dict:
         rows = conn.execute(
             """
             SELECT m.provider_message_id, m.gmail_message_id, m.gmail_thread_id, m.body_text, m.message_timestamp,
-                   c.conversation_id, c.display_name, c.source_provider, c.imessage_chat_id
+                   c.conversation_id, c.display_name, c.source_provider, c.source_chat_id
             FROM penguin_connect_messages m
             JOIN penguin_connect_conversations c ON c.conversation_id = m.conversation_id
             WHERE m.provider = 'gmail'
@@ -128,7 +128,7 @@ def _audit(limit: int, *, rewrite_db: bool = False) -> dict:
                         "conversation_id": row["conversation_id"],
                         "display_name": row["display_name"],
                         "source_provider": row["source_provider"],
-                        "source_chat_id": row["imessage_chat_id"],
+                        "source_chat_id": row["source_chat_id"],
                         "gmail_message_id": row["gmail_message_id"],
                         "gmail_thread_id": row["gmail_thread_id"],
                         "message_timestamp": row["message_timestamp"],

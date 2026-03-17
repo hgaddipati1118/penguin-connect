@@ -61,7 +61,7 @@ class TelegramBridgeIntegrationTests(unittest.TestCase):
         alias_email = f"owner+am-{conversation_id[:8]}@gmail.com"
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, source_provider, conversation_id, imessage_chat_id,
+               (gmail_email, source_provider, conversation_id, source_chat_id,
                 display_name, chat_type, participants, alias_email, status)
                VALUES (?, 'telegram', ?, ?, ?, ?, '[]', ?, 'active')""",
             ("owner@gmail.com", conversation_id, chat_id, display_name, chat_type, alias_email),
@@ -348,7 +348,7 @@ class WhatsAppBridgeIntegrationTests(unittest.TestCase):
         alias_email = f"owner+am-{conversation_id[:8]}@gmail.com"
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, source_provider, conversation_id, imessage_chat_id,
+               (gmail_email, source_provider, conversation_id, source_chat_id,
                 display_name, chat_type, participants, alias_email, status)
                VALUES (?, 'whatsapp', ?, ?, ?, ?, '[]', ?, 'active')""",
             ("owner@gmail.com", conversation_id, chat_id, display_name, chat_type, alias_email),

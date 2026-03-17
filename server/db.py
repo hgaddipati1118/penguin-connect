@@ -56,9 +56,9 @@ CREATE TABLE IF NOT EXISTS penguin_connect_conversations (
     gmail_email TEXT NOT NULL,
     source_provider TEXT NOT NULL DEFAULT 'imessage',
     conversation_id TEXT NOT NULL UNIQUE,
-    imessage_chat_id TEXT NOT NULL,
-    imessage_chat_identifier TEXT,
-    imessage_service_name TEXT,
+    source_chat_id TEXT NOT NULL,
+    source_chat_identifier TEXT,
+    source_service_name TEXT,
     display_name TEXT,
     chat_type TEXT DEFAULT 'dm',
     participants TEXT,
@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS penguin_connect_conversations (
     last_synced_at TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now')),
-    UNIQUE(gmail_email, source_provider, imessage_chat_id)
+    UNIQUE(gmail_email, source_provider, source_chat_id)
 );
 
 CREATE TABLE IF NOT EXISTS penguin_connect_aliases (
@@ -103,8 +103,8 @@ CREATE TABLE IF NOT EXISTS penguin_connect_messages (
 
 CREATE TABLE IF NOT EXISTS penguin_connect_sync_state (
     conversation_id TEXT PRIMARY KEY REFERENCES penguin_connect_conversations(conversation_id) ON DELETE CASCADE,
-    last_imessage_ts TEXT,
-    last_imessage_native_message_id TEXT,
+    last_source_ts TEXT,
+    last_source_native_message_id TEXT,
     last_gmail_ts TEXT,
     last_message_ts TEXT,
     last_gmail_history_id TEXT,
@@ -460,8 +460,8 @@ def _resolve_apple_messages_route_for_conversation(
     conn: sqlite3.Connection,
     conversation_row: sqlite3.Row,
 ) -> dict[str, str] | None:
-    current_chat_id = (conversation_row["imessage_chat_id"] or "").strip()
-    current_identifier = (conversation_row["imessage_chat_identifier"] or "").strip()
+    current_chat_id = (conversation_row["source_chat_id"] or "").strip()
+    current_identifier = (conversation_row["source_chat_identifier"] or "").strip()
     if _looks_like_apple_messages_guid(current_chat_id):
         return _resolve_apple_messages_route(current_chat_id)
 
@@ -487,7 +487,7 @@ def _resolve_apple_messages_route_for_conversation(
                 "source_provider": str(candidate["source_provider"] or ""),
             }
 
-        current_service_name = (conversation_row["imessage_service_name"] or "").strip().lower()
+        current_service_name = (conversation_row["source_service_name"] or "").strip().lower()
         if current_service_name:
             service_matches = [
                 candidate
@@ -598,25 +598,25 @@ def _merge_conversation_into_existing_target(
     conn.execute("DELETE FROM penguin_connect_messages WHERE conversation_id = ?", (source_id,))
 
     source_state = conn.execute(
-        """SELECT last_imessage_ts, last_imessage_native_message_id, last_gmail_ts, last_message_ts, last_gmail_history_id,
+        """SELECT last_source_ts, last_source_native_message_id, last_gmail_ts, last_message_ts, last_gmail_history_id,
                   initial_sync_completed_at, initial_sync_empty_verified_at
            FROM penguin_connect_sync_state
            WHERE conversation_id = ?""",
         (source_id,),
     ).fetchone()
     target_state = conn.execute(
-        """SELECT last_imessage_ts, last_imessage_native_message_id, last_gmail_ts, last_message_ts, last_gmail_history_id,
+        """SELECT last_source_ts, last_source_native_message_id, last_gmail_ts, last_message_ts, last_gmail_history_id,
                   initial_sync_completed_at, initial_sync_empty_verified_at
            FROM penguin_connect_sync_state
            WHERE conversation_id = ?""",
         (target_id,),
     ).fetchone()
     if source_state:
-        merged_last_imessage, merged_last_imessage_native_message_id = _merge_imessage_cursor(
-            target_state["last_imessage_ts"] if target_state else None,
-            target_state["last_imessage_native_message_id"] if target_state else None,
-            source_state["last_imessage_ts"],
-            source_state["last_imessage_native_message_id"],
+        merged_last_imessage, merged_last_source_native_message_id = _merge_imessage_cursor(
+            target_state["last_source_ts"] if target_state else None,
+            target_state["last_source_native_message_id"] if target_state else None,
+            source_state["last_source_ts"],
+            source_state["last_source_native_message_id"],
         )
         merged_last_gmail = _max_iso_value(
             target_state["last_gmail_ts"] if target_state else None,
@@ -640,12 +640,12 @@ def _merge_conversation_into_existing_target(
         )
         conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, last_imessage_native_message_id, last_gmail_ts, last_message_ts,
+               (conversation_id, last_source_ts, last_source_native_message_id, last_gmail_ts, last_message_ts,
                 last_gmail_history_id, initial_sync_completed_at, initial_sync_empty_verified_at, last_synced_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                ON CONFLICT(conversation_id) DO UPDATE SET
-                 last_imessage_ts = excluded.last_imessage_ts,
-                 last_imessage_native_message_id = excluded.last_imessage_native_message_id,
+                 last_source_ts = excluded.last_source_ts,
+                 last_source_native_message_id = excluded.last_source_native_message_id,
                  last_gmail_ts = excluded.last_gmail_ts,
                  last_message_ts = excluded.last_message_ts,
                  last_gmail_history_id = excluded.last_gmail_history_id,
@@ -656,7 +656,7 @@ def _merge_conversation_into_existing_target(
             (
                 target_id,
                 merged_last_imessage,
-                merged_last_imessage_native_message_id,
+                merged_last_source_native_message_id,
                 merged_last_gmail,
                 merged_last_message,
                 merged_history_id,
@@ -696,7 +696,7 @@ def _has_provider_aware_conversation_uniqueness(conn: sqlite3.Connection) -> boo
             info["name"]
             for info in conn.execute(f"PRAGMA index_info('{safe_index_name}')").fetchall()
         ]
-        if columns == ["gmail_email", "source_provider", "imessage_chat_id"]:
+        if columns == ["gmail_email", "source_provider", "source_chat_id"]:
             return True
     return False
 
@@ -726,9 +726,9 @@ def _rebuild_conversations_table_for_provider_uniqueness(conn: sqlite3.Connectio
                 gmail_email TEXT NOT NULL,
                 source_provider TEXT NOT NULL DEFAULT 'imessage',
                 conversation_id TEXT NOT NULL UNIQUE,
-                imessage_chat_id TEXT NOT NULL,
-                imessage_chat_identifier TEXT,
-                imessage_service_name TEXT,
+                source_chat_id TEXT NOT NULL,
+                source_chat_identifier TEXT,
+                source_service_name TEXT,
                 display_name TEXT,
                 chat_type TEXT DEFAULT 'dm',
                 participants TEXT,
@@ -739,7 +739,7 @@ def _rebuild_conversations_table_for_provider_uniqueness(conn: sqlite3.Connectio
                 last_synced_at TEXT,
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now')),
-                UNIQUE(gmail_email, source_provider, imessage_chat_id)
+                UNIQUE(gmail_email, source_provider, source_chat_id)
             );
 
             INSERT INTO penguin_connect_conversations__new (
@@ -747,9 +747,9 @@ def _rebuild_conversations_table_for_provider_uniqueness(conn: sqlite3.Connectio
                 gmail_email,
                 source_provider,
                 conversation_id,
-                imessage_chat_id,
-                imessage_chat_identifier,
-                imessage_service_name,
+                source_chat_id,
+                source_chat_identifier,
+                source_service_name,
                 display_name,
                 chat_type,
                 participants,
@@ -766,7 +766,7 @@ def _rebuild_conversations_table_for_provider_uniqueness(conn: sqlite3.Connectio
                 gmail_email,
                 LOWER(COALESCE(NULLIF(source_provider, ''), 'imessage')),
                 conversation_id,
-                imessage_chat_id,
+                source_chat_id,
                 NULL,
                 NULL,
                 display_name,
@@ -802,12 +802,12 @@ def _rebuild_conversations_table_for_provider_uniqueness(conn: sqlite3.Connectio
 
 def _migrate_legacy_conversation_ids(conn: sqlite3.Connection) -> int:
     rows = conn.execute(
-        """SELECT conversation_id, gmail_email, source_provider, imessage_chat_id
+        """SELECT conversation_id, gmail_email, source_provider, source_chat_id
            FROM penguin_connect_conversations"""
     ).fetchall()
     updates: list[tuple[str, str, str]] = []
     for row in rows:
-        source_chat_id = (row["imessage_chat_id"] or "").strip()
+        source_chat_id = (row["source_chat_id"] or "").strip()
         if not source_chat_id:
             continue
         source_provider = (row["source_provider"] or "imessage").strip().lower() or "imessage"
@@ -837,9 +837,9 @@ def _migrate_legacy_conversation_ids(conn: sqlite3.Connection) -> int:
                    gmail_email,
                    source_provider,
                    conversation_id,
-                   imessage_chat_id,
-                   imessage_chat_identifier,
-                   imessage_service_name,
+                   source_chat_id,
+                   source_chat_identifier,
+                   source_service_name,
                    display_name,
                    chat_type,
                    participants,
@@ -855,9 +855,9 @@ def _migrate_legacy_conversation_ids(conn: sqlite3.Connection) -> int:
                    gmail_email,
                    ?,
                    ?,
-                   imessage_chat_id,
-                   imessage_chat_identifier,
-                   imessage_service_name,
+                   source_chat_id,
+                   source_chat_identifier,
+                   source_service_name,
                    display_name,
                    chat_type,
                    participants,
@@ -882,8 +882,8 @@ def _migrate_legacy_conversation_ids(conn: sqlite3.Connection) -> int:
 
 def _migrate_apple_messages_conversation_routes(conn: sqlite3.Connection) -> int:
     rows = conn.execute(
-        """SELECT conversation_id, gmail_email, source_provider, imessage_chat_id,
-                  imessage_chat_identifier, imessage_service_name
+        """SELECT conversation_id, gmail_email, source_provider, source_chat_id,
+                  source_chat_identifier, source_service_name
            FROM penguin_connect_conversations
            WHERE source_provider IN ('imessage', 'sms', 'rcs')"""
     ).fetchall()
@@ -891,8 +891,8 @@ def _migrate_apple_messages_conversation_routes(conn: sqlite3.Connection) -> int
     migrated = 0
     for row in rows:
         old_id = (row["conversation_id"] or "").strip()
-        current_chat_id = (row["imessage_chat_id"] or "").strip()
-        current_identifier = (row["imessage_chat_identifier"] or "").strip()
+        current_chat_id = (row["source_chat_id"] or "").strip()
+        current_identifier = (row["source_chat_identifier"] or "").strip()
         route = _resolve_apple_messages_route_for_conversation(conn, row)
         if not route or not route.get("guid") or not route.get("source_provider"):
             continue
@@ -900,7 +900,7 @@ def _migrate_apple_messages_conversation_routes(conn: sqlite3.Connection) -> int
         target_provider = route["source_provider"]
         target_chat_id = route["guid"]
         target_identifier = route.get("chat_identifier") or current_identifier or current_chat_id
-        target_service_name = route.get("service_name") or row["imessage_service_name"]
+        target_service_name = route.get("service_name") or row["source_service_name"]
         target_conversation_id = _provider_aware_conversation_id(row["gmail_email"], target_provider, target_chat_id)
 
         same_identity = (
@@ -911,7 +911,7 @@ def _migrate_apple_messages_conversation_routes(conn: sqlite3.Connection) -> int
         if same_identity:
             conn.execute(
                 """UPDATE penguin_connect_conversations
-                   SET imessage_chat_identifier = ?, imessage_service_name = ?, updated_at = datetime('now')
+                   SET source_chat_identifier = ?, source_service_name = ?, updated_at = datetime('now')
                    WHERE conversation_id = ?""",
                 (target_identifier, target_service_name, old_id),
             )
@@ -936,9 +936,9 @@ def _migrate_apple_messages_conversation_routes(conn: sqlite3.Connection) -> int
                    gmail_email,
                    source_provider,
                    conversation_id,
-                   imessage_chat_id,
-                   imessage_chat_identifier,
-                   imessage_service_name,
+                   source_chat_id,
+                   source_chat_identifier,
+                   source_service_name,
                    display_name,
                    chat_type,
                    participants,
@@ -1240,6 +1240,24 @@ def init_db() -> None:
         conversation_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(penguin_connect_conversations)").fetchall()
         }
+
+        # Migrate legacy iMessage-specific column names to provider-neutral names.
+        _column_renames = [
+            ("penguin_connect_conversations", "imessage_chat_id", "source_chat_id", conversation_columns),
+            ("penguin_connect_conversations", "imessage_chat_identifier", "source_chat_identifier", conversation_columns),
+            ("penguin_connect_conversations", "imessage_service_name", "source_service_name", conversation_columns),
+            ("penguin_connect_sync_state", "last_imessage_ts", "last_source_ts", sync_columns),
+            ("penguin_connect_sync_state", "last_imessage_native_message_id", "last_source_native_message_id", sync_columns),
+        ]
+        for table, old_col, new_col, cols in _column_renames:
+            if old_col in cols and new_col not in cols:
+                conn.execute(f"ALTER TABLE {table} RENAME COLUMN {old_col} TO {new_col}")
+        # Refresh column sets after renames.
+        sync_columns = {row[1] for row in conn.execute("PRAGMA table_info(penguin_connect_sync_state)").fetchall()}
+        conversation_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(penguin_connect_conversations)").fetchall()
+        }
+
         if "source_provider" not in conversation_columns:
             conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN source_provider TEXT DEFAULT 'imessage'")
             conn.execute(
@@ -1251,15 +1269,15 @@ def init_db() -> None:
                 """UPDATE penguin_connect_conversations
                    SET source_provider = LOWER(COALESCE(NULLIF(source_provider, ''), 'imessage'))"""
             )
-        if "imessage_chat_identifier" not in conversation_columns:
-            conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN imessage_chat_identifier TEXT")
-        if "imessage_service_name" not in conversation_columns:
-            conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN imessage_service_name TEXT")
+        if "source_chat_identifier" not in conversation_columns:
+            conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN source_chat_identifier TEXT")
+        if "source_service_name" not in conversation_columns:
+            conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN source_service_name TEXT")
         if "exclude_from_sync" not in conversation_columns:
             conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN exclude_from_sync INTEGER NOT NULL DEFAULT 0")
         conn.execute(
             """UPDATE penguin_connect_conversations
-               SET imessage_chat_identifier = COALESCE(NULLIF(imessage_chat_identifier, ''), imessage_chat_id)
+               SET source_chat_identifier = COALESCE(NULLIF(source_chat_identifier, ''), source_chat_id)
                WHERE source_provider IN ('imessage', 'sms', 'rcs')"""
         )
         if not _has_provider_aware_conversation_uniqueness(conn):
@@ -1268,15 +1286,15 @@ def init_db() -> None:
             conversation_columns = {
                 row[1] for row in conn.execute("PRAGMA table_info(penguin_connect_conversations)").fetchall()
             }
-            if "imessage_chat_identifier" not in conversation_columns:
-                conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN imessage_chat_identifier TEXT")
-            if "imessage_service_name" not in conversation_columns:
-                conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN imessage_service_name TEXT")
+            if "source_chat_identifier" not in conversation_columns:
+                conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN source_chat_identifier TEXT")
+            if "source_service_name" not in conversation_columns:
+                conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN source_service_name TEXT")
             if "exclude_from_sync" not in conversation_columns:
                 conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN exclude_from_sync INTEGER NOT NULL DEFAULT 0")
             conn.execute(
                 """UPDATE penguin_connect_conversations
-                   SET imessage_chat_identifier = COALESCE(NULLIF(imessage_chat_identifier, ''), imessage_chat_id)
+                   SET source_chat_identifier = COALESCE(NULLIF(source_chat_identifier, ''), source_chat_id)
                    WHERE source_provider IN ('imessage', 'sms', 'rcs')"""
             )
         _migrate_legacy_conversation_ids(conn)
@@ -1293,8 +1311,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN initial_sync_completed_at TEXT")
         if "initial_sync_empty_verified_at" not in sync_columns:
             conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN initial_sync_empty_verified_at TEXT")
-        if "last_imessage_native_message_id" not in sync_columns:
-            conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN last_imessage_native_message_id TEXT")
+        if "last_source_native_message_id" not in sync_columns:
+            conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN last_source_native_message_id TEXT")
         if "last_message_ts" not in sync_columns:
             conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN last_message_ts TEXT")
         if "pending_gmail_activity_at" not in sync_columns:
@@ -1318,26 +1336,26 @@ def init_db() -> None:
         conn.execute(
             """UPDATE penguin_connect_sync_state
                SET last_message_ts = CASE
-                 WHEN last_imessage_ts IS NOT NULL AND last_gmail_ts IS NOT NULL
-                   THEN CASE WHEN last_imessage_ts >= last_gmail_ts THEN last_imessage_ts ELSE last_gmail_ts END
-                 ELSE COALESCE(last_imessage_ts, last_gmail_ts, last_message_ts)
+                 WHEN last_source_ts IS NOT NULL AND last_gmail_ts IS NOT NULL
+                   THEN CASE WHEN last_source_ts >= last_gmail_ts THEN last_source_ts ELSE last_gmail_ts END
+                 ELSE COALESCE(last_source_ts, last_gmail_ts, last_message_ts)
                END
                WHERE last_message_ts IS NULL"""
         )
         conn.execute(
             """UPDATE penguin_connect_sync_state
-               SET last_imessage_native_message_id = (
+               SET last_source_native_message_id = (
                  SELECT json_extract(m.metadata, '$.native_message_id')
                  FROM penguin_connect_messages m
                  WHERE m.conversation_id = penguin_connect_sync_state.conversation_id
                    AND m.provider = 'imessage'
                    AND m.direction = 'imessage_to_email'
-                   AND m.message_timestamp = penguin_connect_sync_state.last_imessage_ts
+                   AND m.message_timestamp = penguin_connect_sync_state.last_source_ts
                  ORDER BY CAST(json_extract(m.metadata, '$.native_message_id') AS INTEGER) DESC, m.id DESC
                  LIMIT 1
                )
-               WHERE last_imessage_native_message_id IS NULL
-                 AND last_imessage_ts IS NOT NULL"""
+               WHERE last_source_native_message_id IS NULL
+                 AND last_source_ts IS NOT NULL"""
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_penguin_connect_sync_bootstrap ON penguin_connect_sync_state(initial_sync_completed_at)"

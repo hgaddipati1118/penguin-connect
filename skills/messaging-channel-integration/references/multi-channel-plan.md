@@ -6,9 +6,9 @@ Use this file when designing the refactor from one source provider to many.
 
 - Schema:
 - `penguin_connect_conversations.source_provider`
-- `penguin_connect_conversations.imessage_chat_id`
+- `penguin_connect_conversations.source_chat_id`
 - legacy chat-id column name still exists even though new conversation ids are provider-aware
-- sync-state column names such as `last_imessage_ts`
+- sync-state column names such as `last_source_ts`
 
 - Direction and status naming:
 - `imessage_to_email`
@@ -32,7 +32,7 @@ Use this file when designing the refactor from one source provider to many.
 
 - Product text and metadata:
 - subject prefix `iMessage · ...`
-- metadata keys like `imessage_chat_id`
+- metadata keys like `source_chat_id`
 - quoted-content parsing should live in a shared utility and deliver only net-new reply text back to chat
 - setup and doctor guidance tied to `chat.db`, AppleScript, Terminal.app, and Full Disk Access
 
@@ -72,7 +72,7 @@ Use this file when designing the refactor from one source provider to many.
 
 3. Generalize the schema.
 
-- Replace `imessage_chat_id` with generic source identity columns such as `source_provider` and `source_chat_id`.
+- Replace `source_chat_id` with generic source identity columns such as `source_provider` and `source_chat_id`.
 - Revisit direction enums so they do not freeze iMessage into the storage model.
 - Keep Gmail-specific columns only where Gmail truly remains the shared inbox surface.
 - Move new provider-specific fields into explicit columns or strongly versioned metadata instead of ad hoc growth.
@@ -147,7 +147,7 @@ Use this file when designing the refactor from one source provider to many.
 ## Anti-patterns
 
 - Do not keep adding provider-specific branches directly inside `server/penguin_connect.py`.
-- Do not treat `imessage_chat_id` as the only source identifier once multiple providers exist.
+- Do not treat `source_chat_id` as the only source identifier once multiple providers exist.
 - Do not skip backfill, retry, or thread-repair behavior for a new provider just because the happy path works.
 - Do not merge provider-specific setup constraints into generic docs without scoping them.
 - Do not claim provider parity until discovery, sync, send, attachments, and health checks all exist.

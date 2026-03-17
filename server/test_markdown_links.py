@@ -23,7 +23,7 @@ class MarkdownLinkRewriteTests(unittest.TestCase):
         )
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants,
                 alias_email, status)
                VALUES (?, ?, ?, ?, 'dm', '[]', ?, 'active')""",
             (
