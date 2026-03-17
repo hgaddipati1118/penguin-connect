@@ -157,6 +157,7 @@ Set `PENGUIN_CONNECT_EXCLUDED_CHATS_FILE` to point at a local JSON file with App
 ## Repository Guide
 
 - How threading works: [`docs/HOW_THREADING_WORKS.md`](./docs/HOW_THREADING_WORKS.md)
+- How syncing, backfill, and rate limits work: [`docs/HOW_SYNCING_WORKS.md`](./docs/HOW_SYNCING_WORKS.md)
 - Full setup, troubleshooting, and operations: [`docs/PENGUIN_CONNECT.md`](./docs/PENGUIN_CONNECT.md)
 - Contributing guide: [`CONTRIBUTING.md`](./CONTRIBUTING.md)
 - Security reporting: [`SECURITY.md`](./SECURITY.md)
