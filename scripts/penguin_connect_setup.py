@@ -396,6 +396,105 @@ def _connect_gmail(
         ) from exc
 
 
+def _configure_whatsapp(repo_root: Path, env_path: Path, *, assume_yes: bool, env_file: dict[str, str]) -> None:
+    _header("Optional: WhatsApp Setup")
+    wa_db = _env_value("PENGUIN_CONNECT_WHATSAPP_DB_PATH", env_file)
+    if wa_db:
+        from pathlib import Path as P
+        if P(wa_db).expanduser().exists():
+            print(f"[ok] WhatsApp bridge DB found at {wa_db}")
+            return
+    default_db = Path.home() / "whatsapp-mcp" / "whatsapp-bridge" / "store" / "messages.db"
+    if default_db.exists():
+        print(f"[ok] WhatsApp bridge DB found at {default_db}")
+        return
+    should_configure = _confirm(
+        "Set up WhatsApp bridging? (requires whatsapp-mcp Go bridge)",
+        default_yes=False,
+        assume_yes=assume_yes,
+    )
+    if not should_configure:
+        print("[skip] Skipping WhatsApp setup. You can add it later — see docs/PENGUIN_CONNECT.md")
+        return
+    print("[info] WhatsApp setup requires the whatsapp-mcp Go bridge.")
+    print("[info] 1. git clone https://github.com/nicebytes/whatsapp-mcp.git ~/whatsapp-mcp")
+    print("[info] 2. cd ~/whatsapp-mcp/whatsapp-bridge && go build -o whatsapp-bridge . && ./whatsapp-bridge")
+    print("[info] 3. Scan the QR code with WhatsApp on your phone")
+    print("[info] 4. Rerun this setup or restart the bridge")
+    wa_db_path = _prompt_text(
+        f"WhatsApp bridge DB path [{default_db}]: ",
+        default=str(default_db),
+    )
+    if wa_db_path:
+        _upsert_env_value(env_path, "PENGUIN_CONNECT_WHATSAPP_DB_PATH", wa_db_path)
+        print(f"[ok] Saved PENGUIN_CONNECT_WHATSAPP_DB_PATH={wa_db_path}")
+
+
+def _configure_telegram(
+    repo_root: Path, venv_python: Path, env_path: Path, *, assume_yes: bool, env_file: dict[str, str]
+) -> None:
+    _header("Optional: Telegram Setup")
+    api_id = _env_value("PENGUIN_CONNECT_TELEGRAM_API_ID", env_file)
+    api_hash = _env_value("PENGUIN_CONNECT_TELEGRAM_API_HASH", env_file)
+    session_path = _env_value(
+        "PENGUIN_CONNECT_TELEGRAM_SESSION_PATH", env_file
+    ) or str(Path.home() / "penguin-connect-data" / "telegram")
+    session_file = Path(f"{session_path}.session")
+
+    if api_id and api_hash and session_file.exists():
+        print(f"[ok] Telegram credentials set and session exists at {session_file}")
+        return
+
+    should_configure = _confirm(
+        "Set up Telegram bridging? (requires Telegram API credentials)",
+        default_yes=False,
+        assume_yes=assume_yes,
+    )
+    if not should_configure:
+        print("[skip] Skipping Telegram setup. You can add it later — see docs/PENGUIN_CONNECT.md")
+        return
+
+    if not api_id:
+        print("[info] Get credentials from https://my.telegram.org → API development tools")
+        api_id = _prompt_text("Enter TELEGRAM_API_ID: ")
+        if api_id:
+            _upsert_env_value(env_path, "PENGUIN_CONNECT_TELEGRAM_API_ID", api_id)
+    if not api_hash:
+        api_hash = _prompt_text("Enter TELEGRAM_API_HASH: ")
+        if api_hash:
+            _upsert_env_value(env_path, "PENGUIN_CONNECT_TELEGRAM_API_HASH", api_hash)
+
+    if not api_id or not api_hash:
+        print("[skip] Telegram credentials incomplete. Set them in .env and rerun setup.")
+        return
+
+    if session_file.exists():
+        print(f"[ok] Telegram session already exists at {session_file}")
+        return
+
+    should_auth = _confirm(
+        "Run Telegram authentication now? (interactive: prompts for phone + code)",
+        default_yes=True,
+        assume_yes=False,  # Always interactive for auth
+    )
+    if should_auth:
+        import subprocess
+        env = dict(os.environ)
+        env["PENGUIN_CONNECT_TELEGRAM_API_ID"] = api_id
+        env["PENGUIN_CONNECT_TELEGRAM_API_HASH"] = api_hash
+        try:
+            subprocess.run(
+                [str(venv_python), "scripts/telegram_auth.py"],
+                cwd=str(repo_root),
+                check=True,
+                env=env,
+            )
+        except subprocess.CalledProcessError:
+            print("[warn] Telegram auth failed. You can retry later with: server/venv/bin/python scripts/telegram_auth.py")
+    else:
+        print("[info] Run later: server/venv/bin/python scripts/telegram_auth.py")
+
+
 def _run_doctor(repo_root: Path, venv_python: Path, skip_doctor: bool) -> None:
     _header("Step 5/6: Run Doctor Checks")
     if skip_doctor:
@@ -561,6 +660,11 @@ def main() -> int:
         assume_yes=args.yes,
         skip_connect=args.skip_connect,
     )
+
+    env_values = _read_env_file(env_path)
+    _configure_whatsapp(repo_root, env_path, assume_yes=args.yes, env_file=env_values)
+    env_values = _read_env_file(env_path)
+    _configure_telegram(repo_root, venv_python, env_path, assume_yes=args.yes, env_file=env_values)
 
     _run_doctor(repo_root=repo_root, venv_python=venv_python, skip_doctor=args.skip_doctor)
     _run_sync_smoke(api_base=api_base, skip_sync_smoke=args.skip_sync_smoke)

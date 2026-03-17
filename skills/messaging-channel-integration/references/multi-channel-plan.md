@@ -95,13 +95,15 @@ Use this file when designing the refactor from one source provider to many.
 - outbound send API
 - provider-specific health checks and setup scripts
 
-## Suggested implementation order
+## Implementation status
 
-1. Extract the current Apple Messages code into an adapter without changing behavior.
-2. Migrate schema and naming to provider-neutral fields.
-3. Route sync orchestration through the adapter boundary.
-4. Update scripts, doctor checks, and docs so provider requirements are explicit instead of implicit.
-5. Add the second provider only after the first four steps pass with the existing Apple Messages test suite.
+All five steps below are complete:
+
+1. ~~Extract the current Apple Messages code into an adapter without changing behavior.~~ Done.
+2. ~~Migrate schema and naming to provider-neutral fields.~~ Done — `source_chat_id`, `last_source_ts`, etc.
+3. ~~Route sync orchestration through the adapter boundary.~~ Done — `_send_to_source_conversation()`, `_fetch_source_messages_for_conversation()`.
+4. ~~Update scripts, doctor checks, and docs so provider requirements are explicit instead of implicit.~~ Done.
+5. ~~Add second and third providers.~~ Done — WhatsApp (via whatsapp-mcp bridge) and Telegram (via Telethon).
 
 ## New-provider checklist
 

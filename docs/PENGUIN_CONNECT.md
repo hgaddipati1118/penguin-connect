@@ -2,9 +2,11 @@
 
 PenguinConnect bridges messaging conversations to a user's Gmail inbox using per-conversation alias addresses.
 
-Current implemented source adapter: Apple Messages (`iMessage`, `SMS`, `RCS`).
+Implemented source adapters:
 
-Planned next source adapters: WhatsApp and Telegram.
+- **Apple Messages** (`iMessage`, `SMS`, `RCS`)
+- **WhatsApp** (via whatsapp-mcp Go bridge)
+- **Telegram** (via Telethon MTProto API)
 
 This bridge is macOS local-only and runs on `127.0.0.1`.
 
@@ -72,6 +74,93 @@ cd /path/to/penguin-connect/server
 python3 -m venv venv
 venv/bin/pip install -r requirements.txt
 ```
+
+## WhatsApp Setup (Optional)
+
+WhatsApp bridging requires the [whatsapp-mcp](https://github.com/nicebytes/whatsapp-mcp) Go bridge running locally.
+
+### 1) Install and start the WhatsApp bridge
+
+```bash
+# Clone and build whatsapp-mcp
+git clone https://github.com/nicebytes/whatsapp-mcp.git ~/whatsapp-mcp
+cd ~/whatsapp-mcp/whatsapp-bridge
+go build -o whatsapp-bridge .
+
+# Start the bridge (will show a QR code on first run — scan with WhatsApp)
+./whatsapp-bridge
+```
+
+On first run, the bridge displays a QR code. Open WhatsApp on your phone → Settings → Linked Devices → Link a Device → scan the QR code.
+
+The bridge stores messages in `~/whatsapp-mcp/whatsapp-bridge/store/messages.db` and exposes an HTTP API on `http://localhost:8080/api`.
+
+### 2) Configure PenguinConnect
+
+Add to your `.env` (or leave defaults):
+
+```bash
+# Path to the WhatsApp bridge SQLite database
+PENGUIN_CONNECT_WHATSAPP_DB_PATH=~/whatsapp-mcp/whatsapp-bridge/store/messages.db
+# WhatsApp bridge API URL for sending messages
+PENGUIN_CONNECT_WHATSAPP_API_URL=http://localhost:8080/api
+```
+
+### 3) Verify
+
+```bash
+./scripts/penguin_connect_doctor.py
+```
+
+Look for `[OK] whatsapp_bridge` and `[OK] whatsapp_api`. Once the bridge is running, PenguinConnect discovers WhatsApp conversations automatically on server start.
+
+## Telegram Setup (Optional)
+
+Telegram bridging uses [Telethon](https://github.com/LonamiWebs/Telethon) (MTProto user client) for full access to your message history.
+
+### 1) Get Telegram API credentials
+
+1. Go to [https://my.telegram.org](https://my.telegram.org) → API development tools
+2. Create an application (title: "PenguinConnect", platform: "Other")
+3. Copy the `api_id` and `api_hash`
+
+### 2) Configure PenguinConnect
+
+Add to your `.env`:
+
+```bash
+PENGUIN_CONNECT_TELEGRAM_API_ID=<your api_id>
+PENGUIN_CONNECT_TELEGRAM_API_HASH=<your api_hash>
+```
+
+### 3) Authenticate (one-time)
+
+```bash
+cd /path/to/penguin-connect
+server/venv/bin/python scripts/telegram_auth.py
+```
+
+This will prompt for:
+- Your phone number (with country code, e.g. `+1...`)
+- A verification code sent to your Telegram app
+- Your 2FA password (if enabled)
+
+The session is saved to `~/penguin-connect-data/telegram.session`. You only need to do this once.
+
+### 4) Verify
+
+```bash
+./scripts/penguin_connect_doctor.py
+```
+
+Look for `[OK] telegram_auth`. Once authenticated, PenguinConnect discovers Telegram conversations automatically on server start.
+
+### Telegram troubleshooting
+
+- **Session expired**: Re-run `server/venv/bin/python scripts/telegram_auth.py`
+- **FloodWaitError**: Telegram rate limiting — wait the indicated time and retry
+- **2FA required**: The auth script prompts for your password automatically
+- **Session locked**: Only one process can use a Telegram session file at a time. Stop the bridge before running the auth script.
 
 Optional reply-cleanup setting:
 
