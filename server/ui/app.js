@@ -452,6 +452,28 @@ function attachmentUrl(message, index) {
   return `/penguin-connect/conversations/${conversationId}/attachments/${index}?provider_message_id=${messageId}`;
 }
 
+function renderAudioAttachment(attachment, url) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "audio-attachment";
+
+  const link = document.createElement("a");
+  link.className = "pill attachment-link";
+  link.href = url;
+  link.target = "_blank";
+  link.rel = "noopener";
+  link.title = "Open audio attachment";
+  link.textContent = attachmentLabel(attachment);
+
+  const audio = document.createElement("audio");
+  audio.controls = true;
+  audio.preload = "metadata";
+  audio.src = url;
+  audio.setAttribute("aria-label", attachmentLabel(attachment));
+
+  wrapper.append(link, audio);
+  return wrapper;
+}
+
 function messageSnippet(message, length = 180) {
   const text = trim(message.body_text || message.text || "", length);
   const attachments = attachmentRows(message).map((attachment) => basename(attachment.transfer_name || attachment.filename || attachment.mime_type || "attachment"));
@@ -977,6 +999,10 @@ function renderMessages() {
     const attachmentBox = item.querySelector(".message-attachments");
     for (const [index, attachment] of attachments.entries()) {
       const url = attachmentLocalPath(attachment) ? attachmentUrl(message, index) : "";
+      if (url && isAudioAttachment(attachment)) {
+        attachmentBox.append(renderAudioAttachment(attachment, url));
+        continue;
+      }
       const pill = document.createElement(url ? "a" : "span");
       pill.className = `pill${url ? " attachment-link" : ""}`;
       if (url) {

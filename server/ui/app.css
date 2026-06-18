@@ -725,6 +725,24 @@ input[type="email"]:focus {
   margin-top: 8px;
 }
 
+.audio-attachment {
+  display: grid;
+  width: min(320px, 100%);
+  gap: 6px;
+  padding: 7px;
+  border: 1px solid var(--line);
+  background: rgba(255, 253, 248, 0.72);
+}
+
+.audio-attachment .pill {
+  width: fit-content;
+}
+
+.audio-attachment audio {
+  width: 100%;
+  max-width: 100%;
+}
+
 .message-actions {
   display: flex;
   justify-content: flex-end;
