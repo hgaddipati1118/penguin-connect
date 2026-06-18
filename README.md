@@ -158,8 +158,9 @@ shortcuts, message-level reply targets and copy actions, thread filtering,
 unread/pinned/archived and label-based conversation views, bulk
 mark-read/archive actions, latest-message previews in the conversation rail,
 global synced-message search, loaded-message filters for unread/sent/files/audio,
-opening synced attachment files, inline previews for local image attachments,
-inline playback for local audio attachments, cached Contacts search/refresh,
+opening synced attachment files, a per-thread media browser for loaded
+images/audio/files, inline previews for local image attachments, inline playback
+for local audio attachments, cached Contacts search/refresh,
 contact creation, contact-to-thread matching, contact-to-new-chat recipient
 picking with removable recipient chips, selected-thread participant actions for
 contact search/new-chat/contact creation, local thread notes and tags,

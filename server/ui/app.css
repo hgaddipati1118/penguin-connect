@@ -574,6 +574,124 @@ input[type="email"]:focus {
   color: var(--accent);
 }
 
+.media-filters {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.media-filters button {
+  min-width: 0;
+  min-height: 28px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-filters button:hover,
+.media-filters button.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.thread-media {
+  display: grid;
+  max-height: 260px;
+  overflow: auto;
+  gap: 6px;
+}
+
+.media-item {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.media-thumb {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  overflow: hidden;
+  place-items: center;
+  background: var(--panel-alt);
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+.media-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.media-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.media-name,
+.media-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-name {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.media-meta {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+.media-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.media-actions button,
+.media-actions a {
+  display: inline-grid;
+  min-height: 26px;
+  place-items: center;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  background: var(--panel-alt);
+  color: var(--muted);
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  text-decoration: none;
+}
+
+.media-actions button:hover,
+.media-actions button:focus-visible,
+.media-actions a:hover,
+.media-actions a:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .thread {
   display: grid;
   grid-template-rows: auto auto auto auto auto auto minmax(0, 1fr);

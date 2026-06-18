@@ -11,6 +11,7 @@ const state = {
   messageSearchTimer: null,
   focusMessageId: "",
   messageView: "all",
+  mediaView: "all",
   conversationView: "inbox",
   conversationLabel: "",
   selectedConversationIds: new Set(),
@@ -49,6 +50,9 @@ const el = {
   threadStatus: document.querySelector("#threadStatus"),
   threadPeopleState: document.querySelector("#threadPeopleState"),
   threadPeople: document.querySelector("#threadPeople"),
+  threadMediaState: document.querySelector("#threadMediaState"),
+  mediaFilters: document.querySelector("#mediaFilters"),
+  threadMedia: document.querySelector("#threadMedia"),
   threadTags: document.querySelector("#threadTags"),
   threadNote: document.querySelector("#threadNote"),
   saveManagementButton: document.querySelector("#saveManagementButton"),
@@ -103,6 +107,13 @@ const messageViews = [
   { key: "files", label: "Files" },
   { key: "audio", label: "Audio" },
   { key: "mine", label: "Mine" },
+];
+
+const mediaViews = [
+  { key: "all", label: "All" },
+  { key: "images", label: "Images" },
+  { key: "audio", label: "Audio" },
+  { key: "files", label: "Files" },
 ];
 
 const codexModes = {
@@ -968,6 +979,137 @@ function renderMessageViewFilters() {
   }
 }
 
+function mediaTypeForAttachment(attachment) {
+  if (isImageAttachment(attachment)) return "image";
+  if (isAudioAttachment(attachment)) return "audio";
+  return "file";
+}
+
+function threadMediaItems() {
+  const items = [];
+  for (const message of state.messages) {
+    for (const [index, attachment] of attachmentRows(message).entries()) {
+      const url = attachmentLocalPath(attachment) ? attachmentUrl(message, index) : "";
+      items.push({
+        attachment,
+        index,
+        label: attachmentLabel(attachment),
+        message,
+        messageId: message.provider_message_id || "",
+        sender: messageSender(message),
+        time: messageTime(message),
+        type: mediaTypeForAttachment(attachment),
+        url,
+      });
+    }
+  }
+  return items;
+}
+
+function mediaMatchesView(item, view = state.mediaView) {
+  if (view === "images") return item.type === "image";
+  if (view === "audio") return item.type === "audio";
+  if (view === "files") return item.type === "file";
+  return true;
+}
+
+function mediaViewCounts(items) {
+  return {
+    all: items.length,
+    images: items.filter((item) => item.type === "image").length,
+    audio: items.filter((item) => item.type === "audio").length,
+    files: items.filter((item) => item.type === "file").length,
+  };
+}
+
+function renderMediaFilters(items) {
+  const counts = mediaViewCounts(items);
+  el.mediaFilters.replaceChildren();
+  for (const view of mediaViews) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.mediaView = view.key;
+    button.textContent = `${view.label} ${counts[view.key] ?? 0}`;
+    const active = state.mediaView === view.key;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+    el.mediaFilters.append(button);
+  }
+}
+
+function focusMediaMessage(item) {
+  if (!item.messageId) return;
+  state.focusMessageId = item.messageId;
+  state.messageView = "all";
+  el.messageFilter.value = "";
+  renderMessages();
+  requestAnimationFrame(() => {
+    const focused = el.messageList.querySelector(".message.focused");
+    if (focused) focused.scrollIntoView({ block: "center" });
+  });
+}
+
+function renderThreadMedia() {
+  const items = threadMediaItems();
+  renderMediaFilters(items);
+  el.threadMedia.replaceChildren();
+  el.threadMediaState.textContent = state.selected
+    ? `${items.length} item${items.length === 1 ? "" : "s"}`
+    : "No thread";
+  if (!state.selected) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state compact-state";
+    empty.textContent = "Select a conversation";
+    el.threadMedia.append(empty);
+    return;
+  }
+  const visible = items.filter((item) => mediaMatchesView(item));
+  if (!visible.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state compact-state";
+    empty.textContent = items.length ? "No media in this view" : "No loaded media";
+    el.threadMedia.append(empty);
+    return;
+  }
+
+  for (const item of visible) {
+    const row = document.createElement("div");
+    row.className = `media-item ${item.type}`;
+    row.innerHTML = `
+      <div class="media-thumb"></div>
+      <div class="media-copy">
+        <span class="media-name"></span>
+        <span class="media-meta"></span>
+      </div>
+      <div class="media-actions">
+        <button type="button" data-action="jump">Jump</button>
+      </div>
+    `;
+    const thumb = row.querySelector(".media-thumb");
+    if (item.url && item.type === "image") {
+      const image = document.createElement("img");
+      image.src = item.url;
+      image.alt = item.label;
+      image.loading = "lazy";
+      thumb.append(image);
+    } else {
+      thumb.textContent = item.type === "audio" ? "AUD" : "FILE";
+    }
+    row.querySelector(".media-name").textContent = item.label;
+    row.querySelector(".media-meta").textContent = [item.sender, item.time].filter(Boolean).join(" · ");
+    row.querySelector('[data-action="jump"]').addEventListener("click", () => focusMediaMessage(item));
+    if (item.url) {
+      const open = document.createElement("a");
+      open.href = item.url;
+      open.target = "_blank";
+      open.rel = "noopener";
+      open.textContent = "Open";
+      row.querySelector(".media-actions").append(open);
+    }
+    el.threadMedia.append(row);
+  }
+}
+
 function renderMessages() {
   const query = el.messageFilter.value.trim().toLowerCase();
   renderMessageViewFilters();
@@ -1125,6 +1267,7 @@ function syncSelectedConversation(fields) {
   renderThreadControls();
   renderManagementFields();
   renderThreadPeople();
+  renderThreadMedia();
   buildCodexPrompt();
 }
 
@@ -1242,6 +1385,7 @@ async function selectConversation(conversation) {
   renderThreadControls();
   renderManagementFields();
   renderThreadPeople();
+  renderThreadMedia();
   renderConversations();
   renderMessages();
   await loadMessages();
@@ -1253,6 +1397,7 @@ async function loadMessages() {
     const payload = await api(`/penguin-connect/conversations/${encodeURIComponent(state.selected.conversation_id)}/messages?limit=200`);
     state.messages = payload.messages || [];
     renderMessages();
+    renderThreadMedia();
     buildCodexPrompt();
     requestAnimationFrame(() => {
       const focused = el.messageList.querySelector(".message.focused");
@@ -1344,6 +1489,7 @@ async function setReadState(unread) {
     });
     state.messages = state.messages.map((message) => ({ ...message, is_read: !unread }));
     renderMessages();
+    renderThreadMedia();
   } catch (error) {
     el.threadStatus.textContent = error.message;
   } finally {
@@ -1766,6 +1912,14 @@ el.messageViewFilters.addEventListener("click", (event) => {
     : "all";
   renderMessages();
 });
+el.mediaFilters.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-media-view]");
+  if (!button) return;
+  state.mediaView = mediaViews.some((view) => view.key === button.dataset.mediaView)
+    ? button.dataset.mediaView
+    : "all";
+  renderThreadMedia();
+});
 el.draftRecipients.addEventListener("input", () => renderDraftRecipientChips());
 el.draftRecipients.addEventListener("blur", (event) => {
   if (event.relatedTarget && el.draftRecipientChips.contains(event.relatedTarget)) return;
@@ -1877,6 +2031,7 @@ renderDraftRecipientChips();
 renderMessageSearchResults();
 renderThreadControls();
 renderThreadPeople();
+renderThreadMedia();
 renderCodexModes();
 loadStatus();
 loadConversations();
