@@ -2,6 +2,7 @@ const state = {
   conversations: [],
   selected: null,
   messages: [],
+  messagesLoading: false,
   replyContext: null,
   senderEmail: "",
   attachments: [],
@@ -852,11 +853,17 @@ function renderConversations() {
 }
 
 function findConversationForContact(contact) {
+  return findConversationsForContact(contact, 1)[0] || null;
+}
+
+function findConversationsForContact(contact, limit = 4) {
   const needles = contactNeedles(contact);
-  return state.conversations.find((conversation) => {
+  const matches = state.conversations.filter((conversation) => {
     const haystack = conversationHaystack(conversation);
     return needles.some((needle) => haystack.includes(needle));
   });
+  matches.sort((a, b) => conversationSortValue(b) - conversationSortValue(a));
+  return limit ? matches.slice(0, limit) : matches;
 }
 
 function recipientCompareKey(value) {
@@ -980,15 +987,56 @@ function addContactToDraft(contact) {
 
 async function useContact(contact) {
   const searchValue = contact.primary_handle || contact.phone_normalized || contactDisplayName(contact);
-  el.conversationSearch.value = searchValue;
   state.focusMessageId = "";
-  renderConversations();
   const match = findConversationForContact(contact);
   if (match) {
-    el.contactStatus.textContent = `Matched ${match.display_name || "conversation"}`;
-    await selectConversation(match);
+    await openContactConversation(contact, match);
   } else {
+    el.conversationSearch.value = searchValue;
+    state.conversationView = "all";
+    state.conversationLabel = "";
+    renderConversations();
     el.contactStatus.textContent = "No matching synced conversation";
+  }
+}
+
+async function openContactConversation(contact, conversation) {
+  state.focusMessageId = "";
+  state.conversationView = "all";
+  state.conversationLabel = "";
+  el.conversationSearch.value = "";
+  renderConversations();
+  el.contactStatus.textContent = `Opening ${conversationDisplayName(conversation)}`;
+  await selectConversation(conversation);
+  el.contactStatus.textContent = `Opened ${conversationDisplayName(conversation)}`;
+  buildCodexPrompt();
+}
+
+function renderContactRelatedThreads(container, contact) {
+  container.replaceChildren();
+  const matches = findConversationsForContact(contact, 4);
+  if (!matches.length) {
+    container.hidden = true;
+    return;
+  }
+
+  container.hidden = false;
+  const label = document.createElement("span");
+  label.className = "contact-related-label";
+  label.textContent = matches.length === 1 ? "Thread" : "Threads";
+  container.append(label);
+
+  for (const conversation of matches) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "contact-thread-link";
+    button.textContent = conversationDisplayName(conversation);
+    button.title = `Open ${conversationDisplayName(conversation)}`;
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openContactConversation(contact, conversation);
+    });
+    container.append(button);
   }
 }
 
@@ -1115,6 +1163,7 @@ function renderContacts() {
         <button class="contact-add" type="button" title="Add to new chat" aria-label="Add contact to new chat">+</button>
         <button class="contact-create-result" type="button" title="Create contact" aria-label="Create contact from search result">Create</button>
       </span>
+      <div class="contact-related" hidden></div>
     `;
     item.querySelector(".contact-name").textContent = contactDisplayName(contact);
     item.querySelector(".contact-handle").textContent = contactHandleText(contact);
@@ -1129,6 +1178,7 @@ function renderContacts() {
     createButton.hidden = contact.is_saved !== false;
     createButton.disabled = !contactRecipientHandle(contact);
     createButton.addEventListener("click", () => fillContactFormFromContact(contact));
+    renderContactRelatedThreads(item.querySelector(".contact-related"), contact);
     el.contactList.append(item);
   }
 }
@@ -1356,7 +1406,9 @@ function renderMessages() {
   if (!rows.length) {
     const empty = document.createElement("div");
     empty.className = "empty-state";
-    empty.textContent = query || state.messageView !== "all" ? "No matching messages" : "No loaded messages";
+    empty.textContent = state.messagesLoading
+      ? "Loading messages"
+      : (query || state.messageView !== "all" ? "No matching messages" : "No loaded messages");
     el.messageList.append(empty);
     return;
   }
@@ -1533,6 +1585,7 @@ async function loadConversations() {
     }
     el.senderBadge.textContent = state.senderEmail || "No sender";
     renderConversations();
+    renderContacts();
     if (!state.selected && state.conversations.length) {
       await selectConversation(state.conversations.find((conversation) => !conversation.is_archived) || state.conversations[0]);
     }
@@ -1638,6 +1691,7 @@ function scheduleMessageSearch() {
 async function selectConversation(conversation) {
   state.selected = conversation;
   state.messages = [];
+  state.messagesLoading = true;
   resetThreadContactMatches();
   clearReplyContext();
   el.composer.value = draftTextForConversation(conversation);
@@ -1658,9 +1712,12 @@ async function selectConversation(conversation) {
 
 async function loadMessages() {
   if (!state.selected) return;
+  state.messagesLoading = true;
+  renderMessages();
   try {
     const payload = await api(`/penguin-connect/conversations/${encodeURIComponent(state.selected.conversation_id)}/messages?limit=200`);
     state.messages = payload.messages || [];
+    state.messagesLoading = false;
     renderMessages();
     renderThreadMedia();
     buildCodexPrompt();
@@ -1673,6 +1730,7 @@ async function loadMessages() {
       }
     });
   } catch (error) {
+    state.messagesLoading = false;
     el.messageList.innerHTML = `<div class="error-state">${error.message}</div>`;
   }
 }

@@ -523,6 +523,52 @@ input[type="email"]:focus {
   padding-right: 8px;
 }
 
+.contact-related {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 0 8px 8px 10px;
+}
+
+.contact-related[hidden] {
+  display: none;
+}
+
+.contact-related-label,
+.contact-thread-link {
+  min-height: 22px;
+  border: 1px solid var(--line);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.contact-related-label {
+  display: inline-grid;
+  padding: 0 7px;
+  place-items: center;
+  background: var(--panel-alt);
+  color: var(--muted);
+}
+
+.contact-thread-link {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0 8px;
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.contact-thread-link:hover,
+.contact-thread-link:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .contact-add,
 .contact-create-result {
   display: inline-grid;
