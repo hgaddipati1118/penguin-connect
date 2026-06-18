@@ -417,6 +417,14 @@ function isAudioAttachment(attachment) {
   return /\.(aac|aif|aiff|caf|m4a|mp3|wav)$/i.test(name);
 }
 
+function isImageAttachment(attachment) {
+  if (!attachment || typeof attachment !== "object") return false;
+  const mime = String(attachment.mime_type || "").toLowerCase();
+  if (mime.startsWith("image/")) return true;
+  const name = basename(attachment.transfer_name || attachment.filename || attachment.path || "");
+  return /\.(avif|gif|heic|heif|jpe?g|png|webp)$/i.test(name);
+}
+
 function messageMatchesView(message, view = state.messageView) {
   if (view === "unread") return isUnreadMessage(message);
   if (view === "files") return attachmentRows(message).length > 0;
@@ -471,6 +479,26 @@ function renderAudioAttachment(attachment, url) {
   audio.setAttribute("aria-label", attachmentLabel(attachment));
 
   wrapper.append(link, audio);
+  return wrapper;
+}
+
+function renderImageAttachment(attachment, url) {
+  const wrapper = document.createElement("a");
+  wrapper.className = "image-attachment attachment-link";
+  wrapper.href = url;
+  wrapper.target = "_blank";
+  wrapper.rel = "noopener";
+  wrapper.title = "Open image attachment";
+
+  const image = document.createElement("img");
+  image.src = url;
+  image.alt = attachmentLabel(attachment);
+  image.loading = "lazy";
+
+  const caption = document.createElement("span");
+  caption.textContent = attachmentLabel(attachment);
+
+  wrapper.append(image, caption);
   return wrapper;
 }
 
@@ -1001,6 +1029,10 @@ function renderMessages() {
       const url = attachmentLocalPath(attachment) ? attachmentUrl(message, index) : "";
       if (url && isAudioAttachment(attachment)) {
         attachmentBox.append(renderAudioAttachment(attachment, url));
+        continue;
+      }
+      if (url && isImageAttachment(attachment)) {
+        attachmentBox.append(renderImageAttachment(attachment, url));
         continue;
       }
       const pill = document.createElement(url ? "a" : "span");

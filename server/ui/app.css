@@ -743,6 +743,39 @@ input[type="email"]:focus {
   max-width: 100%;
 }
 
+.image-attachment {
+  display: grid;
+  width: min(260px, 100%);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.image-attachment img {
+  display: block;
+  width: 100%;
+  max-height: 220px;
+  object-fit: cover;
+  background: var(--panel-alt);
+}
+
+.image-attachment span {
+  overflow: hidden;
+  padding: 5px 7px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.image-attachment:hover,
+.image-attachment:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .message-actions {
   display: flex;
   justify-content: flex-end;
