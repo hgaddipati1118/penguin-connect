@@ -229,6 +229,30 @@ h3 {
   white-space: nowrap;
 }
 
+.message-view-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 8px 18px 0;
+}
+
+.message-view-filters button {
+  min-height: 28px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+.message-view-filters button:hover,
+.message-view-filters button.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
 input[type="search"] {
   width: 100%;
   border: 0;

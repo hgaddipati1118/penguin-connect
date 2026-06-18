@@ -10,6 +10,7 @@ const state = {
   messageSearchResults: [],
   messageSearchTimer: null,
   focusMessageId: "",
+  messageView: "all",
   conversationView: "inbox",
   conversationLabel: "",
   selectedConversationIds: new Set(),
@@ -55,6 +56,7 @@ const el = {
   globalMessageSearch: document.querySelector("#globalMessageSearch"),
   messageSearchStatus: document.querySelector("#messageSearchStatus"),
   messageSearchResults: document.querySelector("#messageSearchResults"),
+  messageViewFilters: document.querySelector("#messageViewFilters"),
   messageFilter: document.querySelector("#messageFilter"),
   messageList: document.querySelector("#messageList"),
   senderBadge: document.querySelector("#senderBadge"),
@@ -94,6 +96,14 @@ const el = {
 };
 
 const emojiChoices = ["👍", "🙏", "🔥", "❤️", "😂", "👀", "✅", "🤔", "😭", "🚀"];
+
+const messageViews = [
+  { key: "all", label: "All" },
+  { key: "unread", label: "Unread" },
+  { key: "files", label: "Files" },
+  { key: "audio", label: "Audio" },
+  { key: "mine", label: "Mine" },
+];
 
 const codexModes = {
   reply: {
@@ -385,6 +395,10 @@ function isOwnMessage(message) {
   return message.sender_name === "Me" || message.direction === "manual_to_imessage" || message.direction === "email_to_imessage";
 }
 
+function isUnreadMessage(message) {
+  return message.is_read === false || message.is_read === 0;
+}
+
 function attachmentRows(message) {
   const metadata = message.metadata && typeof message.metadata === "object" ? message.metadata : {};
   if (Array.isArray(message.attachments)) return message.attachments;
@@ -393,6 +407,32 @@ function attachmentRows(message) {
     return [{ transfer_name: `${metadata.manual_attachment_count} sent attachment(s)`, mime_type: "" }];
   }
   return [];
+}
+
+function isAudioAttachment(attachment) {
+  if (!attachment || typeof attachment !== "object") return false;
+  const mime = String(attachment.mime_type || "").toLowerCase();
+  if (mime.startsWith("audio/")) return true;
+  const name = basename(attachment.transfer_name || attachment.filename || attachment.path || "");
+  return /\.(aac|aif|aiff|caf|m4a|mp3|wav)$/i.test(name);
+}
+
+function messageMatchesView(message, view = state.messageView) {
+  if (view === "unread") return isUnreadMessage(message);
+  if (view === "files") return attachmentRows(message).length > 0;
+  if (view === "audio") return attachmentRows(message).some(isAudioAttachment);
+  if (view === "mine") return isOwnMessage(message);
+  return true;
+}
+
+function messageViewCounts() {
+  return {
+    all: state.messages.length,
+    unread: state.messages.filter(isUnreadMessage).length,
+    files: state.messages.filter((message) => attachmentRows(message).length > 0).length,
+    audio: state.messages.filter((message) => attachmentRows(message).some(isAudioAttachment)).length,
+    mine: state.messages.filter(isOwnMessage).length,
+  };
 }
 
 function attachmentLocalPath(attachment) {
@@ -863,8 +903,24 @@ function renderMessageSearchResults() {
   }
 }
 
+function renderMessageViewFilters() {
+  const counts = messageViewCounts();
+  el.messageViewFilters.replaceChildren();
+  for (const view of messageViews) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.messageView = view.key;
+    button.textContent = `${view.label} ${counts[view.key] ?? 0}`;
+    const active = state.messageView === view.key;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+    el.messageViewFilters.append(button);
+  }
+}
+
 function renderMessages() {
   const query = el.messageFilter.value.trim().toLowerCase();
+  renderMessageViewFilters();
   const rows = [...state.messages].reverse().filter((message) => {
     const haystack = [
       message.sender_name,
@@ -872,7 +928,7 @@ function renderMessages() {
       message.body_text,
       JSON.stringify(attachmentRows(message)),
     ].join(" ").toLowerCase();
-    return !query || haystack.includes(query);
+    return messageMatchesView(message) && (!query || haystack.includes(query));
   });
 
   el.messageList.replaceChildren();
@@ -886,7 +942,7 @@ function renderMessages() {
   if (!rows.length) {
     const empty = document.createElement("div");
     empty.className = "empty-state";
-    empty.textContent = "No loaded messages";
+    empty.textContent = query || state.messageView !== "all" ? "No matching messages" : "No loaded messages";
     el.messageList.append(empty);
     return;
   }
@@ -894,7 +950,7 @@ function renderMessages() {
   for (const message of rows) {
     const item = document.createElement("article");
     const focused = state.focusMessageId && message.provider_message_id === state.focusMessageId;
-    const unread = message.is_read === false || message.is_read === 0;
+    const unread = isUnreadMessage(message);
     item.className = `message ${isOwnMessage(message) ? "mine" : ""} ${unread ? "unread" : ""} ${focused ? "focused" : ""}`;
     item.dataset.messageId = message.provider_message_id || "";
     const attachments = attachmentRows(message);
@@ -1644,6 +1700,14 @@ el.contactRefreshButton.addEventListener("click", async () => {
   }
 });
 el.messageFilter.addEventListener("input", renderMessages);
+el.messageViewFilters.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-message-view]");
+  if (!button) return;
+  state.messageView = messageViews.some((view) => view.key === button.dataset.messageView)
+    ? button.dataset.messageView
+    : "all";
+  renderMessages();
+});
 el.draftRecipients.addEventListener("input", () => renderDraftRecipientChips());
 el.draftRecipients.addEventListener("blur", (event) => {
   if (event.relatedTarget && el.draftRecipientChips.contains(event.relatedTarget)) return;
