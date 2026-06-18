@@ -214,6 +214,51 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(body["messages"][0]["provider_message_id"], "imsg-latest")
         self.assertEqual(body["messages"][0]["body_text"], "Latest message")
 
+    def test_message_search_endpoint_searches_cached_messages(self):
+        with TestClient(app_module.app) as client:
+            response = client.get("/penguin-connect/messages/search", params={"query": "latest", "limit": 10})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["messages"][0]["conversation_id"], "amc_test")
+        self.assertEqual(body["messages"][0]["display_name"], "Taylor")
+        self.assertEqual(body["messages"][0]["provider_message_id"], "imsg-latest")
+
+    def test_message_search_endpoint_searches_attachment_metadata(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction, sender_email, subject,
+                    body_text, message_timestamp, is_read, metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "amc_test",
+                    "imessage",
+                    "imsg-voice",
+                    "imessage_to_gmail",
+                    None,
+                    "[Apple Messages] Taylor",
+                    "",
+                    "2026-03-08T10:00:00+00:00",
+                    1,
+                    json.dumps({"attachments": [{"transfer_name": "voice-note.m4a", "mime_type": "audio/mp4"}]}),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with TestClient(app_module.app) as client:
+            response = client.get("/penguin-connect/messages/search", params={"query": "voice-note", "limit": 10})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["messages"][0]["provider_message_id"], "imsg-voice")
+        self.assertEqual(body["messages"][0]["attachments"][0]["transfer_name"], "voice-note.m4a")
+
     def test_contacts_endpoint_searches_cached_contacts(self):
         with TestClient(app_module.app) as client:
             response = client.get("/penguin-connect/contacts", params={"search": "taylor", "limit": 10})
@@ -247,11 +292,14 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(html_response.status_code, 200)
         self.assertIn("PenguinConnect Console", html_response.text)
         self.assertIn("contactSearch", html_response.text)
+        self.assertIn("globalMessageSearch", html_response.text)
         self.assertEqual(css_response.status_code, 200)
         self.assertIn(".contact-list", css_response.text)
+        self.assertIn(".search-result", css_response.text)
         self.assertEqual(js_response.status_code, 200)
         self.assertIn("buildCodexPrompt", js_response.text)
         self.assertIn("renderContacts", js_response.text)
+        self.assertIn("renderMessageSearchResults", js_response.text)
 
     def test_messages_endpoint_uses_header_display_name_for_own_gmail_messages(self):
         conn = self._get_connection()

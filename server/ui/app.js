@@ -6,6 +6,9 @@ const state = {
   attachments: [],
   contacts: [],
   contactSearchTimer: null,
+  messageSearchResults: [],
+  messageSearchTimer: null,
+  focusMessageId: "",
 };
 
 const el = {
@@ -21,6 +24,9 @@ const el = {
   threadTitle: document.querySelector("#threadTitle"),
   syncButton: document.querySelector("#syncButton"),
   copyThreadButton: document.querySelector("#copyThreadButton"),
+  globalMessageSearch: document.querySelector("#globalMessageSearch"),
+  messageSearchStatus: document.querySelector("#messageSearchStatus"),
+  messageSearchResults: document.querySelector("#messageSearchResults"),
   messageFilter: document.querySelector("#messageFilter"),
   messageList: document.querySelector("#messageList"),
   senderBadge: document.querySelector("#senderBadge"),
@@ -130,6 +136,13 @@ function attachmentRows(message) {
   return [];
 }
 
+function messageSnippet(message, length = 180) {
+  const text = trim(message.body_text || message.text || "", length);
+  const attachments = attachmentRows(message).map((attachment) => basename(attachment.transfer_name || attachment.filename || attachment.mime_type || "attachment"));
+  const suffix = attachments.length ? ` attachments: ${attachments.join(", ")}` : "";
+  return `${text}${suffix ? ` ·${suffix}` : ""}`.trim() || "(no text)";
+}
+
 function renderEmojiButtons() {
   el.emojiRow.replaceChildren();
   for (const emoji of emojiChoices) {
@@ -182,7 +195,10 @@ function renderConversations() {
       conversation.source_service_name || conversation.source_provider || "source",
       conversation.last_message_ts ? formatTime(conversation.last_message_ts) : conversation.status || "",
     ].filter(Boolean).join(" · ");
-    button.addEventListener("click", () => selectConversation(conversation));
+    button.addEventListener("click", () => {
+      state.focusMessageId = "";
+      selectConversation(conversation);
+    });
     el.conversationList.append(button);
   }
 }
@@ -198,6 +214,7 @@ function findConversationForContact(contact) {
 async function useContact(contact) {
   const searchValue = contact.primary_handle || contact.phone_normalized || contactDisplayName(contact);
   el.conversationSearch.value = searchValue;
+  state.focusMessageId = "";
   renderConversations();
   const match = findConversationForContact(contact);
   if (match) {
@@ -206,6 +223,24 @@ async function useContact(contact) {
   } else {
     el.contactStatus.textContent = "No matching synced conversation";
   }
+}
+
+function conversationFromSearchResult(result) {
+  return state.conversations.find((conversation) => conversation.conversation_id === result.conversation_id) || {
+    conversation_id: result.conversation_id,
+    display_name: result.display_name || "Conversation",
+    source_provider: result.source_provider || result.provider || "imessage",
+    source_service_name: result.source_service_name || "",
+    chat_type: result.chat_type || "chat",
+    participants: [],
+  };
+}
+
+async function useMessageSearchResult(result) {
+  state.focusMessageId = result.provider_message_id || "";
+  el.conversationSearch.value = "";
+  renderConversations();
+  await selectConversation(conversationFromSearchResult(result));
 }
 
 function renderContacts() {
@@ -234,6 +269,42 @@ function renderContacts() {
       : contact.handle_type || "contact";
     button.addEventListener("click", () => useContact(contact));
     el.contactList.append(button);
+  }
+}
+
+function renderMessageSearchResults() {
+  el.messageSearchResults.replaceChildren();
+  const query = el.globalMessageSearch.value.trim();
+  if (!query) {
+    el.messageSearchResults.hidden = true;
+    return;
+  }
+  el.messageSearchResults.hidden = false;
+  if (!state.messageSearchResults.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state compact-state";
+    empty.textContent = "No message matches";
+    el.messageSearchResults.append(empty);
+    return;
+  }
+
+  for (const result of state.messageSearchResults) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "search-result";
+    button.innerHTML = `
+      <span class="search-result-top"></span>
+      <span class="search-result-body"></span>
+    `;
+    const sender = result.sender_name || result.sender_email || result.direction || "unknown";
+    button.querySelector(".search-result-top").textContent = [
+      result.display_name || "Conversation",
+      sender,
+      formatTime(result.message_timestamp || result.timestamp),
+    ].filter(Boolean).join(" · ");
+    button.querySelector(".search-result-body").textContent = messageSnippet(result);
+    button.addEventListener("click", () => useMessageSearchResult(result));
+    el.messageSearchResults.append(button);
   }
 }
 
@@ -267,7 +338,9 @@ function renderMessages() {
 
   for (const message of rows) {
     const item = document.createElement("article");
-    item.className = `message ${isOwnMessage(message) ? "mine" : ""}`;
+    const focused = state.focusMessageId && message.provider_message_id === state.focusMessageId;
+    item.className = `message ${isOwnMessage(message) ? "mine" : ""} ${focused ? "focused" : ""}`;
+    item.dataset.messageId = message.provider_message_id || "";
     const attachments = attachmentRows(message);
     item.innerHTML = `
       <div class="message-head">
@@ -366,6 +439,33 @@ function scheduleContactSearch() {
   state.contactSearchTimer = setTimeout(() => loadContacts(), 180);
 }
 
+async function loadMessageSearch() {
+  const query = el.globalMessageSearch.value.trim();
+  if (query.length < 2) {
+    state.messageSearchResults = [];
+    el.messageSearchStatus.textContent = "Type 2+ chars to search local cache";
+    renderMessageSearchResults();
+    return;
+  }
+
+  el.messageSearchStatus.textContent = "Searching local cache";
+  try {
+    const payload = await api(`/penguin-connect/messages/search?query=${encodeURIComponent(query)}&limit=30`);
+    state.messageSearchResults = payload.messages || [];
+    el.messageSearchStatus.textContent = `${state.messageSearchResults.length} message match${state.messageSearchResults.length === 1 ? "" : "es"}`;
+    renderMessageSearchResults();
+  } catch (error) {
+    state.messageSearchResults = [];
+    el.messageSearchStatus.textContent = error.message;
+    renderMessageSearchResults();
+  }
+}
+
+function scheduleMessageSearch() {
+  clearTimeout(state.messageSearchTimer);
+  state.messageSearchTimer = setTimeout(() => loadMessageSearch(), 180);
+}
+
 async function selectConversation(conversation) {
   state.selected = conversation;
   state.messages = [];
@@ -384,7 +484,12 @@ async function loadMessages() {
     renderMessages();
     buildCodexPrompt();
     requestAnimationFrame(() => {
-      el.messageList.scrollTop = el.messageList.scrollHeight;
+      const focused = el.messageList.querySelector(".message.focused");
+      if (focused) {
+        focused.scrollIntoView({ block: "center" });
+      } else {
+        el.messageList.scrollTop = el.messageList.scrollHeight;
+      }
     });
   } catch (error) {
     el.messageList.innerHTML = `<div class="error-state">${error.message}</div>`;
@@ -499,6 +604,7 @@ el.refreshButton.addEventListener("click", () => {
 });
 el.conversationSearch.addEventListener("input", renderConversations);
 el.contactSearch.addEventListener("input", scheduleContactSearch);
+el.globalMessageSearch.addEventListener("input", scheduleMessageSearch);
 el.contactRefreshButton.addEventListener("click", async () => {
   el.contactRefreshButton.disabled = true;
   el.contactStatus.textContent = "Refreshing Contacts";
@@ -557,5 +663,6 @@ el.copyPromptButton.addEventListener("click", async () => {
 renderEmojiButtons();
 renderMessages();
 renderContacts();
+renderMessageSearchResults();
 loadStatus();
 loadConversations();

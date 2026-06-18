@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
 import os
 import re
 import shutil
@@ -242,6 +243,74 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int) -> di
     }
 
 
+def _message_metadata(raw_value: str | None) -> dict:
+    if not raw_value:
+        return {}
+    try:
+        parsed = json.loads(raw_value)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _search_messages(conn: sqlite3.Connection, query: str, *, limit: int) -> dict:
+    search = (query or "").strip()
+    if not search:
+        return {"query": "", "count": 0, "messages": []}
+
+    rows = conn.execute(
+        """
+        SELECT
+            c.conversation_id,
+            c.display_name,
+            c.source_provider,
+            c.source_service_name,
+            c.chat_type,
+            c.source_chat_identifier,
+            c.participants,
+            m.provider,
+            m.provider_message_id,
+            m.direction,
+            m.sender_email,
+            m.sender_name,
+            m.subject,
+            m.body_text,
+            m.message_timestamp,
+            m.metadata,
+            m.gmail_message_id,
+            m.gmail_thread_id
+        FROM penguin_connect_messages m
+        JOIN penguin_connect_conversations c
+          ON c.conversation_id = m.conversation_id
+        WHERE lower(
+            COALESCE(c.conversation_id, '') || ' ' ||
+            COALESCE(c.display_name, '') || ' ' ||
+            COALESCE(c.source_provider, '') || ' ' ||
+            COALESCE(c.source_chat_identifier, '') || ' ' ||
+            COALESCE(c.participants, '') || ' ' ||
+            COALESCE(m.sender_email, '') || ' ' ||
+            COALESCE(m.sender_name, '') || ' ' ||
+            COALESCE(m.subject, '') || ' ' ||
+            COALESCE(m.body_text, '') || ' ' ||
+            COALESCE(m.metadata, '')
+        ) LIKE ?
+        ORDER BY m.message_timestamp DESC, m.id DESC
+        LIMIT ?
+        """,
+        (f"%{search.lower()}%", max(1, min(limit, 100))),
+    ).fetchall()
+
+    messages = []
+    for row in rows:
+        metadata = _message_metadata(row["metadata"])
+        item = dict(row)
+        item["metadata"] = metadata
+        if isinstance(metadata.get("attachments"), list):
+            item["attachments"] = metadata["attachments"]
+        messages.append(item)
+    return {"query": search, "count": len(messages), "messages": messages}
+
+
 def _startup_catchup_retry_delay(result: dict, pause_seconds: float) -> float | None:
     if not result.get("success"):
         return None
@@ -462,6 +531,15 @@ def refresh_penguinconnect_contacts():
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error", "contacts_refresh_failed"))
     return result
+
+@app.get("/api/penguin-connect/messages/search")
+@app.get("/penguin-connect/messages/search")
+def search_penguinconnect_messages(query: str = "", limit: int = Query(25, ge=1, le=100)):
+    conn = get_connection()
+    try:
+        return _search_messages(conn, query, limit=limit)
+    finally:
+        conn.close()
 
 @app.post("/api/penguin-connect/gmail/connect")
 @app.post("/penguin-connect/gmail/connect")

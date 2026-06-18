@@ -47,10 +47,18 @@
             <button class="quiet-button" id="copyThreadButton" type="button">Copy thread</button>
           </div>
         </header>
-        <label class="message-filter">
-          <span>Find in thread</span>
-          <input id="messageFilter" type="search" placeholder="Filter loaded messages" autocomplete="off" />
-        </label>
+        <div class="message-tools">
+          <label class="message-search">
+            <span>Search all synced messages</span>
+            <input id="globalMessageSearch" type="search" placeholder="Text, sender, contact, attachment" autocomplete="off" />
+          </label>
+          <label class="message-filter">
+            <span>Find in thread</span>
+            <input id="messageFilter" type="search" placeholder="Filter loaded messages" autocomplete="off" />
+          </label>
+        </div>
+        <div class="message-search-status" id="messageSearchStatus">Type 2+ chars to search local cache</div>
+        <div class="message-search-results" id="messageSearchResults" aria-live="polite"></div>
         <div class="message-list" id="messageList" aria-live="polite"></div>
       </section>
 
