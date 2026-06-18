@@ -164,7 +164,7 @@ for local audio attachments, cached Contacts search/refresh,
 contact creation, contact-to-thread matching, saved-contact resolution for
 selected-thread participants, contact-to-new-chat recipient picking with
 removable recipient chips, selected-thread participant actions for contact
-search/new-chat/contact creation, local thread notes and tags,
+search/new-chat/contact creation, local thread titles, notes and tags,
 read/unread management, bridge disconnect/reconnect controls, persistent
 per-thread reply drafts, new chat draft staging, and a Codex prompt helper with
 reply, summary, follow-up, contact-cleanup, and custom-question modes that copy

@@ -1513,7 +1513,7 @@ class SyncIntegrationTests(unittest.TestCase):
         self.assertIn("gmail_rate_limit_streak", columns)
         self.assertEqual(row["gmail_rate_limit_streak"], 0)
 
-    def test_init_db_adds_note_and_labels_to_existing_management_table(self):
+    def test_init_db_adds_title_note_and_labels_to_existing_management_table(self):
         conn = db.get_connection()
         conn.close()
         if db.DB_PATH.exists():
@@ -1521,6 +1521,7 @@ class SyncIntegrationTests(unittest.TestCase):
 
         legacy_schema = (
             db.SCHEMA.replace("    note TEXT NOT NULL DEFAULT '',\n", "")
+            .replace("    title TEXT NOT NULL DEFAULT '',\n", "")
             .replace("    labels TEXT NOT NULL DEFAULT '[]',\n", "")
             .replace("    draft_text TEXT NOT NULL DEFAULT '',\n", "")
         )
@@ -1571,7 +1572,7 @@ class SyncIntegrationTests(unittest.TestCase):
                 ).fetchall()
             }
             row = migrated_conn.execute(
-                """SELECT c.conversation_id, m.is_pinned, m.is_archived, m.note, m.labels, m.draft_text
+                """SELECT c.conversation_id, m.is_pinned, m.is_archived, m.title, m.note, m.labels, m.draft_text
                    FROM penguin_connect_conversations c
                    JOIN penguin_connect_conversation_management m
                      ON m.conversation_id = c.conversation_id
@@ -1580,12 +1581,14 @@ class SyncIntegrationTests(unittest.TestCase):
         finally:
             migrated_conn.close()
 
+        self.assertIn("title", columns)
         self.assertIn("note", columns)
         self.assertIn("labels", columns)
         self.assertIn("draft_text", columns)
         self.assertIsNotNone(row)
         self.assertEqual(row["is_pinned"], 1)
         self.assertEqual(row["is_archived"], 0)
+        self.assertEqual(row["title"], "")
         self.assertEqual(row["note"], "")
         self.assertEqual(row["labels"], "[]")
         self.assertEqual(row["draft_text"], "")

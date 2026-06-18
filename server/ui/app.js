@@ -57,6 +57,7 @@ const el = {
   threadMediaState: document.querySelector("#threadMediaState"),
   mediaFilters: document.querySelector("#mediaFilters"),
   threadMedia: document.querySelector("#threadMedia"),
+  threadLocalTitle: document.querySelector("#threadLocalTitle"),
   threadTags: document.querySelector("#threadTags"),
   threadNote: document.querySelector("#threadNote"),
   saveManagementButton: document.querySelector("#saveManagementButton"),
@@ -323,6 +324,7 @@ async function loadThreadContactMatches(conversation = state.selected) {
 function conversationHaystack(conversation) {
   const raw = [
     conversation.conversation_id,
+    conversation.title,
     conversation.display_name,
     conversation.source_provider,
     conversation.source_chat_identifier,
@@ -335,6 +337,28 @@ function conversationHaystack(conversation) {
     ...(conversation.participants || []),
   ].join(" ").toLowerCase();
   return `${raw} ${digitsOnly(raw)}`;
+}
+
+function conversationDisplayName(conversation) {
+  return String(conversation?.title || conversation?.display_name || conversation?.conversation_id || "Conversation").trim() || "Conversation";
+}
+
+function sourceDisplayName(conversation) {
+  return String(conversation?.display_name || conversation?.conversation_id || "Conversation").trim() || "Conversation";
+}
+
+function renderThreadHeader() {
+  if (!state.selected) {
+    el.threadProvider.textContent = "No thread selected";
+    el.threadTitle.textContent = "Select a conversation";
+    return;
+  }
+  el.threadProvider.textContent = [
+    state.selected.source_provider,
+    state.selected.source_service_name,
+    state.selected.chat_type,
+  ].filter(Boolean).join(" · ");
+  el.threadTitle.textContent = conversationDisplayName(state.selected);
 }
 
 function labelsForConversation(conversation) {
@@ -741,7 +765,7 @@ function renderConversations() {
     });
 
     const mainButton = row.querySelector(".conversation-item");
-    mainButton.querySelector(".conversation-name").textContent = conversation.display_name || "Conversation";
+    mainButton.querySelector(".conversation-name").textContent = conversationDisplayName(conversation);
     const badges = mainButton.querySelector(".conversation-badges");
     if (conversation.unread_count) {
       const badge = document.createElement("span");
@@ -1332,6 +1356,7 @@ function renderThreadControls() {
   el.pinButton.disabled = !hasSelection;
   el.archiveButton.disabled = !hasSelection;
   el.saveManagementButton.disabled = !hasSelection;
+  el.threadLocalTitle.disabled = !hasSelection;
   el.threadTags.disabled = !hasSelection;
   el.threadNote.disabled = !hasSelection;
   el.markReadButton.disabled = !hasSelection;
@@ -1362,11 +1387,13 @@ function renderThreadControls() {
 
 function renderManagementFields() {
   if (!state.selected) {
+    el.threadLocalTitle.value = "";
     el.threadTags.value = "";
     el.threadNote.value = "";
     el.managementState.textContent = "No thread";
     return;
   }
+  el.threadLocalTitle.value = state.selected.title || "";
   el.threadTags.value = labelsForConversation(state.selected).join(", ");
   el.threadNote.value = state.selected.note || "";
   el.managementState.textContent = "Saved";
@@ -1381,6 +1408,7 @@ function syncSelectedConversation(fields) {
       : conversation
   ));
   renderConversations();
+  renderThreadHeader();
   renderThreadControls();
   renderManagementFields();
   renderThreadPeople();
@@ -1418,6 +1446,9 @@ async function loadConversations() {
     state.conversations = payload.conversations || [];
     if (state.selected) {
       state.selected = state.conversations.find((conversation) => conversation.conversation_id === state.selected.conversation_id) || state.selected;
+      renderThreadHeader();
+      renderThreadControls();
+      renderManagementFields();
     }
     el.senderBadge.textContent = state.senderEmail || "No sender";
     renderConversations();
@@ -1498,8 +1529,7 @@ async function selectConversation(conversation) {
   resetThreadContactMatches();
   clearReplyContext();
   el.composer.value = draftTextForConversation(conversation);
-  el.threadProvider.textContent = [conversation.source_provider, conversation.source_service_name, conversation.chat_type].filter(Boolean).join(" · ");
-  el.threadTitle.textContent = conversation.display_name || conversation.conversation_id;
+  renderThreadHeader();
   renderThreadControls();
   renderManagementFields();
   renderThreadPeople();
@@ -1639,6 +1669,7 @@ function conversationManagementUpdates(result, fields = {}) {
   const updates = {
     is_pinned: Boolean(result.is_pinned),
     is_archived: Boolean(result.is_archived),
+    title: result.title || "",
     note: result.note || "",
     labels: result.labels || [],
     management_updated_at: result.management_updated_at || "",
@@ -1792,6 +1823,7 @@ function scheduleDraftSave() {
 
 async function saveConversationManagement() {
   await setConversationManagement({
+    title: el.threadLocalTitle.value,
     note: el.threadNote.value,
     labels: splitValues(el.threadTags.value),
   });
@@ -1849,7 +1881,8 @@ function selectedConversationContext() {
       : `${participant.handle} (unknown contact)`;
   }).join(", ") || "unknown";
   return [
-    `Conversation: ${state.selected.display_name || state.selected.conversation_id}`,
+    `Conversation: ${conversationDisplayName(state.selected)}`,
+    `Source title: ${sourceDisplayName(state.selected)}`,
     `Provider: ${[state.selected.source_provider, state.selected.source_service_name, state.selected.chat_type].filter(Boolean).join(" · ") || "imessage"}`,
     `Participants: ${participants}`,
     `Unread count: ${Number(state.selected.unread_count || 0)}`,
@@ -2084,6 +2117,10 @@ el.sendButton.addEventListener("click", sendMessage);
 el.pinButton.addEventListener("click", () => setConversationManagement({ pinned: !Boolean(state.selected?.is_pinned) }));
 el.archiveButton.addEventListener("click", () => setConversationManagement({ archived: !Boolean(state.selected?.is_archived) }));
 el.saveManagementButton.addEventListener("click", saveConversationManagement);
+el.threadLocalTitle.addEventListener("input", () => {
+  el.managementState.textContent = state.selected ? "Unsaved" : "No thread";
+  buildCodexPrompt();
+});
 el.threadTags.addEventListener("input", () => {
   el.managementState.textContent = state.selected ? "Unsaved" : "No thread";
   buildCodexPrompt();

@@ -236,6 +236,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertTrue(conversation["has_unread"])
         self.assertFalse(conversation["is_pinned"])
         self.assertFalse(conversation["is_archived"])
+        self.assertEqual(conversation["title"], "")
         self.assertEqual(conversation["note"], "")
         self.assertEqual(conversation["labels"], [])
         self.assertEqual(conversation["draft_text"], "")
@@ -250,6 +251,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
                 "/penguin-connect/conversations/amc_test/management",
                 json={
                     "pinned": True,
+                    "title": "Local Taylor Thread",
                     "note": "Follow up after intro",
                     "labels": ["VIP", "#Hiring", "vip", " ".join(["long"] * 20)],
                     "draft_text": "Draft reply from local UI",
@@ -265,6 +267,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertTrue(pin_body["success"])
         self.assertTrue(pin_body["is_pinned"])
         self.assertFalse(pin_body["is_archived"])
+        self.assertEqual(pin_body["title"], "Local Taylor Thread")
         self.assertEqual(pin_body["note"], "Follow up after intro")
         self.assertEqual(pin_body["labels"], ["VIP", "Hiring", "long long long long long long lo"])
         self.assertEqual(pin_body["draft_text"], "Draft reply from local UI")
@@ -272,6 +275,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         pinned_conversation = pinned_list_response.json()["conversations"][0]
         self.assertTrue(pinned_conversation["is_pinned"])
         self.assertFalse(pinned_conversation["is_archived"])
+        self.assertEqual(pinned_conversation["title"], "Local Taylor Thread")
         self.assertEqual(pinned_conversation["note"], "Follow up after intro")
         self.assertEqual(pinned_conversation["labels"], ["VIP", "Hiring", "long long long long long long lo"])
         self.assertEqual(pinned_conversation["draft_text"], "Draft reply from local UI")
@@ -280,6 +284,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         archive_body = archive_response.json()
         self.assertFalse(archive_body["is_pinned"])
         self.assertTrue(archive_body["is_archived"])
+        self.assertEqual(archive_body["title"], "Local Taylor Thread")
         self.assertEqual(archive_body["note"], "Follow up after intro")
         self.assertEqual(archive_body["labels"], ["VIP", "Hiring", "long long long long long long lo"])
         self.assertEqual(archive_body["draft_text"], "Draft reply from local UI")
@@ -287,6 +292,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         archived_conversation = archived_list_response.json()["conversations"][0]
         self.assertFalse(archived_conversation["is_pinned"])
         self.assertTrue(archived_conversation["is_archived"])
+        self.assertEqual(archived_conversation["title"], "Local Taylor Thread")
         self.assertEqual(archived_conversation["note"], "Follow up after intro")
         self.assertEqual(archived_conversation["labels"], ["VIP", "Hiring", "long long long long long long lo"])
         self.assertEqual(archived_conversation["draft_text"], "Draft reply from local UI")
@@ -538,6 +544,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("bulkArchiveButton", html_response.text)
         self.assertIn("pinButton", html_response.text)
         self.assertIn("archiveButton", html_response.text)
+        self.assertIn("threadLocalTitle", html_response.text)
         self.assertIn("threadTags", html_response.text)
         self.assertIn("threadNote", html_response.text)
         self.assertIn("saveManagementButton", html_response.text)
@@ -587,6 +594,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("messageSearchContext", js_response.text)
         self.assertIn("contactContext", js_response.text)
         self.assertIn("renderCodexModes", js_response.text)
+        self.assertIn("conversationDisplayName", js_response.text)
+        self.assertIn("sourceDisplayName", js_response.text)
         self.assertIn("conversationParticipants", js_response.text)
         self.assertIn("loadThreadContactMatches", js_response.text)
         self.assertIn("contactMatchesHandle", js_response.text)
