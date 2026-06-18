@@ -159,8 +159,9 @@ unread/pinned/archived and label-based conversation views, bulk
 mark-read/archive actions, latest-message previews in the conversation rail,
 global synced-message search, opening synced attachment files, cached Contacts
 search/refresh, contact creation, contact-to-thread matching, contact-to-new-chat
-recipient picking with removable recipient chips, local thread notes and tags,
-read/unread management, bridge disconnect/reconnect controls, persistent
+recipient picking with removable recipient chips, selected-thread participant
+actions for contact search/new-chat/contact creation, local thread notes and
+tags, read/unread management, bridge disconnect/reconnect controls, persistent
 per-thread reply drafts, new chat draft staging, and a Codex prompt helper with
 reply, summary, follow-up, contact-cleanup, and custom-question modes that copy
 recent thread context, search results, contact results, local notes, tags, and

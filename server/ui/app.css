@@ -487,6 +487,69 @@ input[type="email"]:focus {
   font-size: 11px;
 }
 
+.thread-people {
+  display: grid;
+  gap: 6px;
+}
+
+.thread-person {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.thread-person-main {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.thread-person-handle,
+.thread-person-type {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-person-handle {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.thread-person-type {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.thread-person-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.thread-person-actions button {
+  min-height: 26px;
+  border: 1px solid var(--line);
+  background: var(--panel-alt);
+  color: var(--muted);
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+.thread-person-actions button:hover,
+.thread-person-actions button:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .thread {
   display: grid;
   grid-template-rows: auto auto auto auto auto auto minmax(0, 1fr);

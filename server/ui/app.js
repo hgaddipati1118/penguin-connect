@@ -46,6 +46,8 @@ const el = {
   connectionButton: document.querySelector("#connectionButton"),
   copyThreadButton: document.querySelector("#copyThreadButton"),
   threadStatus: document.querySelector("#threadStatus"),
+  threadPeopleState: document.querySelector("#threadPeopleState"),
+  threadPeople: document.querySelector("#threadPeople"),
   threadTags: document.querySelector("#threadTags"),
   threadNote: document.querySelector("#threadNote"),
   saveManagementButton: document.querySelector("#saveManagementButton"),
@@ -189,6 +191,35 @@ function contactNeedles(contact) {
   ].filter(Boolean);
   const digitValues = values.map(digitsOnly).filter((value) => value.length >= 7);
   return [...new Set([...values.map((value) => String(value).toLowerCase()), ...digitValues])];
+}
+
+function handleType(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (text.includes("@")) return "email";
+  if (digitsOnly(text).length >= 7) return "phone";
+  return "handle";
+}
+
+function conversationParticipants(conversation = state.selected) {
+  if (!conversation) return [];
+  const values = Array.isArray(conversation.participants) ? conversation.participants : [];
+  const sourceIdentifier = String(conversation.source_chat_identifier || "").trim();
+  const candidates = [...values];
+  if (sourceIdentifier && handleType(sourceIdentifier) !== "handle") {
+    candidates.push(sourceIdentifier);
+  }
+  const seen = new Set();
+  const participants = [];
+  for (const value of candidates) {
+    const handle = String(value || "").trim();
+    const type = handleType(handle);
+    const key = recipientCompareKey(handle);
+    if (!handle || !type || !key || seen.has(key)) continue;
+    seen.add(key);
+    participants.push({ handle, type });
+  }
+  return participants;
 }
 
 function conversationHaystack(conversation) {
@@ -649,6 +680,32 @@ function addDraftRecipient(value) {
   return true;
 }
 
+function fillContactFormFromHandle(value) {
+  const handle = String(value || "").trim();
+  if (!handle) return;
+  clearContactForm();
+  if (handleType(handle) === "email") {
+    el.newContactEmails.value = handle;
+  } else {
+    el.newContactPhones.value = handle;
+  }
+  el.createContactState.textContent = "Prefilled from thread";
+  el.newContactFirst.focus();
+}
+
+function searchContactHandle(value) {
+  const handle = String(value || "").trim();
+  if (!handle) return;
+  el.contactSearch.value = handle;
+  el.contactStatus.textContent = "Searching thread handle";
+  loadContacts({ force: true });
+}
+
+function addParticipantToDraft(value) {
+  const added = addDraftRecipient(value);
+  el.threadPeopleState.textContent = added ? "Added to new chat" : "Already in new chat";
+}
+
 function addContactToDraft(contact) {
   const handle = contactRecipientHandle(contact);
   if (!handle) {
@@ -671,6 +728,50 @@ async function useContact(contact) {
     await selectConversation(match);
   } else {
     el.contactStatus.textContent = "No matching synced conversation";
+  }
+}
+
+function renderThreadPeople() {
+  el.threadPeople.replaceChildren();
+  const participants = conversationParticipants();
+  el.threadPeopleState.textContent = state.selected
+    ? `${participants.length} participant${participants.length === 1 ? "" : "s"}`
+    : "No thread";
+  if (!state.selected) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state compact-state";
+    empty.textContent = "Select a conversation";
+    el.threadPeople.append(empty);
+    return;
+  }
+  if (!participants.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state compact-state";
+    empty.textContent = "No participant handles";
+    el.threadPeople.append(empty);
+    return;
+  }
+
+  for (const participant of participants) {
+    const item = document.createElement("div");
+    item.className = "thread-person";
+    item.innerHTML = `
+      <div class="thread-person-main">
+        <span class="thread-person-handle"></span>
+        <span class="thread-person-type"></span>
+      </div>
+      <div class="thread-person-actions">
+        <button type="button" data-action="search">Search</button>
+        <button type="button" data-action="draft">New chat</button>
+        <button type="button" data-action="contact">Create</button>
+      </div>
+    `;
+    item.querySelector(".thread-person-handle").textContent = participant.handle;
+    item.querySelector(".thread-person-type").textContent = participant.type;
+    item.querySelector('[data-action="search"]').addEventListener("click", () => searchContactHandle(participant.handle));
+    item.querySelector('[data-action="draft"]').addEventListener("click", () => addParticipantToDraft(participant.handle));
+    item.querySelector('[data-action="contact"]').addEventListener("click", () => fillContactFormFromHandle(participant.handle));
+    el.threadPeople.append(item);
   }
 }
 
@@ -909,6 +1010,7 @@ function syncSelectedConversation(fields) {
   renderConversations();
   renderThreadControls();
   renderManagementFields();
+  renderThreadPeople();
   buildCodexPrompt();
 }
 
@@ -1025,6 +1127,7 @@ async function selectConversation(conversation) {
   el.threadTitle.textContent = conversation.display_name || conversation.conversation_id;
   renderThreadControls();
   renderManagementFields();
+  renderThreadPeople();
   renderConversations();
   renderMessages();
   await loadMessages();
@@ -1651,6 +1754,7 @@ renderContacts();
 renderDraftRecipientChips();
 renderMessageSearchResults();
 renderThreadControls();
+renderThreadPeople();
 renderCodexModes();
 loadStatus();
 loadConversations();
