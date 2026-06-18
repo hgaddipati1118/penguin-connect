@@ -10,6 +10,7 @@ const state = {
   messageSearchTimer: null,
   focusMessageId: "",
   conversationView: "inbox",
+  conversationLabel: "",
   draftSaveTimer: null,
 };
 
@@ -18,6 +19,7 @@ const el = {
   refreshButton: document.querySelector("#refreshButton"),
   conversationSearch: document.querySelector("#conversationSearch"),
   conversationFilters: document.querySelector("#conversationFilters"),
+  labelFilters: document.querySelector("#labelFilters"),
   conversationList: document.querySelector("#conversationList"),
   contactRefreshButton: document.querySelector("#contactRefreshButton"),
   contactSearch: document.querySelector("#contactSearch"),
@@ -169,6 +171,10 @@ function labelsForConversation(conversation) {
   return Array.isArray(conversation?.labels) ? conversation.labels : [];
 }
 
+function labelKey(label) {
+  return String(label || "").trim().toLowerCase();
+}
+
 function draftTextForConversation(conversation) {
   return String(conversation?.draft_text || "");
 }
@@ -180,19 +186,42 @@ function conversationSortValue(conversation) {
 }
 
 function conversationMatchesView(conversation, view = state.conversationView) {
+  if (view === "unread") return Number(conversation.unread_count || 0) > 0 && !conversation.is_archived;
   if (view === "pinned") return Boolean(conversation.is_pinned) && !conversation.is_archived;
   if (view === "archived") return Boolean(conversation.is_archived);
   if (view === "all") return true;
   return !conversation.is_archived;
 }
 
+function conversationMatchesLabel(conversation, label = state.conversationLabel) {
+  const selected = labelKey(label);
+  if (!selected) return true;
+  return labelsForConversation(conversation).some((value) => labelKey(value) === selected);
+}
+
 function conversationViewCounts() {
   return {
     inbox: state.conversations.filter((conversation) => conversationMatchesView(conversation, "inbox")).length,
+    unread: state.conversations.filter((conversation) => conversationMatchesView(conversation, "unread")).length,
     pinned: state.conversations.filter((conversation) => conversationMatchesView(conversation, "pinned")).length,
     archived: state.conversations.filter((conversation) => conversationMatchesView(conversation, "archived")).length,
     all: state.conversations.length,
   };
+}
+
+function conversationLabelCounts() {
+  const counts = new Map();
+  for (const conversation of state.conversations) {
+    if (!conversationMatchesView(conversation)) continue;
+    for (const label of labelsForConversation(conversation)) {
+      const normalized = labelKey(label);
+      if (!normalized) continue;
+      const current = counts.get(normalized) || { label: String(label).trim(), count: 0 };
+      current.count += 1;
+      counts.set(normalized, current);
+    }
+  }
+  return [...counts.values()].sort((a, b) => a.label.localeCompare(b.label));
 }
 
 function renderConversationFilters() {
@@ -203,6 +232,36 @@ function renderConversationFilters() {
     button.textContent = `${label} ${counts[view] ?? 0}`;
     button.classList.toggle("active", view === state.conversationView);
     button.setAttribute("aria-pressed", view === state.conversationView ? "true" : "false");
+  }
+}
+
+function renderLabelFilters() {
+  const labelCounts = conversationLabelCounts();
+  const activeLabel = labelKey(state.conversationLabel);
+  el.labelFilters.replaceChildren();
+  if (!labelCounts.length && !activeLabel) return;
+
+  const clearButton = document.createElement("button");
+  clearButton.type = "button";
+  clearButton.dataset.label = "";
+  clearButton.textContent = "All labels";
+  clearButton.className = activeLabel ? "" : "active";
+  clearButton.setAttribute("aria-pressed", activeLabel ? "false" : "true");
+  el.labelFilters.append(clearButton);
+
+  const labels = activeLabel && !labelCounts.some((item) => labelKey(item.label) === activeLabel)
+    ? [{ label: state.conversationLabel, count: 0 }, ...labelCounts]
+    : labelCounts;
+
+  for (const item of labels) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.label = item.label;
+    button.textContent = `#${item.label} ${item.count}`;
+    const isActive = labelKey(item.label) === activeLabel;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-pressed", isActive ? "true" : "false");
+    el.labelFilters.append(button);
   }
 }
 
@@ -270,6 +329,7 @@ function renderConversations() {
   const digitQuery = digitsOnly(query);
   const rows = state.conversations.filter((conversation) => {
     if (!conversationMatchesView(conversation)) return false;
+    if (!conversationMatchesLabel(conversation)) return false;
     const haystack = conversationHaystack(conversation);
     return !query || haystack.includes(query) || (digitQuery.length >= 3 && haystack.includes(digitQuery));
   }).sort((a, b) => {
@@ -279,6 +339,7 @@ function renderConversations() {
   });
 
   renderConversationFilters();
+  renderLabelFilters();
   el.conversationList.replaceChildren();
   if (!rows.length) {
     const empty = document.createElement("div");
@@ -1243,6 +1304,12 @@ el.conversationFilters.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-view]");
   if (!button) return;
   state.conversationView = button.dataset.view || "inbox";
+  renderConversations();
+});
+el.labelFilters.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-label]");
+  if (!button) return;
+  state.conversationLabel = button.dataset.label || "";
   renderConversations();
 });
 
