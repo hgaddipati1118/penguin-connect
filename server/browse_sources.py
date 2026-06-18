@@ -353,6 +353,116 @@ def browse_imessage_chats(search=None, limit=100):
         conn.close()
 
 
+def search_imessage_messages(query, limit=50):
+    needle = (query or "").strip().lower()
+    if not needle:
+        return {"available": True, "messages": []}
+    if not os.path.exists(IMESSAGE_DB):
+        return {"available": False, "reason": "chat.db not found"}
+
+    conn = sqlite3.connect(f"file:{IMESSAGE_DB}?mode=ro", uri=True)
+    try:
+        cur = conn.cursor()
+        room_name_expr = _chat_room_name_expr(conn)
+        like = f"%{needle}%"
+        safe_limit = max(1, min(int(limit or 50), 1000))
+        cur.execute(
+            f"""
+            SELECT DISTINCT
+                m.ROWID,
+                m.text,
+                m.date,
+                m.is_from_me,
+                m.service,
+                h.id as handle_id,
+                m.attributedBody,
+                c.guid,
+                c.chat_identifier,
+                c.display_name,
+                {room_name_expr},
+                c.service_name
+            FROM message m
+            JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+            JOIN chat c ON c.ROWID = cmj.chat_id
+            LEFT JOIN handle h ON m.handle_id = h.ROWID
+            WHERE c.guid IS NOT NULL
+              AND c.service_name IN ('iMessage', 'SMS', 'RCS')
+              AND (
+                   lower(COALESCE(m.text, '')) LIKE ?
+                OR lower(COALESCE(h.id, '')) LIKE ?
+                OR lower(COALESCE(c.chat_identifier, '')) LIKE ?
+                OR lower(COALESCE(c.display_name, '')) LIKE ?
+                OR lower(COALESCE({room_name_expr}, '')) LIKE ?
+              )
+            ORDER BY m.date DESC, m.ROWID DESC
+            LIMIT ?
+            """,
+            (like, like, like, like, like, safe_limit),
+        )
+
+        messages = []
+        for row in cur.fetchall():
+            (
+                msg_rowid,
+                text,
+                date,
+                is_from_me,
+                service,
+                handle_id,
+                attributed_body,
+                chat_guid,
+                chat_identifier,
+                display_name,
+                room_name,
+                chat_service,
+            ) = row
+            if not text and attributed_body:
+                text = _extract_text_from_attributed_body(attributed_body)
+
+            cur.execute(
+                """
+                SELECT a.filename, a.mime_type, a.total_bytes, a.transfer_name
+                FROM attachment a
+                JOIN message_attachment_join maj ON maj.attachment_id = a.ROWID
+                WHERE maj.message_id = ?
+                """,
+                (msg_rowid,),
+            )
+            attachments = []
+            for a_row in cur.fetchall():
+                fname, mime, size, transfer_name = a_row
+                if fname and _is_supported_attachment(fname, mime, transfer_name):
+                    attachments.append(
+                        {
+                            "filename": fname,
+                            "mime_type": mime or "",
+                            "size": size or 0,
+                            "transfer_name": transfer_name or "",
+                        }
+                    )
+
+            messages.append(
+                {
+                    "chat_id": chat_guid,
+                    "chat_identifier": chat_identifier or "",
+                    "chat_name": _preferred_source_chat_title(display_name, room_name, chat_identifier, chat_guid),
+                    "source_provider": _service_to_provider(chat_service),
+                    "service": service or chat_service or "iMessage",
+                    "native_message_id": str(msg_rowid),
+                    "timestamp": _apple_ts_to_iso(date),
+                    "is_from_me": bool(is_from_me),
+                    "handle": handle_id or "",
+                    "text": text or "",
+                    "attachments": attachments if attachments else None,
+                }
+            )
+        return {"available": True, "messages": messages}
+    except Exception as exc:
+        return {"available": False, "reason": str(exc)}
+    finally:
+        conn.close()
+
+
 def list_recent_imessage_chat_activity(since, limit=500):
     if not os.path.exists(IMESSAGE_DB):
         return {"available": False, "reason": "chat.db not found"}

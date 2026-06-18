@@ -6803,6 +6803,72 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(rows[0]["attachments"][0]["transfer_name"], "Audio Message.caf")
         self.assertEqual(rows[0]["attachments"][0]["mime_type"], "")
 
+    def test_search_imessage_messages_finds_text_and_attachment_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "chat.db")
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                CREATE TABLE chat (
+                    ROWID INTEGER PRIMARY KEY,
+                    guid TEXT,
+                    chat_identifier TEXT,
+                    display_name TEXT,
+                    service_name TEXT,
+                    is_archived INTEGER DEFAULT 0
+                );
+                CREATE TABLE message (
+                    ROWID INTEGER PRIMARY KEY,
+                    text TEXT,
+                    date INTEGER,
+                    is_from_me INTEGER,
+                    service TEXT,
+                    handle_id INTEGER,
+                    attributedBody BLOB
+                );
+                CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
+                CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+                CREATE TABLE message_attachment_join (message_id INTEGER, attachment_id INTEGER);
+                CREATE TABLE attachment (
+                    ROWID INTEGER PRIMARY KEY,
+                    filename TEXT,
+                    mime_type TEXT,
+                    total_bytes INTEGER,
+                    transfer_name TEXT
+                );
+                """
+            )
+            conn.execute(
+                "INSERT INTO chat(ROWID, guid, chat_identifier, display_name, service_name) VALUES (1, ?, ?, ?, 'iMessage')",
+                ("iMessage;-;chat-search", "chat-search", "Search Chat"),
+            )
+            conn.execute("INSERT INTO handle(ROWID, id) VALUES (1, '+14155550101')")
+            conn.execute(
+                "INSERT INTO message(ROWID, text, date, is_from_me, service, handle_id, attributedBody) VALUES (1, ?, 2000, 0, 'iMessage', 1, NULL)",
+                ("Dinner plan with voice memo",),
+            )
+            conn.execute("INSERT INTO chat_message_join(chat_id, message_id) VALUES (1, 1)")
+            conn.execute(
+                "INSERT INTO attachment(ROWID, filename, mime_type, total_bytes, transfer_name) VALUES (1, ?, 'audio/mp4', 12, ?)",
+                (os.path.join(tmp, "voice-note.m4a"), "voice-note.m4a"),
+            )
+            conn.execute("INSERT INTO message_attachment_join(message_id, attachment_id) VALUES (1, 1)")
+            conn.commit()
+            conn.close()
+
+            old_path = browse_sources.IMESSAGE_DB
+            browse_sources.IMESSAGE_DB = db_path
+            try:
+                result = browse_sources.search_imessage_messages("dinner", limit=10)
+            finally:
+                browse_sources.IMESSAGE_DB = old_path
+
+        self.assertTrue(result["available"])
+        self.assertEqual(len(result["messages"]), 1)
+        self.assertEqual(result["messages"][0]["chat_id"], "iMessage;-;chat-search")
+        self.assertEqual(result["messages"][0]["chat_name"], "Search Chat")
+        self.assertEqual(result["messages"][0]["attachments"][0]["transfer_name"], "voice-note.m4a")
+
     def test_list_recent_imessage_chat_activity_orders_oldest_first(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = os.path.join(tmp, "chat.db")

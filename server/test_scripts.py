@@ -377,6 +377,87 @@ class ScriptTests(unittest.TestCase):
 
         self.assertIn("audio:Audio Message.caf", summary)
 
+    def test_tool_search_bridge_messages_matches_body_and_attachment_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cache.db"
+            conn = sqlite3.connect(str(db_path))
+            conn.executescript(
+                """
+                CREATE TABLE penguin_connect_conversations (
+                    conversation_id TEXT PRIMARY KEY,
+                    display_name TEXT,
+                    source_provider TEXT,
+                    source_service_name TEXT,
+                    source_chat_identifier TEXT,
+                    participants TEXT
+                );
+                CREATE TABLE penguin_connect_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id TEXT,
+                    provider TEXT,
+                    provider_message_id TEXT,
+                    direction TEXT,
+                    sender_email TEXT,
+                    sender_name TEXT,
+                    subject TEXT,
+                    body_text TEXT,
+                    message_timestamp TEXT,
+                    metadata TEXT,
+                    gmail_message_id TEXT,
+                    gmail_thread_id TEXT
+                );
+                """
+            )
+            conn.execute(
+                """INSERT INTO penguin_connect_conversations
+                   (conversation_id, display_name, source_provider, source_service_name, source_chat_identifier, participants)
+                   VALUES ('amc_test', 'Weekend Plans', 'imessage', 'iMessage', 'chat-123', '["ava@example.com"]')"""
+            )
+            conn.execute(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction, sender_name, subject,
+                    body_text, message_timestamp, metadata)
+                   VALUES (?, 'imessage', 'imsg-1', 'imessage_to_gmail', ?, ?, ?, ?, ?)""",
+                (
+                    "amc_test",
+                    "Ava",
+                    "Weekend Plans",
+                    "Voice memo from dinner",
+                    "2026-03-10T10:00:00+00:00",
+                    '{"attachments":[{"transfer_name":"voice-note.m4a","mime_type":"audio/mp4"}]}',
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+            original_cache_db = penguin_connect_tool.CACHE_DB
+            penguin_connect_tool.CACHE_DB = db_path
+            try:
+                body_rows = penguin_connect_tool._search_bridge_messages("dinner", limit=5)
+                attachment_rows = penguin_connect_tool._search_bridge_messages("voice-note", limit=5)
+            finally:
+                penguin_connect_tool.CACHE_DB = original_cache_db
+
+        self.assertEqual(len(body_rows), 1)
+        self.assertEqual(body_rows[0]["conversation_id"], "amc_test")
+        self.assertEqual(len(attachment_rows), 1)
+        self.assertEqual(attachment_rows[0]["attachments"][0]["transfer_name"], "voice-note.m4a")
+
+    def test_tool_formats_message_search_row(self):
+        row = {
+            "conversation_id": "amc_test",
+            "display_name": "Weekend Plans",
+            "sender_name": "Ava",
+            "body_text": "Voice memo from dinner",
+            "message_timestamp": "2026-03-10T10:00:00+00:00",
+        }
+
+        formatted = penguin_connect_tool._format_search_message_row(row)
+
+        self.assertIn("amc_test", formatted)
+        self.assertIn("Weekend Plans", formatted)
+        self.assertIn("Voice memo", formatted)
+
 
 if __name__ == "__main__":
     unittest.main()

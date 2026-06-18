@@ -133,6 +133,18 @@ def _format_source_chat(chat: dict[str, Any]) -> str:
     )
 
 
+def _format_search_message_row(row: dict[str, Any]) -> str:
+    conversation_id = row.get("conversation_id") or row.get("chat_id") or "unknown"
+    name = row.get("display_name") or row.get("chat_name") or "Conversation"
+    sender = row.get("sender_name") or row.get("handle") or row.get("direction") or "unknown"
+    ts = row.get("message_timestamp") or row.get("timestamp") or "n/a"
+    body = _trim(row.get("body_text") or row.get("text") or "", 180)
+    attachment_summary = _format_message_attachment_summary(row)
+    if attachment_summary:
+        body = f"{body} {attachment_summary}".strip()
+    return f"{ts} | {conversation_id} | {_trim(name, 32)} | {_trim(sender, 24)} | {body}"
+
+
 def command_status(args: argparse.Namespace) -> int:
     payload = _api_json("GET", "/penguin-connect/health", api_base=args.api_base, timeout=args.timeout)
     if args.json:
@@ -179,6 +191,100 @@ def command_search(args: argparse.Namespace) -> int:
             print(f"Apple Messages chats ({len(chats)}):")
             for chat in chats:
                 print(f"  {_format_source_chat(chat)}")
+    if args.json:
+        _print_json(output)
+    return 0
+
+
+def _search_bridge_messages(query: str, *, limit: int) -> list[dict[str, Any]]:
+    needle = _normalize_search(query)
+    if not needle or not CACHE_DB.exists():
+        return []
+    like = f"%{needle}%"
+    conn = sqlite3.connect(str(CACHE_DB))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                c.conversation_id,
+                c.display_name,
+                c.source_provider,
+                c.source_service_name,
+                m.provider,
+                m.provider_message_id,
+                m.direction,
+                m.sender_email,
+                m.sender_name,
+                m.body_text,
+                m.message_timestamp,
+                m.metadata,
+                m.gmail_message_id,
+                m.gmail_thread_id
+            FROM penguin_connect_messages m
+            JOIN penguin_connect_conversations c
+              ON c.conversation_id = m.conversation_id
+            WHERE lower(
+                COALESCE(c.conversation_id, '') || ' ' ||
+                COALESCE(c.display_name, '') || ' ' ||
+                COALESCE(c.source_provider, '') || ' ' ||
+                COALESCE(c.source_chat_identifier, '') || ' ' ||
+                COALESCE(c.participants, '') || ' ' ||
+                COALESCE(m.sender_email, '') || ' ' ||
+                COALESCE(m.sender_name, '') || ' ' ||
+                COALESCE(m.subject, '') || ' ' ||
+                COALESCE(m.body_text, '') || ' ' ||
+                COALESCE(m.metadata, '')
+            ) LIKE ?
+            ORDER BY m.message_timestamp DESC, m.id DESC
+            LIMIT ?
+            """,
+            (like, max(1, min(limit, 1000))),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["metadata"] = json.loads(item.get("metadata") or "{}")
+        except Exception:
+            item["metadata"] = {}
+        if isinstance(item["metadata"].get("attachments"), list):
+            item["attachments"] = item["metadata"]["attachments"]
+        out.append(item)
+    return out
+
+
+def command_message_search(args: argparse.Namespace) -> int:
+    query = (args.query or "").strip()
+    if not query:
+        raise ToolError("Message search requires a non-empty query.")
+    limit = max(1, min(args.limit, 1000))
+    output: dict[str, Any] = {}
+
+    if args.source in {"bridge", "both"}:
+        rows = _search_bridge_messages(query, limit=limit)
+        output["bridge_messages"] = rows
+        if not args.json:
+            print(f"Bridge messages ({len(rows)}):")
+            for row in rows:
+                print(f"  {_format_search_message_row(row)}")
+
+    if args.source in {"imessage", "both"}:
+        result = browse_sources.search_imessage_messages(query, limit=limit)
+        if not result.get("available"):
+            raise ToolError(result.get("reason") or "Unable to search Apple Messages")
+        rows = result.get("messages", [])
+        output["imessage_messages"] = rows
+        if not args.json:
+            if args.source == "both":
+                print("")
+            print(f"Apple Messages ({len(rows)}):")
+            for row in rows:
+                print(f"  {_format_search_message_row(row)}")
+
     if args.json:
         _print_json(output)
     return 0
@@ -478,6 +584,17 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--limit", type=int, default=25)
     search.add_argument("--json", action="store_true", help="Print raw JSON")
     search.set_defaults(func=command_search)
+
+    message_search = sub.add_parser(
+        "message-search",
+        aliases=["search-messages"],
+        help="Search message text in the local bridge cache and/or Apple Messages",
+    )
+    message_search.add_argument("query", help="Message text, sender, participant, or attachment metadata to search")
+    message_search.add_argument("--source", choices=["bridge", "imessage", "both"], default="bridge")
+    message_search.add_argument("--limit", type=int, default=25)
+    message_search.add_argument("--json", action="store_true", help="Print raw JSON")
+    message_search.set_defaults(func=command_message_search)
 
     messages = sub.add_parser("messages", help="Show cached messages for a bridge conversation")
     messages.add_argument("conversation_id")
