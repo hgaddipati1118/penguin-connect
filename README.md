@@ -138,6 +138,7 @@ Manage excluded Apple Messages chats:
 Local operator CLI for search, messages, sends, contacts, and group drafts:
 
 ```bash
+open http://127.0.0.1:9000/penguin-connect/ui
 ./scripts/penguin_connect_tool.py status
 ./scripts/penguin_connect_tool.py search "Taylor" --source both
 ./scripts/penguin_connect_tool.py message-search "dinner plan" --source both
@@ -152,13 +153,15 @@ Local operator CLI for search, messages, sends, contacts, and group drafts:
 
 The `send` command routes through an existing PenguinConnect conversation and
 keeps the normal route-safety checks. It can also attach local files, including
-audio voice memos. Use `message-search` to search synced message bodies in the
-local bridge cache, or pass `--source imessage`/`--source both` to search Apple
-Messages text directly. The `messages` command shows imported attachment
-summaries, including audio attachments from Apple Messages. The group command
-stages a new Messages draft instead of auto-sending, because Messages exposes
-reliable scripting for existing chats but not for creating a brand-new group
-chat by API.
+audio voice memos. The local UI supports replies, file/image attachments, emoji
+shortcuts, thread filtering, and a Codex prompt helper that copies recent thread
+context plus your draft for review. Use `message-search` to search synced
+message bodies in the local bridge cache, or pass `--source imessage`/`--source
+both` to search Apple Messages text directly. The `messages` command shows
+imported attachment summaries, including audio attachments from Apple Messages.
+The group command stages a new Messages draft instead of auto-sending, because
+Messages exposes reliable scripting for existing chats but not for creating a
+brand-new group chat by API.
 
 ## Safety Model
 

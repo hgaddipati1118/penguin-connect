@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PenguinConnect Console</title>
+    <link rel="stylesheet" href="/penguin-connect/ui/app.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="rail" aria-label="Conversations">
+        <header class="rail-head">
+          <div>
+            <p class="eyebrow">PenguinConnect</p>
+            <h1>Messages</h1>
+          </div>
+          <button class="icon-button" id="refreshButton" type="button" title="Refresh">↻</button>
+        </header>
+        <div class="status-line" id="statusLine">Checking bridge…</div>
+        <label class="search-box">
+          <span>⌕</span>
+          <input id="conversationSearch" type="search" placeholder="Search people, groups, aliases" autocomplete="off" />
+        </label>
+        <div class="conversation-list" id="conversationList" role="list"></div>
+      </aside>
+
+      <section class="thread" aria-label="Conversation">
+        <header class="thread-head">
+          <div>
+            <p class="eyebrow" id="threadProvider">No thread selected</p>
+            <h2 id="threadTitle">Select a conversation</h2>
+          </div>
+          <div class="thread-actions">
+            <button class="quiet-button" id="syncButton" type="button">Sync</button>
+            <button class="quiet-button" id="copyThreadButton" type="button">Copy thread</button>
+          </div>
+        </header>
+        <label class="message-filter">
+          <span>Find in thread</span>
+          <input id="messageFilter" type="search" placeholder="Filter loaded messages" autocomplete="off" />
+        </label>
+        <div class="message-list" id="messageList" aria-live="polite"></div>
+      </section>
+
+      <aside class="compose" aria-label="Reply tools">
+        <section class="tool-section">
+          <header class="section-head">
+            <h3>Reply</h3>
+            <span id="senderBadge">No sender</span>
+          </header>
+          <textarea id="composer" rows="8" placeholder="Write a reply"></textarea>
+          <div class="emoji-row" id="emojiRow" aria-label="Emoji shortcuts"></div>
+          <div class="attachment-drop" id="attachmentDrop">
+            <input id="fileInput" type="file" multiple />
+            <label for="fileInput">Attach files or images</label>
+          </div>
+          <div class="attachment-list" id="attachmentList"></div>
+          <div class="send-row">
+            <button class="primary-button" id="sendButton" type="button">Send</button>
+            <button class="quiet-button" id="clearButton" type="button">Clear</button>
+          </div>
+          <div class="send-state" id="sendState"></div>
+        </section>
+
+        <section class="tool-section">
+          <header class="section-head">
+            <h3>Codex</h3>
+            <span id="codexCount">0 msgs</span>
+          </header>
+          <textarea id="codexPrompt" rows="10" readonly></textarea>
+          <div class="send-row">
+            <button class="quiet-button" id="buildPromptButton" type="button">Build prompt</button>
+            <button class="quiet-button" id="copyPromptButton" type="button">Copy prompt</button>
+          </div>
+        </section>
+      </aside>
+    </main>
+    <script src="/penguin-connect/ui/app.js"></script>
+  </body>
+</html>

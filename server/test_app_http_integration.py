@@ -1,4 +1,5 @@
 import json
+import base64
 import sqlite3
 import tempfile
 import threading
@@ -188,6 +189,19 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(body["messages"][0]["provider_message_id"], "imsg-latest")
         self.assertEqual(body["messages"][0]["body_text"], "Latest message")
 
+    def test_ui_endpoint_serves_console_assets(self):
+        with TestClient(app_module.app) as client:
+            html_response = client.get("/penguin-connect/ui")
+            css_response = client.get("/penguin-connect/ui/app.css")
+            js_response = client.get("/penguin-connect/ui/app.js")
+
+        self.assertEqual(html_response.status_code, 200)
+        self.assertIn("PenguinConnect Console", html_response.text)
+        self.assertEqual(css_response.status_code, 200)
+        self.assertIn(".shell", css_response.text)
+        self.assertEqual(js_response.status_code, 200)
+        self.assertIn("buildCodexPrompt", js_response.text)
+
     def test_messages_endpoint_uses_header_display_name_for_own_gmail_messages(self):
         conn = self._get_connection()
         try:
@@ -347,6 +361,40 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertEqual(row["body_text"], "")
         self.assertEqual(json.loads(row["metadata"])["manual_attachment_count"], 1)
+
+    def test_send_endpoint_stages_browser_attachments(self):
+        captured_paths = []
+
+        def fake_send(_chat_id, _message, attachment_paths=None):
+            captured_paths.extend(attachment_paths or [])
+            self.assertEqual(Path(captured_paths[0]).read_bytes(), b"fake-image")
+            return True, None
+
+        encoded = base64.b64encode(b"fake-image").decode("ascii")
+        with mock.patch("app.refresh_contacts_now", return_value={"success": True}), mock.patch(
+            "penguin_connect.send_imessage",
+            side_effect=fake_send,
+        ), TestClient(app_module.app) as client:
+            response = client.post(
+                "/penguin-connect/conversations/amc_test/send",
+                json={
+                    "sender_email": "owner@gmail.com",
+                    "message": "see attached",
+                    "attachments": [
+                        {
+                            "filename": "photo.png",
+                            "mime_type": "image/png",
+                            "size": len(b"fake-image"),
+                            "data_base64": encoded,
+                        }
+                    ],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["success"])
+        self.assertEqual(len(captured_paths), 1)
+        self.assertFalse(Path(captured_paths[0]).exists())
 
 
 if __name__ == "__main__":

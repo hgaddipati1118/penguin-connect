@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import os
+import re
+import shutil
 import sqlite3
+import tempfile
 import threading
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 
 from action_log import action_log_path, log_action
@@ -40,6 +47,10 @@ def _startup_catchup_batch_pause_seconds() -> float:
         value = 5.0
     return max(1.0, min(value, 60.0))
 
+UI_DIR = Path(__file__).resolve().parent / "ui"
+DEFAULT_UI_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
+DEFAULT_UI_ATTACHMENT_TOTAL_MAX_BYTES = 50 * 1024 * 1024
+
 class PenguinConnectGmailConnectRequest(BaseModel):
     gmail_email: str
     token_json: dict
@@ -50,10 +61,17 @@ class PenguinConnectSyncRequest(BaseModel):
     hours: int | None = None
     verify_all: bool = False
 
+class PenguinConnectBrowserAttachment(BaseModel):
+    filename: str
+    mime_type: str = ""
+    data_base64: str
+    size: int | None = None
+
 class PenguinConnectSendRequest(BaseModel):
     sender_email: str
     message: str = ""
     attachment_paths: list[str] | None = None
+    attachments: list[PenguinConnectBrowserAttachment] | None = None
 
 def _map_sqlite_error(exc: sqlite3.OperationalError) -> HTTPException:
     msg = str(exc).lower()
@@ -71,6 +89,88 @@ def _apply_runtime_sync_status(sync_status: dict) -> dict:
     runtime = penguinconnect_get_runtime_sync_status()
     sync_status.setdefault("penguin_connect", {}).update(runtime)
     return sync_status
+
+
+def _ui_attachment_max_bytes() -> int:
+    raw = (os.environ.get("PENGUIN_CONNECT_UI_ATTACHMENT_MAX_BYTES") or "").strip()
+    try:
+        value = int(raw) if raw else DEFAULT_UI_ATTACHMENT_MAX_BYTES
+    except Exception:
+        value = DEFAULT_UI_ATTACHMENT_MAX_BYTES
+    return max(1024, min(value, 100 * 1024 * 1024))
+
+
+def _ui_attachment_total_max_bytes() -> int:
+    raw = (os.environ.get("PENGUIN_CONNECT_UI_ATTACHMENT_TOTAL_MAX_BYTES") or "").strip()
+    try:
+        value = int(raw) if raw else DEFAULT_UI_ATTACHMENT_TOTAL_MAX_BYTES
+    except Exception:
+        value = DEFAULT_UI_ATTACHMENT_TOTAL_MAX_BYTES
+    return max(1024, min(value, 200 * 1024 * 1024))
+
+
+def _safe_ui_attachment_filename(filename: str, fallback_index: int) -> str:
+    candidate = Path((filename or "").strip()).name
+    if not candidate:
+        candidate = f"attachment-{fallback_index}"
+    safe = re.sub(r"[^A-Za-z0-9._ -]", "_", candidate).strip(" .")
+    return (safe or f"attachment-{fallback_index}")[:200]
+
+
+def _decode_ui_attachment_data(raw_value: str) -> bytes:
+    raw = (raw_value or "").strip()
+    if "," in raw and raw[:80].lower().startswith("data:"):
+        raw = raw.split(",", 1)[1]
+    raw = "".join(raw.split())
+    if not raw:
+        return b""
+    raw += "=" * (-len(raw) % 4)
+    try:
+        return base64.b64decode(raw.encode("utf-8"), validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="invalid_attachment_data") from exc
+
+
+def _stage_ui_attachments(attachments: list[PenguinConnectBrowserAttachment] | None) -> tuple[list[str], Path | None]:
+    if not attachments:
+        return [], None
+    max_bytes = _ui_attachment_max_bytes()
+    total_max_bytes = _ui_attachment_total_max_bytes()
+    total_bytes = 0
+    staged_dir = Path(tempfile.mkdtemp(prefix="penguinconnect-ui-attachments-"))
+    staged_paths: list[str] = []
+    try:
+        for idx, attachment in enumerate(attachments, 1):
+            data = _decode_ui_attachment_data(attachment.data_base64)
+            if not data:
+                raise HTTPException(status_code=400, detail="empty_attachment")
+            declared_size = int(attachment.size or len(data))
+            if len(data) > max_bytes or declared_size > max_bytes:
+                raise HTTPException(status_code=413, detail="attachment_too_large")
+            total_bytes += len(data)
+            if total_bytes > total_max_bytes:
+                raise HTTPException(status_code=413, detail="attachments_too_large")
+
+            filename = _safe_ui_attachment_filename(attachment.filename, idx)
+            out_path = staged_dir / filename
+            if out_path.exists():
+                out_path = staged_dir / f"{out_path.stem or 'attachment'}-{idx}{out_path.suffix}"
+            out_path.write_bytes(data)
+            staged_paths.append(str(out_path))
+    except Exception:
+        shutil.rmtree(staged_dir, ignore_errors=True)
+        raise
+    if not staged_paths:
+        shutil.rmtree(staged_dir, ignore_errors=True)
+        return [], None
+    return staged_paths, staged_dir
+
+
+def _ui_file_response(filename: str, media_type: str) -> Response:
+    path = UI_DIR / filename
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="ui_asset_not_found")
+    return Response(path.read_text(encoding="utf-8"), media_type=media_type)
 
 
 def _startup_catchup_retry_delay(result: dict, pause_seconds: float) -> float | None:
@@ -194,6 +294,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/api/penguin-connect/ui", response_class=HTMLResponse)
+@app.get("/penguin-connect/ui", response_class=HTMLResponse)
+def get_penguinconnect_ui():
+    return HTMLResponse((UI_DIR / "index.html").read_text(encoding="utf-8"))
+
+@app.get("/api/penguin-connect/ui/app.css")
+@app.get("/penguin-connect/ui/app.css")
+def get_penguinconnect_ui_css():
+    return _ui_file_response("app.css", "text/css; charset=utf-8")
+
+@app.get("/api/penguin-connect/ui/app.js")
+@app.get("/penguin-connect/ui/app.js")
+def get_penguinconnect_ui_js():
+    return _ui_file_response("app.js", "application/javascript; charset=utf-8")
+
 @app.get("/api/status")
 def get_status():
     conn = get_connection()
@@ -221,8 +336,6 @@ def get_status():
 
 @app.get("/api/penguin-connect/gmail/status")
 @app.get("/penguin-connect/gmail/status")
-@app.get("/api/penguin-connect/gmail/status")
-@app.get("/penguin-connect/gmail/status")
 def get_penguinconnect_gmail_status():
     conn = get_connection()
     try:
@@ -230,8 +343,6 @@ def get_penguinconnect_gmail_status():
     finally:
         conn.close()
 
-@app.get("/api/penguin-connect/health")
-@app.get("/penguin-connect/health")
 @app.get("/api/penguin-connect/health")
 @app.get("/penguin-connect/health")
 def get_penguinconnect_health():
@@ -268,8 +379,6 @@ def get_penguinconnect_health():
 
 @app.post("/api/penguin-connect/gmail/connect")
 @app.post("/penguin-connect/gmail/connect")
-@app.post("/api/penguin-connect/gmail/connect")
-@app.post("/penguin-connect/gmail/connect")
 def connect_penguinconnect_gmail(req: PenguinConnectGmailConnectRequest):
     conn = get_connection()
     try:
@@ -289,8 +398,6 @@ def connect_penguinconnect_gmail(req: PenguinConnectGmailConnectRequest):
 
 @app.get("/api/penguin-connect/conversations")
 @app.get("/penguin-connect/conversations")
-@app.get("/api/penguin-connect/conversations")
-@app.get("/penguin-connect/conversations")
 def get_penguinconnect_conversations():
     conn = get_connection()
     try:
@@ -302,8 +409,6 @@ def get_penguinconnect_conversations():
     finally:
         conn.close()
 
-@app.get("/api/penguin-connect/conversations/{conversation_id}/messages")
-@app.get("/penguin-connect/conversations/{conversation_id}/messages")
 @app.get("/api/penguin-connect/conversations/{conversation_id}/messages")
 @app.get("/penguin-connect/conversations/{conversation_id}/messages")
 def get_penguinconnect_conversation_messages(conversation_id: str, limit: int = Query(200, ge=1, le=1000)):
@@ -318,8 +423,6 @@ def get_penguinconnect_conversation_messages(conversation_id: str, limit: int = 
 
 @app.get("/api/penguin-connect/conversations/{conversation_id}/alias")
 @app.get("/penguin-connect/conversations/{conversation_id}/alias")
-@app.get("/api/penguin-connect/conversations/{conversation_id}/alias")
-@app.get("/penguin-connect/conversations/{conversation_id}/alias")
 def get_penguinconnect_conversation_alias(conversation_id: str):
     conn = get_connection()
     try:
@@ -330,8 +433,6 @@ def get_penguinconnect_conversation_alias(conversation_id: str):
     finally:
         conn.close()
 
-@app.post("/api/penguin-connect/conversations/sync")
-@app.post("/penguin-connect/conversations/sync")
 @app.post("/api/penguin-connect/conversations/sync")
 @app.post("/penguin-connect/conversations/sync")
 def sync_penguinconnect_conversations(req: PenguinConnectSyncRequest):
@@ -372,8 +473,6 @@ def sync_penguinconnect_conversations(req: PenguinConnectSyncRequest):
 
 @app.post("/api/penguin-connect/conversations/{conversation_id}/disconnect")
 @app.post("/penguin-connect/conversations/{conversation_id}/disconnect")
-@app.post("/api/penguin-connect/conversations/{conversation_id}/disconnect")
-@app.post("/penguin-connect/conversations/{conversation_id}/disconnect")
 def disconnect_penguinconnect_conversation(conversation_id: str):
     conn = get_connection()
     try:
@@ -391,8 +490,6 @@ def disconnect_penguinconnect_conversation(conversation_id: str):
     finally:
         conn.close()
 
-@app.post("/api/penguin-connect/conversations/{conversation_id}/reconnect")
-@app.post("/penguin-connect/conversations/{conversation_id}/reconnect")
 @app.post("/api/penguin-connect/conversations/{conversation_id}/reconnect")
 @app.post("/penguin-connect/conversations/{conversation_id}/reconnect")
 def reconnect_penguinconnect_conversation(conversation_id: str):
@@ -417,17 +514,20 @@ def reconnect_penguinconnect_conversation(conversation_id: str):
 
 @app.post("/api/penguin-connect/conversations/{conversation_id}/send")
 @app.post("/penguin-connect/conversations/{conversation_id}/send")
-@app.post("/api/penguin-connect/conversations/{conversation_id}/send")
-@app.post("/penguin-connect/conversations/{conversation_id}/send")
 def send_penguinconnect_conversation_message(conversation_id: str, req: PenguinConnectSendRequest):
+    ui_attachment_paths: list[str] = []
+    staged_dir: Path | None = None
     conn = get_connection()
     try:
+        ui_attachment_paths, staged_dir = _stage_ui_attachments(req.attachments)
+        attachment_paths = [str(path) for path in (req.attachment_paths or []) if str(path or "").strip()]
+        attachment_paths.extend(ui_attachment_paths)
         result = penguinconnect_send_manual_message(
             conn,
             conversation_id=conversation_id,
             sender_email=req.sender_email,
             body_text=req.message,
-            attachment_paths=req.attachment_paths,
+            attachment_paths=attachment_paths or None,
         )
         log_action(
             "api_manual_send_request",
@@ -435,6 +535,7 @@ def send_penguinconnect_conversation_message(conversation_id: str, req: PenguinC
             sender_email=req.sender_email,
             success=bool(result.get("success")),
             error=result.get("error"),
+            attachment_count=len(attachment_paths),
         )
         if not result.get("success"):
             if result.get("error") == "sender_not_connected_gmail":
@@ -443,6 +544,8 @@ def send_penguinconnect_conversation_message(conversation_id: str, req: PenguinC
         conn.commit()
         return result
     finally:
+        if staged_dir:
+            shutil.rmtree(staged_dir, ignore_errors=True)
         conn.close()
 
 if __name__ == "__main__":
