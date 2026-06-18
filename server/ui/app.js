@@ -35,6 +35,8 @@ const el = {
   bulkMarkReadButton: document.querySelector("#bulkMarkReadButton"),
   bulkArchiveButton: document.querySelector("#bulkArchiveButton"),
   clearSelectionButton: document.querySelector("#clearSelectionButton"),
+  bulkLabelsInput: document.querySelector("#bulkLabelsInput"),
+  bulkLabelButton: document.querySelector("#bulkLabelButton"),
   conversationList: document.querySelector("#conversationList"),
   contactRefreshButton: document.querySelector("#contactRefreshButton"),
   contactSearch: document.querySelector("#contactSearch"),
@@ -339,6 +341,34 @@ function labelsForConversation(conversation) {
   return Array.isArray(conversation?.labels) ? conversation.labels : [];
 }
 
+function cleanBulkLabels(value) {
+  const seen = new Set();
+  const labels = [];
+  for (const raw of splitValues(value)) {
+    const label = raw.replace(/^#+/, "").replace(/\s+/g, " ").trim().slice(0, 32);
+    const key = labelKey(label);
+    if (!label || seen.has(key)) continue;
+    seen.add(key);
+    labels.push(label);
+    if (labels.length >= 12) break;
+  }
+  return labels;
+}
+
+function mergeConversationLabels(conversation, additions) {
+  const seen = new Set();
+  const labels = [];
+  for (const label of [...labelsForConversation(conversation), ...(additions || [])]) {
+    const clean = String(label || "").replace(/^#+/, "").replace(/\s+/g, " ").trim().slice(0, 32);
+    const key = labelKey(clean);
+    if (!clean || seen.has(key)) continue;
+    seen.add(key);
+    labels.push(clean);
+    if (labels.length >= 12) break;
+  }
+  return labels;
+}
+
 function conversationPreviewText(conversation) {
   const preview = String(conversation?.last_message_preview || "").trim();
   if (!preview) return "";
@@ -470,10 +500,13 @@ function renderBulkActions(rows) {
   const selectedCount = selectedConversations().length;
   const visibleCount = rows.length;
   const allVisibleSelected = visibleCount > 0 && rows.every((conversation) => state.selectedConversationIds.has(conversation.conversation_id));
+  const labelCount = cleanBulkLabels(el.bulkLabelsInput.value).length;
   el.bulkState.textContent = state.bulkBusy ? "Updating selected" : (state.bulkMessage || `${selectedCount} selected`);
   el.selectVisibleButton.disabled = state.bulkBusy || !visibleCount || allVisibleSelected;
   el.bulkMarkReadButton.disabled = state.bulkBusy || selectedCount === 0;
   el.bulkArchiveButton.disabled = state.bulkBusy || selectedCount === 0;
+  el.bulkLabelButton.disabled = state.bulkBusy || selectedCount === 0 || labelCount === 0;
+  el.bulkLabelsInput.disabled = state.bulkBusy;
   el.clearSelectionButton.disabled = state.bulkBusy || selectedCount === 0;
 }
 
@@ -1686,6 +1719,37 @@ async function bulkArchiveSelected() {
   }
 }
 
+async function bulkApplyLabels() {
+  const targets = selectedConversationSnapshot();
+  const labels = cleanBulkLabels(el.bulkLabelsInput.value);
+  if (!targets.length || !labels.length) {
+    state.bulkMessage = targets.length ? "Add label text" : "Select conversations";
+    renderConversations();
+    return;
+  }
+
+  state.bulkBusy = true;
+  state.bulkMessage = "";
+  renderConversations();
+  try {
+    for (const conversation of targets) {
+      await updateConversationManagement(conversation.conversation_id, {
+        labels: mergeConversationLabels(conversation, labels),
+      });
+    }
+    state.selectedConversationIds.clear();
+    el.bulkLabelsInput.value = "";
+    state.bulkMessage = `Labeled ${targets.length}`;
+  } catch (error) {
+    state.bulkMessage = error.message;
+  } finally {
+    state.bulkBusy = false;
+    renderConversations();
+    renderManagementFields();
+    buildCodexPrompt();
+  }
+}
+
 async function saveLocalDraft(conversationId, draftText, { silent = false } = {}) {
   if (!conversationId) return;
   try {
@@ -2112,6 +2176,8 @@ el.clearSelectionButton.addEventListener("click", () => {
   state.bulkMessage = "";
   renderConversations();
 });
+el.bulkLabelsInput.addEventListener("input", renderConversations);
+el.bulkLabelButton.addEventListener("click", bulkApplyLabels);
 el.bulkMarkReadButton.addEventListener("click", bulkMarkSelectedRead);
 el.bulkArchiveButton.addEventListener("click", bulkArchiveSelected);
 

@@ -180,6 +180,20 @@ h3 {
   white-space: nowrap;
 }
 
+.bulk-label-row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px;
+}
+
+.bulk-label-input {
+  min-height: 26px;
+  padding: 0 7px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
 .bulk-actions button {
   min-height: 26px;
   border: 1px solid var(--line);
