@@ -370,6 +370,19 @@ input[type="email"]:focus {
   white-space: nowrap;
 }
 
+.conversation-preview {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-preview[hidden] {
+  display: none;
+}
+
 .contacts-panel {
   padding: 14px 18px 18px;
   border-top: 1px solid var(--line);

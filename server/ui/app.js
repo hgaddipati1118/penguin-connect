@@ -172,6 +172,8 @@ function conversationHaystack(conversation) {
     conversation.source_provider,
     conversation.source_chat_identifier,
     conversation.alias_email,
+    conversation.last_message_sender,
+    conversation.last_message_preview,
     conversation.note,
     conversation.draft_text,
     ...(conversation.labels || []),
@@ -182,6 +184,13 @@ function conversationHaystack(conversation) {
 
 function labelsForConversation(conversation) {
   return Array.isArray(conversation?.labels) ? conversation.labels : [];
+}
+
+function conversationPreviewText(conversation) {
+  const preview = String(conversation?.last_message_preview || "").trim();
+  if (!preview) return "";
+  const sender = String(conversation?.last_message_sender || "").trim();
+  return sender ? `${sender}: ${preview}` : preview;
 }
 
 function labelKey(label) {
@@ -447,6 +456,7 @@ function renderConversations() {
           <span class="conversation-badges"></span>
         </span>
         <span class="conversation-meta"></span>
+        <span class="conversation-preview"></span>
       </button>
     `;
     const selectButton = row.querySelector(".conversation-select");
@@ -520,6 +530,10 @@ function renderConversations() {
       conversation.source_service_name || conversation.source_provider || "source",
       conversation.last_message_ts ? formatTime(conversation.last_message_ts) : conversation.status || "",
     ].filter(Boolean).join(" · ");
+    const preview = mainButton.querySelector(".conversation-preview");
+    const previewText = conversationPreviewText(conversation);
+    preview.textContent = previewText;
+    preview.hidden = !previewText;
     mainButton.addEventListener("click", () => {
       state.focusMessageId = "";
       selectConversation(conversation);

@@ -541,6 +541,92 @@ def _attach_conversation_unread_counts(conn: sqlite3.Connection, result: dict) -
     return result
 
 
+def _preview_attachment_name(attachment: object) -> str:
+    if not isinstance(attachment, dict):
+        return "attachment"
+    for key in ("transfer_name", "filename", "mime_type"):
+        value = str(attachment.get(key) or "").strip()
+        if value:
+            return Path(value).name
+    return "attachment"
+
+
+def _conversation_preview_text(body_text: str | None, metadata: dict) -> tuple[str, bool]:
+    text = " ".join((body_text or "").split())
+    attachments = metadata.get("attachments") if isinstance(metadata.get("attachments"), list) else []
+    has_attachments = bool(attachments)
+    if text:
+        return text[:180], has_attachments
+    if has_attachments:
+        names = [_preview_attachment_name(attachment) for attachment in attachments[:2]]
+        suffix = f" +{len(attachments) - 2}" if len(attachments) > 2 else ""
+        return f"attachment: {', '.join(names)}{suffix}", True
+    if metadata.get("manual_attachment_count"):
+        return f"attachments: {metadata.get('manual_attachment_count')}", True
+    return "", False
+
+
+def _conversation_preview_sender(row: sqlite3.Row) -> str:
+    sender = (row["sender_name"] or row["sender_email"] or "").strip()
+    if sender:
+        return sender
+    return "Me" if row["direction"] in {"manual_to_imessage", "email_to_imessage"} else ""
+
+
+def _attach_conversation_previews(conn: sqlite3.Connection, result: dict) -> dict:
+    conversations = [conversation for conversation in result.get("conversations") or [] if isinstance(conversation, dict)]
+    ids = [conversation.get("conversation_id") for conversation in conversations if conversation.get("conversation_id")]
+    for conversation in conversations:
+        conversation["last_message_preview"] = ""
+        conversation["last_message_sender"] = ""
+        conversation["last_message_has_attachments"] = False
+    if not ids:
+        return result
+
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"""
+        SELECT *
+        FROM (
+            SELECT
+                conversation_id,
+                provider_message_id,
+                direction,
+                sender_email,
+                sender_name,
+                body_text,
+                message_timestamp,
+                metadata,
+                ROW_NUMBER() OVER (
+                    PARTITION BY conversation_id
+                    ORDER BY message_timestamp DESC, id DESC
+                ) as row_number
+            FROM penguin_connect_messages
+            WHERE conversation_id IN ({placeholders})
+        )
+        WHERE row_number = 1
+        """,
+        ids,
+    ).fetchall()
+    previews = {}
+    for row in rows:
+        metadata = _message_metadata(row["metadata"])
+        preview, has_attachments = _conversation_preview_text(row["body_text"], metadata)
+        previews[row["conversation_id"]] = {
+            "last_message_provider_id": row["provider_message_id"],
+            "last_message_sender": _conversation_preview_sender(row),
+            "last_message_preview": preview,
+            "last_message_ts": row["message_timestamp"],
+            "last_message_has_attachments": has_attachments,
+        }
+
+    for conversation in conversations:
+        preview = previews.get(conversation.get("conversation_id"))
+        if preview:
+            conversation.update(preview)
+    return result
+
+
 def _conversation_management_rows(conn: sqlite3.Connection, conversation_ids: list[str]) -> dict[str, dict]:
     ids = [conversation_id for conversation_id in conversation_ids if conversation_id]
     if not ids:
@@ -1001,6 +1087,7 @@ def get_penguinconnect_conversations():
     try:
         result = penguinconnect_list_conversations(conn)
         result = _attach_conversation_unread_counts(conn, result)
+        result = _attach_conversation_previews(conn, result)
         result = _attach_conversation_management(conn, result)
         conn.commit()
         return result

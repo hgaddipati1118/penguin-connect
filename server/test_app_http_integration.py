@@ -239,6 +239,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(conversation["note"], "")
         self.assertEqual(conversation["labels"], [])
         self.assertEqual(conversation["draft_text"], "")
+        self.assertEqual(conversation["last_message_preview"], "Latest message")
+        self.assertEqual(conversation["last_message_sender"], "")
+        self.assertEqual(conversation["last_message_provider_id"], "imsg-latest")
+        self.assertFalse(conversation["last_message_has_attachments"])
 
     def test_conversation_management_endpoint_pins_and_archives(self):
         with TestClient(app_module.app) as client:
@@ -544,6 +548,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn(".label-filters", css_response.text)
         self.assertIn(".bulk-actions", css_response.text)
         self.assertIn(".conversation-select", css_response.text)
+        self.assertIn(".conversation-preview", css_response.text)
         self.assertIn(".message-actions", css_response.text)
         self.assertIn(".reply-context", css_response.text)
         self.assertIn(".thread-management", css_response.text)
@@ -560,6 +565,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("conversationMatchesLabel", js_response.text)
         self.assertIn("bulkMarkSelectedRead", js_response.text)
         self.assertIn("bulkArchiveSelected", js_response.text)
+        self.assertIn("conversationPreviewText", js_response.text)
         self.assertIn("setReplyContext", js_response.text)
         self.assertIn("messageCopyText", js_response.text)
         self.assertIn("renderManagementFields", js_response.text)
