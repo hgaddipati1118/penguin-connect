@@ -473,15 +473,84 @@ def _stored_message_attachment(
     return path, display_name, media_type
 
 
-def _search_messages(conn: sqlite3.Connection, query: str, *, limit: int) -> dict:
+def _search_messages(
+    conn: sqlite3.Connection,
+    query: str,
+    *,
+    limit: int,
+    view: str = "all",
+    conversation_id: str = "",
+) -> dict:
     search = (query or "").strip()
-    if not search:
-        return {"query": "", "count": 0, "messages": []}
+    normalized_view = (view or "all").strip().lower()
+    if normalized_view not in {"all", "current", "unread", "files", "audio", "mine"}:
+        normalized_view = "all"
+    target_conversation_id = (conversation_id or "").strip()
+    if not search and normalized_view == "all":
+        return {"query": "", "view": normalized_view, "conversation_id": "", "count": 0, "messages": []}
+    if normalized_view == "current" and not target_conversation_id:
+        return {"query": search, "view": normalized_view, "conversation_id": "", "count": 0, "messages": []}
+
+    conditions: list[str] = []
+    params: list[object] = []
+    if search:
+        conditions.append(
+            """lower(
+                COALESCE(c.conversation_id, '') || ' ' ||
+                COALESCE(c.display_name, '') || ' ' ||
+                COALESCE(cm.title, '') || ' ' ||
+                COALESCE(cm.note, '') || ' ' ||
+                COALESCE(cm.labels, '') || ' ' ||
+                COALESCE(c.source_provider, '') || ' ' ||
+                COALESCE(c.source_chat_identifier, '') || ' ' ||
+                COALESCE(c.participants, '') || ' ' ||
+                COALESCE(m.sender_email, '') || ' ' ||
+                COALESCE(m.sender_name, '') || ' ' ||
+                COALESCE(m.subject, '') || ' ' ||
+                COALESCE(m.body_text, '') || ' ' ||
+                COALESCE(m.metadata, '')
+            ) LIKE ?"""
+        )
+        params.append(f"%{search.lower()}%")
+
+    if normalized_view == "current":
+        conditions.append("c.conversation_id = ?")
+        params.append(target_conversation_id)
+    elif normalized_view == "unread":
+        conditions.append("COALESCE(m.is_read, 0) = 0")
+    elif normalized_view == "files":
+        conditions.append(
+            """(
+                COALESCE(m.metadata, '') LIKE '%"attachments"%'
+                OR COALESCE(m.metadata, '') LIKE '%manual_attachment_count%'
+            )"""
+        )
+    elif normalized_view == "audio":
+        conditions.append(
+            """(
+                lower(COALESCE(m.metadata, '')) LIKE '%audio/%'
+                OR lower(COALESCE(m.metadata, '')) LIKE '%.aac%'
+                OR lower(COALESCE(m.metadata, '')) LIKE '%.aif%'
+                OR lower(COALESCE(m.metadata, '')) LIKE '%.aiff%'
+                OR lower(COALESCE(m.metadata, '')) LIKE '%.caf%'
+                OR lower(COALESCE(m.metadata, '')) LIKE '%.m4a%'
+                OR lower(COALESCE(m.metadata, '')) LIKE '%.mp3%'
+                OR lower(COALESCE(m.metadata, '')) LIKE '%.wav%'
+                OR lower(COALESCE(m.metadata, '')) LIKE '%voice memo%'
+            )"""
+        )
+    elif normalized_view == "mine":
+        conditions.append("m.direction IN ('manual_to_imessage', 'email_to_imessage')")
+
+    where_clause = " AND ".join(f"({condition})" for condition in conditions) or "1 = 1"
+    params.append(max(1, min(limit, 100)))
 
     rows = conn.execute(
-        """
+        f"""
         SELECT
             c.conversation_id,
+            COALESCE(cm.title, '') AS title,
+            COALESCE(cm.labels, '[]') AS labels,
             c.display_name,
             c.source_provider,
             c.source_service_name,
@@ -496,28 +565,20 @@ def _search_messages(conn: sqlite3.Connection, query: str, *, limit: int) -> dic
             m.subject,
             m.body_text,
             m.message_timestamp,
+            m.is_read,
             m.metadata,
             m.gmail_message_id,
             m.gmail_thread_id
         FROM penguin_connect_messages m
         JOIN penguin_connect_conversations c
           ON c.conversation_id = m.conversation_id
-        WHERE lower(
-            COALESCE(c.conversation_id, '') || ' ' ||
-            COALESCE(c.display_name, '') || ' ' ||
-            COALESCE(c.source_provider, '') || ' ' ||
-            COALESCE(c.source_chat_identifier, '') || ' ' ||
-            COALESCE(c.participants, '') || ' ' ||
-            COALESCE(m.sender_email, '') || ' ' ||
-            COALESCE(m.sender_name, '') || ' ' ||
-            COALESCE(m.subject, '') || ' ' ||
-            COALESCE(m.body_text, '') || ' ' ||
-            COALESCE(m.metadata, '')
-        ) LIKE ?
+        LEFT JOIN penguin_connect_conversation_management cm
+          ON cm.conversation_id = c.conversation_id
+        WHERE {where_clause}
         ORDER BY m.message_timestamp DESC, m.id DESC
         LIMIT ?
         """,
-        (f"%{search.lower()}%", max(1, min(limit, 100))),
+        params,
     ).fetchall()
 
     messages = []
@@ -525,10 +586,18 @@ def _search_messages(conn: sqlite3.Connection, query: str, *, limit: int) -> dic
         metadata = _message_metadata(row["metadata"])
         item = dict(row)
         item["metadata"] = metadata
+        item["labels"] = _parse_management_labels(row["labels"])
+        item["is_read"] = bool(row["is_read"])
         if isinstance(metadata.get("attachments"), list):
             item["attachments"] = metadata["attachments"]
         messages.append(item)
-    return {"query": search, "count": len(messages), "messages": messages}
+    return {
+        "query": search,
+        "view": normalized_view,
+        "conversation_id": target_conversation_id if normalized_view == "current" else "",
+        "count": len(messages),
+        "messages": messages,
+    }
 
 
 def _conversation_unread_counts(conn: sqlite3.Connection) -> dict[str, int]:
@@ -1053,10 +1122,15 @@ def refresh_penguinconnect_contacts():
 
 @app.get("/api/penguin-connect/messages/search")
 @app.get("/penguin-connect/messages/search")
-def search_penguinconnect_messages(query: str = "", limit: int = Query(25, ge=1, le=100)):
+def search_penguinconnect_messages(
+    query: str = "",
+    limit: int = Query(25, ge=1, le=100),
+    view: str = "all",
+    conversation_id: str = "",
+):
     conn = get_connection()
     try:
-        return _search_messages(conn, query, limit=limit)
+        return _search_messages(conn, query, limit=limit, view=view, conversation_id=conversation_id)
     finally:
         conn.close()
 

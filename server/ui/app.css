@@ -243,6 +243,7 @@ h3 {
   white-space: nowrap;
 }
 
+.message-search-filters,
 .message-view-filters {
   display: flex;
   flex-wrap: wrap;
@@ -250,6 +251,7 @@ h3 {
   margin: 8px 18px 0;
 }
 
+.message-search-filters button,
 .message-view-filters button {
   min-height: 28px;
   border: 1px solid var(--line);
@@ -260,11 +262,18 @@ h3 {
   font-size: 10px;
 }
 
+.message-search-filters button:hover,
+.message-search-filters button.active,
 .message-view-filters button:hover,
 .message-view-filters button.active {
   border-color: var(--accent);
   background: var(--accent);
   color: var(--accent-ink);
+}
+
+.message-search-filters button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 input[type="search"] {

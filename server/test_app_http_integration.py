@@ -380,6 +380,134 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(body["messages"][0]["provider_message_id"], "imsg-voice")
         self.assertEqual(body["messages"][0]["attachments"][0]["transfer_name"], "voice-note.m4a")
 
+    def test_message_search_endpoint_filters_scoped_views(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """INSERT INTO penguin_connect_conversation_management
+                   (conversation_id, title, labels)
+                   VALUES (?, ?, ?)""",
+                ("amc_test", "Launch crew", json.dumps(["planning"])),
+            )
+            conn.execute(
+                """INSERT INTO penguin_connect_conversations
+                   (gmail_email, conversation_id, source_chat_id, display_name, alias_email, status)
+                   VALUES (?, ?, ?, ?, ?, 'active')""",
+                (
+                    "owner@gmail.com",
+                    "amc_other",
+                    "iMessage;-;chat-other",
+                    "Morgan",
+                    "owner+other@gmail.com",
+                ),
+            )
+            conn.execute(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction, sender_email, sender_name, subject,
+                    body_text, message_timestamp, is_read, metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "amc_other",
+                    "imessage",
+                    "imsg-audio",
+                    "imessage_to_gmail",
+                    None,
+                    "Morgan",
+                    "[Apple Messages] Morgan",
+                    "",
+                    "2026-03-11T10:00:00+00:00",
+                    1,
+                    json.dumps({"attachments": [{"transfer_name": "voice-memo.m4a", "mime_type": "audio/mp4"}]}),
+                ),
+            )
+            conn.execute(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction, sender_email, sender_name, subject,
+                    body_text, message_timestamp, is_read, metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "amc_test",
+                    "imessage",
+                    "imsg-file",
+                    "imessage_to_gmail",
+                    None,
+                    "Taylor",
+                    "[Apple Messages] Taylor",
+                    "",
+                    "2026-03-11T09:00:00+00:00",
+                    1,
+                    json.dumps({"attachments": [{"transfer_name": "deck.pdf", "mime_type": "application/pdf"}]}),
+                ),
+            )
+            conn.execute(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction, sender_email, sender_name, subject,
+                    body_text, message_timestamp, is_read, metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "amc_test",
+                    "manual",
+                    "manual-sent",
+                    "manual_to_imessage",
+                    "owner@gmail.com",
+                    "Me",
+                    "[Apple Messages] Taylor",
+                    "I sent the plan.",
+                    "2026-03-11T09:30:00+00:00",
+                    1,
+                    "{}",
+                ),
+            )
+            conn.execute(
+                "UPDATE penguin_connect_messages SET is_read = 0 WHERE provider_message_id = ?",
+                ("imsg-latest",),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with TestClient(app_module.app) as client:
+            title_response = client.get("/penguin-connect/messages/search", params={"query": "launch", "limit": 10})
+            audio_response = client.get("/penguin-connect/messages/search", params={"view": "audio", "limit": 10})
+            files_response = client.get("/penguin-connect/messages/search", params={"view": "files", "limit": 10})
+            unread_response = client.get("/penguin-connect/messages/search", params={"view": "unread", "limit": 10})
+            mine_response = client.get("/penguin-connect/messages/search", params={"view": "mine", "limit": 10})
+            current_response = client.get(
+                "/penguin-connect/messages/search",
+                params={"view": "current", "conversation_id": "amc_test", "limit": 10},
+            )
+
+        self.assertEqual(title_response.status_code, 200)
+        title_body = title_response.json()
+        self.assertGreaterEqual(title_body["count"], 1)
+        self.assertEqual(title_body["messages"][0]["title"], "Launch crew")
+        self.assertEqual(title_body["messages"][0]["labels"], ["planning"])
+
+        self.assertEqual(audio_response.status_code, 200)
+        audio_body = audio_response.json()
+        self.assertEqual(audio_body["view"], "audio")
+        self.assertEqual([message["provider_message_id"] for message in audio_body["messages"]], ["imsg-audio"])
+
+        self.assertEqual(files_response.status_code, 200)
+        file_ids = {message["provider_message_id"] for message in files_response.json()["messages"]}
+        self.assertIn("imsg-audio", file_ids)
+        self.assertIn("imsg-file", file_ids)
+
+        self.assertEqual(unread_response.status_code, 200)
+        unread_ids = {message["provider_message_id"] for message in unread_response.json()["messages"]}
+        self.assertIn("imsg-latest", unread_ids)
+
+        self.assertEqual(mine_response.status_code, 200)
+        self.assertEqual([message["provider_message_id"] for message in mine_response.json()["messages"]], ["manual-sent"])
+
+        self.assertEqual(current_response.status_code, 200)
+        current_body = current_response.json()
+        self.assertEqual(current_body["view"], "current")
+        self.assertEqual(current_body["conversation_id"], "amc_test")
+        self.assertTrue(current_body["messages"])
+        self.assertTrue(all(message["conversation_id"] == "amc_test" for message in current_body["messages"]))
+        self.assertNotIn("imsg-audio", {message["provider_message_id"] for message in current_body["messages"]})
+
     def test_attachment_endpoint_serves_stored_message_file(self):
         attachment_path = Path(self.tmpdir.name) / "voice-note.m4a"
         attachment_path.write_bytes(b"fake-audio")
@@ -530,6 +658,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("PenguinConnect Console", html_response.text)
         self.assertIn("contactSearch", html_response.text)
         self.assertIn("globalMessageSearch", html_response.text)
+        self.assertIn("globalMessageSearchFilters", html_response.text)
         self.assertIn("messageViewFilters", html_response.text)
         self.assertIn("stageDraftButton", html_response.text)
         self.assertIn("draftRecipientChips", html_response.text)
@@ -561,6 +690,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn(".contact-add", css_response.text)
         self.assertIn(".draft-recipient-chip", css_response.text)
         self.assertIn(".search-result", css_response.text)
+        self.assertIn(".message-search-filters", css_response.text)
         self.assertIn(".message-view-filters", css_response.text)
         self.assertIn(".toggle-row", css_response.text)
         self.assertIn(".unread-badge", css_response.text)
@@ -607,6 +737,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("renderDraftRecipientChips", js_response.text)
         self.assertIn("removeDraftRecipient", js_response.text)
         self.assertIn("renderMessageSearchResults", js_response.text)
+        self.assertIn("renderMessageSearchFilters", js_response.text)
+        self.assertIn("messageSearchViews", js_response.text)
         self.assertIn("renderMessageViewFilters", js_response.text)
         self.assertIn("messageMatchesView", js_response.text)
         self.assertIn("isAudioAttachment", js_response.text)

@@ -11,6 +11,7 @@ const state = {
   threadContactToken: 0,
   messageSearchResults: [],
   messageSearchTimer: null,
+  messageSearchView: "all",
   focusMessageId: "",
   messageView: "all",
   mediaView: "all",
@@ -63,6 +64,7 @@ const el = {
   saveManagementButton: document.querySelector("#saveManagementButton"),
   managementState: document.querySelector("#managementState"),
   globalMessageSearch: document.querySelector("#globalMessageSearch"),
+  globalMessageSearchFilters: document.querySelector("#globalMessageSearchFilters"),
   messageSearchStatus: document.querySelector("#messageSearchStatus"),
   messageSearchResults: document.querySelector("#messageSearchResults"),
   messageViewFilters: document.querySelector("#messageViewFilters"),
@@ -108,6 +110,15 @@ const emojiChoices = ["👍", "🙏", "🔥", "❤️", "😂", "👀", "✅", "
 
 const messageViews = [
   { key: "all", label: "All" },
+  { key: "unread", label: "Unread" },
+  { key: "files", label: "Files" },
+  { key: "audio", label: "Audio" },
+  { key: "mine", label: "Mine" },
+];
+
+const messageSearchViews = [
+  { key: "all", label: "All" },
+  { key: "current", label: "This thread" },
   { key: "unread", label: "Unread" },
   { key: "files", label: "Files" },
   { key: "audio", label: "Audio" },
@@ -1020,6 +1031,7 @@ function renderThreadPeople() {
 function conversationFromSearchResult(result) {
   return state.conversations.find((conversation) => conversation.conversation_id === result.conversation_id) || {
     conversation_id: result.conversation_id,
+    title: result.title || "",
     display_name: result.display_name || "Conversation",
     source_provider: result.source_provider || result.provider || "imessage",
     source_service_name: result.source_service_name || "",
@@ -1033,6 +1045,12 @@ async function useMessageSearchResult(result) {
   el.conversationSearch.value = "";
   renderConversations();
   await selectConversation(conversationFromSearchResult(result));
+}
+
+function searchResultConversationName(result) {
+  const conversation = state.conversations.find((conversation) => conversation.conversation_id === result.conversation_id);
+  if (conversation) return conversationDisplayName(conversation);
+  return String(result.title || result.display_name || result.conversation_id || "Conversation").trim() || "Conversation";
 }
 
 function renderContacts() {
@@ -1069,10 +1087,27 @@ function renderContacts() {
   }
 }
 
+function renderMessageSearchFilters() {
+  el.globalMessageSearchFilters.replaceChildren();
+  for (const view of messageSearchViews) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.messageSearchView = view.key;
+    button.textContent = view.label;
+    const active = state.messageSearchView === view.key;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+    if (view.key === "current" && !state.selected) {
+      button.disabled = true;
+    }
+    el.globalMessageSearchFilters.append(button);
+  }
+}
+
 function renderMessageSearchResults() {
   el.messageSearchResults.replaceChildren();
   const query = el.globalMessageSearch.value.trim();
-  if (!query) {
+  if (!query && state.messageSearchView === "all") {
     el.messageSearchResults.hidden = true;
     return;
   }
@@ -1095,7 +1130,7 @@ function renderMessageSearchResults() {
     `;
     const sender = result.sender_name || result.sender_email || result.direction || "unknown";
     button.querySelector(".search-result-top").textContent = [
-      result.display_name || "Conversation",
+      searchResultConversationName(result),
       sender,
       formatTime(result.message_timestamp || result.timestamp),
     ].filter(Boolean).join(" · ");
@@ -1495,19 +1530,37 @@ function scheduleContactSearch() {
 
 async function loadMessageSearch() {
   const query = el.globalMessageSearch.value.trim();
-  if (query.length < 2) {
+  const scoped = state.messageSearchView !== "all";
+  renderMessageSearchFilters();
+  if (query.length < 2 && !scoped) {
     state.messageSearchResults = [];
     el.messageSearchStatus.textContent = "Type 2+ chars to search local cache";
     renderMessageSearchResults();
     buildCodexPrompt();
     return;
   }
+  if (state.messageSearchView === "current" && !state.selected) {
+    state.messageSearchResults = [];
+    el.messageSearchStatus.textContent = "Select a thread for current-thread search";
+    renderMessageSearchResults();
+    buildCodexPrompt();
+    return;
+  }
 
-  el.messageSearchStatus.textContent = "Searching local cache";
+  const view = messageSearchViews.find((item) => item.key === state.messageSearchView) || messageSearchViews[0];
+  el.messageSearchStatus.textContent = query ? "Searching local cache" : `Loading ${view.label.toLowerCase()} messages`;
   try {
-    const payload = await api(`/penguin-connect/messages/search?query=${encodeURIComponent(query)}&limit=30`);
+    const params = new URLSearchParams({
+      query,
+      limit: "30",
+      view: state.messageSearchView,
+    });
+    if (state.messageSearchView === "current" && state.selected?.conversation_id) {
+      params.set("conversation_id", state.selected.conversation_id);
+    }
+    const payload = await api(`/penguin-connect/messages/search?${params.toString()}`);
     state.messageSearchResults = payload.messages || [];
-    el.messageSearchStatus.textContent = `${state.messageSearchResults.length} message match${state.messageSearchResults.length === 1 ? "" : "es"}`;
+    el.messageSearchStatus.textContent = `${state.messageSearchResults.length} ${view.label.toLowerCase()} match${state.messageSearchResults.length === 1 ? "" : "es"}`;
     renderMessageSearchResults();
     buildCodexPrompt();
   } catch (error) {
@@ -1535,8 +1588,12 @@ async function selectConversation(conversation) {
   renderThreadPeople();
   renderThreadMedia();
   renderConversations();
+  renderMessageSearchFilters();
   renderMessages();
   loadThreadContactMatches(conversation);
+  if (state.messageSearchView === "current") {
+    loadMessageSearch();
+  }
   await loadMessages();
 }
 
@@ -1906,13 +1963,15 @@ function plannedAttachmentText() {
 
 function messageSearchContext(limit = 8) {
   const query = el.globalMessageSearch.value.trim();
-  if (!query) return "none";
+  if (!query && state.messageSearchView === "all") return "none";
+  const view = messageSearchViews.find((item) => item.key === state.messageSearchView) || messageSearchViews[0];
   const rows = state.messageSearchResults.slice(0, limit).map((result) => {
     const sender = result.sender_name || result.sender_email || result.direction || "unknown";
-    return `${formatTime(result.message_timestamp || result.timestamp)} | ${result.display_name || result.conversation_id || "Conversation"} | ${sender}: ${messageSnippet(result, 180)}`;
+    return `${formatTime(result.message_timestamp || result.timestamp)} | ${searchResultConversationName(result)} | ${sender}: ${messageSnippet(result, 180)}`;
   });
   return [
-    `Query: ${query}`,
+    `View: ${view.label}`,
+    `Query: ${query || "none"}`,
     rows.length ? rows.join("\n") : "No loaded results",
   ].join("\n");
 }
@@ -2078,6 +2137,14 @@ el.refreshButton.addEventListener("click", () => {
 el.conversationSearch.addEventListener("input", renderConversations);
 el.contactSearch.addEventListener("input", scheduleContactSearch);
 el.globalMessageSearch.addEventListener("input", scheduleMessageSearch);
+el.globalMessageSearchFilters.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-message-search-view]");
+  if (!button) return;
+  state.messageSearchView = messageSearchViews.some((view) => view.key === button.dataset.messageSearchView)
+    ? button.dataset.messageSearchView
+    : "all";
+  loadMessageSearch();
+});
 el.contactRefreshButton.addEventListener("click", async () => {
   el.contactRefreshButton.disabled = true;
   el.contactStatus.textContent = "Refreshing Contacts";
@@ -2222,6 +2289,7 @@ renderEmojiButtons();
 renderMessages();
 renderContacts();
 renderDraftRecipientChips();
+renderMessageSearchFilters();
 renderMessageSearchResults();
 renderThreadControls();
 renderThreadPeople();
