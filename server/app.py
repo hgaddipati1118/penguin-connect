@@ -341,6 +341,41 @@ def _contact_phone_search_key(value: str) -> str:
     return re.sub(r"\D+", "", value or "")
 
 
+def _contact_handle_type(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if "@" in text:
+        return "email"
+    if len(_contact_phone_search_key(text)) >= 7:
+        return "phone"
+    return "handle"
+
+
+def _contact_compare_key(value: str) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    if "@" in text:
+        return f"email:{text}"
+    digits = _contact_phone_search_key(text)
+    if len(digits) >= 7:
+        return f"phone:{digits}"
+    return f"handle:{text}"
+
+
+def _contact_row_keys(row: sqlite3.Row) -> set[str]:
+    return {
+        key
+        for key in (
+            _contact_compare_key(row["email"] or ""),
+            _contact_compare_key(row["phone"] or ""),
+            _contact_compare_key(row["phone_normalized"] or ""),
+        )
+        if key
+    }
+
+
 def _contact_to_dict(row: sqlite3.Row) -> dict:
     display_name = _contact_display_name(row)
     primary_handle = _contact_primary_handle(row)
@@ -356,7 +391,95 @@ def _contact_to_dict(row: sqlite3.Row) -> dict:
         "primary_handle": primary_handle,
         "handle_type": "email" if row["email"] else ("phone" if row["phone"] or row["phone_normalized"] else ""),
         "imported_at": row["imported_at"] or "",
+        "source": "contacts",
+        "is_saved": True,
     }
+
+
+def _conversation_participant_handles(row: sqlite3.Row) -> list[str]:
+    values: list[str] = []
+    try:
+        parsed = json.loads(row["participants"] or "[]")
+    except Exception:
+        parsed = []
+    if isinstance(parsed, list):
+        values.extend(str(value or "").strip() for value in parsed)
+    source_identifier = str(row["source_chat_identifier"] or "").strip()
+    if source_identifier and _contact_handle_type(source_identifier) != "handle":
+        values.append(source_identifier)
+
+    handles: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        handle = str(value or "").strip()
+        key = _contact_compare_key(handle)
+        if not handle or not key or key in seen:
+            continue
+        seen.add(key)
+        handles.append(handle)
+    return handles
+
+
+def _participant_handle_matches_query(handle: str, query: str) -> bool:
+    clean_query = str(query or "").strip().lower()
+    if not clean_query:
+        return False
+    clean_handle = str(handle or "").strip().lower()
+    if clean_query in clean_handle:
+        return True
+    query_digits = _contact_phone_search_key(clean_query)
+    handle_digits = _contact_phone_search_key(clean_handle)
+    return len(query_digits) >= 3 and len(handle_digits) >= 7 and query_digits in handle_digits
+
+
+def _conversation_participant_contact_results(
+    conn: sqlite3.Connection,
+    query: str,
+    *,
+    limit: int,
+    existing_keys: set[str],
+) -> list[dict]:
+    if not query or limit <= 0:
+        return []
+    rows = conn.execute(
+        """
+        SELECT conversation_id, display_name, source_chat_identifier, participants
+        FROM penguin_connect_conversations
+        ORDER BY updated_at DESC, display_name COLLATE NOCASE, conversation_id
+        """
+    ).fetchall()
+    results: list[dict] = []
+    seen = set(existing_keys)
+    for row in rows:
+        conversation_name = (row["display_name"] or row["source_chat_identifier"] or "Conversation").strip()
+        for handle in _conversation_participant_handles(row):
+            key = _contact_compare_key(handle)
+            if not key or key in seen or not _participant_handle_matches_query(handle, query):
+                continue
+            seen.add(key)
+            handle_type = _contact_handle_type(handle)
+            results.append(
+                {
+                    "id": f"conversation:{key}",
+                    "display_name": handle,
+                    "first_name": "",
+                    "last_name": "",
+                    "organization": f"Seen in {conversation_name}" if conversation_name else "Conversation participant",
+                    "phone": handle if handle_type == "phone" else "",
+                    "phone_normalized": _contact_phone_search_key(handle) if handle_type == "phone" else "",
+                    "email": handle if handle_type == "email" else "",
+                    "primary_handle": handle,
+                    "handle_type": handle_type,
+                    "imported_at": "",
+                    "source": "conversation",
+                    "is_saved": False,
+                    "conversation_id": row["conversation_id"],
+                    "conversation_name": conversation_name,
+                }
+            )
+            if len(results) >= limit:
+                return results
+    return results
 
 
 def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int) -> dict:
@@ -383,7 +506,8 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int) -> di
         where = """
             WHERE ({conditions})
         """.format(conditions=" OR ".join(conditions))
-    params.append(max(1, min(limit, 100)))
+    limit_value = max(1, min(limit, 100))
+    params.append(limit_value)
     rows = conn.execute(
         f"""
         SELECT id, first_name, last_name, organization, phone, phone_normalized, email, imported_at
@@ -399,12 +523,23 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int) -> di
         """,
         params,
     ).fetchall()
+    contact_items = [_contact_to_dict(row) for row in rows]
+    existing_keys: set[str] = set()
+    for row in rows:
+        existing_keys.update(_contact_row_keys(row))
+    participant_items = _conversation_participant_contact_results(
+        conn,
+        query,
+        limit=max(0, limit_value - len(contact_items)),
+        existing_keys=existing_keys,
+    )
     total_contacts = conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
     return {
         "query": query,
-        "count": len(rows),
+        "count": len(contact_items) + len(participant_items),
         "total_contacts": total_contacts,
-        "contacts": [_contact_to_dict(row) for row in rows],
+        "participant_count": len(participant_items),
+        "contacts": [*contact_items, *participant_items],
     }
 
 

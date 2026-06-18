@@ -583,6 +583,53 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(phone_body["count"], 1)
         self.assertEqual(phone_body["contacts"][0]["display_name"], "Taylor Example")
 
+    def test_contacts_endpoint_searches_unsaved_conversation_participants(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """INSERT INTO penguin_connect_conversations
+                   (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants,
+                    alias_email, status)
+                   VALUES (?, ?, ?, ?, 'dm', ?, ?, 'active')""",
+                (
+                    "owner@gmail.com",
+                    "amc_unsaved",
+                    "chat-unsaved",
+                    "Unsaved Thread",
+                    '["+1 (415) 555-0199"]',
+                    "owner+unsaved@gmail.com",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with TestClient(app_module.app) as client:
+            response = client.get("/penguin-connect/contacts", params={"search": "5550199", "limit": 10})
+            saved_response = client.get("/penguin-connect/contacts", params={"search": "+15127436385", "limit": 10})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["total_contacts"], 2)
+        self.assertEqual(body["participant_count"], 1)
+        result = body["contacts"][0]
+        self.assertEqual(result["source"], "conversation")
+        self.assertFalse(result["is_saved"])
+        self.assertEqual(result["display_name"], "+1 (415) 555-0199")
+        self.assertEqual(result["primary_handle"], "+1 (415) 555-0199")
+        self.assertEqual(result["phone_normalized"], "14155550199")
+        self.assertEqual(result["handle_type"], "phone")
+        self.assertEqual(result["conversation_id"], "amc_unsaved")
+        self.assertIn("Unsaved Thread", result["organization"])
+
+        self.assertEqual(saved_response.status_code, 200)
+        saved_body = saved_response.json()
+        self.assertEqual(saved_body["count"], 1)
+        self.assertEqual(saved_body["participant_count"], 0)
+        self.assertEqual(saved_body["contacts"][0]["source"], "contacts")
+        self.assertTrue(saved_body["contacts"][0]["is_saved"])
+
     def test_contacts_refresh_endpoint_runs_refresh_once(self):
         with mock.patch(
             "app.refresh_contacts_now",
@@ -688,6 +735,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(css_response.status_code, 200)
         self.assertIn(".contact-list", css_response.text)
         self.assertIn(".contact-add", css_response.text)
+        self.assertIn(".contact-actions", css_response.text)
+        self.assertIn(".contact-create-result", css_response.text)
         self.assertIn(".draft-recipient-chip", css_response.text)
         self.assertIn(".search-result", css_response.text)
         self.assertIn(".message-search-filters", css_response.text)
@@ -731,6 +780,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("contactMatchesHandle", js_response.text)
         self.assertIn("renderThreadPeople", js_response.text)
         self.assertIn("fillContactFormFromHandle", js_response.text)
+        self.assertIn("fillContactFormFromContact", js_response.text)
         self.assertIn("renderContacts", js_response.text)
         self.assertIn("addDraftRecipient", js_response.text)
         self.assertIn("addContactToDraft", js_response.text)

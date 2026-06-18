@@ -924,7 +924,7 @@ function addDraftRecipient(value) {
   return true;
 }
 
-function fillContactFormFromHandle(value) {
+function fillContactFormFromHandle(value, stateText = "Prefilled from thread") {
   const handle = String(value || "").trim();
   if (!handle) return;
   clearContactForm();
@@ -933,8 +933,17 @@ function fillContactFormFromHandle(value) {
   } else {
     el.newContactPhones.value = handle;
   }
-  el.createContactState.textContent = "Prefilled from thread";
+  el.createContactState.textContent = stateText;
   el.newContactFirst.focus();
+}
+
+function fillContactFormFromContact(contact) {
+  const handle = contactRecipientHandle(contact);
+  if (!handle) {
+    el.contactStatus.textContent = "No phone or email on result";
+    return;
+  }
+  fillContactFormFromHandle(handle, "Prefilled from search");
 }
 
 function searchContactHandle(value) {
@@ -1072,7 +1081,10 @@ function renderContacts() {
         <span class="contact-handle"></span>
         <span class="contact-meta"></span>
       </button>
-      <button class="contact-add" type="button" title="Add to new chat" aria-label="Add contact to new chat">+</button>
+      <span class="contact-actions">
+        <button class="contact-add" type="button" title="Add to new chat" aria-label="Add contact to new chat">+</button>
+        <button class="contact-create-result" type="button" title="Create contact" aria-label="Create contact from search result">Create</button>
+      </span>
     `;
     item.querySelector(".contact-name").textContent = contactDisplayName(contact);
     item.querySelector(".contact-handle").textContent = contactHandleText(contact);
@@ -1083,6 +1095,10 @@ function renderContacts() {
     const addButton = item.querySelector(".contact-add");
     addButton.disabled = !contactRecipientHandle(contact);
     addButton.addEventListener("click", () => addContactToDraft(contact));
+    const createButton = item.querySelector(".contact-create-result");
+    createButton.hidden = contact.is_saved !== false;
+    createButton.disabled = !contactRecipientHandle(contact);
+    createButton.addEventListener("click", () => fillContactFormFromContact(contact));
     el.contactList.append(item);
   }
 }
@@ -1980,7 +1996,8 @@ function contactContext(limit = 8) {
   if (!state.contacts.length) return "none";
   return state.contacts.slice(0, limit).map((contact) => {
     const organization = contact.organization ? ` | ${contact.organization}` : "";
-    return `${contactDisplayName(contact)} | ${contactHandleText(contact)}${organization}`;
+    const source = contact.is_saved === false ? " | unsaved participant" : "";
+    return `${contactDisplayName(contact)} | ${contactHandleText(contact)}${organization}${source}`;
   }).join("\n");
 }
 

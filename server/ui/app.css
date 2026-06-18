@@ -462,7 +462,7 @@ input[type="email"]:focus {
 
 .contact-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 32px;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   width: 100%;
   gap: 6px;
@@ -489,27 +489,42 @@ input[type="email"]:focus {
   text-align: left;
 }
 
-.contact-add {
+.contact-actions {
+  display: inline-flex;
+  gap: 4px;
+  padding-right: 8px;
+}
+
+.contact-add,
+.contact-create-result {
   display: inline-grid;
-  width: 30px;
+  min-width: 30px;
   height: 30px;
-  margin-right: 8px;
+  padding: 0 7px;
   place-items: center;
   border: 1px solid var(--line);
   background: var(--panel-alt);
   color: var(--ink);
   cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 16px;
   line-height: 1;
 }
 
+.contact-create-result {
+  font-size: 10px;
+}
+
 .contact-add:hover,
-.contact-add:focus-visible {
+.contact-add:focus-visible,
+.contact-create-result:hover,
+.contact-create-result:focus-visible {
   border-color: var(--accent);
   color: var(--accent);
 }
 
-.contact-add:disabled {
+.contact-add:disabled,
+.contact-create-result:disabled {
   cursor: not-allowed;
   opacity: 0.45;
 }
