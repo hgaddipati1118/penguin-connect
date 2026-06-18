@@ -163,6 +163,43 @@ h3 {
   padding: 0 7px;
 }
 
+.bulk-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) repeat(4, auto);
+  align-items: center;
+  gap: 4px;
+  margin: 0 18px 12px;
+}
+
+.bulk-actions span {
+  overflow: hidden;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bulk-actions button {
+  min-height: 26px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+.bulk-actions button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.bulk-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .conversation-filters button:hover,
 .conversation-filters button.active,
 .label-filters button:hover,
@@ -225,6 +262,31 @@ input[type="email"]:focus {
   padding: 0 10px 18px;
 }
 
+.conversation-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: start;
+  gap: 4px;
+}
+
+.conversation-select {
+  width: 24px;
+  height: 24px;
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--accent);
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.conversation-select:hover,
+.conversation-select.active {
+  border-color: var(--accent);
+  background: rgba(17, 100, 86, 0.08);
+}
+
 .conversation-item {
   width: 100%;
   display: grid;
@@ -238,7 +300,7 @@ input[type="email"]:focus {
 }
 
 .conversation-item:hover,
-.conversation-item.active {
+.conversation-row.active .conversation-item {
   border-color: var(--line);
   background: var(--panel);
 }

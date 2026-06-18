@@ -11,6 +11,9 @@ const state = {
   focusMessageId: "",
   conversationView: "inbox",
   conversationLabel: "",
+  selectedConversationIds: new Set(),
+  bulkBusy: false,
+  bulkMessage: "",
   draftSaveTimer: null,
 };
 
@@ -20,6 +23,12 @@ const el = {
   conversationSearch: document.querySelector("#conversationSearch"),
   conversationFilters: document.querySelector("#conversationFilters"),
   labelFilters: document.querySelector("#labelFilters"),
+  bulkActions: document.querySelector("#bulkActions"),
+  bulkState: document.querySelector("#bulkState"),
+  selectVisibleButton: document.querySelector("#selectVisibleButton"),
+  bulkMarkReadButton: document.querySelector("#bulkMarkReadButton"),
+  bulkArchiveButton: document.querySelector("#bulkArchiveButton"),
+  clearSelectionButton: document.querySelector("#clearSelectionButton"),
   conversationList: document.querySelector("#conversationList"),
   contactRefreshButton: document.querySelector("#contactRefreshButton"),
   contactSearch: document.querySelector("#contactSearch"),
@@ -265,6 +274,43 @@ function renderLabelFilters() {
   }
 }
 
+function visibleConversationRows() {
+  const query = el.conversationSearch.value.trim().toLowerCase();
+  const digitQuery = digitsOnly(query);
+  return state.conversations.filter((conversation) => {
+    if (!conversationMatchesView(conversation)) return false;
+    if (!conversationMatchesLabel(conversation)) return false;
+    const haystack = conversationHaystack(conversation);
+    return !query || haystack.includes(query) || (digitQuery.length >= 3 && haystack.includes(digitQuery));
+  }).sort((a, b) => {
+    const pinnedDiff = Number(b.is_pinned) - Number(a.is_pinned);
+    if (pinnedDiff) return pinnedDiff;
+    return conversationSortValue(b) - conversationSortValue(a);
+  });
+}
+
+function selectedConversations() {
+  return state.conversations.filter((conversation) => state.selectedConversationIds.has(conversation.conversation_id));
+}
+
+function pruneSelectedConversations() {
+  const ids = new Set(state.conversations.map((conversation) => conversation.conversation_id));
+  for (const selectedId of state.selectedConversationIds) {
+    if (!ids.has(selectedId)) state.selectedConversationIds.delete(selectedId);
+  }
+}
+
+function renderBulkActions(rows) {
+  const selectedCount = selectedConversations().length;
+  const visibleCount = rows.length;
+  const allVisibleSelected = visibleCount > 0 && rows.every((conversation) => state.selectedConversationIds.has(conversation.conversation_id));
+  el.bulkState.textContent = state.bulkBusy ? "Updating selected" : (state.bulkMessage || `${selectedCount} selected`);
+  el.selectVisibleButton.disabled = state.bulkBusy || !visibleCount || allVisibleSelected;
+  el.bulkMarkReadButton.disabled = state.bulkBusy || selectedCount === 0;
+  el.bulkArchiveButton.disabled = state.bulkBusy || selectedCount === 0;
+  el.clearSelectionButton.disabled = state.bulkBusy || selectedCount === 0;
+}
+
 function isOwnMessage(message) {
   return message.sender_name === "Me" || message.direction === "manual_to_imessage" || message.direction === "email_to_imessage";
 }
@@ -325,21 +371,12 @@ function renderEmojiButtons() {
 }
 
 function renderConversations() {
-  const query = el.conversationSearch.value.trim().toLowerCase();
-  const digitQuery = digitsOnly(query);
-  const rows = state.conversations.filter((conversation) => {
-    if (!conversationMatchesView(conversation)) return false;
-    if (!conversationMatchesLabel(conversation)) return false;
-    const haystack = conversationHaystack(conversation);
-    return !query || haystack.includes(query) || (digitQuery.length >= 3 && haystack.includes(digitQuery));
-  }).sort((a, b) => {
-    const pinnedDiff = Number(b.is_pinned) - Number(a.is_pinned);
-    if (pinnedDiff) return pinnedDiff;
-    return conversationSortValue(b) - conversationSortValue(a);
-  });
+  pruneSelectedConversations();
+  const rows = visibleConversationRows();
 
   renderConversationFilters();
   renderLabelFilters();
+  renderBulkActions(rows);
   el.conversationList.replaceChildren();
   if (!rows.length) {
     const empty = document.createElement("div");
@@ -350,18 +387,36 @@ function renderConversations() {
   }
 
   for (const conversation of rows) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `conversation-item ${state.selected?.conversation_id === conversation.conversation_id ? "active" : ""}`;
-    button.innerHTML = `
-      <span class="conversation-title-row">
-        <span class="conversation-name"></span>
-        <span class="conversation-badges"></span>
-      </span>
-      <span class="conversation-meta"></span>
+    const row = document.createElement("div");
+    row.className = `conversation-row ${state.selected?.conversation_id === conversation.conversation_id ? "active" : ""}`;
+    row.innerHTML = `
+      <button class="conversation-select" type="button" title="Select conversation" aria-label="Select conversation"></button>
+      <button class="conversation-item" type="button">
+        <span class="conversation-title-row">
+          <span class="conversation-name"></span>
+          <span class="conversation-badges"></span>
+        </span>
+        <span class="conversation-meta"></span>
+      </button>
     `;
-    button.querySelector(".conversation-name").textContent = conversation.display_name || "Conversation";
-    const badges = button.querySelector(".conversation-badges");
+    const selectButton = row.querySelector(".conversation-select");
+    const isChecked = state.selectedConversationIds.has(conversation.conversation_id);
+    selectButton.classList.toggle("active", isChecked);
+    selectButton.textContent = isChecked ? "x" : "";
+    selectButton.setAttribute("aria-pressed", isChecked ? "true" : "false");
+    selectButton.addEventListener("click", () => {
+      state.bulkMessage = "";
+      if (state.selectedConversationIds.has(conversation.conversation_id)) {
+        state.selectedConversationIds.delete(conversation.conversation_id);
+      } else {
+        state.selectedConversationIds.add(conversation.conversation_id);
+      }
+      renderConversations();
+    });
+
+    const mainButton = row.querySelector(".conversation-item");
+    mainButton.querySelector(".conversation-name").textContent = conversation.display_name || "Conversation";
+    const badges = mainButton.querySelector(".conversation-badges");
     if (conversation.unread_count) {
       const badge = document.createElement("span");
       badge.className = "badge unread-badge";
@@ -410,16 +465,16 @@ function renderConversations() {
       badge.textContent = "excluded";
       badges.append(badge);
     }
-    button.querySelector(".conversation-meta").textContent = [
+    mainButton.querySelector(".conversation-meta").textContent = [
       conversation.chat_type || "chat",
       conversation.source_service_name || conversation.source_provider || "source",
       conversation.last_message_ts ? formatTime(conversation.last_message_ts) : conversation.status || "",
     ].filter(Boolean).join(" · ");
-    button.addEventListener("click", () => {
+    mainButton.addEventListener("click", () => {
       state.focusMessageId = "";
       selectConversation(conversation);
     });
-    el.conversationList.append(button);
+    el.conversationList.append(row);
   }
 }
 
@@ -983,21 +1038,95 @@ async function setConversationManagement(fields) {
       method: "POST",
       body: JSON.stringify(fields),
     });
-    const updates = {
-      is_pinned: Boolean(result.is_pinned),
-      is_archived: Boolean(result.is_archived),
-      note: result.note || "",
-      labels: result.labels || [],
-      management_updated_at: result.management_updated_at || "",
-    };
-    if (Object.prototype.hasOwnProperty.call(fields, "draft_text")) {
-      updates.draft_text = result.draft_text || "";
-    }
-    syncSelectedConversation(updates);
+    syncSelectedConversation(conversationManagementUpdates(result, fields));
   } catch (error) {
     el.threadStatus.textContent = error.message;
   } finally {
     renderThreadControls();
+  }
+}
+
+function conversationManagementUpdates(result, fields = {}) {
+  const updates = {
+    is_pinned: Boolean(result.is_pinned),
+    is_archived: Boolean(result.is_archived),
+    note: result.note || "",
+    labels: result.labels || [],
+    management_updated_at: result.management_updated_at || "",
+  };
+  if (Object.prototype.hasOwnProperty.call(fields, "draft_text")) {
+    updates.draft_text = result.draft_text || "";
+  }
+  return updates;
+}
+
+async function updateConversationManagement(conversationId, fields) {
+  const result = await api(`/penguin-connect/conversations/${encodeURIComponent(conversationId)}/management`, {
+    method: "POST",
+    body: JSON.stringify(fields),
+  });
+  const updates = conversationManagementUpdates(result, fields);
+  updateConversationFields(conversationId, updates);
+  return updates;
+}
+
+function selectedConversationSnapshot() {
+  return selectedConversations().map((conversation) => ({ ...conversation }));
+}
+
+async function bulkMarkSelectedRead() {
+  const targets = selectedConversationSnapshot();
+  if (!targets.length) return;
+  state.bulkBusy = true;
+  state.bulkMessage = "";
+  renderConversations();
+  try {
+    for (const conversation of targets) {
+      const result = await api(`/penguin-connect/conversations/${encodeURIComponent(conversation.conversation_id)}/read-state`, {
+        method: "POST",
+        body: JSON.stringify({ unread: false }),
+      });
+      updateConversationFields(conversation.conversation_id, {
+        unread_count: result.unread_count || 0,
+        has_unread: Boolean(result.has_unread),
+      });
+      if (state.selected?.conversation_id === conversation.conversation_id) {
+        state.messages = state.messages.map((message) => ({ ...message, is_read: true }));
+      }
+    }
+    state.selectedConversationIds.clear();
+    state.bulkMessage = `Marked ${targets.length} read`;
+  } catch (error) {
+    state.bulkMessage = error.message;
+  } finally {
+    state.bulkBusy = false;
+    renderConversations();
+    renderThreadControls();
+    renderMessages();
+  }
+}
+
+async function bulkArchiveSelected() {
+  const targets = selectedConversationSnapshot();
+  if (!targets.length) return;
+  if (!window.confirm(`Archive ${targets.length} selected conversation${targets.length === 1 ? "" : "s"}?`)) return;
+  state.bulkBusy = true;
+  state.bulkMessage = "";
+  renderConversations();
+  try {
+    for (const conversation of targets) {
+      await updateConversationManagement(conversation.conversation_id, { archived: true });
+    }
+    state.selectedConversationIds.clear();
+    state.bulkMessage = `Archived ${targets.length}`;
+  } catch (error) {
+    state.bulkMessage = error.message;
+  } finally {
+    state.bulkBusy = false;
+    renderConversations();
+    renderThreadControls();
+    renderManagementFields();
+    buildCodexPrompt();
   }
 }
 
@@ -1312,6 +1441,20 @@ el.labelFilters.addEventListener("click", (event) => {
   state.conversationLabel = button.dataset.label || "";
   renderConversations();
 });
+el.selectVisibleButton.addEventListener("click", () => {
+  for (const conversation of visibleConversationRows()) {
+    state.selectedConversationIds.add(conversation.conversation_id);
+  }
+  state.bulkMessage = "";
+  renderConversations();
+});
+el.clearSelectionButton.addEventListener("click", () => {
+  state.selectedConversationIds.clear();
+  state.bulkMessage = "";
+  renderConversations();
+});
+el.bulkMarkReadButton.addEventListener("click", bulkMarkSelectedRead);
+el.bulkArchiveButton.addEventListener("click", bulkArchiveSelected);
 
 renderEmojiButtons();
 renderMessages();
