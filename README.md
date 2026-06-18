@@ -157,13 +157,14 @@ audio voice memos. The local UI supports replies, file/image attachments, emoji
 shortcuts, thread filtering, global synced-message search, opening synced
 attachment files, pinned and archived conversation views, cached Contacts
 search/refresh, contact creation, contact-to-thread matching, contact-to-new-chat
-recipient picking, local thread notes and tags, read/unread management, bridge
-disconnect/reconnect controls, persistent per-thread reply drafts, new chat draft
-staging, and a Codex prompt helper that copies recent thread context, local
-notes, tags, and your draft for review. Use `message-search` to search synced
-message bodies in the local bridge cache, or search Apple Messages text directly
-with `--source imessage` or `--source both`. The `messages` command shows
-imported attachment summaries, including audio attachments from Apple Messages.
+recipient picking with removable recipient chips, local thread notes and tags,
+read/unread management, bridge disconnect/reconnect controls, persistent
+per-thread reply drafts, new chat draft staging, and a Codex prompt helper that
+copies recent thread context, local notes, tags, and your draft for review. Use
+`message-search` to search synced message bodies in the local bridge cache, or
+search Apple Messages text directly with `--source imessage` or `--source both`.
+The `messages` command shows imported attachment summaries, including audio
+attachments from Apple Messages.
 The group command stages a new Messages draft instead of auto-sending, because
 Messages exposes reliable scripting for existing chats but not for creating a
 brand-new group chat by API.

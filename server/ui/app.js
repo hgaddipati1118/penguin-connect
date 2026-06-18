@@ -53,6 +53,7 @@ const el = {
   sendState: document.querySelector("#sendState"),
   draftState: document.querySelector("#draftState"),
   draftRecipients: document.querySelector("#draftRecipients"),
+  draftRecipientChips: document.querySelector("#draftRecipientChips"),
   draftMessage: document.querySelector("#draftMessage"),
   draftCopyToggle: document.querySelector("#draftCopyToggle"),
   draftOpenToggle: document.querySelector("#draftOpenToggle"),
@@ -375,11 +376,61 @@ function recipientCompareKey(value) {
   return digits.length >= 7 && !text.includes("@") ? digits : text;
 }
 
+function draftRecipientValues() {
+  return splitValues(el.draftRecipients.value);
+}
+
+function uniqueRecipientValues(values) {
+  const seen = new Set();
+  const recipients = [];
+  for (const value of values) {
+    const recipient = String(value || "").trim();
+    const key = recipientCompareKey(recipient);
+    if (!recipient || !key || seen.has(key)) continue;
+    seen.add(key);
+    recipients.push(recipient);
+  }
+  return recipients;
+}
+
+function renderDraftRecipientChips(values = uniqueRecipientValues(draftRecipientValues())) {
+  el.draftRecipientChips.replaceChildren();
+  if (!values.length) return;
+
+  values.forEach((recipient, index) => {
+    const chip = document.createElement("span");
+    chip.className = "draft-recipient-chip";
+    chip.innerHTML = `
+      <span></span>
+      <button type="button" title="Remove recipient" aria-label="Remove recipient">x</button>
+    `;
+    chip.querySelector("span").textContent = recipient;
+    chip.querySelector("button").addEventListener("click", () => removeDraftRecipient(index));
+    el.draftRecipientChips.append(chip);
+  });
+}
+
+function setDraftRecipients(values, { focus = false } = {}) {
+  const recipients = uniqueRecipientValues(values);
+  el.draftRecipients.value = recipients.join(", ");
+  renderDraftRecipientChips(recipients);
+  if (focus) el.draftRecipients.focus();
+  return recipients;
+}
+
+function removeDraftRecipient(index) {
+  const recipients = uniqueRecipientValues(draftRecipientValues());
+  if (index < 0 || index >= recipients.length) return;
+  recipients.splice(index, 1);
+  setDraftRecipients(recipients, { focus: true });
+  el.draftState.textContent = recipients.length ? "Recipient removed" : "Add recipient";
+}
+
 function addDraftRecipient(value) {
   const recipient = String(value || "").trim();
   if (!recipient) return false;
 
-  const recipients = splitValues(el.draftRecipients.value);
+  const recipients = uniqueRecipientValues(draftRecipientValues());
   const key = recipientCompareKey(recipient);
   if (new Set(recipients.map(recipientCompareKey)).has(key)) {
     el.draftState.textContent = "Recipient already added";
@@ -387,10 +438,8 @@ function addDraftRecipient(value) {
     return false;
   }
 
-  recipients.push(recipient);
-  el.draftRecipients.value = recipients.join(", ");
+  setDraftRecipients([...recipients, recipient], { focus: true });
   el.draftState.textContent = "Recipient added";
-  el.draftRecipients.focus();
   return true;
 }
 
@@ -1022,10 +1071,11 @@ function clearDraftForm() {
   el.draftRecipients.value = "";
   el.draftMessage.value = "";
   el.draftState.textContent = "Idle";
+  renderDraftRecipientChips();
 }
 
 async function stageDraft() {
-  const participants = splitValues(el.draftRecipients.value);
+  const participants = setDraftRecipients(draftRecipientValues());
   if (!participants.length) {
     el.draftState.textContent = "Add recipient";
     return;
@@ -1121,6 +1171,11 @@ el.contactRefreshButton.addEventListener("click", async () => {
   }
 });
 el.messageFilter.addEventListener("input", renderMessages);
+el.draftRecipients.addEventListener("input", () => renderDraftRecipientChips());
+el.draftRecipients.addEventListener("blur", (event) => {
+  if (event.relatedTarget && el.draftRecipientChips.contains(event.relatedTarget)) return;
+  setDraftRecipients(draftRecipientValues());
+});
 el.sendButton.addEventListener("click", sendMessage);
 el.pinButton.addEventListener("click", () => setConversationManagement({ pinned: !Boolean(state.selected?.is_pinned) }));
 el.archiveButton.addEventListener("click", () => setConversationManagement({ archived: !Boolean(state.selected?.is_archived) }));
@@ -1194,6 +1249,7 @@ el.conversationFilters.addEventListener("click", (event) => {
 renderEmojiButtons();
 renderMessages();
 renderContacts();
+renderDraftRecipientChips();
 renderMessageSearchResults();
 renderThreadControls();
 loadStatus();
