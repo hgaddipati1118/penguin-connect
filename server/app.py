@@ -100,6 +100,7 @@ class PenguinConnectConversationManagementRequest(BaseModel):
     archived: bool | None = None
     note: str | None = None
     labels: list[str] | None = None
+    draft_text: str | None = None
 
 def _map_sqlite_error(exc: sqlite3.OperationalError) -> HTTPException:
     msg = str(exc).lower()
@@ -546,7 +547,7 @@ def _conversation_management_rows(conn: sqlite3.Connection, conversation_ids: li
         return {}
     placeholders = ",".join("?" for _ in ids)
     rows = conn.execute(
-        f"""SELECT conversation_id, is_pinned, is_archived, note, labels, updated_at
+        f"""SELECT conversation_id, is_pinned, is_archived, note, labels, draft_text, updated_at
             FROM penguin_connect_conversation_management
             WHERE conversation_id IN ({placeholders})""",
         ids,
@@ -557,6 +558,7 @@ def _conversation_management_rows(conn: sqlite3.Connection, conversation_ids: li
             "is_archived": bool(row["is_archived"]),
             "note": row["note"] or "",
             "labels": _parse_management_labels(row["labels"]),
+            "draft_text": row["draft_text"] or "",
             "management_updated_at": row["updated_at"],
         }
         for row in rows
@@ -572,6 +574,7 @@ def _attach_conversation_management(conn: sqlite3.Connection, result: dict) -> d
         conversation["is_archived"] = bool(state.get("is_archived"))
         conversation["note"] = state.get("note") or ""
         conversation["labels"] = state.get("labels") or []
+        conversation["draft_text"] = state.get("draft_text") or ""
         conversation["management_updated_at"] = state.get("management_updated_at")
     return result
 
@@ -609,9 +612,13 @@ def _clean_management_note(value: str | None) -> str:
     return note[:4000]
 
 
+def _clean_management_draft(value: str | None) -> str:
+    return str(value or "").replace("\r\n", "\n").replace("\r", "\n")[:20000]
+
+
 def _get_conversation_management(conn: sqlite3.Connection, conversation_id: str) -> dict:
     row = conn.execute(
-        """SELECT c.conversation_id, m.is_pinned, m.is_archived, m.note, m.labels, m.updated_at
+        """SELECT c.conversation_id, m.is_pinned, m.is_archived, m.note, m.labels, m.draft_text, m.updated_at
            FROM penguin_connect_conversations c
            LEFT JOIN penguin_connect_conversation_management m
              ON m.conversation_id = c.conversation_id
@@ -627,6 +634,7 @@ def _get_conversation_management(conn: sqlite3.Connection, conversation_id: str)
         "is_archived": bool(row["is_archived"] or 0),
         "note": row["note"] or "",
         "labels": _parse_management_labels(row["labels"]),
+        "draft_text": row["draft_text"] or "",
         "management_updated_at": row["updated_at"],
     }
 
@@ -639,12 +647,14 @@ def _set_conversation_management(
     archived: bool | None,
     note: str | None,
     labels: list[str] | None,
+    draft_text: str | None,
 ) -> dict:
     current = _get_conversation_management(conn, conversation_id)
     is_pinned = current["is_pinned"] if pinned is None else bool(pinned)
     is_archived = current["is_archived"] if archived is None else bool(archived)
     clean_note = current["note"] if note is None else _clean_management_note(note)
     clean_labels = current["labels"] if labels is None else _clean_management_labels(labels)
+    clean_draft = current["draft_text"] if draft_text is None else _clean_management_draft(draft_text)
     if archived is True:
         is_pinned = False
     elif pinned is True:
@@ -652,13 +662,14 @@ def _set_conversation_management(
 
     conn.execute(
         """INSERT INTO penguin_connect_conversation_management
-           (conversation_id, is_pinned, is_archived, note, labels, updated_at)
-           VALUES (?, ?, ?, ?, ?, datetime('now'))
+           (conversation_id, is_pinned, is_archived, note, labels, draft_text, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
            ON CONFLICT(conversation_id) DO UPDATE SET
              is_pinned = excluded.is_pinned,
              is_archived = excluded.is_archived,
              note = excluded.note,
              labels = excluded.labels,
+             draft_text = excluded.draft_text,
              updated_at = datetime('now')""",
         (
             conversation_id,
@@ -666,6 +677,7 @@ def _set_conversation_management(
             1 if is_archived else 0,
             clean_note,
             json.dumps(clean_labels),
+            clean_draft,
         ),
     )
     return _get_conversation_management(conn, conversation_id)
@@ -1045,6 +1057,7 @@ def set_penguinconnect_conversation_management(
             archived=req.archived,
             note=req.note,
             labels=req.labels,
+            draft_text=req.draft_text,
         )
         log_action(
             "api_set_conversation_management",
@@ -1053,6 +1066,7 @@ def set_penguinconnect_conversation_management(
             is_archived=bool(result.get("is_archived")),
             has_note=bool(result.get("note")),
             label_count=len(result.get("labels") or []),
+            has_draft=bool(result.get("draft_text")),
         )
         conn.commit()
         return {"success": True, **result}

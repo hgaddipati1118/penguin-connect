@@ -10,6 +10,7 @@ const state = {
   messageSearchTimer: null,
   focusMessageId: "",
   conversationView: "inbox",
+  draftSaveTimer: null,
 };
 
 const el = {
@@ -152,6 +153,7 @@ function conversationHaystack(conversation) {
     conversation.source_chat_identifier,
     conversation.alias_email,
     conversation.note,
+    conversation.draft_text,
     ...(conversation.labels || []),
     ...(conversation.participants || []),
   ].join(" ").toLowerCase();
@@ -160,6 +162,10 @@ function conversationHaystack(conversation) {
 
 function labelsForConversation(conversation) {
   return Array.isArray(conversation?.labels) ? conversation.labels : [];
+}
+
+function draftTextForConversation(conversation) {
+  return String(conversation?.draft_text || "");
 }
 
 function conversationSortValue(conversation) {
@@ -306,6 +312,12 @@ function renderConversations() {
       const badge = document.createElement("span");
       badge.className = "badge status-badge";
       badge.textContent = "archived";
+      badges.append(badge);
+    }
+    if (draftTextForConversation(conversation).trim()) {
+      const badge = document.createElement("span");
+      badge.className = "badge draft-badge";
+      badge.textContent = "draft";
       badges.append(badge);
     }
     for (const label of labelsForConversation(conversation).slice(0, 2)) {
@@ -591,6 +603,17 @@ function syncSelectedConversation(fields) {
   buildCodexPrompt();
 }
 
+function updateConversationFields(conversationId, fields) {
+  state.conversations = state.conversations.map((conversation) => (
+    conversation.conversation_id === conversationId
+      ? { ...conversation, ...fields }
+      : conversation
+  ));
+  if (state.selected?.conversation_id === conversationId) {
+    Object.assign(state.selected, fields);
+  }
+}
+
 async function loadStatus() {
   try {
     const status = await api("/penguin-connect/health");
@@ -681,6 +704,7 @@ function scheduleMessageSearch() {
 async function selectConversation(conversation) {
   state.selected = conversation;
   state.messages = [];
+  el.composer.value = draftTextForConversation(conversation);
   el.threadProvider.textContent = [conversation.source_provider, conversation.source_service_name, conversation.chat_type].filter(Boolean).join(" · ");
   el.threadTitle.textContent = conversation.display_name || conversation.conversation_id;
   renderThreadControls();
@@ -724,6 +748,7 @@ function readFileAsBase64(file) {
 
 async function sendMessage() {
   if (!state.selected) return;
+  const conversationId = state.selected.conversation_id;
   const message = el.composer.value;
   if (!message.trim() && !state.attachments.length) {
     el.sendState.textContent = "Nothing to send";
@@ -746,7 +771,7 @@ async function sendMessage() {
         data_base64: await readFileAsBase64(file),
       });
     }
-    await api(`/penguin-connect/conversations/${encodeURIComponent(state.selected.conversation_id)}/send`, {
+    await api(`/penguin-connect/conversations/${encodeURIComponent(conversationId)}/send`, {
       method: "POST",
       body: JSON.stringify({
         sender_email: state.senderEmail,
@@ -757,6 +782,8 @@ async function sendMessage() {
     el.composer.value = "";
     state.attachments = [];
     renderAttachments();
+    clearTimeout(state.draftSaveTimer);
+    await saveLocalDraft(conversationId, "", { silent: true });
     el.sendState.textContent = "Sent";
     await loadMessages();
   } catch (error) {
@@ -801,18 +828,62 @@ async function setConversationManagement(fields) {
       method: "POST",
       body: JSON.stringify(fields),
     });
-    syncSelectedConversation({
+    const updates = {
       is_pinned: Boolean(result.is_pinned),
       is_archived: Boolean(result.is_archived),
       note: result.note || "",
       labels: result.labels || [],
       management_updated_at: result.management_updated_at || "",
-    });
+    };
+    if (Object.prototype.hasOwnProperty.call(fields, "draft_text")) {
+      updates.draft_text = result.draft_text || "";
+    }
+    syncSelectedConversation(updates);
   } catch (error) {
     el.threadStatus.textContent = error.message;
   } finally {
     renderThreadControls();
   }
+}
+
+async function saveLocalDraft(conversationId, draftText, { silent = false } = {}) {
+  if (!conversationId) return;
+  try {
+    const result = await api(`/penguin-connect/conversations/${encodeURIComponent(conversationId)}/management`, {
+      method: "POST",
+      body: JSON.stringify({ draft_text: draftText }),
+    });
+    const serverDraft = result.draft_text || "";
+    const current = state.conversations.find((conversation) => conversation.conversation_id === conversationId);
+    if (current && draftTextForConversation(current) !== draftText) {
+      return;
+    }
+    updateConversationFields(conversationId, {
+      draft_text: serverDraft,
+      management_updated_at: result.management_updated_at || "",
+    });
+    renderConversations();
+    if (state.selected?.conversation_id === conversationId) {
+      buildCodexPrompt();
+      if (!silent && el.composer.value === draftText) {
+        el.sendState.textContent = serverDraft.trim() ? "Draft saved" : "";
+      }
+    }
+  } catch (error) {
+    if (!silent && state.selected?.conversation_id === conversationId) {
+      el.sendState.textContent = `Draft not saved · ${error.message}`;
+    }
+  }
+}
+
+function scheduleDraftSave() {
+  if (!state.selected) return;
+  const conversationId = state.selected.conversation_id;
+  const draftText = el.composer.value;
+  updateConversationFields(conversationId, { draft_text: draftText });
+  renderConversations();
+  clearTimeout(state.draftSaveTimer);
+  state.draftSaveTimer = setTimeout(() => saveLocalDraft(conversationId, draftText), 450);
 }
 
 async function saveConversationManagement() {
@@ -1024,6 +1095,7 @@ el.clearButton.addEventListener("click", () => {
   el.composer.value = "";
   state.attachments = [];
   renderAttachments();
+  scheduleDraftSave();
   buildCodexPrompt();
 });
 el.syncButton.addEventListener("click", async () => {
@@ -1058,7 +1130,10 @@ el.attachmentDrop.addEventListener("drop", (event) => {
   el.attachmentDrop.classList.remove("dragging");
   addFiles(event.dataTransfer.files);
 });
-el.composer.addEventListener("input", buildCodexPrompt);
+el.composer.addEventListener("input", () => {
+  scheduleDraftSave();
+  buildCodexPrompt();
+});
 el.buildPromptButton.addEventListener("click", buildCodexPrompt);
 el.copyPromptButton.addEventListener("click", async () => {
   await copyText(buildCodexPrompt());

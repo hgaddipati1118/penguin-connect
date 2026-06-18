@@ -124,6 +124,7 @@ CREATE TABLE IF NOT EXISTS penguin_connect_conversation_management (
     is_archived INTEGER NOT NULL DEFAULT 0,
     note TEXT NOT NULL DEFAULT '',
     labels TEXT NOT NULL DEFAULT '[]',
+    draft_text TEXT NOT NULL DEFAULT '',
     updated_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -305,7 +306,7 @@ def _merge_management_rows(conn: sqlite3.Connection, source_id: str, target_id: 
     if not source_id or not target_id or source_id == target_id:
         return
     source = conn.execute(
-        """SELECT is_pinned, is_archived, note, labels
+        """SELECT is_pinned, is_archived, note, labels, draft_text
            FROM penguin_connect_conversation_management
            WHERE conversation_id = ?""",
         (source_id,),
@@ -313,7 +314,7 @@ def _merge_management_rows(conn: sqlite3.Connection, source_id: str, target_id: 
     if not source:
         return
     target = conn.execute(
-        """SELECT is_pinned, is_archived, note, labels
+        """SELECT is_pinned, is_archived, note, labels, draft_text
            FROM penguin_connect_conversation_management
            WHERE conversation_id = ?""",
         (target_id,),
@@ -332,6 +333,7 @@ def _merge_management_rows(conn: sqlite3.Connection, source_id: str, target_id: 
         note = (value or "").strip()
         if note and note not in notes:
             notes.append(note)
+    draft_text = (target["draft_text"] or "").strip() or (source["draft_text"] or "").strip()
     labels = []
     seen_labels: set[str] = set()
     for label in _management_labels_from_json(target["labels"]) + _management_labels_from_json(source["labels"]):
@@ -347,6 +349,7 @@ def _merge_management_rows(conn: sqlite3.Connection, source_id: str, target_id: 
                is_archived = ?,
                note = ?,
                labels = ?,
+               draft_text = ?,
                updated_at = datetime('now')
            WHERE conversation_id = ?""",
         (
@@ -354,6 +357,7 @@ def _merge_management_rows(conn: sqlite3.Connection, source_id: str, target_id: 
             1 if merged_archived else 0,
             "\n\n".join(notes)[:4000],
             json.dumps(labels[:12]),
+            draft_text[:20000],
             target_id,
         ),
     )
@@ -1397,6 +1401,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE penguin_connect_conversation_management ADD COLUMN note TEXT NOT NULL DEFAULT ''")
         if "labels" not in management_columns:
             conn.execute("ALTER TABLE penguin_connect_conversation_management ADD COLUMN labels TEXT NOT NULL DEFAULT '[]'")
+        if "draft_text" not in management_columns:
+            conn.execute("ALTER TABLE penguin_connect_conversation_management ADD COLUMN draft_text TEXT NOT NULL DEFAULT ''")
         _migrate_legacy_conversation_ids(conn)
         _migrate_apple_messages_conversation_routes(conn)
         conn.execute(

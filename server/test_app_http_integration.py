@@ -238,6 +238,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertFalse(conversation["is_archived"])
         self.assertEqual(conversation["note"], "")
         self.assertEqual(conversation["labels"], [])
+        self.assertEqual(conversation["draft_text"], "")
 
     def test_conversation_management_endpoint_pins_and_archives(self):
         with TestClient(app_module.app) as client:
@@ -247,6 +248,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
                     "pinned": True,
                     "note": "Follow up after intro",
                     "labels": ["VIP", "#Hiring", "vip", " ".join(["long"] * 20)],
+                    "draft_text": "Draft reply from local UI",
                 },
             )
             pinned_list_response = client.get("/penguin-connect/conversations")
@@ -261,12 +263,14 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertFalse(pin_body["is_archived"])
         self.assertEqual(pin_body["note"], "Follow up after intro")
         self.assertEqual(pin_body["labels"], ["VIP", "Hiring", "long long long long long long lo"])
+        self.assertEqual(pin_body["draft_text"], "Draft reply from local UI")
 
         pinned_conversation = pinned_list_response.json()["conversations"][0]
         self.assertTrue(pinned_conversation["is_pinned"])
         self.assertFalse(pinned_conversation["is_archived"])
         self.assertEqual(pinned_conversation["note"], "Follow up after intro")
         self.assertEqual(pinned_conversation["labels"], ["VIP", "Hiring", "long long long long long long lo"])
+        self.assertEqual(pinned_conversation["draft_text"], "Draft reply from local UI")
 
         self.assertEqual(archive_response.status_code, 200)
         archive_body = archive_response.json()
@@ -274,12 +278,14 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertTrue(archive_body["is_archived"])
         self.assertEqual(archive_body["note"], "Follow up after intro")
         self.assertEqual(archive_body["labels"], ["VIP", "Hiring", "long long long long long long lo"])
+        self.assertEqual(archive_body["draft_text"], "Draft reply from local UI")
 
         archived_conversation = archived_list_response.json()["conversations"][0]
         self.assertFalse(archived_conversation["is_pinned"])
         self.assertTrue(archived_conversation["is_archived"])
         self.assertEqual(archived_conversation["note"], "Follow up after intro")
         self.assertEqual(archived_conversation["labels"], ["VIP", "Hiring", "long long long long long long lo"])
+        self.assertEqual(archived_conversation["draft_text"], "Draft reply from local UI")
 
         self.assertEqual(unarchive_response.status_code, 200)
         unarchive_body = unarchive_response.json()
@@ -525,6 +531,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn(".toggle-row", css_response.text)
         self.assertIn(".unread-badge", css_response.text)
         self.assertIn(".label-badge", css_response.text)
+        self.assertIn(".draft-badge", css_response.text)
         self.assertIn(".attachment-link", css_response.text)
         self.assertIn(".conversation-filters", css_response.text)
         self.assertIn(".thread-management", css_response.text)
@@ -539,6 +546,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("setReadState", js_response.text)
         self.assertIn("setConversationManagement", js_response.text)
         self.assertIn("saveConversationManagement", js_response.text)
+        self.assertIn("scheduleDraftSave", js_response.text)
+        self.assertIn("saveLocalDraft", js_response.text)
         self.assertIn("toggleConnection", js_response.text)
         self.assertIn("attachmentUrl", js_response.text)
 

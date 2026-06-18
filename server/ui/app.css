@@ -277,6 +277,12 @@ input[type="email"]:focus {
   color: var(--accent);
 }
 
+.draft-badge {
+  border-color: rgba(168, 83, 27, 0.45);
+  background: rgba(168, 83, 27, 0.1);
+  color: var(--warn);
+}
+
 .conversation-meta {
   overflow: hidden;
   color: var(--muted);
