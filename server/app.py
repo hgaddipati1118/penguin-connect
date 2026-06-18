@@ -53,6 +53,8 @@ def _startup_catchup_batch_pause_seconds() -> float:
 UI_DIR = Path(__file__).resolve().parent / "ui"
 DEFAULT_UI_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 DEFAULT_UI_ATTACHMENT_TOTAL_MAX_BYTES = 50 * 1024 * 1024
+DEFAULT_CODEX_PROMPT_MAX_CHARS = 24_000
+DEFAULT_CODEX_TIMEOUT_SECONDS = 90
 
 class PenguinConnectGmailConnectRequest(BaseModel):
     gmail_email: str
@@ -91,6 +93,9 @@ class PenguinConnectDraftCreateRequest(BaseModel):
     message: str = ""
     copy_to_clipboard: bool = True
     open_messages: bool = True
+
+class PenguinConnectCodexAskRequest(BaseModel):
+    prompt: str = ""
 
 class PenguinConnectReadStateRequest(BaseModel):
     unread: bool = False
@@ -326,6 +331,84 @@ def _open_messages_app() -> None:
         raise HTTPException(status_code=504, detail="open_messages_timeout") from exc
     except subprocess.CalledProcessError as exc:
         raise HTTPException(status_code=400, detail="open_messages_failed") from exc
+
+
+def _codex_prompt_max_chars() -> int:
+    raw = (os.environ.get("PENGUIN_CONNECT_CODEX_MAX_PROMPT_CHARS") or "").strip()
+    try:
+        value = int(raw) if raw else DEFAULT_CODEX_PROMPT_MAX_CHARS
+    except Exception:
+        value = DEFAULT_CODEX_PROMPT_MAX_CHARS
+    return max(1_000, min(value, 100_000))
+
+
+def _codex_timeout_seconds() -> float:
+    raw = (os.environ.get("PENGUIN_CONNECT_CODEX_TIMEOUT_SECONDS") or "").strip()
+    try:
+        value = float(raw) if raw else DEFAULT_CODEX_TIMEOUT_SECONDS
+    except Exception:
+        value = DEFAULT_CODEX_TIMEOUT_SECONDS
+    return max(5.0, min(value, 300.0))
+
+
+def _run_codex_prompt(prompt: str) -> dict:
+    prompt_text = (prompt or "").strip()
+    if not prompt_text:
+        raise HTTPException(status_code=400, detail="codex_prompt_required")
+
+    max_chars = _codex_prompt_max_chars()
+    if len(prompt_text) > max_chars:
+        raise HTTPException(status_code=413, detail="codex_prompt_too_large")
+
+    codex_bin = shutil.which(os.environ.get("PENGUIN_CONNECT_CODEX_BIN", "codex"))
+    if not codex_bin:
+        raise HTTPException(status_code=501, detail="codex_cli_unavailable")
+
+    with tempfile.TemporaryDirectory(prefix="penguinconnect-codex-") as tmp:
+        tmp_path = Path(tmp)
+        output_path = tmp_path / "answer.txt"
+        command = [
+            codex_bin,
+            "exec",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            "--ignore-rules",
+            "--sandbox",
+            "read-only",
+            "--ask-for-approval",
+            "never",
+            "--cd",
+            str(tmp_path),
+            "--color",
+            "never",
+            "--output-last-message",
+            str(output_path),
+            "-",
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                input=prompt_text,
+                capture_output=True,
+                text=True,
+                timeout=_codex_timeout_seconds(),
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=501, detail="codex_cli_unavailable") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise HTTPException(status_code=504, detail="codex_timeout") from exc
+
+        answer = ""
+        if output_path.exists():
+            answer = output_path.read_text(encoding="utf-8", errors="replace").strip()
+        if not answer:
+            answer = (result.stdout or "").strip()
+        if result.returncode != 0:
+            raise HTTPException(status_code=400, detail="codex_failed")
+        if not answer:
+            raise HTTPException(status_code=400, detail="codex_empty_response")
+
+        return {"success": True, "answer": answer, "prompt_chars": len(prompt_text)}
 
 
 def _contact_display_name(row: sqlite3.Row) -> str:
@@ -1312,6 +1395,11 @@ def create_penguinconnect_messages_draft(req: PenguinConnectDraftCreateRequest):
         "copied": copied,
         "opened_messages": opened_messages,
     }
+
+@app.post("/api/penguin-connect/codex/ask")
+@app.post("/penguin-connect/codex/ask")
+def ask_penguinconnect_codex(req: PenguinConnectCodexAskRequest):
+    return _run_codex_prompt(req.prompt)
 
 @app.post("/api/penguin-connect/gmail/connect")
 @app.post("/penguin-connect/gmail/connect")

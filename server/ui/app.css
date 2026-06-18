@@ -1331,7 +1331,8 @@ textarea:focus,
 }
 
 #codexQuestion,
-#codexPrompt {
+#codexPrompt,
+#codexAnswer {
   min-height: 210px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
@@ -1339,6 +1340,10 @@ textarea:focus,
 
 #codexQuestion {
   min-height: 62px;
+}
+
+#codexAnswer {
+  min-height: 150px;
 }
 
 .empty-state,

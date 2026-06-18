@@ -24,6 +24,7 @@ const state = {
   bulkMessage: "",
   draftSaveTimer: null,
   codexMode: "reply",
+  codexBusy: false,
 };
 
 const el = {
@@ -105,8 +106,12 @@ const el = {
   codexModes: document.querySelector("#codexModes"),
   codexQuestion: document.querySelector("#codexQuestion"),
   codexPrompt: document.querySelector("#codexPrompt"),
+  codexAnswer: document.querySelector("#codexAnswer"),
   buildPromptButton: document.querySelector("#buildPromptButton"),
   copyPromptButton: document.querySelector("#copyPromptButton"),
+  askCodexButton: document.querySelector("#askCodexButton"),
+  copyCodexAnswerButton: document.querySelector("#copyCodexAnswerButton"),
+  useCodexDraftButton: document.querySelector("#useCodexDraftButton"),
 };
 
 const emojiChoices = ["👍", "🙏", "🔥", "❤️", "😂", "👀", "✅", "🤔", "😭", "🚀"];
@@ -2110,6 +2115,17 @@ function renderCodexModes() {
   }
 }
 
+function codexAnswerText() {
+  return el.codexAnswer.value.trim();
+}
+
+function renderCodexAnswerControls() {
+  const hasAnswer = Boolean(codexAnswerText());
+  el.askCodexButton.disabled = state.codexBusy;
+  el.copyCodexAnswerButton.disabled = state.codexBusy || !hasAnswer;
+  el.useCodexDraftButton.disabled = state.codexBusy || !hasAnswer;
+}
+
 function codexModeConfig() {
   return codexModes[state.codexMode] || codexModes.reply;
 }
@@ -2148,7 +2164,43 @@ function buildCodexPrompt() {
   el.codexPrompt.value = prompt;
   el.codexCount.textContent = `${mode.label} · ${Math.min(state.messages.length, 18)} msgs`;
   renderCodexModes();
+  renderCodexAnswerControls();
   return prompt;
+}
+
+async function askCodex() {
+  if (state.codexBusy) return;
+  const prompt = buildCodexPrompt();
+  state.codexBusy = true;
+  el.codexAnswer.value = "";
+  el.codexAnswer.placeholder = "Asking Codex";
+  el.codexCount.textContent = "Asking Codex";
+  renderCodexAnswerControls();
+  try {
+    const result = await api("/penguin-connect/codex/ask", {
+      method: "POST",
+      body: JSON.stringify({ prompt }),
+    });
+    el.codexAnswer.value = result.answer || "";
+    el.codexAnswer.placeholder = "Codex answer";
+    el.codexCount.textContent = `Codex answer · ${Math.max(0, el.codexAnswer.value.length)} chars`;
+  } catch (error) {
+    el.codexAnswer.value = "";
+    el.codexAnswer.placeholder = error.message;
+    el.codexCount.textContent = error.message;
+  } finally {
+    state.codexBusy = false;
+    renderCodexAnswerControls();
+  }
+}
+
+function useCodexAnswerAsDraft() {
+  const answer = codexAnswerText();
+  if (!answer) return;
+  el.composer.value = answer;
+  scheduleDraftSave();
+  buildCodexPrompt();
+  el.sendState.textContent = "Codex answer moved to draft";
 }
 
 async function copyText(value) {
@@ -2377,6 +2429,14 @@ el.copyPromptButton.addEventListener("click", async () => {
   await copyText(buildCodexPrompt());
   el.sendState.textContent = "Codex prompt copied";
 });
+el.askCodexButton.addEventListener("click", askCodex);
+el.copyCodexAnswerButton.addEventListener("click", async () => {
+  const answer = codexAnswerText();
+  if (!answer) return;
+  await copyText(answer);
+  el.sendState.textContent = "Codex answer copied";
+});
+el.useCodexDraftButton.addEventListener("click", useCodexAnswerAsDraft);
 el.codexQuestion.addEventListener("input", buildCodexPrompt);
 el.codexModes.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-codex-mode]");
@@ -2424,5 +2484,6 @@ renderThreadControls();
 renderThreadPeople();
 renderThreadMedia();
 renderCodexModes();
+renderCodexAnswerControls();
 loadStatus();
 loadConversations();

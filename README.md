@@ -169,10 +169,11 @@ removable recipient chips, selected-thread participant actions for contact
 search/new-chat/contact creation, local thread titles, notes and tags,
 read/unread management, bridge disconnect/reconnect controls, persistent
 per-thread reply drafts, new chat draft staging, and a Codex prompt helper with
-reply, summary, follow-up, contact-cleanup, and custom-question modes that copy
-recent thread context, search results, contact results, local notes, tags, and
-your draft for review. Use `message-search` to search synced message bodies in
-the local bridge cache, or search Apple Messages text directly with the
+reply, summary, follow-up, contact-cleanup, and custom-question modes that can
+copy or run a local `codex exec` prompt over recent thread context, search
+results, contact results, local notes, tags, and your draft, then place the
+answer into the reply draft for review. Use `message-search` to search synced
+message bodies in the local bridge cache, or search Apple Messages text directly with the
 `--source imessage` or `--source both` options. The `messages` command shows
 imported attachment summaries, including audio attachments from Apple Messages.
 The group command stages a new Messages draft instead of auto-sending, because

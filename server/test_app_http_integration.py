@@ -714,6 +714,41 @@ class AppHttpIntegrationTests(unittest.TestCase):
         mock_copy.assert_called_once_with(body["draft"])
         mock_open.assert_called_once_with()
 
+    def test_codex_ask_endpoint_runs_local_runner(self):
+        with mock.patch(
+            "app._run_codex_prompt",
+            return_value={"success": True, "answer": "Draft reply", "prompt_chars": 42},
+        ) as mock_run, TestClient(app_module.app) as client:
+            response = client.post("/penguin-connect/codex/ask", json={"prompt": "Synthetic prompt"})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["success"])
+        self.assertEqual(body["answer"], "Draft reply")
+        mock_run.assert_called_once_with("Synthetic prompt")
+
+    def test_codex_runner_uses_ephemeral_readonly_exec(self):
+        def fake_run(command, *, input, capture_output, text, timeout):
+            output_path = Path(command[command.index("--output-last-message") + 1])
+            output_path.write_text("Synthetic answer", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        with mock.patch("app.shutil.which", return_value="/usr/local/bin/codex"), mock.patch(
+            "app.subprocess.run", side_effect=fake_run
+        ) as mock_run:
+            result = app_module._run_codex_prompt("Synthetic prompt")
+
+        command = mock_run.call_args.args[0]
+        self.assertEqual(result["answer"], "Synthetic answer")
+        self.assertEqual(command[:2], ["/usr/local/bin/codex", "exec"])
+        self.assertIn("--ephemeral", command)
+        self.assertIn("--ignore-rules", command)
+        self.assertIn("--skip-git-repo-check", command)
+        self.assertIn("--output-last-message", command)
+        self.assertIn("-", command)
+        self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
+        self.assertEqual(command[command.index("--ask-for-approval") + 1], "never")
+
     def test_ui_endpoint_serves_console_assets(self):
         with TestClient(app_module.app) as client:
             html_response = client.get("/penguin-connect/ui")
@@ -747,6 +782,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("replyContext", html_response.text)
         self.assertIn("codexModes", html_response.text)
         self.assertIn("codexQuestion", html_response.text)
+        self.assertIn("codexAnswer", html_response.text)
+        self.assertIn("askCodexButton", html_response.text)
+        self.assertIn("useCodexDraftButton", html_response.text)
         self.assertIn("threadPeople", html_response.text)
         self.assertIn("threadPeopleState", html_response.text)
         self.assertIn("threadMedia", html_response.text)
@@ -783,6 +821,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn(".thread-management", css_response.text)
         self.assertIn(".codex-modes", css_response.text)
         self.assertIn("#codexQuestion", css_response.text)
+        self.assertIn("#codexAnswer", css_response.text)
         self.assertIn(".thread-people", css_response.text)
         self.assertIn(".thread-person-actions", css_response.text)
         self.assertIn(".thread-person-name", css_response.text)
@@ -797,6 +836,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("contactContext", js_response.text)
         self.assertIn("contactSources", js_response.text)
         self.assertIn("renderCodexModes", js_response.text)
+        self.assertIn("askCodex", js_response.text)
+        self.assertIn("useCodexAnswerAsDraft", js_response.text)
+        self.assertIn("renderCodexAnswerControls", js_response.text)
         self.assertIn("conversationDisplayName", js_response.text)
         self.assertIn("sourceDisplayName", js_response.text)
         self.assertIn("conversationParticipants", js_response.text)
