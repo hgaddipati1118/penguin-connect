@@ -625,6 +625,30 @@ input[type="email"]:focus {
   margin-top: 8px;
 }
 
+.message-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.message-actions button,
+.reply-context button {
+  min-height: 24px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+.message-actions button:hover,
+.reply-context button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .pill {
   max-width: 100%;
   padding: 4px 7px;
@@ -667,6 +691,29 @@ input[type="email"]:focus {
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11px;
+}
+
+.reply-context {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px;
+  border: 1px solid rgba(17, 100, 86, 0.28);
+  background: rgba(17, 100, 86, 0.08);
+}
+
+.reply-context[hidden] {
+  display: none;
+}
+
+.reply-context span {
+  overflow: hidden;
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .field-grid {

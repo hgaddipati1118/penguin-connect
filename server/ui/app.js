@@ -2,6 +2,7 @@ const state = {
   conversations: [],
   selected: null,
   messages: [],
+  replyContext: null,
   senderEmail: "",
   attachments: [],
   contacts: [],
@@ -54,6 +55,9 @@ const el = {
   messageFilter: document.querySelector("#messageFilter"),
   messageList: document.querySelector("#messageList"),
   senderBadge: document.querySelector("#senderBadge"),
+  replyContext: document.querySelector("#replyContext"),
+  replyContextText: document.querySelector("#replyContextText"),
+  clearReplyContextButton: document.querySelector("#clearReplyContextButton"),
   composer: document.querySelector("#composer"),
   emojiRow: document.querySelector("#emojiRow"),
   attachmentDrop: document.querySelector("#attachmentDrop"),
@@ -347,6 +351,52 @@ function messageSnippet(message, length = 180) {
   const attachments = attachmentRows(message).map((attachment) => basename(attachment.transfer_name || attachment.filename || attachment.mime_type || "attachment"));
   const suffix = attachments.length ? ` attachments: ${attachments.join(", ")}` : "";
   return `${text}${suffix ? ` ·${suffix}` : ""}`.trim() || "(no text)";
+}
+
+function messageSender(message) {
+  return message.sender_name || message.sender_email || message.direction || "unknown";
+}
+
+function messageTime(message) {
+  return formatTime(message.message_timestamp || message.timestamp);
+}
+
+function messageCopyText(message) {
+  const attachments = attachmentRows(message).map((attachment) => basename(attachment.transfer_name || attachment.filename || attachment.mime_type || "attachment"));
+  const parts = [
+    `${messageTime(message)} | ${messageSender(message)}`,
+    message.body_text || message.text || "",
+  ];
+  if (attachments.length) parts.push(`Attachments: ${attachments.join(", ")}`);
+  return parts.filter(Boolean).join("\n");
+}
+
+function clearReplyContext() {
+  state.replyContext = null;
+  renderReplyContext();
+  buildCodexPrompt();
+}
+
+function setReplyContext(message) {
+  state.replyContext = {
+    sender: messageSender(message),
+    time: messageTime(message),
+    snippet: messageSnippet(message, 160),
+    provider_message_id: message.provider_message_id || "",
+  };
+  renderReplyContext();
+  el.composer.focus();
+  buildCodexPrompt();
+}
+
+function renderReplyContext() {
+  if (!state.replyContext) {
+    el.replyContext.hidden = true;
+    el.replyContextText.textContent = "";
+    return;
+  }
+  el.replyContext.hidden = false;
+  el.replyContextText.textContent = `${state.replyContext.sender} · ${state.replyContext.snippet}`;
 }
 
 function renderEmojiButtons() {
@@ -714,10 +764,19 @@ function renderMessages() {
       </div>
       <div class="message-body"></div>
       <div class="message-attachments"></div>
+      <div class="message-actions">
+        <button type="button" data-action="reply">Reply</button>
+        <button type="button" data-action="copy">Copy</button>
+      </div>
     `;
-    item.querySelector(".message-head span").textContent = message.sender_name || message.sender_email || message.direction || "unknown";
-    item.querySelector("time").textContent = formatTime(message.message_timestamp || message.timestamp);
+    item.querySelector(".message-head span").textContent = messageSender(message);
+    item.querySelector("time").textContent = messageTime(message);
     item.querySelector(".message-body").textContent = message.body_text || message.text || "";
+    item.querySelector('[data-action="reply"]').addEventListener("click", () => setReplyContext(message));
+    item.querySelector('[data-action="copy"]').addEventListener("click", async () => {
+      await copyText(messageCopyText(message));
+      el.sendState.textContent = "Message copied";
+    });
     const attachmentBox = item.querySelector(".message-attachments");
     for (const [index, attachment] of attachments.entries()) {
       const url = attachmentLocalPath(attachment) ? attachmentUrl(message, index) : "";
@@ -914,6 +973,7 @@ function scheduleMessageSearch() {
 async function selectConversation(conversation) {
   state.selected = conversation;
   state.messages = [];
+  clearReplyContext();
   el.composer.value = draftTextForConversation(conversation);
   el.threadProvider.textContent = [conversation.source_provider, conversation.source_service_name, conversation.chat_type].filter(Boolean).join(" · ");
   el.threadTitle.textContent = conversation.display_name || conversation.conversation_id;
@@ -990,6 +1050,7 @@ async function sendMessage() {
       }),
     });
     el.composer.value = "";
+    clearReplyContext();
     state.attachments = [];
     renderAttachments();
     clearTimeout(state.draftSaveTimer);
@@ -1224,12 +1285,16 @@ function buildCodexPrompt() {
   const attachmentNames = state.attachments.map((file) => file.name).join(", ") || "none";
   const labels = state.selected ? (splitValues(el.threadTags.value).join(", ") || "none") : "none";
   const note = state.selected ? (el.threadNote.value.trim() || "none") : "none";
+  const replyTarget = state.replyContext
+    ? `${state.replyContext.sender} at ${state.replyContext.time}: ${state.replyContext.snippet}`
+    : "none";
   const prompt = [
     "Help me respond to this iMessage conversation.",
     "",
     `Conversation: ${title}`,
     `Thread tags: ${labels}`,
     `Private note: ${note}`,
+    `Reply target: ${replyTarget}`,
     `Attachments I plan to send: ${attachmentNames}`,
     "",
     "Recent messages:",
@@ -1381,8 +1446,10 @@ el.threadNote.addEventListener("input", () => {
 el.markReadButton.addEventListener("click", () => setReadState(false));
 el.markUnreadButton.addEventListener("click", () => setReadState(true));
 el.connectionButton.addEventListener("click", toggleConnection);
+el.clearReplyContextButton.addEventListener("click", clearReplyContext);
 el.clearButton.addEventListener("click", () => {
   el.composer.value = "";
+  clearReplyContext();
   state.attachments = [];
   renderAttachments();
   scheduleDraftSave();
