@@ -376,6 +376,16 @@ def _contact_row_keys(row: sqlite3.Row) -> set[str]:
     }
 
 
+def _all_contact_keys(conn: sqlite3.Connection) -> set[str]:
+    rows = conn.execute(
+        "SELECT phone, phone_normalized, email FROM contacts"
+    ).fetchall()
+    keys: set[str] = set()
+    for row in rows:
+        keys.update(_contact_row_keys(row))
+    return keys
+
+
 def _contact_to_dict(row: sqlite3.Row) -> dict:
     display_name = _contact_display_name(row)
     primary_handle = _contact_primary_handle(row)
@@ -438,8 +448,9 @@ def _conversation_participant_contact_results(
     *,
     limit: int,
     existing_keys: set[str],
+    include_all: bool = False,
 ) -> list[dict]:
-    if not query or limit <= 0:
+    if (not query and not include_all) or limit <= 0:
         return []
     rows = conn.execute(
         """
@@ -454,7 +465,9 @@ def _conversation_participant_contact_results(
         conversation_name = (row["display_name"] or row["source_chat_identifier"] or "Conversation").strip()
         for handle in _conversation_participant_handles(row):
             key = _contact_compare_key(handle)
-            if not key or key in seen or not _participant_handle_matches_query(handle, query):
+            if not key or key in seen:
+                continue
+            if query and not _participant_handle_matches_query(handle, query):
                 continue
             seen.add(key)
             handle_type = _contact_handle_type(handle)
@@ -482,8 +495,11 @@ def _conversation_participant_contact_results(
     return results
 
 
-def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int) -> dict:
+def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, source: str = "all") -> dict:
     query = (search or "").strip()
+    normalized_source = (source or "all").strip().lower()
+    if normalized_source not in {"all", "contacts", "participants"}:
+        normalized_source = "all"
     pattern = f"%{query.lower()}%"
     where = ""
     params: list[object] = []
@@ -507,35 +523,39 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int) -> di
             WHERE ({conditions})
         """.format(conditions=" OR ".join(conditions))
     limit_value = max(1, min(limit, 100))
-    params.append(limit_value)
-    rows = conn.execute(
-        f"""
-        SELECT id, first_name, last_name, organization, phone, phone_normalized, email, imported_at
-        FROM contacts
-        {where}
-        ORDER BY
-            last_name COLLATE NOCASE,
-            first_name COLLATE NOCASE,
-            organization COLLATE NOCASE,
-            email COLLATE NOCASE,
-            phone COLLATE NOCASE
-        LIMIT ?
-        """,
-        params,
-    ).fetchall()
+    rows = []
+    if normalized_source in {"all", "contacts"}:
+        params.append(limit_value)
+        rows = conn.execute(
+            f"""
+            SELECT id, first_name, last_name, organization, phone, phone_normalized, email, imported_at
+            FROM contacts
+            {where}
+            ORDER BY
+                last_name COLLATE NOCASE,
+                first_name COLLATE NOCASE,
+                organization COLLATE NOCASE,
+                email COLLATE NOCASE,
+                phone COLLATE NOCASE
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
     contact_items = [_contact_to_dict(row) for row in rows]
-    existing_keys: set[str] = set()
-    for row in rows:
-        existing_keys.update(_contact_row_keys(row))
-    participant_items = _conversation_participant_contact_results(
-        conn,
-        query,
-        limit=max(0, limit_value - len(contact_items)),
-        existing_keys=existing_keys,
-    )
+    participant_items: list[dict] = []
+    if normalized_source in {"all", "participants"}:
+        existing_keys = _all_contact_keys(conn)
+        participant_items = _conversation_participant_contact_results(
+            conn,
+            query,
+            limit=max(0, limit_value - len(contact_items)),
+            existing_keys=existing_keys,
+            include_all=normalized_source == "participants",
+        )
     total_contacts = conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
     return {
         "query": query,
+        "source": normalized_source,
         "count": len(contact_items) + len(participant_items),
         "total_contacts": total_contacts,
         "participant_count": len(participant_items),
@@ -1227,10 +1247,10 @@ def get_penguinconnect_health():
 
 @app.get("/api/penguin-connect/contacts")
 @app.get("/penguin-connect/contacts")
-def search_penguinconnect_contacts(search: str = "", limit: int = Query(25, ge=1, le=100)):
+def search_penguinconnect_contacts(search: str = "", limit: int = Query(25, ge=1, le=100), source: str = "all"):
     conn = get_connection()
     try:
-        return _search_contacts(conn, search, limit=limit)
+        return _search_contacts(conn, search, limit=limit, source=source)
     finally:
         conn.close()
 

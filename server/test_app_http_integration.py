@@ -607,6 +607,14 @@ class AppHttpIntegrationTests(unittest.TestCase):
         with TestClient(app_module.app) as client:
             response = client.get("/penguin-connect/contacts", params={"search": "5550199", "limit": 10})
             saved_response = client.get("/penguin-connect/contacts", params={"search": "+15127436385", "limit": 10})
+            saved_only_response = client.get(
+                "/penguin-connect/contacts",
+                params={"search": "5550199", "source": "contacts", "limit": 10},
+            )
+            unsaved_browse_response = client.get(
+                "/penguin-connect/contacts",
+                params={"source": "participants", "limit": 10},
+            )
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
@@ -629,6 +637,17 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(saved_body["participant_count"], 0)
         self.assertEqual(saved_body["contacts"][0]["source"], "contacts")
         self.assertTrue(saved_body["contacts"][0]["is_saved"])
+
+        self.assertEqual(saved_only_response.status_code, 200)
+        self.assertEqual(saved_only_response.json()["count"], 0)
+        self.assertEqual(saved_only_response.json()["source"], "contacts")
+
+        self.assertEqual(unsaved_browse_response.status_code, 200)
+        unsaved_body = unsaved_browse_response.json()
+        self.assertEqual(unsaved_body["source"], "participants")
+        self.assertEqual(unsaved_body["count"], 1)
+        self.assertEqual(unsaved_body["participant_count"], 1)
+        self.assertEqual(unsaved_body["contacts"][0]["primary_handle"], "+1 (415) 555-0199")
 
     def test_contacts_refresh_endpoint_runs_refresh_once(self):
         with mock.patch(
@@ -704,6 +723,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(html_response.status_code, 200)
         self.assertIn("PenguinConnect Console", html_response.text)
         self.assertIn("contactSearch", html_response.text)
+        self.assertIn("contactSourceFilters", html_response.text)
         self.assertIn("globalMessageSearch", html_response.text)
         self.assertIn("globalMessageSearchFilters", html_response.text)
         self.assertIn("messageViewFilters", html_response.text)
@@ -734,6 +754,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("mediaFilters", html_response.text)
         self.assertEqual(css_response.status_code, 200)
         self.assertIn(".contact-list", css_response.text)
+        self.assertIn(".contact-source-filters", css_response.text)
         self.assertIn(".contact-add", css_response.text)
         self.assertIn(".contact-actions", css_response.text)
         self.assertIn(".contact-create-result", css_response.text)
@@ -772,15 +793,18 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("selectedConversationContext", js_response.text)
         self.assertIn("messageSearchContext", js_response.text)
         self.assertIn("contactContext", js_response.text)
+        self.assertIn("contactSources", js_response.text)
         self.assertIn("renderCodexModes", js_response.text)
         self.assertIn("conversationDisplayName", js_response.text)
         self.assertIn("sourceDisplayName", js_response.text)
         self.assertIn("conversationParticipants", js_response.text)
         self.assertIn("loadThreadContactMatches", js_response.text)
+        self.assertIn("source=contacts", js_response.text)
         self.assertIn("contactMatchesHandle", js_response.text)
         self.assertIn("renderThreadPeople", js_response.text)
         self.assertIn("fillContactFormFromHandle", js_response.text)
         self.assertIn("fillContactFormFromContact", js_response.text)
+        self.assertIn("renderContactSourceFilters", js_response.text)
         self.assertIn("renderContacts", js_response.text)
         self.assertIn("addDraftRecipient", js_response.text)
         self.assertIn("addContactToDraft", js_response.text)

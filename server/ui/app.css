@@ -452,6 +452,34 @@ input[type="email"]:focus {
   font-size: 11px;
 }
 
+.contact-source-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  margin: 0 0 8px;
+}
+
+.contact-source-filters button {
+  min-width: 0;
+  min-height: 26px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.contact-source-filters button:hover,
+.contact-source-filters button.active {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
 .contact-list {
   display: grid;
   gap: 6px;

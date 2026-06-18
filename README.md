@@ -161,8 +161,8 @@ global synced-message search with filters for current thread, unread, sent,
 files and audio, loaded-message filters for unread/sent/files/audio,
 opening synced attachment files, a per-thread media browser for loaded
 images/audio/files, inline previews for local image attachments, inline playback
-for local audio attachments, cached Contacts search/refresh with unsaved
-conversation-participant fallback, contact creation, contact-to-thread matching, saved-contact resolution for
+for local audio attachments, cached Contacts search/refresh with saved/unsaved
+source filters and conversation-participant fallback, contact creation, contact-to-thread matching, saved-contact resolution for
 selected-thread participants, contact-to-new-chat recipient picking with
 removable recipient chips, selected-thread participant actions for contact
 search/new-chat/contact creation, local thread titles, notes and tags,

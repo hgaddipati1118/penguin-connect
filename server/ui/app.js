@@ -6,6 +6,7 @@ const state = {
   senderEmail: "",
   attachments: [],
   contacts: [],
+  contactSource: "all",
   contactSearchTimer: null,
   threadContactMatches: {},
   threadContactToken: 0,
@@ -41,6 +42,7 @@ const el = {
   conversationList: document.querySelector("#conversationList"),
   contactRefreshButton: document.querySelector("#contactRefreshButton"),
   contactSearch: document.querySelector("#contactSearch"),
+  contactSourceFilters: document.querySelector("#contactSourceFilters"),
   contactStatus: document.querySelector("#contactStatus"),
   contactList: document.querySelector("#contactList"),
   threadProvider: document.querySelector("#threadProvider"),
@@ -114,6 +116,12 @@ const messageViews = [
   { key: "files", label: "Files" },
   { key: "audio", label: "Audio" },
   { key: "mine", label: "Mine" },
+];
+
+const contactSources = [
+  { key: "all", label: "All" },
+  { key: "contacts", label: "Saved" },
+  { key: "participants", label: "Unsaved" },
 ];
 
 const messageSearchViews = [
@@ -253,7 +261,7 @@ function contactMatchesHandle(contact, handle) {
 }
 
 function bestContactForHandle(handle, contacts) {
-  return (contacts || []).find((contact) => contactMatchesHandle(contact, handle)) || null;
+  return (contacts || []).find((contact) => contact.is_saved !== false && contactMatchesHandle(contact, handle)) || null;
 }
 
 function threadContactKey(handle) {
@@ -314,7 +322,7 @@ async function loadThreadContactMatches(conversation = state.selected) {
     const key = threadContactKey(participant.handle);
     if (!key) return null;
     try {
-      const payload = await api(`/penguin-connect/contacts?search=${encodeURIComponent(participant.handle)}&limit=5`);
+      const payload = await api(`/penguin-connect/contacts?search=${encodeURIComponent(participant.handle)}&limit=5&source=contacts`);
       const match = bestContactForHandle(participant.handle, payload.contacts || []);
       return match ? [key, match] : null;
     } catch (_error) {
@@ -1062,12 +1070,34 @@ function searchResultConversationName(result) {
   return String(result.title || result.display_name || result.conversation_id || "Conversation").trim() || "Conversation";
 }
 
+function contactSourceLabel() {
+  return (contactSources.find((source) => source.key === state.contactSource) || contactSources[0]).label;
+}
+
+function renderContactSourceFilters() {
+  el.contactSourceFilters.replaceChildren();
+  for (const source of contactSources) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.contactSource = source.key;
+    button.textContent = source.label;
+    const active = state.contactSource === source.key;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+    el.contactSourceFilters.append(button);
+  }
+}
+
 function renderContacts() {
   el.contactList.replaceChildren();
   if (!state.contacts.length) {
     const empty = document.createElement("div");
     empty.className = "empty-state compact-state";
-    empty.textContent = el.contactSearch.value.trim() ? "No contacts" : "Search Contacts";
+    if (state.contactSource === "participants") {
+      empty.textContent = el.contactSearch.value.trim() ? "No unsaved participants" : "No unsaved participants";
+    } else {
+      empty.textContent = el.contactSearch.value.trim() ? "No contacts" : "Search Contacts";
+    }
     el.contactList.append(empty);
     return;
   }
@@ -1513,22 +1543,35 @@ async function loadConversations() {
 
 async function loadContacts({ force = false } = {}) {
   const query = el.contactSearch.value.trim();
-  if (!force && query.length < 2) {
+  const browsesUnsaved = state.contactSource === "participants";
+  renderContactSourceFilters();
+  if (!force && query.length < 2 && !browsesUnsaved) {
     state.contacts = [];
-    el.contactStatus.textContent = "Type 2+ chars to search cached Contacts";
+    el.contactStatus.textContent = "Type 2+ chars to search contacts";
     renderContacts();
     buildCodexPrompt();
     return;
   }
 
-  el.contactStatus.textContent = "Searching";
+  el.contactStatus.textContent = browsesUnsaved && !query ? "Loading unsaved participants" : "Searching";
   try {
-    const payload = await api(`/penguin-connect/contacts?search=${encodeURIComponent(query)}&limit=20`);
+    const params = new URLSearchParams({
+      search: query,
+      limit: "20",
+      source: state.contactSource,
+    });
+    const payload = await api(`/penguin-connect/contacts?${params.toString()}`);
     state.contacts = payload.contacts || [];
     const total = payload.total_contacts ?? 0;
-    el.contactStatus.textContent = query
-      ? `${state.contacts.length} match${state.contacts.length === 1 ? "" : "es"} · ${total} cached`
-      : `${state.contacts.length} contacts · ${total} cached`;
+    if (state.contactSource === "participants") {
+      el.contactStatus.textContent = `${state.contacts.length} unsaved participant${state.contacts.length === 1 ? "" : "s"}`;
+    } else if (query) {
+      const participantCount = payload.participant_count || 0;
+      const suffix = participantCount ? ` · ${participantCount} unsaved` : "";
+      el.contactStatus.textContent = `${state.contacts.length} ${contactSourceLabel().toLowerCase()} match${state.contacts.length === 1 ? "" : "es"} · ${total} saved${suffix}`;
+    } else {
+      el.contactStatus.textContent = `${state.contacts.length} ${contactSourceLabel().toLowerCase()} contacts · ${total} saved`;
+    }
     renderContacts();
     buildCodexPrompt();
   } catch (error) {
@@ -2136,6 +2179,8 @@ async function createContact() {
     });
     const searchValue = [firstName, lastName].filter(Boolean).join(" ") || organization || phones[0] || emails[0] || "";
     if (searchValue) el.contactSearch.value = searchValue;
+    state.contactSource = "all";
+    renderContactSourceFilters();
     await loadContacts({ force: true });
     await loadThreadContactMatches();
     el.createContactState.textContent = "Created";
@@ -2153,6 +2198,14 @@ el.refreshButton.addEventListener("click", () => {
 });
 el.conversationSearch.addEventListener("input", renderConversations);
 el.contactSearch.addEventListener("input", scheduleContactSearch);
+el.contactSourceFilters.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-contact-source]");
+  if (!button) return;
+  state.contactSource = contactSources.some((source) => source.key === button.dataset.contactSource)
+    ? button.dataset.contactSource
+    : "all";
+  loadContacts({ force: state.contactSource === "participants" || el.contactSearch.value.trim().length >= 2 });
+});
 el.globalMessageSearch.addEventListener("input", scheduleMessageSearch);
 el.globalMessageSearchFilters.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-message-search-view]");
@@ -2305,6 +2358,7 @@ el.bulkArchiveButton.addEventListener("click", bulkArchiveSelected);
 renderEmojiButtons();
 renderMessages();
 renderContacts();
+renderContactSourceFilters();
 renderDraftRecipientChips();
 renderMessageSearchFilters();
 renderMessageSearchResults();
