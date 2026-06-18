@@ -156,6 +156,13 @@
             <h3>Codex</h3>
             <span id="codexCount">0 msgs</span>
           </header>
+          <div class="codex-modes" id="codexModes" role="group" aria-label="Codex prompt mode">
+            <button type="button" data-codex-mode="reply">Reply</button>
+            <button type="button" data-codex-mode="summary">Summary</button>
+            <button type="button" data-codex-mode="followups">Follow-ups</button>
+            <button type="button" data-codex-mode="contacts">Contacts</button>
+          </div>
+          <textarea id="codexQuestion" rows="2" placeholder="Ask about this chat"></textarea>
           <textarea id="codexPrompt" rows="10" readonly></textarea>
           <div class="send-row">
             <button class="quiet-button" id="buildPromptButton" type="button">Build prompt</button>

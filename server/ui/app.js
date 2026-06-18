@@ -16,6 +16,7 @@ const state = {
   bulkBusy: false,
   bulkMessage: "",
   draftSaveTimer: null,
+  codexMode: "reply",
 };
 
 const el = {
@@ -83,12 +84,37 @@ const el = {
   createContactButton: document.querySelector("#createContactButton"),
   clearContactButton: document.querySelector("#clearContactButton"),
   codexCount: document.querySelector("#codexCount"),
+  codexModes: document.querySelector("#codexModes"),
+  codexQuestion: document.querySelector("#codexQuestion"),
   codexPrompt: document.querySelector("#codexPrompt"),
   buildPromptButton: document.querySelector("#buildPromptButton"),
   copyPromptButton: document.querySelector("#copyPromptButton"),
 };
 
 const emojiChoices = ["👍", "🙏", "🔥", "❤️", "😂", "👀", "✅", "🤔", "😭", "🚀"];
+
+const codexModes = {
+  reply: {
+    label: "Reply",
+    question: "What should I reply next?",
+    instruction: "Suggest a concise reply, flag any ambiguity, and preserve my tone.",
+  },
+  summary: {
+    label: "Summary",
+    question: "What matters in this thread?",
+    instruction: "Summarize the current state of the conversation, decisions, loose ends, and any time-sensitive details.",
+  },
+  followups: {
+    label: "Follow-ups",
+    question: "What should I do next?",
+    instruction: "Extract concrete follow-up actions, unanswered questions, deadlines, and people I may need to respond to.",
+  },
+  contacts: {
+    label: "Contacts",
+    question: "What contact or group-chat cleanup would help here?",
+    instruction: "Look for useful contact updates, recipient cleanup, possible new-chat recipients, and group-chat management notes.",
+  },
+};
 
 function api(path, options = {}) {
   return fetch(path, {
@@ -933,6 +959,7 @@ async function loadContacts({ force = false } = {}) {
     state.contacts = [];
     el.contactStatus.textContent = "Type 2+ chars to search cached Contacts";
     renderContacts();
+    buildCodexPrompt();
     return;
   }
 
@@ -945,10 +972,12 @@ async function loadContacts({ force = false } = {}) {
       ? `${state.contacts.length} match${state.contacts.length === 1 ? "" : "es"} · ${total} cached`
       : `${state.contacts.length} contacts · ${total} cached`;
     renderContacts();
+    buildCodexPrompt();
   } catch (error) {
     state.contacts = [];
     el.contactStatus.textContent = error.message;
     renderContacts();
+    buildCodexPrompt();
   }
 }
 
@@ -963,6 +992,7 @@ async function loadMessageSearch() {
     state.messageSearchResults = [];
     el.messageSearchStatus.textContent = "Type 2+ chars to search local cache";
     renderMessageSearchResults();
+    buildCodexPrompt();
     return;
   }
 
@@ -972,10 +1002,12 @@ async function loadMessageSearch() {
     state.messageSearchResults = payload.messages || [];
     el.messageSearchStatus.textContent = `${state.messageSearchResults.length} message match${state.messageSearchResults.length === 1 ? "" : "es"}`;
     renderMessageSearchResults();
+    buildCodexPrompt();
   } catch (error) {
     state.messageSearchResults = [];
     el.messageSearchStatus.textContent = error.message;
     renderMessageSearchResults();
+    buildCodexPrompt();
   }
 }
 
@@ -1293,34 +1325,103 @@ function threadText(limit = 18) {
   }).join("\n");
 }
 
-function buildCodexPrompt() {
-  const title = state.selected?.display_name || "No conversation selected";
-  const draft = el.composer.value.trim() || "(no draft yet)";
-  const attachmentNames = state.attachments.map((file) => file.name).join(", ") || "none";
-  const labels = state.selected ? (splitValues(el.threadTags.value).join(", ") || "none") : "none";
-  const note = state.selected ? (el.threadNote.value.trim() || "none") : "none";
-  const replyTarget = state.replyContext
-    ? `${state.replyContext.sender} at ${state.replyContext.time}: ${state.replyContext.snippet}`
-    : "none";
-  const prompt = [
-    "Help me respond to this iMessage conversation.",
-    "",
-    `Conversation: ${title}`,
+function selectedConversationContext() {
+  if (!state.selected) return "none";
+  const labels = splitValues(el.threadTags.value).join(", ") || "none";
+  const note = el.threadNote.value.trim() || "none";
+  const participants = Array.isArray(state.selected.participants) && state.selected.participants.length
+    ? state.selected.participants.slice(0, 14).join(", ")
+    : "unknown";
+  return [
+    `Conversation: ${state.selected.display_name || state.selected.conversation_id}`,
+    `Provider: ${[state.selected.source_provider, state.selected.source_service_name, state.selected.chat_type].filter(Boolean).join(" · ") || "imessage"}`,
+    `Participants: ${participants}`,
+    `Unread count: ${Number(state.selected.unread_count || 0)}`,
+    `Pinned: ${Boolean(state.selected.is_pinned)}`,
+    `Archived: ${Boolean(state.selected.is_archived)}`,
     `Thread tags: ${labels}`,
     `Private note: ${note}`,
-    `Reply target: ${replyTarget}`,
-    `Attachments I plan to send: ${attachmentNames}`,
+    `Latest preview: ${conversationPreviewText(state.selected) || "none"}`,
+  ].join("\n");
+}
+
+function codexReplyTargetText() {
+  return state.replyContext
+    ? `${state.replyContext.sender} at ${state.replyContext.time}: ${state.replyContext.snippet}`
+    : "none";
+}
+
+function plannedAttachmentText() {
+  return state.attachments.map((file) => `${file.name} (${file.type || "file"}, ${file.size} bytes)`).join(", ") || "none";
+}
+
+function messageSearchContext(limit = 8) {
+  const query = el.globalMessageSearch.value.trim();
+  if (!query) return "none";
+  const rows = state.messageSearchResults.slice(0, limit).map((result) => {
+    const sender = result.sender_name || result.sender_email || result.direction || "unknown";
+    return `${formatTime(result.message_timestamp || result.timestamp)} | ${result.display_name || result.conversation_id || "Conversation"} | ${sender}: ${messageSnippet(result, 180)}`;
+  });
+  return [
+    `Query: ${query}`,
+    rows.length ? rows.join("\n") : "No loaded results",
+  ].join("\n");
+}
+
+function contactContext(limit = 8) {
+  if (!state.contacts.length) return "none";
+  return state.contacts.slice(0, limit).map((contact) => {
+    const organization = contact.organization ? ` | ${contact.organization}` : "";
+    return `${contactDisplayName(contact)} | ${contactHandleText(contact)}${organization}`;
+  }).join("\n");
+}
+
+function renderCodexModes() {
+  for (const button of el.codexModes.querySelectorAll("button[data-codex-mode]")) {
+    const active = button.dataset.codexMode === state.codexMode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+}
+
+function codexModeConfig() {
+  return codexModes[state.codexMode] || codexModes.reply;
+}
+
+function buildCodexPrompt() {
+  const mode = codexModeConfig();
+  const question = el.codexQuestion.value.trim() || mode.question;
+  const draft = el.composer.value.trim() || "(no draft yet)";
+  const prompt = [
+    "Help me work through this local iMessage conversation.",
+    "",
+    `Mode: ${mode.label}`,
+    `Question: ${question}`,
+    `Task: ${mode.instruction}`,
+    "",
+    "Conversation state:",
+    selectedConversationContext(),
+    "",
+    `Reply target: ${codexReplyTargetText()}`,
+    `Attachments I plan to send: ${plannedAttachmentText()}`,
+    "",
+    "Loaded contact context:",
+    contactContext(),
+    "",
+    "Current message search context:",
+    messageSearchContext(),
     "",
     "Recent messages:",
-    threadText(),
+    threadText() || "none",
     "",
     "My draft:",
     draft,
     "",
-    "Please suggest a concise reply, flag any ambiguity, and preserve my tone.",
+    "Answer with only the useful output for this mode. Do not invent missing context.",
   ].join("\n");
   el.codexPrompt.value = prompt;
-  el.codexCount.textContent = `${Math.min(state.messages.length, 18)} msgs`;
+  el.codexCount.textContent = `${mode.label} · ${Math.min(state.messages.length, 18)} msgs`;
+  renderCodexModes();
   return prompt;
 }
 
@@ -1510,6 +1611,13 @@ el.copyPromptButton.addEventListener("click", async () => {
   await copyText(buildCodexPrompt());
   el.sendState.textContent = "Codex prompt copied";
 });
+el.codexQuestion.addEventListener("input", buildCodexPrompt);
+el.codexModes.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-codex-mode]");
+  if (!button) return;
+  state.codexMode = codexModes[button.dataset.codexMode] ? button.dataset.codexMode : "reply";
+  buildCodexPrompt();
+});
 el.conversationFilters.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-view]");
   if (!button) return;
@@ -1543,5 +1651,6 @@ renderContacts();
 renderDraftRecipientChips();
 renderMessageSearchResults();
 renderThreadControls();
+renderCodexModes();
 loadStatus();
 loadConversations();

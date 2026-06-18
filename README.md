@@ -161,12 +161,13 @@ global synced-message search, opening synced attachment files, cached Contacts
 search/refresh, contact creation, contact-to-thread matching, contact-to-new-chat
 recipient picking with removable recipient chips, local thread notes and tags,
 read/unread management, bridge disconnect/reconnect controls, persistent
-per-thread reply drafts, new chat draft staging, and a Codex prompt helper that
-copies recent thread context, local notes, tags, and your draft for review. Use
-`message-search` to search synced message bodies in the local bridge cache, or
-search Apple Messages text directly with the `--source imessage` or
-`--source both` options. The `messages` command shows imported attachment
-summaries, including audio attachments from Apple Messages.
+per-thread reply drafts, new chat draft staging, and a Codex prompt helper with
+reply, summary, follow-up, contact-cleanup, and custom-question modes that copy
+recent thread context, search results, contact results, local notes, tags, and
+your draft for review. Use `message-search` to search synced message bodies in
+the local bridge cache, or search Apple Messages text directly with the
+`--source imessage` or `--source both` options. The `messages` command shows
+imported attachment summaries, including audio attachments from Apple Messages.
 The group command stages a new Messages draft instead of auto-sending, because
 Messages exposes reliable scripting for existing chats but not for creating a
 brand-new group chat by API.
