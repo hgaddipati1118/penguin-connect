@@ -173,6 +173,75 @@ def _ui_file_response(filename: str, media_type: str) -> Response:
     return Response(path.read_text(encoding="utf-8"), media_type=media_type)
 
 
+def _contact_display_name(row: sqlite3.Row) -> str:
+    name = " ".join(part for part in [row["first_name"], row["last_name"]] if part).strip()
+    return name or row["organization"] or row["email"] or row["phone"] or "Contact"
+
+
+def _contact_primary_handle(row: sqlite3.Row) -> str:
+    return row["email"] or row["phone"] or row["phone_normalized"] or ""
+
+
+def _contact_to_dict(row: sqlite3.Row) -> dict:
+    display_name = _contact_display_name(row)
+    primary_handle = _contact_primary_handle(row)
+    return {
+        "id": row["id"],
+        "display_name": display_name,
+        "first_name": row["first_name"] or "",
+        "last_name": row["last_name"] or "",
+        "organization": row["organization"] or "",
+        "phone": row["phone"] or "",
+        "phone_normalized": row["phone_normalized"] or "",
+        "email": row["email"] or "",
+        "primary_handle": primary_handle,
+        "handle_type": "email" if row["email"] else ("phone" if row["phone"] or row["phone_normalized"] else ""),
+        "imported_at": row["imported_at"] or "",
+    }
+
+
+def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int) -> dict:
+    query = (search or "").strip()
+    pattern = f"%{query.lower()}%"
+    where = ""
+    params: list[object] = []
+    if query:
+        where = """
+            WHERE lower(
+                COALESCE(first_name, '') || ' ' ||
+                COALESCE(last_name, '') || ' ' ||
+                COALESCE(organization, '') || ' ' ||
+                COALESCE(phone, '') || ' ' ||
+                COALESCE(phone_normalized, '') || ' ' ||
+                COALESCE(email, '')
+            ) LIKE ?
+        """
+        params.append(pattern)
+    params.append(max(1, min(limit, 100)))
+    rows = conn.execute(
+        f"""
+        SELECT id, first_name, last_name, organization, phone, phone_normalized, email, imported_at
+        FROM contacts
+        {where}
+        ORDER BY
+            last_name COLLATE NOCASE,
+            first_name COLLATE NOCASE,
+            organization COLLATE NOCASE,
+            email COLLATE NOCASE,
+            phone COLLATE NOCASE
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    total_contacts = conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
+    return {
+        "query": query,
+        "count": len(rows),
+        "total_contacts": total_contacts,
+        "contacts": [_contact_to_dict(row) for row in rows],
+    }
+
+
 def _startup_catchup_retry_delay(result: dict, pause_seconds: float) -> float | None:
     if not result.get("success"):
         return None
@@ -376,6 +445,23 @@ def get_penguinconnect_health():
         }
     finally:
         conn.close()
+
+@app.get("/api/penguin-connect/contacts")
+@app.get("/penguin-connect/contacts")
+def search_penguinconnect_contacts(search: str = "", limit: int = Query(25, ge=1, le=100)):
+    conn = get_connection()
+    try:
+        return _search_contacts(conn, search, limit=limit)
+    finally:
+        conn.close()
+
+@app.post("/api/penguin-connect/contacts/refresh")
+@app.post("/penguin-connect/contacts/refresh")
+def refresh_penguinconnect_contacts():
+    result = refresh_contacts_now()
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error", "contacts_refresh_failed"))
+    return result
 
 @app.post("/api/penguin-connect/gmail/connect")
 @app.post("/penguin-connect/gmail/connect")

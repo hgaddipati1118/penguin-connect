@@ -4,6 +4,8 @@ const state = {
   messages: [],
   senderEmail: "",
   attachments: [],
+  contacts: [],
+  contactSearchTimer: null,
 };
 
 const el = {
@@ -11,6 +13,10 @@ const el = {
   refreshButton: document.querySelector("#refreshButton"),
   conversationSearch: document.querySelector("#conversationSearch"),
   conversationList: document.querySelector("#conversationList"),
+  contactRefreshButton: document.querySelector("#contactRefreshButton"),
+  contactSearch: document.querySelector("#contactSearch"),
+  contactStatus: document.querySelector("#contactStatus"),
+  contactList: document.querySelector("#contactList"),
   threadProvider: document.querySelector("#threadProvider"),
   threadTitle: document.querySelector("#threadTitle"),
   syncButton: document.querySelector("#syncButton"),
@@ -74,6 +80,42 @@ function basename(value) {
   return String(value || "attachment").split(/[\\/]/).pop() || "attachment";
 }
 
+function digitsOnly(value) {
+  return String(value || "").replace(/\D+/g, "");
+}
+
+function contactDisplayName(contact) {
+  return contact.display_name || [contact.first_name, contact.last_name].filter(Boolean).join(" ") || contact.organization || contact.primary_handle || "Contact";
+}
+
+function contactHandleText(contact) {
+  return [contact.phone, contact.email].filter(Boolean).join(" · ") || contact.phone_normalized || "No handle";
+}
+
+function contactNeedles(contact) {
+  const values = [
+    contact.primary_handle,
+    contact.phone,
+    contact.phone_normalized,
+    contact.email,
+    contactDisplayName(contact),
+  ].filter(Boolean);
+  const digitValues = values.map(digitsOnly).filter((value) => value.length >= 7);
+  return [...new Set([...values.map((value) => String(value).toLowerCase()), ...digitValues])];
+}
+
+function conversationHaystack(conversation) {
+  const raw = [
+    conversation.conversation_id,
+    conversation.display_name,
+    conversation.source_provider,
+    conversation.source_chat_identifier,
+    conversation.alias_email,
+    ...(conversation.participants || []),
+  ].join(" ").toLowerCase();
+  return `${raw} ${digitsOnly(raw)}`;
+}
+
 function isOwnMessage(message) {
   return message.sender_name === "Me" || message.direction === "manual_to_imessage" || message.direction === "email_to_imessage";
 }
@@ -111,16 +153,10 @@ function renderEmojiButtons() {
 
 function renderConversations() {
   const query = el.conversationSearch.value.trim().toLowerCase();
+  const digitQuery = digitsOnly(query);
   const rows = state.conversations.filter((conversation) => {
-    const haystack = [
-      conversation.conversation_id,
-      conversation.display_name,
-      conversation.source_provider,
-      conversation.source_chat_identifier,
-      conversation.alias_email,
-      ...(conversation.participants || []),
-    ].join(" ").toLowerCase();
-    return !query || haystack.includes(query);
+    const haystack = conversationHaystack(conversation);
+    return !query || haystack.includes(query) || (digitQuery.length >= 3 && haystack.includes(digitQuery));
   });
 
   el.conversationList.replaceChildren();
@@ -148,6 +184,56 @@ function renderConversations() {
     ].filter(Boolean).join(" · ");
     button.addEventListener("click", () => selectConversation(conversation));
     el.conversationList.append(button);
+  }
+}
+
+function findConversationForContact(contact) {
+  const needles = contactNeedles(contact);
+  return state.conversations.find((conversation) => {
+    const haystack = conversationHaystack(conversation);
+    return needles.some((needle) => haystack.includes(needle));
+  });
+}
+
+async function useContact(contact) {
+  const searchValue = contact.primary_handle || contact.phone_normalized || contactDisplayName(contact);
+  el.conversationSearch.value = searchValue;
+  renderConversations();
+  const match = findConversationForContact(contact);
+  if (match) {
+    el.contactStatus.textContent = `Matched ${match.display_name || "conversation"}`;
+    await selectConversation(match);
+  } else {
+    el.contactStatus.textContent = "No matching synced conversation";
+  }
+}
+
+function renderContacts() {
+  el.contactList.replaceChildren();
+  if (!state.contacts.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state compact-state";
+    empty.textContent = el.contactSearch.value.trim() ? "No contacts" : "Search Contacts";
+    el.contactList.append(empty);
+    return;
+  }
+
+  for (const contact of state.contacts) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "contact-item";
+    button.innerHTML = `
+      <span class="contact-name"></span>
+      <span class="contact-handle"></span>
+      <span class="contact-meta"></span>
+    `;
+    button.querySelector(".contact-name").textContent = contactDisplayName(contact);
+    button.querySelector(".contact-handle").textContent = contactHandleText(contact);
+    button.querySelector(".contact-meta").textContent = contact.organization && contact.organization !== contactDisplayName(contact)
+      ? contact.organization
+      : contact.handle_type || "contact";
+    button.addEventListener("click", () => useContact(contact));
+    el.contactList.append(button);
   }
 }
 
@@ -248,6 +334,36 @@ async function loadConversations() {
   } catch (error) {
     el.conversationList.innerHTML = `<div class="error-state">${error.message}</div>`;
   }
+}
+
+async function loadContacts({ force = false } = {}) {
+  const query = el.contactSearch.value.trim();
+  if (!force && query.length < 2) {
+    state.contacts = [];
+    el.contactStatus.textContent = "Type 2+ chars to search cached Contacts";
+    renderContacts();
+    return;
+  }
+
+  el.contactStatus.textContent = "Searching";
+  try {
+    const payload = await api(`/penguin-connect/contacts?search=${encodeURIComponent(query)}&limit=20`);
+    state.contacts = payload.contacts || [];
+    const total = payload.total_contacts ?? 0;
+    el.contactStatus.textContent = query
+      ? `${state.contacts.length} match${state.contacts.length === 1 ? "" : "es"} · ${total} cached`
+      : `${state.contacts.length} contacts · ${total} cached`;
+    renderContacts();
+  } catch (error) {
+    state.contacts = [];
+    el.contactStatus.textContent = error.message;
+    renderContacts();
+  }
+}
+
+function scheduleContactSearch() {
+  clearTimeout(state.contactSearchTimer);
+  state.contactSearchTimer = setTimeout(() => loadContacts(), 180);
 }
 
 async function selectConversation(conversation) {
@@ -379,8 +495,22 @@ function addFiles(fileList) {
 el.refreshButton.addEventListener("click", () => {
   loadStatus();
   loadConversations();
+  loadContacts();
 });
 el.conversationSearch.addEventListener("input", renderConversations);
+el.contactSearch.addEventListener("input", scheduleContactSearch);
+el.contactRefreshButton.addEventListener("click", async () => {
+  el.contactRefreshButton.disabled = true;
+  el.contactStatus.textContent = "Refreshing Contacts";
+  try {
+    await api("/penguin-connect/contacts/refresh", { method: "POST", body: "{}" });
+    await loadContacts({ force: true });
+  } catch (error) {
+    el.contactStatus.textContent = error.message;
+  } finally {
+    el.contactRefreshButton.disabled = false;
+  }
+});
 el.messageFilter.addEventListener("input", renderMessages);
 el.sendButton.addEventListener("click", sendMessage);
 el.clearButton.addEventListener("click", () => {
@@ -426,5 +556,6 @@ el.copyPromptButton.addEventListener("click", async () => {
 
 renderEmojiButtons();
 renderMessages();
+renderContacts();
 loadStatus();
 loadConversations();

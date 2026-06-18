@@ -30,6 +30,31 @@ class AppHttpIntegrationTests(unittest.TestCase):
                     '["owner@gmail.com", "ops@company.com"]',
                 ),
             )
+            conn.executemany(
+                """INSERT INTO contacts
+                   (first_name, last_name, organization, phone, phone_normalized, email, source_db)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                [
+                    (
+                        "Taylor",
+                        "Example",
+                        "",
+                        "+1 (512) 743-6385",
+                        "15127436385",
+                        "",
+                        "synthetic",
+                    ),
+                    (
+                        "",
+                        "",
+                        "Example Ops",
+                        "",
+                        "",
+                        "ops@example.test",
+                        "synthetic",
+                    ),
+                ],
+            )
             conn.execute(
                 """INSERT INTO penguin_connect_conversations
                    (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants,
@@ -189,6 +214,30 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(body["messages"][0]["provider_message_id"], "imsg-latest")
         self.assertEqual(body["messages"][0]["body_text"], "Latest message")
 
+    def test_contacts_endpoint_searches_cached_contacts(self):
+        with TestClient(app_module.app) as client:
+            response = client.get("/penguin-connect/contacts", params={"search": "taylor", "limit": 10})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["total_contacts"], 2)
+        self.assertEqual(body["contacts"][0]["display_name"], "Taylor Example")
+        self.assertEqual(body["contacts"][0]["primary_handle"], "+1 (512) 743-6385")
+        self.assertEqual(body["contacts"][0]["handle_type"], "phone")
+
+    def test_contacts_refresh_endpoint_runs_refresh_once(self):
+        with mock.patch(
+            "app.refresh_contacts_now",
+            return_value={"success": True, "contacts_count": 2, "display_names_updated": 1},
+        ) as mock_refresh, TestClient(app_module.app) as client:
+            mock_refresh.reset_mock()
+            response = client.post("/penguin-connect/contacts/refresh")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["contacts_count"], 2)
+        mock_refresh.assert_called_once_with()
+
     def test_ui_endpoint_serves_console_assets(self):
         with TestClient(app_module.app) as client:
             html_response = client.get("/penguin-connect/ui")
@@ -197,10 +246,12 @@ class AppHttpIntegrationTests(unittest.TestCase):
 
         self.assertEqual(html_response.status_code, 200)
         self.assertIn("PenguinConnect Console", html_response.text)
+        self.assertIn("contactSearch", html_response.text)
         self.assertEqual(css_response.status_code, 200)
-        self.assertIn(".shell", css_response.text)
+        self.assertIn(".contact-list", css_response.text)
         self.assertEqual(js_response.status_code, 200)
         self.assertIn("buildCodexPrompt", js_response.text)
+        self.assertIn("renderContacts", js_response.text)
 
     def test_messages_endpoint_uses_header_display_name_for_own_gmail_messages(self):
         conn = self._get_connection()

@@ -22,6 +22,18 @@
           <input id="conversationSearch" type="search" placeholder="Search people, groups, aliases" autocomplete="off" />
         </label>
         <div class="conversation-list" id="conversationList" role="list"></div>
+        <section class="contacts-panel" aria-label="Contacts">
+          <header class="mini-head">
+            <h3>Contacts</h3>
+            <button class="icon-button small-button" id="contactRefreshButton" type="button" title="Refresh contacts">↻</button>
+          </header>
+          <label class="search-box compact-search">
+            <span>⌕</span>
+            <input id="contactSearch" type="search" placeholder="Search names, phones, email" autocomplete="off" />
+          </label>
+          <div class="contact-status" id="contactStatus">Type to search cached Contacts</div>
+          <div class="contact-list" id="contactList" role="list"></div>
+        </section>
       </aside>
 
       <section class="thread" aria-label="Conversation">

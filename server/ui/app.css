@@ -52,10 +52,17 @@ textarea {
   background: rgba(255, 253, 248, 0.9);
 }
 
+.rail {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
 .rail-head,
 .thread-head,
 .section-head,
-.send-row {
+.send-row,
+.mini-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -116,6 +123,10 @@ h3 {
   background: var(--panel);
 }
 
+.compact-search {
+  margin: 10px 0 8px;
+}
+
 .message-filter {
   justify-content: space-between;
   margin: 12px 18px 0;
@@ -135,7 +146,8 @@ input[type="search"] {
 }
 
 .conversation-list {
-  height: calc(100vh - 160px);
+  flex: 1;
+  min-height: 180px;
   overflow: auto;
   padding: 0 10px 18px;
 }
@@ -173,6 +185,72 @@ input[type="search"] {
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.contacts-panel {
+  padding: 14px 18px 18px;
+  border-top: 1px solid var(--line);
+  background: rgba(237, 231, 221, 0.42);
+}
+
+.mini-head h3 {
+  font-size: 14px;
+}
+
+.small-button {
+  width: 30px;
+  height: 30px;
+}
+
+.contact-status {
+  min-height: 16px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.contact-list {
+  display: grid;
+  gap: 6px;
+  max-height: 220px;
+  margin-top: 8px;
+  overflow: auto;
+}
+
+.contact-item {
+  display: grid;
+  width: 100%;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.contact-item:hover {
+  border-color: var(--accent);
+}
+
+.contact-name,
+.contact-handle,
+.contact-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.contact-name {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.contact-handle,
+.contact-meta {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
 }
 
 .thread {
@@ -389,6 +467,11 @@ textarea:focus,
   color: var(--warn);
 }
 
+.compact-state {
+  padding: 10px;
+  font-size: 12px;
+}
+
 @media (max-width: 1040px) {
   .shell {
     grid-template-columns: 280px 1fr;
@@ -414,6 +497,11 @@ textarea:focus,
 
   .conversation-list {
     height: 280px;
+    flex: initial;
+  }
+
+  .contact-list {
+    max-height: 180px;
   }
 
   .compose {
