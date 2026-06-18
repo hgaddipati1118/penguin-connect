@@ -16,6 +16,7 @@ import import_contacts
 import penguin_connect_backfill
 import penguin_connect_excluded_chats
 import penguin_connect_setup
+import penguin_connect_tool
 import penguin_connect_verify_contact_resolution
 
 
@@ -316,6 +317,39 @@ class ScriptTests(unittest.TestCase):
         self.assertIn("amc_hidden", by_id)
         self.assertIn("amc_visible", by_id)
         self.assertEqual(by_id["amc_visible"]["reason"], "quiet thread")
+
+    def test_tool_search_matches_conversation_participants(self):
+        conversation = {
+            "conversation_id": "amc_123",
+            "display_name": "Weekend Plans",
+            "participants": ["+14155550101", "ava@example.com"],
+        }
+
+        self.assertTrue(penguin_connect_tool._conversation_matches(conversation, "ava@example.com"))
+        self.assertFalse(penguin_connect_tool._conversation_matches(conversation, "not-here"))
+
+    def test_tool_contact_create_script_escapes_fields(self):
+        script = penguin_connect_tool._build_contact_create_script(
+            first_name='Ava "AJ"',
+            last_name="Stone",
+            organization="Example Co",
+            phones=["+14155550101"],
+            emails=["ava@example.com"],
+        )
+
+        self.assertIn('first name:"Ava \\"AJ\\""', script)
+        self.assertIn('make new phone at end of phones of newPerson', script)
+        self.assertIn('value:"+14155550101"', script)
+        self.assertIn('make new email at end of emails of newPerson', script)
+        self.assertIn('value:"ava@example.com"', script)
+
+    def test_tool_group_draft_lists_participants_and_message(self):
+        draft = penguin_connect_tool._build_group_draft(
+            ["+14155550101", "ava@example.com"],
+            "Dinner at 7?",
+        )
+
+        self.assertEqual(draft, "To: +14155550101, ava@example.com\n\nDinner at 7?\n")
 
 
 if __name__ == "__main__":

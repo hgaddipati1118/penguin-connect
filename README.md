@@ -135,6 +135,24 @@ Manage excluded Apple Messages chats:
 ./scripts/penguin_connect_excluded_chats.py
 ```
 
+Local operator CLI for search, messages, sends, contacts, and group drafts:
+
+```bash
+./scripts/penguin_connect_tool.py status
+./scripts/penguin_connect_tool.py search "Taylor" --source both
+./scripts/penguin_connect_tool.py messages CONVERSATION_ID --limit 25
+./scripts/penguin_connect_tool.py send CONVERSATION_ID --from you@gmail.com --message "On it"
+./scripts/penguin_connect_tool.py contacts search "Taylor"
+./scripts/penguin_connect_tool.py contacts create --first Taylor --phone +14155550101
+./scripts/penguin_connect_tool.py contacts refresh
+./scripts/penguin_connect_tool.py group compose --participant +14155550101 --participant friend@example.com --message "Starting this thread" --copy --open-messages
+```
+
+The `send` command routes through an existing PenguinConnect conversation and
+keeps the normal route-safety checks. The group command stages a new Messages
+draft instead of auto-sending, because Messages exposes reliable scripting for
+existing chats but not for creating a brand-new group chat by API.
+
 ## Safety Model
 
 - Local-only runtime on `127.0.0.1`
