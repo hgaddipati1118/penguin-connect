@@ -324,18 +324,56 @@ input[type="email"]:focus {
 
 .contact-item {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  align-items: center;
   width: 100%;
-  gap: 3px;
-  padding: 9px 10px;
+  gap: 6px;
+  padding: 0;
   border: 1px solid var(--line);
   background: var(--panel);
   color: var(--ink);
-  text-align: left;
-  cursor: pointer;
 }
 
-.contact-item:hover {
+.contact-item:hover,
+.contact-item:focus-within {
   border-color: var(--accent);
+}
+
+.contact-main {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  padding: 9px 0 9px 10px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.contact-add {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  margin-right: 8px;
+  place-items: center;
+  border: 1px solid var(--line);
+  background: var(--panel-alt);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.contact-add:hover,
+.contact-add:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.contact-add:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .contact-name,

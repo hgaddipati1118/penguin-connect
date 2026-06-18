@@ -133,6 +133,10 @@ function contactHandleText(contact) {
   return [contact.phone, contact.email].filter(Boolean).join(" · ") || contact.phone_normalized || "No handle";
 }
 
+function contactRecipientHandle(contact) {
+  return contact.primary_handle || contact.phone || contact.email || contact.phone_normalized || "";
+}
+
 function contactNeedles(contact) {
   const values = [
     contact.primary_handle,
@@ -365,6 +369,42 @@ function findConversationForContact(contact) {
   });
 }
 
+function recipientCompareKey(value) {
+  const text = String(value || "").trim().toLowerCase();
+  const digits = digitsOnly(text);
+  return digits.length >= 7 && !text.includes("@") ? digits : text;
+}
+
+function addDraftRecipient(value) {
+  const recipient = String(value || "").trim();
+  if (!recipient) return false;
+
+  const recipients = splitValues(el.draftRecipients.value);
+  const key = recipientCompareKey(recipient);
+  if (new Set(recipients.map(recipientCompareKey)).has(key)) {
+    el.draftState.textContent = "Recipient already added";
+    el.draftRecipients.focus();
+    return false;
+  }
+
+  recipients.push(recipient);
+  el.draftRecipients.value = recipients.join(", ");
+  el.draftState.textContent = "Recipient added";
+  el.draftRecipients.focus();
+  return true;
+}
+
+function addContactToDraft(contact) {
+  const handle = contactRecipientHandle(contact);
+  if (!handle) {
+    el.contactStatus.textContent = "No phone or email on contact";
+    return;
+  }
+
+  const added = addDraftRecipient(handle);
+  el.contactStatus.textContent = added ? "Added contact to new chat" : "Contact already in new chat";
+}
+
 async function useContact(contact) {
   const searchValue = contact.primary_handle || contact.phone_normalized || contactDisplayName(contact);
   el.conversationSearch.value = searchValue;
@@ -408,21 +448,26 @@ function renderContacts() {
   }
 
   for (const contact of state.contacts) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "contact-item";
-    button.innerHTML = `
-      <span class="contact-name"></span>
-      <span class="contact-handle"></span>
-      <span class="contact-meta"></span>
+    const item = document.createElement("div");
+    item.className = "contact-item";
+    item.innerHTML = `
+      <button class="contact-main" type="button">
+        <span class="contact-name"></span>
+        <span class="contact-handle"></span>
+        <span class="contact-meta"></span>
+      </button>
+      <button class="contact-add" type="button" title="Add to new chat" aria-label="Add contact to new chat">+</button>
     `;
-    button.querySelector(".contact-name").textContent = contactDisplayName(contact);
-    button.querySelector(".contact-handle").textContent = contactHandleText(contact);
-    button.querySelector(".contact-meta").textContent = contact.organization && contact.organization !== contactDisplayName(contact)
+    item.querySelector(".contact-name").textContent = contactDisplayName(contact);
+    item.querySelector(".contact-handle").textContent = contactHandleText(contact);
+    item.querySelector(".contact-meta").textContent = contact.organization && contact.organization !== contactDisplayName(contact)
       ? contact.organization
       : contact.handle_type || "contact";
-    button.addEventListener("click", () => useContact(contact));
-    el.contactList.append(button);
+    item.querySelector(".contact-main").addEventListener("click", () => useContact(contact));
+    const addButton = item.querySelector(".contact-add");
+    addButton.disabled = !contactRecipientHandle(contact);
+    addButton.addEventListener("click", () => addContactToDraft(contact));
+    el.contactList.append(item);
   }
 }
 
