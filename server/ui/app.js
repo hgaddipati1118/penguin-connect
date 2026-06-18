@@ -162,6 +162,23 @@ function attachmentRows(message) {
   return [];
 }
 
+function attachmentLocalPath(attachment) {
+  if (!attachment || typeof attachment !== "object") return "";
+  return attachment.filename || attachment.path || attachment.file_path || attachment.local_path || "";
+}
+
+function attachmentLabel(attachment) {
+  const label = basename(attachment.transfer_name || attachment.filename || attachment.mime_type || "attachment");
+  return String(attachment.mime_type || "").startsWith("audio/") ? `audio:${label}` : label;
+}
+
+function attachmentUrl(message, index) {
+  if (!state.selected || !message.provider_message_id) return "";
+  const conversationId = encodeURIComponent(state.selected.conversation_id);
+  const messageId = encodeURIComponent(message.provider_message_id);
+  return `/penguin-connect/conversations/${conversationId}/attachments/${index}?provider_message_id=${messageId}`;
+}
+
 function messageSnippet(message, length = 180) {
   const text = trim(message.body_text || message.text || "", length);
   const attachments = attachmentRows(message).map((attachment) => basename(attachment.transfer_name || attachment.filename || attachment.mime_type || "attachment"));
@@ -403,11 +420,17 @@ function renderMessages() {
     item.querySelector("time").textContent = formatTime(message.message_timestamp || message.timestamp);
     item.querySelector(".message-body").textContent = message.body_text || message.text || "";
     const attachmentBox = item.querySelector(".message-attachments");
-    for (const attachment of attachments) {
-      const pill = document.createElement("span");
-      pill.className = "pill";
-      const label = basename(attachment.transfer_name || attachment.filename || attachment.mime_type || "attachment");
-      pill.textContent = String(attachment.mime_type || "").startsWith("audio/") ? `audio:${label}` : label;
+    for (const [index, attachment] of attachments.entries()) {
+      const url = attachmentLocalPath(attachment) ? attachmentUrl(message, index) : "";
+      const pill = document.createElement(url ? "a" : "span");
+      pill.className = `pill${url ? " attachment-link" : ""}`;
+      if (url) {
+        pill.href = url;
+        pill.target = "_blank";
+        pill.rel = "noopener";
+        pill.title = "Open attachment";
+      }
+      pill.textContent = attachmentLabel(attachment);
       attachmentBox.append(pill);
     }
     if (!attachments.length) attachmentBox.remove();

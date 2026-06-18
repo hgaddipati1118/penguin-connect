@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import mimetypes
 import os
 import re
 import shutil
@@ -18,7 +19,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel
 
 from action_log import action_log_path, log_action
@@ -396,6 +397,61 @@ def _message_metadata(raw_value: str | None) -> dict:
     except Exception:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _message_attachment_path(raw_path: str) -> Path:
+    value = (raw_path or "").strip()
+    if not value:
+        raise HTTPException(status_code=404, detail="attachment_file_not_found")
+    expanded = Path(value).expanduser()
+    if expanded.is_absolute():
+        candidate = expanded
+    elif value.startswith("Library/Messages/Attachments/"):
+        candidate = Path.home() / value
+    else:
+        candidate = Path.home() / "Library" / "Messages" / "Attachments" / value
+    if not candidate.exists() or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="attachment_file_not_found")
+    return candidate
+
+
+def _stored_message_attachment(
+    conn: sqlite3.Connection,
+    conversation_id: str,
+    provider_message_id: str,
+    attachment_index: int,
+) -> tuple[Path, str, str]:
+    if attachment_index < 0:
+        raise HTTPException(status_code=404, detail="attachment_not_found")
+    row = conn.execute(
+        """SELECT metadata
+           FROM penguin_connect_messages
+           WHERE conversation_id = ? AND provider_message_id = ?
+           LIMIT 1""",
+        (conversation_id, provider_message_id),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="message_not_found")
+    metadata = _message_metadata(row["metadata"])
+    attachments = metadata.get("attachments") if isinstance(metadata.get("attachments"), list) else []
+    if attachment_index >= len(attachments) or not isinstance(attachments[attachment_index], dict):
+        raise HTTPException(status_code=404, detail="attachment_not_found")
+
+    attachment = attachments[attachment_index]
+    raw_path = ""
+    for key in ("filename", "path", "file_path", "local_path"):
+        raw_path = str(attachment.get(key) or "").strip()
+        if raw_path:
+            break
+    path = _message_attachment_path(raw_path)
+    display_name = _safe_ui_attachment_filename(
+        str(attachment.get("transfer_name") or path.name or "attachment"),
+        attachment_index + 1,
+    )
+    media_type = str(attachment.get("mime_type") or "").strip()
+    if not media_type:
+        media_type = mimetypes.guess_type(display_name)[0] or "application/octet-stream"
+    return path, display_name, media_type
 
 
 def _search_messages(conn: sqlite3.Connection, query: str, *, limit: int) -> dict:
@@ -814,6 +870,27 @@ def get_penguinconnect_conversation_messages(conversation_id: str, limit: int = 
         return result
     finally:
         conn.close()
+
+
+@app.get("/api/penguin-connect/conversations/{conversation_id}/attachments/{attachment_index}")
+@app.get("/penguin-connect/conversations/{conversation_id}/attachments/{attachment_index}")
+def get_penguinconnect_conversation_attachment(
+    conversation_id: str,
+    attachment_index: int,
+    provider_message_id: str = Query(...),
+):
+    conn = get_connection()
+    try:
+        path, display_name, media_type = _stored_message_attachment(
+            conn,
+            conversation_id,
+            provider_message_id,
+            attachment_index,
+        )
+        return FileResponse(path, media_type=media_type, filename=display_name)
+    finally:
+        conn.close()
+
 
 @app.post("/api/penguin-connect/conversations/{conversation_id}/read-state")
 @app.post("/penguin-connect/conversations/{conversation_id}/read-state")

@@ -451,6 +451,17 @@ input[type="email"]:focus {
   font-size: 11px;
 }
 
+.attachment-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.attachment-link:hover,
+.attachment-link:focus-visible {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
 .compose {
   display: grid;
   align-content: start;
