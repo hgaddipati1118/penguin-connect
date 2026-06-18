@@ -215,6 +215,53 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(body["messages"][0]["provider_message_id"], "imsg-latest")
         self.assertEqual(body["messages"][0]["body_text"], "Latest message")
 
+    def test_conversations_endpoint_includes_unread_count(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                "UPDATE penguin_connect_messages SET is_read = 0 WHERE provider_message_id = ?",
+                ("imsg-latest",),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with TestClient(app_module.app) as client:
+            response = client.get("/penguin-connect/conversations")
+
+        self.assertEqual(response.status_code, 200)
+        conversation = response.json()["conversations"][0]
+        self.assertEqual(conversation["conversation_id"], "amc_test")
+        self.assertEqual(conversation["unread_count"], 1)
+        self.assertTrue(conversation["has_unread"])
+
+    def test_read_state_endpoint_marks_conversation_read_and_unread(self):
+        with TestClient(app_module.app) as client:
+            unread_response = client.post("/penguin-connect/conversations/amc_test/read-state", json={"unread": True})
+            read_response = client.post("/penguin-connect/conversations/amc_test/read-state", json={"unread": False})
+
+        self.assertEqual(unread_response.status_code, 200)
+        unread_body = unread_response.json()
+        self.assertEqual(unread_body["updated_messages"], 2)
+        self.assertEqual(unread_body["unread_count"], 2)
+        self.assertTrue(unread_body["has_unread"])
+
+        self.assertEqual(read_response.status_code, 200)
+        read_body = read_response.json()
+        self.assertEqual(read_body["updated_messages"], 2)
+        self.assertEqual(read_body["unread_count"], 0)
+        self.assertFalse(read_body["has_unread"])
+
+        conn = self._get_connection()
+        try:
+            unread_count = conn.execute(
+                "SELECT COUNT(*) FROM penguin_connect_messages WHERE conversation_id = ? AND COALESCE(is_read, 0) = 0",
+                ("amc_test",),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(unread_count, 0)
+
     def test_message_search_endpoint_searches_cached_messages(self):
         with TestClient(app_module.app) as client:
             response = client.get("/penguin-connect/messages/search", params={"query": "latest", "limit": 10})
@@ -349,16 +396,21 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("globalMessageSearch", html_response.text)
         self.assertIn("stageDraftButton", html_response.text)
         self.assertIn("createContactButton", html_response.text)
+        self.assertIn("markReadButton", html_response.text)
+        self.assertIn("connectionButton", html_response.text)
         self.assertEqual(css_response.status_code, 200)
         self.assertIn(".contact-list", css_response.text)
         self.assertIn(".search-result", css_response.text)
         self.assertIn(".toggle-row", css_response.text)
+        self.assertIn(".unread-badge", css_response.text)
         self.assertEqual(js_response.status_code, 200)
         self.assertIn("buildCodexPrompt", js_response.text)
         self.assertIn("renderContacts", js_response.text)
         self.assertIn("renderMessageSearchResults", js_response.text)
         self.assertIn("stageDraft", js_response.text)
         self.assertIn("createContact", js_response.text)
+        self.assertIn("setReadState", js_response.text)
+        self.assertIn("toggleConnection", js_response.text)
 
     def test_messages_endpoint_uses_header_display_name_for_own_gmail_messages(self):
         conn = self._get_connection()

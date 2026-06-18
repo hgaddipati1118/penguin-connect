@@ -199,12 +199,48 @@ input[type="email"]:focus {
   background: var(--panel);
 }
 
+.conversation-title-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+
 .conversation-name {
   overflow: hidden;
+  flex: 1;
   font-size: 15px;
   font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.conversation-badges {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
+.badge {
+  min-width: 20px;
+  max-width: 74px;
+  overflow: hidden;
+  padding: 2px 5px;
+  border: 1px solid var(--line);
+  background: var(--panel-alt);
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.1;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.unread-badge {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
 }
 
 .conversation-meta {
@@ -294,6 +330,14 @@ input[type="email"]:focus {
   flex-wrap: wrap;
 }
 
+.thread-status {
+  min-height: 16px;
+  margin: 8px 18px 0;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
 .message-list {
   overflow: auto;
   padding: 18px;
@@ -365,6 +409,10 @@ input[type="email"]:focus {
   margin-left: auto;
   border-color: rgba(17, 100, 86, 0.28);
   background: #eff8f3;
+}
+
+.message.unread {
+  border-color: rgba(168, 83, 27, 0.35);
 }
 
 .message.focused {

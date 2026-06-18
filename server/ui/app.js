@@ -23,7 +23,11 @@ const el = {
   threadProvider: document.querySelector("#threadProvider"),
   threadTitle: document.querySelector("#threadTitle"),
   syncButton: document.querySelector("#syncButton"),
+  markReadButton: document.querySelector("#markReadButton"),
+  markUnreadButton: document.querySelector("#markUnreadButton"),
+  connectionButton: document.querySelector("#connectionButton"),
   copyThreadButton: document.querySelector("#copyThreadButton"),
+  threadStatus: document.querySelector("#threadStatus"),
   globalMessageSearch: document.querySelector("#globalMessageSearch"),
   messageSearchStatus: document.querySelector("#messageSearchStatus"),
   messageSearchResults: document.querySelector("#messageSearchResults"),
@@ -208,10 +212,32 @@ function renderConversations() {
     button.type = "button";
     button.className = `conversation-item ${state.selected?.conversation_id === conversation.conversation_id ? "active" : ""}`;
     button.innerHTML = `
-      <span class="conversation-name"></span>
+      <span class="conversation-title-row">
+        <span class="conversation-name"></span>
+        <span class="conversation-badges"></span>
+      </span>
       <span class="conversation-meta"></span>
     `;
     button.querySelector(".conversation-name").textContent = conversation.display_name || "Conversation";
+    const badges = button.querySelector(".conversation-badges");
+    if (conversation.unread_count) {
+      const badge = document.createElement("span");
+      badge.className = "badge unread-badge";
+      badge.textContent = conversation.unread_count > 99 ? "99+" : String(conversation.unread_count);
+      badges.append(badge);
+    }
+    if (conversation.status && conversation.status !== "active") {
+      const badge = document.createElement("span");
+      badge.className = "badge status-badge";
+      badge.textContent = conversation.status;
+      badges.append(badge);
+    }
+    if (conversation.excluded) {
+      const badge = document.createElement("span");
+      badge.className = "badge status-badge";
+      badge.textContent = "excluded";
+      badges.append(badge);
+    }
     button.querySelector(".conversation-meta").textContent = [
       conversation.chat_type || "chat",
       conversation.source_service_name || conversation.source_provider || "source",
@@ -361,7 +387,8 @@ function renderMessages() {
   for (const message of rows) {
     const item = document.createElement("article");
     const focused = state.focusMessageId && message.provider_message_id === state.focusMessageId;
-    item.className = `message ${isOwnMessage(message) ? "mine" : ""} ${focused ? "focused" : ""}`;
+    const unread = message.is_read === false || message.is_read === 0;
+    item.className = `message ${isOwnMessage(message) ? "mine" : ""} ${unread ? "unread" : ""} ${focused ? "focused" : ""}`;
     item.dataset.messageId = message.provider_message_id || "";
     const attachments = attachmentRows(message);
     item.innerHTML = `
@@ -402,6 +429,38 @@ function renderAttachments() {
     });
     el.attachmentList.append(chip);
   }
+}
+
+function renderThreadControls() {
+  const selected = state.selected;
+  const hasSelection = Boolean(selected);
+  el.markReadButton.disabled = !hasSelection;
+  el.markUnreadButton.disabled = !hasSelection;
+  el.connectionButton.disabled = !hasSelection;
+  el.copyThreadButton.disabled = !hasSelection;
+  el.syncButton.disabled = false;
+  if (!hasSelection) {
+    el.threadStatus.textContent = "No conversation selected";
+    el.connectionButton.textContent = "Disconnect";
+    return;
+  }
+  const unread = Number(selected.unread_count || 0);
+  const status = selected.status || "active";
+  const excluded = selected.excluded ? " · excluded" : "";
+  el.threadStatus.textContent = `${status}${excluded} · ${unread} unread · ${selected.alias_email || "no alias"}`;
+  el.connectionButton.textContent = status === "active" ? "Disconnect" : "Reconnect";
+}
+
+function syncSelectedConversation(fields) {
+  if (!state.selected) return;
+  Object.assign(state.selected, fields);
+  state.conversations = state.conversations.map((conversation) => (
+    conversation.conversation_id === state.selected.conversation_id
+      ? { ...conversation, ...fields }
+      : conversation
+  ));
+  renderConversations();
+  renderThreadControls();
 }
 
 async function loadStatus() {
@@ -493,6 +552,7 @@ async function selectConversation(conversation) {
   state.messages = [];
   el.threadProvider.textContent = [conversation.source_provider, conversation.source_service_name, conversation.chat_type].filter(Boolean).join(" · ");
   el.threadTitle.textContent = conversation.display_name || conversation.conversation_id;
+  renderThreadControls();
   renderConversations();
   renderMessages();
   await loadMessages();
@@ -571,6 +631,61 @@ async function sendMessage() {
     el.sendState.textContent = error.message;
   } finally {
     el.sendButton.disabled = false;
+  }
+}
+
+async function setReadState(unread) {
+  if (!state.selected) return;
+  const label = unread ? "Marking unread" : "Marking read";
+  el.threadStatus.textContent = label;
+  el.markReadButton.disabled = true;
+  el.markUnreadButton.disabled = true;
+  try {
+    const result = await api(`/penguin-connect/conversations/${encodeURIComponent(state.selected.conversation_id)}/read-state`, {
+      method: "POST",
+      body: JSON.stringify({ unread }),
+    });
+    syncSelectedConversation({
+      unread_count: result.unread_count || 0,
+      has_unread: Boolean(result.has_unread),
+    });
+    state.messages = state.messages.map((message) => ({ ...message, is_read: !unread }));
+    renderMessages();
+  } catch (error) {
+    el.threadStatus.textContent = error.message;
+  } finally {
+    renderThreadControls();
+  }
+}
+
+async function toggleConnection() {
+  if (!state.selected) return;
+  const active = (state.selected.status || "active") === "active";
+  if (active && !window.confirm("Disconnect this local bridge conversation? Cached messages for this bridge thread will be removed.")) {
+    return;
+  }
+  el.connectionButton.disabled = true;
+  el.threadStatus.textContent = active ? "Disconnecting" : "Reconnecting";
+  const path = active ? "disconnect" : "reconnect";
+  try {
+    const result = await api(`/penguin-connect/conversations/${encodeURIComponent(state.selected.conversation_id)}/${path}`, {
+      method: "POST",
+      body: "{}",
+    });
+    syncSelectedConversation({
+      status: result.status || (active ? "disconnected" : "active"),
+      alias_email: result.alias_email || (active ? "" : state.selected.alias_email),
+      unread_count: active ? 0 : state.selected.unread_count || 0,
+      has_unread: active ? false : Boolean(state.selected.unread_count),
+    });
+    if (active) {
+      state.messages = [];
+      renderMessages();
+    }
+  } catch (error) {
+    el.threadStatus.textContent = error.message;
+  } finally {
+    renderThreadControls();
   }
 }
 
@@ -723,6 +838,9 @@ el.contactRefreshButton.addEventListener("click", async () => {
 });
 el.messageFilter.addEventListener("input", renderMessages);
 el.sendButton.addEventListener("click", sendMessage);
+el.markReadButton.addEventListener("click", () => setReadState(false));
+el.markUnreadButton.addEventListener("click", () => setReadState(true));
+el.connectionButton.addEventListener("click", toggleConnection);
 el.clearButton.addEventListener("click", () => {
   el.composer.value = "";
   state.attachments = [];
@@ -772,5 +890,6 @@ renderEmojiButtons();
 renderMessages();
 renderContacts();
 renderMessageSearchResults();
+renderThreadControls();
 loadStatus();
 loadConversations();

@@ -91,6 +91,9 @@ class PenguinConnectDraftCreateRequest(BaseModel):
     copy_to_clipboard: bool = True
     open_messages: bool = True
 
+class PenguinConnectReadStateRequest(BaseModel):
+    unread: bool = False
+
 def _map_sqlite_error(exc: sqlite3.OperationalError) -> HTTPException:
     msg = str(exc).lower()
     if "unable to open database file" in msg:
@@ -453,6 +456,53 @@ def _search_messages(conn: sqlite3.Connection, query: str, *, limit: int) -> dic
     return {"query": search, "count": len(messages), "messages": messages}
 
 
+def _conversation_unread_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    rows = conn.execute(
+        """
+        SELECT conversation_id, COUNT(*) as unread_count
+        FROM penguin_connect_messages
+        WHERE COALESCE(is_read, 0) = 0
+        GROUP BY conversation_id
+        """
+    ).fetchall()
+    return {row["conversation_id"]: int(row["unread_count"] or 0) for row in rows}
+
+
+def _attach_conversation_unread_counts(conn: sqlite3.Connection, result: dict) -> dict:
+    counts = _conversation_unread_counts(conn)
+    for conversation in result.get("conversations") or []:
+        if isinstance(conversation, dict):
+            unread_count = counts.get(conversation.get("conversation_id"), 0)
+            conversation["unread_count"] = unread_count
+            conversation["has_unread"] = unread_count > 0
+    return result
+
+
+def _set_conversation_read_state(conn: sqlite3.Connection, conversation_id: str, *, unread: bool) -> dict:
+    conv = conn.execute(
+        "SELECT conversation_id, status FROM penguin_connect_conversations WHERE conversation_id = ?",
+        (conversation_id,),
+    ).fetchone()
+    if not conv:
+        return {"success": False, "error": "conversation_not_found"}
+
+    updated = conn.execute(
+        "UPDATE penguin_connect_messages SET is_read = ? WHERE conversation_id = ?",
+        (0 if unread else 1, conversation_id),
+    ).rowcount
+    unread_count = conn.execute(
+        "SELECT COUNT(*) FROM penguin_connect_messages WHERE conversation_id = ? AND COALESCE(is_read, 0) = 0",
+        (conversation_id,),
+    ).fetchone()[0]
+    return {
+        "success": True,
+        "conversation_id": conversation_id,
+        "updated_messages": updated,
+        "unread_count": int(unread_count or 0),
+        "has_unread": int(unread_count or 0) > 0,
+    }
+
+
 def _startup_catchup_retry_delay(result: dict, pause_seconds: float) -> float | None:
     if not result.get("success"):
         return None
@@ -745,6 +795,7 @@ def get_penguinconnect_conversations():
     conn = get_connection()
     try:
         result = penguinconnect_list_conversations(conn)
+        result = _attach_conversation_unread_counts(conn, result)
         conn.commit()
         return result
     except sqlite3.OperationalError as exc:
@@ -760,6 +811,27 @@ def get_penguinconnect_conversation_messages(conversation_id: str, limit: int = 
         result = penguinconnect_get_conversation_messages(conn, conversation_id, limit=limit)
         if not result.get("found"):
             raise HTTPException(status_code=404, detail="conversation_not_found")
+        return result
+    finally:
+        conn.close()
+
+@app.post("/api/penguin-connect/conversations/{conversation_id}/read-state")
+@app.post("/penguin-connect/conversations/{conversation_id}/read-state")
+def set_penguinconnect_conversation_read_state(conversation_id: str, req: PenguinConnectReadStateRequest):
+    conn = get_connection()
+    try:
+        result = _set_conversation_read_state(conn, conversation_id, unread=req.unread)
+        log_action(
+            "api_set_conversation_read_state",
+            conversation_id=conversation_id,
+            unread=bool(req.unread),
+            success=bool(result.get("success")),
+            error=result.get("error"),
+            updated_messages=result.get("updated_messages"),
+        )
+        if not result.get("success"):
+            raise HTTPException(status_code=404, detail=result.get("error", "conversation_not_found"))
+        conn.commit()
         return result
     finally:
         conn.close()
