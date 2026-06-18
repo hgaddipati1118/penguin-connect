@@ -336,6 +336,10 @@ def _contact_primary_handle(row: sqlite3.Row) -> str:
     return row["email"] or row["phone"] or row["phone_normalized"] or ""
 
 
+def _contact_phone_search_key(value: str) -> str:
+    return re.sub(r"\D+", "", value or "")
+
+
 def _contact_to_dict(row: sqlite3.Row) -> dict:
     display_name = _contact_display_name(row)
     primary_handle = _contact_primary_handle(row)
@@ -360,17 +364,24 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int) -> di
     where = ""
     params: list[object] = []
     if query:
-        where = """
-            WHERE lower(
+        phone_query = _contact_phone_search_key(query)
+        conditions = [
+            """lower(
                 COALESCE(first_name, '') || ' ' ||
                 COALESCE(last_name, '') || ' ' ||
                 COALESCE(organization, '') || ' ' ||
                 COALESCE(phone, '') || ' ' ||
                 COALESCE(phone_normalized, '') || ' ' ||
                 COALESCE(email, '')
-            ) LIKE ?
-        """
+            ) LIKE ?""",
+        ]
         params.append(pattern)
+        if len(phone_query) >= 3:
+            conditions.append("COALESCE(phone_normalized, '') LIKE ?")
+            params.append(f"%{phone_query}%")
+        where = """
+            WHERE ({conditions})
+        """.format(conditions=" OR ".join(conditions))
     params.append(max(1, min(limit, 100)))
     rows = conn.execute(
         f"""

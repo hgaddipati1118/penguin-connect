@@ -526,12 +526,18 @@ input[type="email"]:focus {
   background: var(--panel);
 }
 
+.thread-person.known-contact {
+  border-color: rgba(17, 100, 86, 0.28);
+  background: rgba(239, 248, 243, 0.7);
+}
+
 .thread-person-main {
   display: grid;
   min-width: 0;
   gap: 3px;
 }
 
+.thread-person-name,
 .thread-person-handle,
 .thread-person-type {
   overflow: hidden;
@@ -539,9 +545,20 @@ input[type="email"]:focus {
   white-space: nowrap;
 }
 
-.thread-person-handle {
+.thread-person-name {
   font-size: 13px;
   font-weight: 650;
+}
+
+.thread-person-handle {
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+.thread-person.unknown-contact .thread-person-name {
+  color: var(--muted);
+  font-weight: 500;
 }
 
 .thread-person-type {
@@ -572,6 +589,11 @@ input[type="email"]:focus {
 .thread-person-actions button:focus-visible {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+.thread-person-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .media-filters {

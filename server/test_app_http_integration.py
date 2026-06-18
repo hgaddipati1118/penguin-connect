@@ -435,6 +435,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
     def test_contacts_endpoint_searches_cached_contacts(self):
         with TestClient(app_module.app) as client:
             response = client.get("/penguin-connect/contacts", params={"search": "taylor", "limit": 10})
+            phone_response = client.get("/penguin-connect/contacts", params={"search": "+15127436385", "limit": 10})
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
@@ -443,6 +444,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(body["contacts"][0]["display_name"], "Taylor Example")
         self.assertEqual(body["contacts"][0]["primary_handle"], "+1 (512) 743-6385")
         self.assertEqual(body["contacts"][0]["handle_type"], "phone")
+        self.assertEqual(phone_response.status_code, 200)
+        phone_body = phone_response.json()
+        self.assertEqual(phone_body["count"], 1)
+        self.assertEqual(phone_body["contacts"][0]["display_name"], "Taylor Example")
 
     def test_contacts_refresh_endpoint_runs_refresh_once(self):
         with mock.patch(
@@ -567,6 +572,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("#codexQuestion", css_response.text)
         self.assertIn(".thread-people", css_response.text)
         self.assertIn(".thread-person-actions", css_response.text)
+        self.assertIn(".thread-person-name", css_response.text)
+        self.assertIn(".thread-person.known-contact", css_response.text)
         self.assertIn(".media-filters", css_response.text)
         self.assertIn(".thread-media", css_response.text)
         self.assertIn(".media-item", css_response.text)
@@ -577,6 +584,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("contactContext", js_response.text)
         self.assertIn("renderCodexModes", js_response.text)
         self.assertIn("conversationParticipants", js_response.text)
+        self.assertIn("loadThreadContactMatches", js_response.text)
+        self.assertIn("contactMatchesHandle", js_response.text)
         self.assertIn("renderThreadPeople", js_response.text)
         self.assertIn("fillContactFormFromHandle", js_response.text)
         self.assertIn("renderContacts", js_response.text)

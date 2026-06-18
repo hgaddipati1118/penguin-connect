@@ -7,6 +7,8 @@ const state = {
   attachments: [],
   contacts: [],
   contactSearchTimer: null,
+  threadContactMatches: {},
+  threadContactToken: 0,
   messageSearchResults: [],
   messageSearchTimer: null,
   focusMessageId: "",
@@ -214,6 +216,45 @@ function contactNeedles(contact) {
   return [...new Set([...values.map((value) => String(value).toLowerCase()), ...digitValues])];
 }
 
+function contactMatchesHandle(contact, handle) {
+  const key = recipientCompareKey(handle);
+  if (!contact || !key) return false;
+  const values = [
+    contact.primary_handle,
+    contact.phone,
+    contact.phone_normalized,
+    contact.email,
+  ].filter(Boolean);
+  if (handleType(handle) === "phone") {
+    const handleDigits = digitsOnly(handle);
+    const handleTail = handleDigits.length > 10 ? handleDigits.slice(-10) : handleDigits;
+    return values.some((value) => {
+      const digits = digitsOnly(value);
+      if (digits.length < 7 || handleTail.length < 7) return false;
+      const digitsTail = digits.length > 10 ? digits.slice(-10) : digits;
+      return digits === handleDigits || digitsTail === handleTail || digits.includes(handleDigits) || handleDigits.includes(digits);
+    });
+  }
+  return values.some((value) => recipientCompareKey(value) === key);
+}
+
+function bestContactForHandle(handle, contacts) {
+  return (contacts || []).find((contact) => contactMatchesHandle(contact, handle)) || null;
+}
+
+function threadContactKey(handle) {
+  return recipientCompareKey(handle);
+}
+
+function threadContactMatch(handle) {
+  return state.threadContactMatches[threadContactKey(handle)] || null;
+}
+
+function resetThreadContactMatches() {
+  state.threadContactMatches = {};
+  state.threadContactToken += 1;
+}
+
 function handleType(value) {
   const text = String(value || "").trim();
   if (!text) return "";
@@ -241,6 +282,40 @@ function conversationParticipants(conversation = state.selected) {
     participants.push({ handle, type });
   }
   return participants;
+}
+
+async function loadThreadContactMatches(conversation = state.selected) {
+  if (!conversation) return;
+  const participants = conversationParticipants(conversation);
+  const token = state.threadContactToken + 1;
+  state.threadContactToken = token;
+  if (!participants.length) {
+    state.threadContactMatches = {};
+    renderThreadPeople();
+    buildCodexPrompt();
+    return;
+  }
+
+  const entries = await Promise.all(participants.map(async (participant) => {
+    const key = threadContactKey(participant.handle);
+    if (!key) return null;
+    try {
+      const payload = await api(`/penguin-connect/contacts?search=${encodeURIComponent(participant.handle)}&limit=5`);
+      const match = bestContactForHandle(participant.handle, payload.contacts || []);
+      return match ? [key, match] : null;
+    } catch (_error) {
+      return null;
+    }
+  }));
+
+  if (token !== state.threadContactToken || state.selected?.conversation_id !== conversation.conversation_id) return;
+  const matches = {};
+  for (const entry of entries) {
+    if (entry) matches[entry[0]] = entry[1];
+  }
+  state.threadContactMatches = matches;
+  renderThreadPeople();
+  buildCodexPrompt();
 }
 
 function conversationHaystack(conversation) {
@@ -835,8 +910,9 @@ async function useContact(contact) {
 function renderThreadPeople() {
   el.threadPeople.replaceChildren();
   const participants = conversationParticipants();
+  const matchedCount = participants.filter((participant) => threadContactMatch(participant.handle)).length;
   el.threadPeopleState.textContent = state.selected
-    ? `${participants.length} participant${participants.length === 1 ? "" : "s"}`
+    ? `${participants.length} participant${participants.length === 1 ? "" : "s"}${matchedCount ? ` · ${matchedCount} saved` : ""}`
     : "No thread";
   if (!state.selected) {
     const empty = document.createElement("div");
@@ -854,10 +930,12 @@ function renderThreadPeople() {
   }
 
   for (const participant of participants) {
+    const contact = threadContactMatch(participant.handle);
     const item = document.createElement("div");
-    item.className = "thread-person";
+    item.className = `thread-person ${contact ? "known-contact" : "unknown-contact"}`;
     item.innerHTML = `
       <div class="thread-person-main">
+        <span class="thread-person-name"></span>
         <span class="thread-person-handle"></span>
         <span class="thread-person-type"></span>
       </div>
@@ -867,11 +945,17 @@ function renderThreadPeople() {
         <button type="button" data-action="contact">Create</button>
       </div>
     `;
+    item.querySelector(".thread-person-name").textContent = contact ? contactDisplayName(contact) : "Unknown contact";
     item.querySelector(".thread-person-handle").textContent = participant.handle;
-    item.querySelector(".thread-person-type").textContent = participant.type;
+    item.querySelector(".thread-person-type").textContent = contact
+      ? `${participant.type} · ${contactHandleText(contact)}`
+      : participant.type;
     item.querySelector('[data-action="search"]').addEventListener("click", () => searchContactHandle(participant.handle));
     item.querySelector('[data-action="draft"]').addEventListener("click", () => addParticipantToDraft(participant.handle));
-    item.querySelector('[data-action="contact"]').addEventListener("click", () => fillContactFormFromHandle(participant.handle));
+    const contactButton = item.querySelector('[data-action="contact"]');
+    contactButton.textContent = contact ? "Saved" : "Create";
+    contactButton.disabled = Boolean(contact);
+    contactButton.addEventListener("click", () => fillContactFormFromHandle(participant.handle));
     el.threadPeople.append(item);
   }
 }
@@ -1378,6 +1462,7 @@ function scheduleMessageSearch() {
 async function selectConversation(conversation) {
   state.selected = conversation;
   state.messages = [];
+  resetThreadContactMatches();
   clearReplyContext();
   el.composer.value = draftTextForConversation(conversation);
   el.threadProvider.textContent = [conversation.source_provider, conversation.source_service_name, conversation.chat_type].filter(Boolean).join(" · ");
@@ -1388,6 +1473,7 @@ async function selectConversation(conversation) {
   renderThreadMedia();
   renderConversations();
   renderMessages();
+  loadThreadContactMatches(conversation);
   await loadMessages();
 }
 
@@ -1692,9 +1778,12 @@ function selectedConversationContext() {
   if (!state.selected) return "none";
   const labels = splitValues(el.threadTags.value).join(", ") || "none";
   const note = el.threadNote.value.trim() || "none";
-  const participants = Array.isArray(state.selected.participants) && state.selected.participants.length
-    ? state.selected.participants.slice(0, 14).join(", ")
-    : "unknown";
+  const participants = conversationParticipants().slice(0, 14).map((participant) => {
+    const contact = threadContactMatch(participant.handle);
+    return contact
+      ? `${contactDisplayName(contact)} <${participant.handle}>`
+      : `${participant.handle} (unknown contact)`;
+  }).join(", ") || "unknown";
   return [
     `Conversation: ${state.selected.display_name || state.selected.conversation_id}`,
     `Provider: ${[state.selected.source_provider, state.selected.source_service_name, state.selected.chat_type].filter(Boolean).join(" · ") || "imessage"}`,
@@ -1875,6 +1964,7 @@ async function createContact() {
     const searchValue = [firstName, lastName].filter(Boolean).join(" ") || organization || phones[0] || emails[0] || "";
     if (searchValue) el.contactSearch.value = searchValue;
     await loadContacts({ force: true });
+    await loadThreadContactMatches();
     el.createContactState.textContent = "Created";
   } catch (error) {
     el.createContactState.textContent = error.message;
@@ -1897,6 +1987,7 @@ el.contactRefreshButton.addEventListener("click", async () => {
   try {
     await api("/penguin-connect/contacts/refresh", { method: "POST", body: "{}" });
     await loadContacts({ force: true });
+    await loadThreadContactMatches();
   } catch (error) {
     el.contactStatus.textContent = error.message;
   } finally {
