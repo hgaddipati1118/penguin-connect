@@ -236,10 +236,19 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertTrue(conversation["has_unread"])
         self.assertFalse(conversation["is_pinned"])
         self.assertFalse(conversation["is_archived"])
+        self.assertEqual(conversation["note"], "")
+        self.assertEqual(conversation["labels"], [])
 
     def test_conversation_management_endpoint_pins_and_archives(self):
         with TestClient(app_module.app) as client:
-            pin_response = client.post("/penguin-connect/conversations/amc_test/management", json={"pinned": True})
+            pin_response = client.post(
+                "/penguin-connect/conversations/amc_test/management",
+                json={
+                    "pinned": True,
+                    "note": "Follow up after intro",
+                    "labels": ["VIP", "#Hiring", "vip", " ".join(["long"] * 20)],
+                },
+            )
             pinned_list_response = client.get("/penguin-connect/conversations")
             archive_response = client.post("/penguin-connect/conversations/amc_test/management", json={"archived": True})
             archived_list_response = client.get("/penguin-connect/conversations")
@@ -250,19 +259,27 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertTrue(pin_body["success"])
         self.assertTrue(pin_body["is_pinned"])
         self.assertFalse(pin_body["is_archived"])
+        self.assertEqual(pin_body["note"], "Follow up after intro")
+        self.assertEqual(pin_body["labels"], ["VIP", "Hiring", "long long long long long long lo"])
 
         pinned_conversation = pinned_list_response.json()["conversations"][0]
         self.assertTrue(pinned_conversation["is_pinned"])
         self.assertFalse(pinned_conversation["is_archived"])
+        self.assertEqual(pinned_conversation["note"], "Follow up after intro")
+        self.assertEqual(pinned_conversation["labels"], ["VIP", "Hiring", "long long long long long long lo"])
 
         self.assertEqual(archive_response.status_code, 200)
         archive_body = archive_response.json()
         self.assertFalse(archive_body["is_pinned"])
         self.assertTrue(archive_body["is_archived"])
+        self.assertEqual(archive_body["note"], "Follow up after intro")
+        self.assertEqual(archive_body["labels"], ["VIP", "Hiring", "long long long long long long lo"])
 
         archived_conversation = archived_list_response.json()["conversations"][0]
         self.assertFalse(archived_conversation["is_pinned"])
         self.assertTrue(archived_conversation["is_archived"])
+        self.assertEqual(archived_conversation["note"], "Follow up after intro")
+        self.assertEqual(archived_conversation["labels"], ["VIP", "Hiring", "long long long long long long lo"])
 
         self.assertEqual(unarchive_response.status_code, 200)
         unarchive_body = unarchive_response.json()
@@ -499,22 +516,29 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("conversationFilters", html_response.text)
         self.assertIn("pinButton", html_response.text)
         self.assertIn("archiveButton", html_response.text)
+        self.assertIn("threadTags", html_response.text)
+        self.assertIn("threadNote", html_response.text)
+        self.assertIn("saveManagementButton", html_response.text)
         self.assertEqual(css_response.status_code, 200)
         self.assertIn(".contact-list", css_response.text)
         self.assertIn(".search-result", css_response.text)
         self.assertIn(".toggle-row", css_response.text)
         self.assertIn(".unread-badge", css_response.text)
+        self.assertIn(".label-badge", css_response.text)
         self.assertIn(".attachment-link", css_response.text)
         self.assertIn(".conversation-filters", css_response.text)
+        self.assertIn(".thread-management", css_response.text)
         self.assertEqual(js_response.status_code, 200)
         self.assertIn("buildCodexPrompt", js_response.text)
         self.assertIn("renderContacts", js_response.text)
         self.assertIn("renderMessageSearchResults", js_response.text)
         self.assertIn("renderConversationFilters", js_response.text)
+        self.assertIn("renderManagementFields", js_response.text)
         self.assertIn("stageDraft", js_response.text)
         self.assertIn("createContact", js_response.text)
         self.assertIn("setReadState", js_response.text)
         self.assertIn("setConversationManagement", js_response.text)
+        self.assertIn("saveConversationManagement", js_response.text)
         self.assertIn("toggleConnection", js_response.text)
         self.assertIn("attachmentUrl", js_response.text)
 

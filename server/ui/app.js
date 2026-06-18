@@ -32,6 +32,10 @@ const el = {
   connectionButton: document.querySelector("#connectionButton"),
   copyThreadButton: document.querySelector("#copyThreadButton"),
   threadStatus: document.querySelector("#threadStatus"),
+  threadTags: document.querySelector("#threadTags"),
+  threadNote: document.querySelector("#threadNote"),
+  saveManagementButton: document.querySelector("#saveManagementButton"),
+  managementState: document.querySelector("#managementState"),
   globalMessageSearch: document.querySelector("#globalMessageSearch"),
   messageSearchStatus: document.querySelector("#messageSearchStatus"),
   messageSearchResults: document.querySelector("#messageSearchResults"),
@@ -147,9 +151,15 @@ function conversationHaystack(conversation) {
     conversation.source_provider,
     conversation.source_chat_identifier,
     conversation.alias_email,
+    conversation.note,
+    ...(conversation.labels || []),
     ...(conversation.participants || []),
   ].join(" ").toLowerCase();
   return `${raw} ${digitsOnly(raw)}`;
+}
+
+function labelsForConversation(conversation) {
+  return Array.isArray(conversation?.labels) ? conversation.labels : [];
 }
 
 function conversationSortValue(conversation) {
@@ -296,6 +306,18 @@ function renderConversations() {
       const badge = document.createElement("span");
       badge.className = "badge status-badge";
       badge.textContent = "archived";
+      badges.append(badge);
+    }
+    for (const label of labelsForConversation(conversation).slice(0, 2)) {
+      const badge = document.createElement("span");
+      badge.className = "badge label-badge";
+      badge.textContent = `#${label}`;
+      badges.append(badge);
+    }
+    if (labelsForConversation(conversation).length > 2) {
+      const badge = document.createElement("span");
+      badge.className = "badge label-badge";
+      badge.textContent = `+${labelsForConversation(conversation).length - 2}`;
       badges.append(badge);
     }
     if (conversation.status && conversation.status !== "active") {
@@ -514,6 +536,9 @@ function renderThreadControls() {
   const hasSelection = Boolean(selected);
   el.pinButton.disabled = !hasSelection;
   el.archiveButton.disabled = !hasSelection;
+  el.saveManagementButton.disabled = !hasSelection;
+  el.threadTags.disabled = !hasSelection;
+  el.threadNote.disabled = !hasSelection;
   el.markReadButton.disabled = !hasSelection;
   el.markUnreadButton.disabled = !hasSelection;
   el.connectionButton.disabled = !hasSelection;
@@ -521,6 +546,7 @@ function renderThreadControls() {
   el.syncButton.disabled = false;
   if (!hasSelection) {
     el.threadStatus.textContent = "No conversation selected";
+    el.managementState.textContent = "No thread";
     el.pinButton.textContent = "Pin";
     el.archiveButton.textContent = "Archive";
     el.connectionButton.textContent = "Disconnect";
@@ -539,6 +565,18 @@ function renderThreadControls() {
   el.connectionButton.textContent = status === "active" ? "Disconnect" : "Reconnect";
 }
 
+function renderManagementFields() {
+  if (!state.selected) {
+    el.threadTags.value = "";
+    el.threadNote.value = "";
+    el.managementState.textContent = "No thread";
+    return;
+  }
+  el.threadTags.value = labelsForConversation(state.selected).join(", ");
+  el.threadNote.value = state.selected.note || "";
+  el.managementState.textContent = "Saved";
+}
+
 function syncSelectedConversation(fields) {
   if (!state.selected) return;
   Object.assign(state.selected, fields);
@@ -549,6 +587,8 @@ function syncSelectedConversation(fields) {
   ));
   renderConversations();
   renderThreadControls();
+  renderManagementFields();
+  buildCodexPrompt();
 }
 
 async function loadStatus() {
@@ -644,6 +684,7 @@ async function selectConversation(conversation) {
   el.threadProvider.textContent = [conversation.source_provider, conversation.source_service_name, conversation.chat_type].filter(Boolean).join(" · ");
   el.threadTitle.textContent = conversation.display_name || conversation.conversation_id;
   renderThreadControls();
+  renderManagementFields();
   renderConversations();
   renderMessages();
   await loadMessages();
@@ -753,6 +794,7 @@ async function setConversationManagement(fields) {
   if (!state.selected) return;
   el.pinButton.disabled = true;
   el.archiveButton.disabled = true;
+  el.saveManagementButton.disabled = true;
   el.threadStatus.textContent = "Updating thread";
   try {
     const result = await api(`/penguin-connect/conversations/${encodeURIComponent(state.selected.conversation_id)}/management`, {
@@ -762,6 +804,8 @@ async function setConversationManagement(fields) {
     syncSelectedConversation({
       is_pinned: Boolean(result.is_pinned),
       is_archived: Boolean(result.is_archived),
+      note: result.note || "",
+      labels: result.labels || [],
       management_updated_at: result.management_updated_at || "",
     });
   } catch (error) {
@@ -769,6 +813,13 @@ async function setConversationManagement(fields) {
   } finally {
     renderThreadControls();
   }
+}
+
+async function saveConversationManagement() {
+  await setConversationManagement({
+    note: el.threadNote.value,
+    labels: splitValues(el.threadTags.value),
+  });
 }
 
 async function toggleConnection() {
@@ -816,10 +867,14 @@ function buildCodexPrompt() {
   const title = state.selected?.display_name || "No conversation selected";
   const draft = el.composer.value.trim() || "(no draft yet)";
   const attachmentNames = state.attachments.map((file) => file.name).join(", ") || "none";
+  const labels = state.selected ? (splitValues(el.threadTags.value).join(", ") || "none") : "none";
+  const note = state.selected ? (el.threadNote.value.trim() || "none") : "none";
   const prompt = [
     "Help me respond to this iMessage conversation.",
     "",
     `Conversation: ${title}`,
+    `Thread tags: ${labels}`,
+    `Private note: ${note}`,
     `Attachments I plan to send: ${attachmentNames}`,
     "",
     "Recent messages:",
@@ -953,6 +1008,15 @@ el.messageFilter.addEventListener("input", renderMessages);
 el.sendButton.addEventListener("click", sendMessage);
 el.pinButton.addEventListener("click", () => setConversationManagement({ pinned: !Boolean(state.selected?.is_pinned) }));
 el.archiveButton.addEventListener("click", () => setConversationManagement({ archived: !Boolean(state.selected?.is_archived) }));
+el.saveManagementButton.addEventListener("click", saveConversationManagement);
+el.threadTags.addEventListener("input", () => {
+  el.managementState.textContent = state.selected ? "Unsaved" : "No thread";
+  buildCodexPrompt();
+});
+el.threadNote.addEventListener("input", () => {
+  el.managementState.textContent = state.selected ? "Unsaved" : "No thread";
+  buildCodexPrompt();
+});
 el.markReadButton.addEventListener("click", () => setReadState(false));
 el.markUnreadButton.addEventListener("click", () => setReadState(true));
 el.connectionButton.addEventListener("click", toggleConnection);

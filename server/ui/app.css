@@ -271,6 +271,12 @@ input[type="email"]:focus {
   color: var(--accent-ink);
 }
 
+.label-badge {
+  border-color: rgba(17, 100, 86, 0.4);
+  background: rgba(17, 100, 86, 0.08);
+  color: var(--accent);
+}
+
 .conversation-meta {
   overflow: hidden;
   color: var(--muted);
@@ -348,7 +354,7 @@ input[type="email"]:focus {
 
 .thread {
   display: grid;
-  grid-template-rows: auto auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto auto auto minmax(0, 1fr);
   min-height: 0;
   background: rgba(246, 243, 238, 0.75);
 }
@@ -364,6 +370,33 @@ input[type="email"]:focus {
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11px;
+}
+
+.thread-management {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.5fr) minmax(180px, 1fr) auto;
+  gap: 8px;
+  margin: 10px 18px 0;
+  align-items: stretch;
+}
+
+.thread-management textarea {
+  min-height: 38px;
+  max-height: 92px;
+  resize: vertical;
+}
+
+.management-actions {
+  display: grid;
+  gap: 4px;
+  min-width: 78px;
+}
+
+.management-actions span {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  text-align: center;
 }
 
 .message-list {
@@ -686,6 +719,10 @@ textarea:focus,
   }
 
   .message-tools {
+    grid-template-columns: 1fr;
+  }
+
+  .thread-management {
     grid-template-columns: 1fr;
   }
 }

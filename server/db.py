@@ -122,6 +122,8 @@ CREATE TABLE IF NOT EXISTS penguin_connect_conversation_management (
     conversation_id TEXT PRIMARY KEY REFERENCES penguin_connect_conversations(conversation_id) ON DELETE CASCADE,
     is_pinned INTEGER NOT NULL DEFAULT 0,
     is_archived INTEGER NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '',
+    labels TEXT NOT NULL DEFAULT '[]',
     updated_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -276,6 +278,86 @@ def _merge_history_ids(*values: str | None) -> str | None:
         except Exception:
             return present[0]
     return max(numeric, key=lambda item: item[0])[1]
+
+
+def _management_labels_from_json(raw_value: str | None) -> list[str]:
+    try:
+        parsed = json.loads(raw_value or "[]")
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    labels: list[str] = []
+    seen: set[str] = set()
+    for value in parsed:
+        label = str(value or "").strip()
+        if not label:
+            continue
+        key = label.lower()
+        if key in seen:
+            continue
+        labels.append(label)
+        seen.add(key)
+    return labels
+
+
+def _merge_management_rows(conn: sqlite3.Connection, source_id: str, target_id: str) -> None:
+    if not source_id or not target_id or source_id == target_id:
+        return
+    source = conn.execute(
+        """SELECT is_pinned, is_archived, note, labels
+           FROM penguin_connect_conversation_management
+           WHERE conversation_id = ?""",
+        (source_id,),
+    ).fetchone()
+    if not source:
+        return
+    target = conn.execute(
+        """SELECT is_pinned, is_archived, note, labels
+           FROM penguin_connect_conversation_management
+           WHERE conversation_id = ?""",
+        (target_id,),
+    ).fetchone()
+    if not target:
+        conn.execute(
+            "UPDATE penguin_connect_conversation_management SET conversation_id = ? WHERE conversation_id = ?",
+            (target_id, source_id),
+        )
+        return
+
+    merged_archived = bool(source["is_archived"] or target["is_archived"])
+    merged_pinned = bool(source["is_pinned"] or target["is_pinned"]) and not merged_archived
+    notes = []
+    for value in (target["note"], source["note"]):
+        note = (value or "").strip()
+        if note and note not in notes:
+            notes.append(note)
+    labels = []
+    seen_labels: set[str] = set()
+    for label in _management_labels_from_json(target["labels"]) + _management_labels_from_json(source["labels"]):
+        key = label.lower()
+        if key in seen_labels:
+            continue
+        labels.append(label)
+        seen_labels.add(key)
+
+    conn.execute(
+        """UPDATE penguin_connect_conversation_management
+           SET is_pinned = ?,
+               is_archived = ?,
+               note = ?,
+               labels = ?,
+               updated_at = datetime('now')
+           WHERE conversation_id = ?""",
+        (
+            1 if merged_pinned else 0,
+            1 if merged_archived else 0,
+            "\n\n".join(notes)[:4000],
+            json.dumps(labels[:12]),
+            target_id,
+        ),
+    )
+    conn.execute("DELETE FROM penguin_connect_conversation_management WHERE conversation_id = ?", (source_id,))
 
 
 def _initial_full_verify_delay_minutes(conversation_id: str) -> int:
@@ -605,6 +687,7 @@ def _merge_conversation_into_existing_target(
     conn.execute("UPDATE penguin_connect_aliases SET conversation_id = ? WHERE conversation_id = ?", (target_id, source_id))
     conn.execute("UPDATE OR IGNORE penguin_connect_messages SET conversation_id = ? WHERE conversation_id = ?", (target_id, source_id))
     conn.execute("DELETE FROM penguin_connect_messages WHERE conversation_id = ?", (source_id,))
+    _merge_management_rows(conn, source_id, target_id)
 
     source_state = conn.execute(
         """SELECT last_source_ts, last_source_native_message_id, last_gmail_ts, last_message_ts, last_gmail_history_id,
@@ -884,6 +967,7 @@ def _migrate_legacy_conversation_ids(conn: sqlite3.Connection) -> int:
         conn.execute("UPDATE penguin_connect_aliases SET conversation_id = ? WHERE conversation_id = ?", (new_id, old_id))
         conn.execute("UPDATE penguin_connect_messages SET conversation_id = ? WHERE conversation_id = ?", (new_id, old_id))
         conn.execute("UPDATE penguin_connect_sync_state SET conversation_id = ? WHERE conversation_id = ?", (new_id, old_id))
+        _merge_management_rows(conn, old_id, new_id)
         conn.execute("DELETE FROM penguin_connect_conversations WHERE conversation_id = ?", (old_id,))
 
     return len(updates)
@@ -1306,6 +1390,13 @@ def init_db() -> None:
                    SET source_chat_identifier = COALESCE(NULLIF(source_chat_identifier, ''), source_chat_id)
                    WHERE source_provider IN ('imessage', 'sms', 'rcs')"""
             )
+        management_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(penguin_connect_conversation_management)").fetchall()
+        }
+        if "note" not in management_columns:
+            conn.execute("ALTER TABLE penguin_connect_conversation_management ADD COLUMN note TEXT NOT NULL DEFAULT ''")
+        if "labels" not in management_columns:
+            conn.execute("ALTER TABLE penguin_connect_conversation_management ADD COLUMN labels TEXT NOT NULL DEFAULT '[]'")
         _migrate_legacy_conversation_ids(conn)
         _migrate_apple_messages_conversation_routes(conn)
         conn.execute(

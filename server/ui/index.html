@@ -59,6 +59,14 @@
           </div>
         </header>
         <div class="thread-status" id="threadStatus">No conversation selected</div>
+        <div class="thread-management" id="threadManagement">
+          <input id="threadTags" type="text" placeholder="Tags" autocomplete="off" />
+          <textarea id="threadNote" rows="2" placeholder="Private note"></textarea>
+          <div class="management-actions">
+            <button class="quiet-button" id="saveManagementButton" type="button">Save</button>
+            <span id="managementState">No thread</span>
+          </div>
+        </div>
         <div class="message-tools">
           <label class="message-search">
             <span>Search all synced messages</span>

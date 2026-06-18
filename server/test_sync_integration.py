@@ -1513,6 +1513,80 @@ class SyncIntegrationTests(unittest.TestCase):
         self.assertIn("gmail_rate_limit_streak", columns)
         self.assertEqual(row["gmail_rate_limit_streak"], 0)
 
+    def test_init_db_adds_note_and_labels_to_existing_management_table(self):
+        conn = db.get_connection()
+        conn.close()
+        if db.DB_PATH.exists():
+            db.DB_PATH.unlink()
+
+        legacy_schema = (
+            db.SCHEMA.replace("    note TEXT NOT NULL DEFAULT '',\n", "")
+            .replace("    labels TEXT NOT NULL DEFAULT '[]',\n", "")
+        )
+
+        raw_conn = sqlite3.connect(str(db.DB_PATH))
+        try:
+            raw_conn.executescript(legacy_schema)
+            raw_conn.execute(
+                """INSERT INTO penguin_connect_accounts
+                   (gmail_email, keychain_service, send_as_aliases, status)
+                   VALUES (?, ?, ?, 'connected')""",
+                (
+                    "owner@gmail.com",
+                    "penguinconnect-local-bridge.gmail.owner@gmail.com",
+                    '["owner@gmail.com"]',
+                ),
+            )
+            raw_conn.execute(
+                """INSERT INTO penguin_connect_conversations
+                   (gmail_email, conversation_id, source_chat_id, display_name, alias_email, status)
+                   VALUES (?, ?, ?, ?, ?, 'active')""",
+                (
+                    "owner@gmail.com",
+                    "amc_test",
+                    "iMessage;-;chat-test",
+                    "Taylor",
+                    "owner+am-test@gmail.com",
+                ),
+            )
+            raw_conn.execute(
+                """INSERT INTO penguin_connect_conversation_management
+                   (conversation_id, is_pinned, is_archived)
+                   VALUES (?, 1, 0)""",
+                ("amc_test",),
+            )
+            raw_conn.commit()
+        finally:
+            raw_conn.close()
+
+        db.init_db()
+
+        migrated_conn = db.get_connection()
+        try:
+            columns = {
+                row["name"]
+                for row in migrated_conn.execute(
+                    "PRAGMA table_info(penguin_connect_conversation_management)"
+                ).fetchall()
+            }
+            row = migrated_conn.execute(
+                """SELECT c.conversation_id, m.is_pinned, m.is_archived, m.note, m.labels
+                   FROM penguin_connect_conversations c
+                   JOIN penguin_connect_conversation_management m
+                     ON m.conversation_id = c.conversation_id
+                   LIMIT 1""",
+            ).fetchone()
+        finally:
+            migrated_conn.close()
+
+        self.assertIn("note", columns)
+        self.assertIn("labels", columns)
+        self.assertIsNotNone(row)
+        self.assertEqual(row["is_pinned"], 1)
+        self.assertEqual(row["is_archived"], 0)
+        self.assertEqual(row["note"], "")
+        self.assertEqual(row["labels"], "[]")
+
     def test_init_db_adds_gmail_backfill_budget_columns_to_existing_poll_state_table(self):
         conn = db.get_connection()
         conn.close()
