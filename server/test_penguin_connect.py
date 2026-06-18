@@ -580,6 +580,30 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertTrue(primary["success"])
         self.assertTrue(alias["success"])
 
+    def test_send_manual_message_forwards_attachment_paths(self):
+        with tempfile.NamedTemporaryFile(suffix=".m4a") as audio_file, mock.patch(
+            "penguin_connect.send_imessage",
+            return_value=(True, None),
+        ) as mock_send:
+            result = penguin_connect.send_manual_message(
+                self.conn,
+                conversation_id="amc_test",
+                sender_email="owner@gmail.com",
+                body_text="",
+                attachment_paths=[audio_file.name],
+            )
+
+        self.assertTrue(result["success"])
+        mock_send.assert_called_once_with("chat-123", "", attachment_paths=[audio_file.name])
+        row = self.conn.execute(
+            """SELECT body_text, metadata
+               FROM penguin_connect_messages
+               WHERE direction = 'manual_to_imessage'"""
+        ).fetchone()
+        metadata = json.loads(row["metadata"])
+        self.assertEqual(row["body_text"], "")
+        self.assertEqual(metadata["manual_attachment_count"], 1)
+
 
     def test_disconnect_and_reconnect_provisions_fresh_alias(self):
         first_alias = self.conn.execute(
@@ -6715,6 +6739,69 @@ class PenguinConnectTests(unittest.TestCase):
 
         self.assertEqual(ambiguous, [])
         self.assertEqual([row["text"] for row in exact], ["hello"])
+
+    def test_fetch_imessage_messages_includes_voice_memo_by_extension_without_mime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "chat.db")
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                CREATE TABLE chat (
+                    ROWID INTEGER PRIMARY KEY,
+                    guid TEXT,
+                    chat_identifier TEXT,
+                    display_name TEXT,
+                    service_name TEXT,
+                    is_archived INTEGER DEFAULT 0
+                );
+                CREATE TABLE message (
+                    ROWID INTEGER PRIMARY KEY,
+                    text TEXT,
+                    date INTEGER,
+                    is_from_me INTEGER,
+                    service TEXT,
+                    handle_id INTEGER,
+                    attributedBody BLOB
+                );
+                CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
+                CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+                CREATE TABLE message_attachment_join (message_id INTEGER, attachment_id INTEGER);
+                CREATE TABLE attachment (
+                    ROWID INTEGER PRIMARY KEY,
+                    filename TEXT,
+                    mime_type TEXT,
+                    total_bytes INTEGER,
+                    transfer_name TEXT
+                );
+                """
+            )
+            conn.execute(
+                "INSERT INTO chat(ROWID, guid, chat_identifier, display_name, service_name) VALUES (1, ?, ?, '', 'iMessage')",
+                ("iMessage;-;chat-voice", "chat-voice"),
+            )
+            conn.execute(
+                "INSERT INTO message(ROWID, text, date, is_from_me, service, handle_id, attributedBody) VALUES (1, NULL, 1000, 0, 'iMessage', NULL, NULL)"
+            )
+            conn.execute("INSERT INTO chat_message_join(chat_id, message_id) VALUES (1, 1)")
+            conn.execute(
+                "INSERT INTO attachment(ROWID, filename, mime_type, total_bytes, transfer_name) VALUES (1, ?, NULL, 12, ?)",
+                (os.path.join(tmp, "Audio Message.caf"), "Audio Message.caf"),
+            )
+            conn.execute("INSERT INTO message_attachment_join(message_id, attachment_id) VALUES (1, 1)")
+            conn.commit()
+            conn.close()
+
+            old_path = browse_sources.IMESSAGE_DB
+            browse_sources.IMESSAGE_DB = db_path
+            try:
+                rows = browse_sources.fetch_imessage_messages("iMessage;-;chat-voice", limit=10)
+            finally:
+                browse_sources.IMESSAGE_DB = old_path
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["text"], "")
+        self.assertEqual(rows[0]["attachments"][0]["transfer_name"], "Audio Message.caf")
+        self.assertEqual(rows[0]["attachments"][0]["mime_type"], "")
 
     def test_list_recent_imessage_chat_activity_orders_oldest_first(self):
         with tempfile.TemporaryDirectory() as tmp:

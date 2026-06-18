@@ -142,6 +142,7 @@ Local operator CLI for search, messages, sends, contacts, and group drafts:
 ./scripts/penguin_connect_tool.py search "Taylor" --source both
 ./scripts/penguin_connect_tool.py messages CONVERSATION_ID --limit 25
 ./scripts/penguin_connect_tool.py send CONVERSATION_ID --from you@gmail.com --message "On it"
+./scripts/penguin_connect_tool.py send CONVERSATION_ID --from you@gmail.com --attachment ~/Desktop/voice-memo.m4a
 ./scripts/penguin_connect_tool.py contacts search "Taylor"
 ./scripts/penguin_connect_tool.py contacts create --first Taylor --phone +14155550101
 ./scripts/penguin_connect_tool.py contacts refresh
@@ -149,9 +150,11 @@ Local operator CLI for search, messages, sends, contacts, and group drafts:
 ```
 
 The `send` command routes through an existing PenguinConnect conversation and
-keeps the normal route-safety checks. The group command stages a new Messages
-draft instead of auto-sending, because Messages exposes reliable scripting for
-existing chats but not for creating a brand-new group chat by API.
+keeps the normal route-safety checks. It can also attach local files, including
+audio voice memos. The `messages` command shows imported attachment summaries,
+including audio attachments from Apple Messages. The group command stages a new
+Messages draft instead of auto-sending, because Messages exposes reliable
+scripting for existing chats but not for creating a brand-new group chat by API.
 
 ## Safety Model
 

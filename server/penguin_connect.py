@@ -3977,6 +3977,7 @@ def get_conversation_messages(conn: sqlite3.Connection, conversation_id: str, li
             sender_name = "Me"
         elif is_own_gmail_message:
             sender_name = _friendly_email_sender_name(sender_name, row["sender_email"], own_sender=True)
+        attachments = metadata.get("attachments") if isinstance(metadata.get("attachments"), list) else []
         messages.append(
             {
                 "provider": row["provider"],
@@ -3989,6 +3990,7 @@ def get_conversation_messages(conn: sqlite3.Connection, conversation_id: str, li
                 "message_timestamp": row["message_timestamp"],
                 "is_read": bool(row["is_read"]),
                 "metadata": metadata,
+                "attachments": attachments,
                 "gmail_message_id": row["gmail_message_id"],
                 "gmail_thread_id": row["gmail_thread_id"],
             }
@@ -8526,8 +8528,10 @@ def send_manual_message(
     conversation_id: str,
     sender_email: str,
     body_text: str,
+    attachment_paths: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     body_text = _rewrite_markdown_links_for_source_message(body_text)
+    attachment_paths = [str(path) for path in (attachment_paths or []) if str(path or "").strip()]
     conv = conn.execute(
         "SELECT * FROM penguin_connect_conversations WHERE conversation_id = ?",
         (conversation_id,),
@@ -8581,6 +8585,7 @@ def send_manual_message(
     ok, err = _send_to_source_conversation(
         conv,
         body_text,
+        attachment_paths=attachment_paths or None,
         action_context={
             "action": "manual_send",
             "provider_message_id": provider_id,
@@ -8617,6 +8622,7 @@ def send_manual_message(
                 {
                     "security_gate": "passed",
                     "dispatch": source_provider,
+                    "manual_attachment_count": len(attachment_paths),
                 }
             ),
         ),
@@ -8627,6 +8633,7 @@ def send_manual_message(
         success=True,
         sender_email=_normalize_email(sender_email),
         provider_message_id=provider_id,
+        attachment_count=len(attachment_paths),
         **_conversation_log_fields(conv),
         **message_fingerprint(body_text),
     )

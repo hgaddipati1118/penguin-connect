@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import tempfile
 import threading
@@ -315,6 +316,37 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(row["sender_name"], "Me")
         self.assertEqual(row["body_text"], "Hello from Gmail")
         self.assertEqual(row["direction"], "manual_to_imessage")
+
+    def test_send_endpoint_forwards_attachment_paths(self):
+        with mock.patch("app.refresh_contacts_now", return_value={"success": True}), mock.patch(
+            "penguin_connect.send_imessage", return_value=(True, None)
+        ) as mock_send, TestClient(app_module.app) as client:
+            response = client.post(
+                "/penguin-connect/conversations/amc_test/send",
+                json={
+                    "sender_email": "owner@gmail.com",
+                    "message": "",
+                    "attachment_paths": ["/tmp/voice-memo.m4a"],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["success"])
+        mock_send.assert_called_once_with("chat-123", "", attachment_paths=["/tmp/voice-memo.m4a"])
+
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                """SELECT body_text, metadata
+                   FROM penguin_connect_messages
+                   WHERE direction = 'manual_to_imessage'"""
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row["body_text"], "")
+        self.assertEqual(json.loads(row["metadata"])["manual_attachment_count"], 1)
 
 
 if __name__ == "__main__":

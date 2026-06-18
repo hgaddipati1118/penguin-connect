@@ -201,6 +201,9 @@ def command_messages(args: argparse.Namespace) -> int:
         sender = message.get("sender_name") or message.get("sender_email") or message.get("direction") or "unknown"
         ts = message.get("message_timestamp") or "n/a"
         body = _trim(message.get("body_text"), args.body_chars)
+        attachment_summary = _format_message_attachment_summary(message)
+        if attachment_summary:
+            body = f"{body} {attachment_summary}".strip()
         print(f"  {ts} | {_trim(sender, 28)} | {body}")
     return 0
 
@@ -213,20 +216,21 @@ def _connected_gmail_email(api_base: str, timeout: float) -> str:
 
 
 def command_send(args: argparse.Namespace) -> int:
-    sender_email = (args.sender_email or "").strip().lower()
-    if not sender_email:
-        sender_email = _connected_gmail_email(args.api_base, args.timeout)
     message = args.message
     if args.message_file:
         message = Path(args.message_file).expanduser().read_text(encoding="utf-8")
-    if not (message or "").strip():
-        raise ToolError("Message text is required.")
+    attachment_paths = _resolve_attachment_paths(args.attachment_paths)
+    if not (message or "").strip() and not attachment_paths:
+        raise ToolError("Message text or at least one attachment is required.")
+    sender_email = (args.sender_email or "").strip().lower()
+    if not sender_email:
+        sender_email = _connected_gmail_email(args.api_base, args.timeout)
 
     payload = _api_json(
         "POST",
         f"/penguin-connect/conversations/{args.conversation_id}/send",
         api_base=args.api_base,
-        payload={"sender_email": sender_email, "message": message},
+        payload={"sender_email": sender_email, "message": message, "attachment_paths": attachment_paths or None},
         timeout=args.timeout,
     )
     if args.json:
@@ -234,7 +238,47 @@ def command_send(args: argparse.Namespace) -> int:
     else:
         print(f"sent: {bool(payload.get('success'))}")
         print(f"conversation_id: {payload.get('conversation_id') or args.conversation_id}")
+        if attachment_paths:
+            print(f"attachments: {len(attachment_paths)}")
     return 0
+
+
+def _resolve_attachment_paths(paths: Iterable[str]) -> list[str]:
+    resolved: list[str] = []
+    for raw_path in paths:
+        path = Path(raw_path).expanduser()
+        if not path.exists() or not path.is_file():
+            raise ToolError(f"Attachment file not found: {raw_path}")
+        resolved.append(str(path))
+    return resolved
+
+
+def _format_message_attachment_summary(message: dict[str, Any]) -> str:
+    metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+    attachments = message.get("attachments")
+    if not isinstance(attachments, list):
+        attachments = metadata.get("attachments") if isinstance(metadata.get("attachments"), list) else []
+    if attachments:
+        labels = []
+        for attachment in attachments[:3]:
+            if not isinstance(attachment, dict):
+                continue
+            label = (
+                Path(str(attachment.get("transfer_name") or attachment.get("filename") or "attachment")).name
+                or attachment.get("mime_type")
+                or "attachment"
+            )
+            mime_type = attachment.get("mime_type") or ""
+            if str(mime_type).startswith("audio/"):
+                label = f"audio:{label}"
+            labels.append(_trim(label, 40))
+        suffix = f" +{len(attachments) - 3} more" if len(attachments) > 3 else ""
+        return f"[attachments: {', '.join(labels)}{suffix}]"
+
+    manual_count = int(metadata.get("manual_attachment_count") or 0)
+    if manual_count:
+        return f"[attachments sent: {manual_count}]"
+    return ""
 
 
 def _contact_display(row: sqlite3.Row) -> str:
@@ -447,6 +491,15 @@ def build_parser() -> argparse.ArgumentParser:
     send.add_argument("-f", "--from", dest="sender_email", default="", help="Connected Gmail sender")
     send.add_argument("-m", "--message", default="", help="Message text")
     send.add_argument("--message-file", help="Read message text from a UTF-8 file")
+    send.add_argument(
+        "-a",
+        "--attachment",
+        "--voice-memo",
+        action="append",
+        default=[],
+        dest="attachment_paths",
+        help="Attach a local file path; repeat for multiple files. Audio voice memos are supported.",
+    )
     send.add_argument("--json", action="store_true", help="Print raw JSON")
     send.set_defaults(func=command_send)
 

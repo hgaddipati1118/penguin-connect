@@ -9,6 +9,26 @@ from datetime import datetime, timedelta, timezone
 IMESSAGE_DB = os.path.expanduser("~/Library/Messages/chat.db")
 APPLE_EPOCH = datetime(2001, 1, 1, tzinfo=timezone.utc)
 APPLE_MESSAGES_SERVICES = ("iMessage", "SMS", "RCS")
+SUPPORTED_ATTACHMENT_EXTENSIONS = {
+    ".aac",
+    ".aif",
+    ".aiff",
+    ".amr",
+    ".caf",
+    ".gif",
+    ".heic",
+    ".jpeg",
+    ".jpg",
+    ".m4a",
+    ".mov",
+    ".mp3",
+    ".mp4",
+    ".ogg",
+    ".opus",
+    ".pdf",
+    ".png",
+    ".wav",
+}
 
 
 def _apple_ts_to_iso(ts):
@@ -52,6 +72,18 @@ def _service_to_provider(service_name):
     if normalized in {"imessage", "sms", "rcs"}:
         return normalized
     return "imessage"
+
+
+def _is_supported_attachment(filename, mime_type, transfer_name=""):
+    mime = (mime_type or "").strip().lower()
+    if mime.startswith(("image/", "video/", "audio/")) or mime == "application/pdf":
+        return True
+
+    for value in (filename, transfer_name):
+        ext = os.path.splitext((value or "").strip())[1].lower()
+        if ext in SUPPORTED_ATTACHMENT_EXTENSIONS:
+            return True
+    return False
 
 
 def _service_rank(service_name):
@@ -493,16 +525,13 @@ def fetch_imessage_messages(chat_id, limit=50, since=None, since_native_message_
                 FROM attachment a
                 JOIN message_attachment_join maj ON maj.attachment_id = a.ROWID
                 WHERE maj.message_id = ?
-                  AND a.mime_type IS NOT NULL
-                  AND (a.mime_type LIKE 'image/%' OR a.mime_type LIKE 'video/%'
-                       OR a.mime_type LIKE 'audio/%' OR a.mime_type LIKE 'application/pdf')
                 """,
                 (msg_rowid,),
             )
             attachments = []
             for a_row in cur.fetchall():
                 fname, mime, size, transfer_name = a_row
-                if fname:
+                if fname and _is_supported_attachment(fname, mime, transfer_name):
                     attachments.append(
                         {
                             "filename": fname,

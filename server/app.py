@@ -52,7 +52,8 @@ class PenguinConnectSyncRequest(BaseModel):
 
 class PenguinConnectSendRequest(BaseModel):
     sender_email: str
-    message: str
+    message: str = ""
+    attachment_paths: list[str] | None = None
 
 def _map_sqlite_error(exc: sqlite3.OperationalError) -> HTTPException:
     msg = str(exc).lower()
@@ -426,6 +427,7 @@ def send_penguinconnect_conversation_message(conversation_id: str, req: PenguinC
             conversation_id=conversation_id,
             sender_email=req.sender_email,
             body_text=req.message,
+            attachment_paths=req.attachment_paths,
         )
         log_action(
             "api_manual_send_request",

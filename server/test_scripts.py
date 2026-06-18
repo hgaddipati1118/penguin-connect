@@ -351,6 +351,32 @@ class ScriptTests(unittest.TestCase):
 
         self.assertEqual(draft, "To: +14155550101, ava@example.com\n\nDinner at 7?\n")
 
+    def test_tool_resolve_attachment_paths_requires_existing_file(self):
+        with tempfile.NamedTemporaryFile(suffix=".m4a") as audio_file:
+            resolved = penguin_connect_tool._resolve_attachment_paths([audio_file.name])
+
+        self.assertEqual(len(resolved), 1)
+        self.assertTrue(resolved[0].endswith(".m4a"))
+        with self.assertRaises(penguin_connect_tool.ToolError):
+            penguin_connect_tool._resolve_attachment_paths(["/tmp/missing-voice-memo.m4a"])
+
+    def test_tool_formats_audio_attachment_summary(self):
+        summary = penguin_connect_tool._format_message_attachment_summary(
+            {
+                "metadata": {
+                    "attachments": [
+                        {
+                            "filename": "/tmp/Audio Message.caf",
+                            "mime_type": "audio/x-caf",
+                            "transfer_name": "Audio Message.caf",
+                        }
+                    ]
+                }
+            }
+        )
+
+        self.assertIn("audio:Audio Message.caf", summary)
+
 
 if __name__ == "__main__":
     unittest.main()
