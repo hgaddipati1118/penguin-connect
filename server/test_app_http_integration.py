@@ -234,6 +234,46 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(conversation["conversation_id"], "amc_test")
         self.assertEqual(conversation["unread_count"], 1)
         self.assertTrue(conversation["has_unread"])
+        self.assertFalse(conversation["is_pinned"])
+        self.assertFalse(conversation["is_archived"])
+
+    def test_conversation_management_endpoint_pins_and_archives(self):
+        with TestClient(app_module.app) as client:
+            pin_response = client.post("/penguin-connect/conversations/amc_test/management", json={"pinned": True})
+            pinned_list_response = client.get("/penguin-connect/conversations")
+            archive_response = client.post("/penguin-connect/conversations/amc_test/management", json={"archived": True})
+            archived_list_response = client.get("/penguin-connect/conversations")
+            unarchive_response = client.post("/penguin-connect/conversations/amc_test/management", json={"archived": False})
+
+        self.assertEqual(pin_response.status_code, 200)
+        pin_body = pin_response.json()
+        self.assertTrue(pin_body["success"])
+        self.assertTrue(pin_body["is_pinned"])
+        self.assertFalse(pin_body["is_archived"])
+
+        pinned_conversation = pinned_list_response.json()["conversations"][0]
+        self.assertTrue(pinned_conversation["is_pinned"])
+        self.assertFalse(pinned_conversation["is_archived"])
+
+        self.assertEqual(archive_response.status_code, 200)
+        archive_body = archive_response.json()
+        self.assertFalse(archive_body["is_pinned"])
+        self.assertTrue(archive_body["is_archived"])
+
+        archived_conversation = archived_list_response.json()["conversations"][0]
+        self.assertFalse(archived_conversation["is_pinned"])
+        self.assertTrue(archived_conversation["is_archived"])
+
+        self.assertEqual(unarchive_response.status_code, 200)
+        unarchive_body = unarchive_response.json()
+        self.assertFalse(unarchive_body["is_pinned"])
+        self.assertFalse(unarchive_body["is_archived"])
+
+    def test_conversation_management_endpoint_rejects_unknown_conversation(self):
+        with TestClient(app_module.app) as client:
+            response = client.post("/penguin-connect/conversations/missing/management", json={"pinned": True})
+
+        self.assertEqual(response.status_code, 404)
 
     def test_read_state_endpoint_marks_conversation_read_and_unread(self):
         with TestClient(app_module.app) as client:
@@ -456,19 +496,25 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("createContactButton", html_response.text)
         self.assertIn("markReadButton", html_response.text)
         self.assertIn("connectionButton", html_response.text)
+        self.assertIn("conversationFilters", html_response.text)
+        self.assertIn("pinButton", html_response.text)
+        self.assertIn("archiveButton", html_response.text)
         self.assertEqual(css_response.status_code, 200)
         self.assertIn(".contact-list", css_response.text)
         self.assertIn(".search-result", css_response.text)
         self.assertIn(".toggle-row", css_response.text)
         self.assertIn(".unread-badge", css_response.text)
         self.assertIn(".attachment-link", css_response.text)
+        self.assertIn(".conversation-filters", css_response.text)
         self.assertEqual(js_response.status_code, 200)
         self.assertIn("buildCodexPrompt", js_response.text)
         self.assertIn("renderContacts", js_response.text)
         self.assertIn("renderMessageSearchResults", js_response.text)
+        self.assertIn("renderConversationFilters", js_response.text)
         self.assertIn("stageDraft", js_response.text)
         self.assertIn("createContact", js_response.text)
         self.assertIn("setReadState", js_response.text)
+        self.assertIn("setConversationManagement", js_response.text)
         self.assertIn("toggleConnection", js_response.text)
         self.assertIn("attachmentUrl", js_response.text)
 

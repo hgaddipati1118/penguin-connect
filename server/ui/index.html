@@ -21,6 +21,12 @@
           <span>⌕</span>
           <input id="conversationSearch" type="search" placeholder="Search people, groups, aliases" autocomplete="off" />
         </label>
+        <div class="conversation-filters" id="conversationFilters" aria-label="Conversation views">
+          <button type="button" data-view="inbox">Inbox</button>
+          <button type="button" data-view="pinned">Pinned</button>
+          <button type="button" data-view="archived">Archived</button>
+          <button type="button" data-view="all">All</button>
+        </div>
         <div class="conversation-list" id="conversationList" role="list"></div>
         <section class="contacts-panel" aria-label="Contacts">
           <header class="mini-head">
@@ -44,6 +50,8 @@
           </div>
           <div class="thread-actions">
             <button class="quiet-button" id="syncButton" type="button">Sync</button>
+            <button class="quiet-button" id="pinButton" type="button">Pin</button>
+            <button class="quiet-button" id="archiveButton" type="button">Archive</button>
             <button class="quiet-button" id="markReadButton" type="button">Mark read</button>
             <button class="quiet-button" id="markUnreadButton" type="button">Mark unread</button>
             <button class="quiet-button" id="connectionButton" type="button">Disconnect</button>

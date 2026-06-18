@@ -9,12 +9,14 @@ const state = {
   messageSearchResults: [],
   messageSearchTimer: null,
   focusMessageId: "",
+  conversationView: "inbox",
 };
 
 const el = {
   statusLine: document.querySelector("#statusLine"),
   refreshButton: document.querySelector("#refreshButton"),
   conversationSearch: document.querySelector("#conversationSearch"),
+  conversationFilters: document.querySelector("#conversationFilters"),
   conversationList: document.querySelector("#conversationList"),
   contactRefreshButton: document.querySelector("#contactRefreshButton"),
   contactSearch: document.querySelector("#contactSearch"),
@@ -23,6 +25,8 @@ const el = {
   threadProvider: document.querySelector("#threadProvider"),
   threadTitle: document.querySelector("#threadTitle"),
   syncButton: document.querySelector("#syncButton"),
+  pinButton: document.querySelector("#pinButton"),
+  archiveButton: document.querySelector("#archiveButton"),
   markReadButton: document.querySelector("#markReadButton"),
   markUnreadButton: document.querySelector("#markUnreadButton"),
   connectionButton: document.querySelector("#connectionButton"),
@@ -148,6 +152,39 @@ function conversationHaystack(conversation) {
   return `${raw} ${digitsOnly(raw)}`;
 }
 
+function conversationSortValue(conversation) {
+  const raw = conversation.last_message_ts || conversation.updated_at || conversation.management_updated_at || "";
+  const value = Date.parse(raw);
+  return Number.isNaN(value) ? 0 : value;
+}
+
+function conversationMatchesView(conversation, view = state.conversationView) {
+  if (view === "pinned") return Boolean(conversation.is_pinned) && !conversation.is_archived;
+  if (view === "archived") return Boolean(conversation.is_archived);
+  if (view === "all") return true;
+  return !conversation.is_archived;
+}
+
+function conversationViewCounts() {
+  return {
+    inbox: state.conversations.filter((conversation) => conversationMatchesView(conversation, "inbox")).length,
+    pinned: state.conversations.filter((conversation) => conversationMatchesView(conversation, "pinned")).length,
+    archived: state.conversations.filter((conversation) => conversationMatchesView(conversation, "archived")).length,
+    all: state.conversations.length,
+  };
+}
+
+function renderConversationFilters() {
+  const counts = conversationViewCounts();
+  for (const button of el.conversationFilters.querySelectorAll("button")) {
+    const view = button.dataset.view;
+    const label = view ? view.charAt(0).toUpperCase() + view.slice(1) : "View";
+    button.textContent = `${label} ${counts[view] ?? 0}`;
+    button.classList.toggle("active", view === state.conversationView);
+    button.setAttribute("aria-pressed", view === state.conversationView ? "true" : "false");
+  }
+}
+
 function isOwnMessage(message) {
   return message.sender_name === "Me" || message.direction === "manual_to_imessage" || message.direction === "email_to_imessage";
 }
@@ -211,10 +248,16 @@ function renderConversations() {
   const query = el.conversationSearch.value.trim().toLowerCase();
   const digitQuery = digitsOnly(query);
   const rows = state.conversations.filter((conversation) => {
+    if (!conversationMatchesView(conversation)) return false;
     const haystack = conversationHaystack(conversation);
     return !query || haystack.includes(query) || (digitQuery.length >= 3 && haystack.includes(digitQuery));
+  }).sort((a, b) => {
+    const pinnedDiff = Number(b.is_pinned) - Number(a.is_pinned);
+    if (pinnedDiff) return pinnedDiff;
+    return conversationSortValue(b) - conversationSortValue(a);
   });
 
+  renderConversationFilters();
   el.conversationList.replaceChildren();
   if (!rows.length) {
     const empty = document.createElement("div");
@@ -241,6 +284,18 @@ function renderConversations() {
       const badge = document.createElement("span");
       badge.className = "badge unread-badge";
       badge.textContent = conversation.unread_count > 99 ? "99+" : String(conversation.unread_count);
+      badges.append(badge);
+    }
+    if (conversation.is_pinned) {
+      const badge = document.createElement("span");
+      badge.className = "badge status-badge";
+      badge.textContent = "pinned";
+      badges.append(badge);
+    }
+    if (conversation.is_archived) {
+      const badge = document.createElement("span");
+      badge.className = "badge status-badge";
+      badge.textContent = "archived";
       badges.append(badge);
     }
     if (conversation.status && conversation.status !== "active") {
@@ -457,6 +512,8 @@ function renderAttachments() {
 function renderThreadControls() {
   const selected = state.selected;
   const hasSelection = Boolean(selected);
+  el.pinButton.disabled = !hasSelection;
+  el.archiveButton.disabled = !hasSelection;
   el.markReadButton.disabled = !hasSelection;
   el.markUnreadButton.disabled = !hasSelection;
   el.connectionButton.disabled = !hasSelection;
@@ -464,13 +521,21 @@ function renderThreadControls() {
   el.syncButton.disabled = false;
   if (!hasSelection) {
     el.threadStatus.textContent = "No conversation selected";
+    el.pinButton.textContent = "Pin";
+    el.archiveButton.textContent = "Archive";
     el.connectionButton.textContent = "Disconnect";
     return;
   }
   const unread = Number(selected.unread_count || 0);
   const status = selected.status || "active";
   const excluded = selected.excluded ? " · excluded" : "";
-  el.threadStatus.textContent = `${status}${excluded} · ${unread} unread · ${selected.alias_email || "no alias"}`;
+  const managed = [
+    selected.is_pinned ? "pinned" : "",
+    selected.is_archived ? "archived" : "",
+  ].filter(Boolean).join(" · ");
+  el.threadStatus.textContent = `${status}${excluded}${managed ? ` · ${managed}` : ""} · ${unread} unread · ${selected.alias_email || "no alias"}`;
+  el.pinButton.textContent = selected.is_pinned ? "Unpin" : "Pin";
+  el.archiveButton.textContent = selected.is_archived ? "Unarchive" : "Archive";
   el.connectionButton.textContent = status === "active" ? "Disconnect" : "Reconnect";
 }
 
@@ -503,10 +568,13 @@ async function loadConversations() {
     const payload = await api("/penguin-connect/conversations");
     state.senderEmail = payload.gmail_email || state.senderEmail;
     state.conversations = payload.conversations || [];
+    if (state.selected) {
+      state.selected = state.conversations.find((conversation) => conversation.conversation_id === state.selected.conversation_id) || state.selected;
+    }
     el.senderBadge.textContent = state.senderEmail || "No sender";
     renderConversations();
     if (!state.selected && state.conversations.length) {
-      await selectConversation(state.conversations[0]);
+      await selectConversation(state.conversations.find((conversation) => !conversation.is_archived) || state.conversations[0]);
     }
   } catch (error) {
     el.conversationList.innerHTML = `<div class="error-state">${error.message}</div>`;
@@ -674,6 +742,28 @@ async function setReadState(unread) {
     });
     state.messages = state.messages.map((message) => ({ ...message, is_read: !unread }));
     renderMessages();
+  } catch (error) {
+    el.threadStatus.textContent = error.message;
+  } finally {
+    renderThreadControls();
+  }
+}
+
+async function setConversationManagement(fields) {
+  if (!state.selected) return;
+  el.pinButton.disabled = true;
+  el.archiveButton.disabled = true;
+  el.threadStatus.textContent = "Updating thread";
+  try {
+    const result = await api(`/penguin-connect/conversations/${encodeURIComponent(state.selected.conversation_id)}/management`, {
+      method: "POST",
+      body: JSON.stringify(fields),
+    });
+    syncSelectedConversation({
+      is_pinned: Boolean(result.is_pinned),
+      is_archived: Boolean(result.is_archived),
+      management_updated_at: result.management_updated_at || "",
+    });
   } catch (error) {
     el.threadStatus.textContent = error.message;
   } finally {
@@ -861,6 +951,8 @@ el.contactRefreshButton.addEventListener("click", async () => {
 });
 el.messageFilter.addEventListener("input", renderMessages);
 el.sendButton.addEventListener("click", sendMessage);
+el.pinButton.addEventListener("click", () => setConversationManagement({ pinned: !Boolean(state.selected?.is_pinned) }));
+el.archiveButton.addEventListener("click", () => setConversationManagement({ archived: !Boolean(state.selected?.is_archived) }));
 el.markReadButton.addEventListener("click", () => setReadState(false));
 el.markUnreadButton.addEventListener("click", () => setReadState(true));
 el.connectionButton.addEventListener("click", toggleConnection);
@@ -907,6 +999,12 @@ el.buildPromptButton.addEventListener("click", buildCodexPrompt);
 el.copyPromptButton.addEventListener("click", async () => {
   await copyText(buildCodexPrompt());
   el.sendState.textContent = "Codex prompt copied";
+});
+el.conversationFilters.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-view]");
+  if (!button) return;
+  state.conversationView = button.dataset.view || "inbox";
+  renderConversations();
 });
 
 renderEmojiButtons();

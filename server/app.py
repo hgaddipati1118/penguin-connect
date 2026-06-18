@@ -95,6 +95,10 @@ class PenguinConnectDraftCreateRequest(BaseModel):
 class PenguinConnectReadStateRequest(BaseModel):
     unread: bool = False
 
+class PenguinConnectConversationManagementRequest(BaseModel):
+    pinned: bool | None = None
+    archived: bool | None = None
+
 def _map_sqlite_error(exc: sqlite3.OperationalError) -> HTTPException:
     msg = str(exc).lower()
     if "unable to open database file" in msg:
@@ -534,6 +538,86 @@ def _attach_conversation_unread_counts(conn: sqlite3.Connection, result: dict) -
     return result
 
 
+def _conversation_management_rows(conn: sqlite3.Connection, conversation_ids: list[str]) -> dict[str, dict]:
+    ids = [conversation_id for conversation_id in conversation_ids if conversation_id]
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"""SELECT conversation_id, is_pinned, is_archived, updated_at
+            FROM penguin_connect_conversation_management
+            WHERE conversation_id IN ({placeholders})""",
+        ids,
+    ).fetchall()
+    return {
+        row["conversation_id"]: {
+            "is_pinned": bool(row["is_pinned"]),
+            "is_archived": bool(row["is_archived"]),
+            "management_updated_at": row["updated_at"],
+        }
+        for row in rows
+    }
+
+
+def _attach_conversation_management(conn: sqlite3.Connection, result: dict) -> dict:
+    conversations = [conversation for conversation in result.get("conversations") or [] if isinstance(conversation, dict)]
+    rows = _conversation_management_rows(conn, [conversation.get("conversation_id") for conversation in conversations])
+    for conversation in conversations:
+        state = rows.get(conversation.get("conversation_id"), {})
+        conversation["is_pinned"] = bool(state.get("is_pinned"))
+        conversation["is_archived"] = bool(state.get("is_archived"))
+        conversation["management_updated_at"] = state.get("management_updated_at")
+    return result
+
+
+def _get_conversation_management(conn: sqlite3.Connection, conversation_id: str) -> dict:
+    row = conn.execute(
+        """SELECT c.conversation_id, m.is_pinned, m.is_archived, m.updated_at
+           FROM penguin_connect_conversations c
+           LEFT JOIN penguin_connect_conversation_management m
+             ON m.conversation_id = c.conversation_id
+           WHERE c.conversation_id = ?
+           LIMIT 1""",
+        (conversation_id,),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="conversation_not_found")
+    return {
+        "conversation_id": row["conversation_id"],
+        "is_pinned": bool(row["is_pinned"] or 0),
+        "is_archived": bool(row["is_archived"] or 0),
+        "management_updated_at": row["updated_at"],
+    }
+
+
+def _set_conversation_management(
+    conn: sqlite3.Connection,
+    conversation_id: str,
+    *,
+    pinned: bool | None,
+    archived: bool | None,
+) -> dict:
+    current = _get_conversation_management(conn, conversation_id)
+    is_pinned = current["is_pinned"] if pinned is None else bool(pinned)
+    is_archived = current["is_archived"] if archived is None else bool(archived)
+    if archived is True:
+        is_pinned = False
+    elif pinned is True:
+        is_archived = False
+
+    conn.execute(
+        """INSERT INTO penguin_connect_conversation_management
+           (conversation_id, is_pinned, is_archived, updated_at)
+           VALUES (?, ?, ?, datetime('now'))
+           ON CONFLICT(conversation_id) DO UPDATE SET
+             is_pinned = excluded.is_pinned,
+             is_archived = excluded.is_archived,
+             updated_at = datetime('now')""",
+        (conversation_id, 1 if is_pinned else 0, 1 if is_archived else 0),
+    )
+    return _get_conversation_management(conn, conversation_id)
+
+
 def _set_conversation_read_state(conn: sqlite3.Connection, conversation_id: str, *, unread: bool) -> dict:
     conv = conn.execute(
         "SELECT conversation_id, status FROM penguin_connect_conversations WHERE conversation_id = ?",
@@ -852,6 +936,7 @@ def get_penguinconnect_conversations():
     try:
         result = penguinconnect_list_conversations(conn)
         result = _attach_conversation_unread_counts(conn, result)
+        result = _attach_conversation_management(conn, result)
         conn.commit()
         return result
     except sqlite3.OperationalError as exc:
@@ -888,6 +973,32 @@ def get_penguinconnect_conversation_attachment(
             attachment_index,
         )
         return FileResponse(path, media_type=media_type, filename=display_name)
+    finally:
+        conn.close()
+
+
+@app.post("/api/penguin-connect/conversations/{conversation_id}/management")
+@app.post("/penguin-connect/conversations/{conversation_id}/management")
+def set_penguinconnect_conversation_management(
+    conversation_id: str,
+    req: PenguinConnectConversationManagementRequest,
+):
+    conn = get_connection()
+    try:
+        result = _set_conversation_management(
+            conn,
+            conversation_id,
+            pinned=req.pinned,
+            archived=req.archived,
+        )
+        log_action(
+            "api_set_conversation_management",
+            conversation_id=conversation_id,
+            is_pinned=bool(result.get("is_pinned")),
+            is_archived=bool(result.get("is_archived")),
+        )
+        conn.commit()
+        return {"success": True, **result}
     finally:
         conn.close()
 
