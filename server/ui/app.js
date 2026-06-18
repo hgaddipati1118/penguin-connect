@@ -38,6 +38,21 @@ const el = {
   sendButton: document.querySelector("#sendButton"),
   clearButton: document.querySelector("#clearButton"),
   sendState: document.querySelector("#sendState"),
+  draftState: document.querySelector("#draftState"),
+  draftRecipients: document.querySelector("#draftRecipients"),
+  draftMessage: document.querySelector("#draftMessage"),
+  draftCopyToggle: document.querySelector("#draftCopyToggle"),
+  draftOpenToggle: document.querySelector("#draftOpenToggle"),
+  stageDraftButton: document.querySelector("#stageDraftButton"),
+  clearDraftButton: document.querySelector("#clearDraftButton"),
+  createContactState: document.querySelector("#createContactState"),
+  newContactFirst: document.querySelector("#newContactFirst"),
+  newContactLast: document.querySelector("#newContactLast"),
+  newContactOrganization: document.querySelector("#newContactOrganization"),
+  newContactPhones: document.querySelector("#newContactPhones"),
+  newContactEmails: document.querySelector("#newContactEmails"),
+  createContactButton: document.querySelector("#createContactButton"),
+  clearContactButton: document.querySelector("#clearContactButton"),
   codexCount: document.querySelector("#codexCount"),
   codexPrompt: document.querySelector("#codexPrompt"),
   buildPromptButton: document.querySelector("#buildPromptButton"),
@@ -84,6 +99,13 @@ function trim(value, length = 120) {
 
 function basename(value) {
   return String(value || "attachment").split(/[\\/]/).pop() || "attachment";
+}
+
+function splitValues(value) {
+  return String(value || "")
+    .split(/[\n,;]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function digitsOnly(value) {
@@ -597,6 +619,88 @@ function addFiles(fileList) {
   buildCodexPrompt();
 }
 
+function clearDraftForm() {
+  el.draftRecipients.value = "";
+  el.draftMessage.value = "";
+  el.draftState.textContent = "Idle";
+}
+
+async function stageDraft() {
+  const participants = splitValues(el.draftRecipients.value);
+  if (!participants.length) {
+    el.draftState.textContent = "Add recipient";
+    return;
+  }
+
+  el.stageDraftButton.disabled = true;
+  el.draftState.textContent = "Staging";
+  try {
+    const result = await api("/penguin-connect/messages/draft", {
+      method: "POST",
+      body: JSON.stringify({
+        participants,
+        message: el.draftMessage.value,
+        copy_to_clipboard: el.draftCopyToggle.checked,
+        open_messages: el.draftOpenToggle.checked,
+      }),
+    });
+    const actions = [
+      result.copied ? "copied" : "",
+      result.opened_messages ? "opened" : "",
+    ].filter(Boolean).join(" + ");
+    el.draftState.textContent = actions ? `Draft ${actions}` : "Draft ready";
+  } catch (error) {
+    el.draftState.textContent = error.message;
+  } finally {
+    el.stageDraftButton.disabled = false;
+  }
+}
+
+function clearContactForm() {
+  el.newContactFirst.value = "";
+  el.newContactLast.value = "";
+  el.newContactOrganization.value = "";
+  el.newContactPhones.value = "";
+  el.newContactEmails.value = "";
+  el.createContactState.textContent = "Idle";
+}
+
+async function createContact() {
+  const phones = splitValues(el.newContactPhones.value);
+  const emails = splitValues(el.newContactEmails.value);
+  const firstName = el.newContactFirst.value.trim();
+  const lastName = el.newContactLast.value.trim();
+  const organization = el.newContactOrganization.value.trim();
+  if (!firstName && !lastName && !organization && !phones.length && !emails.length) {
+    el.createContactState.textContent = "Add details";
+    return;
+  }
+
+  el.createContactButton.disabled = true;
+  el.createContactState.textContent = "Creating";
+  try {
+    await api("/penguin-connect/contacts", {
+      method: "POST",
+      body: JSON.stringify({
+        first_name: firstName,
+        last_name: lastName,
+        organization,
+        phones,
+        emails,
+        refresh_after: true,
+      }),
+    });
+    const searchValue = [firstName, lastName].filter(Boolean).join(" ") || organization || phones[0] || emails[0] || "";
+    if (searchValue) el.contactSearch.value = searchValue;
+    await loadContacts({ force: true });
+    el.createContactState.textContent = "Created";
+  } catch (error) {
+    el.createContactState.textContent = error.message;
+  } finally {
+    el.createContactButton.disabled = false;
+  }
+}
+
 el.refreshButton.addEventListener("click", () => {
   loadStatus();
   loadConversations();
@@ -643,6 +747,10 @@ el.copyThreadButton.addEventListener("click", async () => {
   el.sendState.textContent = "Thread copied";
 });
 el.fileInput.addEventListener("change", (event) => addFiles(event.target.files));
+el.stageDraftButton.addEventListener("click", stageDraft);
+el.clearDraftButton.addEventListener("click", clearDraftForm);
+el.createContactButton.addEventListener("click", createContact);
+el.clearContactButton.addEventListener("click", clearContactForm);
 el.attachmentDrop.addEventListener("dragover", (event) => {
   event.preventDefault();
   el.attachmentDrop.classList.add("dragging");

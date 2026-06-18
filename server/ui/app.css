@@ -156,6 +156,24 @@ input[type="search"] {
   color: var(--ink);
 }
 
+input[type="text"],
+input[type="tel"],
+input[type="email"] {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  outline: 0;
+  padding: 0 10px;
+}
+
+input[type="text"]:focus,
+input[type="tel"]:focus,
+input[type="email"]:focus {
+  border-color: var(--accent);
+}
+
 .conversation-list {
   flex: 1;
   min-height: 180px;
@@ -389,6 +407,8 @@ input[type="search"] {
   display: grid;
   align-content: start;
   gap: 14px;
+  max-height: 100vh;
+  overflow: auto;
   padding: 18px;
   border-right: 0;
 }
@@ -405,6 +425,30 @@ input[type="search"] {
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11px;
+}
+
+.field-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.two-col {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.toggle-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.toggle-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
 
 textarea {
@@ -577,6 +621,10 @@ textarea:focus,
 
   .contact-list {
     max-height: 180px;
+  }
+
+  .two-col {
+    grid-template-columns: 1fr;
   }
 
   .compose {

@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import tempfile
 import threading
 import time
@@ -73,6 +74,22 @@ class PenguinConnectSendRequest(BaseModel):
     message: str = ""
     attachment_paths: list[str] | None = None
     attachments: list[PenguinConnectBrowserAttachment] | None = None
+
+class PenguinConnectContactCreateRequest(BaseModel):
+    first_name: str = ""
+    last_name: str = ""
+    organization: str = ""
+    phones: list[str] | None = None
+    emails: list[str] | None = None
+    phone_label: str = "mobile"
+    email_label: str = "home"
+    refresh_after: bool = True
+
+class PenguinConnectDraftCreateRequest(BaseModel):
+    participants: list[str] | None = None
+    message: str = ""
+    copy_to_clipboard: bool = True
+    open_messages: bool = True
 
 def _map_sqlite_error(exc: sqlite3.OperationalError) -> HTTPException:
     msg = str(exc).lower()
@@ -172,6 +189,131 @@ def _ui_file_response(filename: str, media_type: str) -> Response:
     if not path.exists():
         raise HTTPException(status_code=404, detail="ui_asset_not_found")
     return Response(path.read_text(encoding="utf-8"), media_type=media_type)
+
+
+def _clean_text(value: str | None, *, max_chars: int = 500) -> str:
+    return (value or "").strip()[:max_chars]
+
+
+def _clean_text_values(values: list[str] | None, *, max_count: int = 10, max_chars: int = 500) -> list[str]:
+    cleaned: list[str] = []
+    for value in values or []:
+        item = _clean_text(value, max_chars=max_chars)
+        if item:
+            cleaned.append(item)
+        if len(cleaned) >= max_count:
+            break
+    return cleaned
+
+
+def _escape_applescript_text(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\\n")
+
+
+def _as_applescript_text(value: str) -> str:
+    return f'"{_escape_applescript_text(value)}"'
+
+
+def _run_osascript(script: str, *, timeout: float = 30.0) -> str:
+    try:
+        result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=501, detail="osascript_unavailable") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="osascript_timeout") from exc
+    if result.returncode != 0:
+        raise HTTPException(status_code=400, detail="osascript_failed")
+    return (result.stdout or "").strip()
+
+
+def _build_contact_create_script(
+    *,
+    first_name: str = "",
+    last_name: str = "",
+    organization: str = "",
+    phones: list[str] | None = None,
+    emails: list[str] | None = None,
+    phone_label: str = "mobile",
+    email_label: str = "home",
+) -> str:
+    properties: list[str] = []
+    if first_name:
+        properties.append(f"first name:{_as_applescript_text(first_name)}")
+    if last_name:
+        properties.append(f"last name:{_as_applescript_text(last_name)}")
+    if organization:
+        properties.append(f"organization:{_as_applescript_text(organization)}")
+
+    make_person = "make new person"
+    if properties:
+        make_person += f" with properties {{{', '.join(properties)}}}"
+
+    lines = ['tell application "Contacts"', f"    set newPerson to {make_person}"]
+    for phone in phones or []:
+        lines.append(
+            "    make new phone at end of phones of newPerson with properties "
+            f"{{label:{_as_applescript_text(phone_label)}, value:{_as_applescript_text(phone)}}}"
+        )
+    for email in emails or []:
+        lines.append(
+            "    make new email at end of emails of newPerson with properties "
+            f"{{label:{_as_applescript_text(email_label)}, value:{_as_applescript_text(email)}}}"
+        )
+    lines.extend(["    save", "    return id of newPerson", "end tell"])
+    return "\n".join(lines)
+
+
+def _create_contact(req: PenguinConnectContactCreateRequest) -> str:
+    first_name = _clean_text(req.first_name, max_chars=160)
+    last_name = _clean_text(req.last_name, max_chars=160)
+    organization = _clean_text(req.organization, max_chars=240)
+    phones = _clean_text_values(req.phones, max_count=10, max_chars=160)
+    emails = _clean_text_values(req.emails, max_count=10, max_chars=240)
+    phone_label = _clean_text(req.phone_label, max_chars=40) or "mobile"
+    email_label = _clean_text(req.email_label, max_chars=40) or "home"
+
+    if not any([first_name, last_name, organization, phones, emails]):
+        raise HTTPException(status_code=400, detail="contact_requires_identity")
+
+    script = _build_contact_create_script(
+        first_name=first_name,
+        last_name=last_name,
+        organization=organization,
+        phones=phones,
+        emails=emails,
+        phone_label=phone_label,
+        email_label=email_label,
+    )
+    return _run_osascript(script, timeout=30.0) or "unknown"
+
+
+def _build_messages_draft(participants: list[str], message: str = "") -> str:
+    body = _clean_text(message, max_chars=50000)
+    if body:
+        return f"To: {', '.join(participants)}\n\n{body}\n"
+    return f"To: {', '.join(participants)}\n"
+
+
+def _copy_to_clipboard(text: str) -> None:
+    try:
+        subprocess.run(["pbcopy"], input=text, text=True, check=True, timeout=10.0)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=501, detail="pbcopy_unavailable") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="clipboard_timeout") from exc
+    except subprocess.CalledProcessError as exc:
+        raise HTTPException(status_code=400, detail="clipboard_failed") from exc
+
+
+def _open_messages_app() -> None:
+    try:
+        subprocess.run(["open", "-a", "Messages"], check=True, timeout=10.0)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=501, detail="open_unavailable") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="open_messages_timeout") from exc
+    except subprocess.CalledProcessError as exc:
+        raise HTTPException(status_code=400, detail="open_messages_failed") from exc
 
 
 def _contact_display_name(row: sqlite3.Row) -> str:
@@ -524,6 +666,19 @@ def search_penguinconnect_contacts(search: str = "", limit: int = Query(25, ge=1
     finally:
         conn.close()
 
+@app.post("/api/penguin-connect/contacts")
+@app.post("/penguin-connect/contacts")
+def create_penguinconnect_contact(req: PenguinConnectContactCreateRequest):
+    contact_id = _create_contact(req)
+    refresh_result = None
+    if req.refresh_after:
+        refresh_result = refresh_contacts_now()
+    return {
+        "success": True,
+        "contact_id": contact_id,
+        "refresh": refresh_result,
+    }
+
 @app.post("/api/penguin-connect/contacts/refresh")
 @app.post("/penguin-connect/contacts/refresh")
 def refresh_penguinconnect_contacts():
@@ -540,6 +695,30 @@ def search_penguinconnect_messages(query: str = "", limit: int = Query(25, ge=1,
         return _search_messages(conn, query, limit=limit)
     finally:
         conn.close()
+
+@app.post("/api/penguin-connect/messages/draft")
+@app.post("/penguin-connect/messages/draft")
+def create_penguinconnect_messages_draft(req: PenguinConnectDraftCreateRequest):
+    participants = _clean_text_values(req.participants, max_count=50, max_chars=240)
+    if not participants:
+        raise HTTPException(status_code=400, detail="draft_requires_participant")
+
+    draft = _build_messages_draft(participants, req.message)
+    copied = False
+    opened_messages = False
+    if req.copy_to_clipboard:
+        _copy_to_clipboard(draft)
+        copied = True
+    if req.open_messages:
+        _open_messages_app()
+        opened_messages = True
+    return {
+        "success": True,
+        "participants_count": len(participants),
+        "draft": draft,
+        "copied": copied,
+        "opened_messages": opened_messages,
+    }
 
 @app.post("/api/penguin-connect/gmail/connect")
 @app.post("/penguin-connect/gmail/connect")

@@ -1,6 +1,7 @@
 import json
 import base64
 import sqlite3
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -283,6 +284,59 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(response.json()["contacts_count"], 2)
         mock_refresh.assert_called_once_with()
 
+    def test_contacts_create_endpoint_runs_osascript_and_refreshes_cache(self):
+        completed = subprocess.CompletedProcess(["osascript"], 0, stdout="person-123\n", stderr="")
+        with mock.patch("app.subprocess.run", return_value=completed) as mock_run, mock.patch(
+            "app.refresh_contacts_now",
+            return_value={"success": True, "contacts_count": 3, "display_names_updated": 0},
+        ) as mock_refresh, TestClient(app_module.app) as client:
+            mock_refresh.reset_mock()
+            response = client.post(
+                "/penguin-connect/contacts",
+                json={
+                    "first_name": "Jordan",
+                    "last_name": "Example",
+                    "phones": ["+1 (415) 555-0100"],
+                    "emails": ["jordan@example.test"],
+                    "refresh_after": True,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["success"])
+        self.assertEqual(body["contact_id"], "person-123")
+        self.assertEqual(body["refresh"]["contacts_count"], 3)
+        mock_refresh.assert_called_once_with()
+        script = mock_run.call_args.args[0][2]
+        self.assertIn('first name:"Jordan"', script)
+        self.assertIn('value:"+1 (415) 555-0100"', script)
+        self.assertIn('value:"jordan@example.test"', script)
+
+    def test_messages_draft_endpoint_copies_and_opens_messages(self):
+        with mock.patch("app._copy_to_clipboard") as mock_copy, mock.patch("app._open_messages_app") as mock_open, TestClient(
+            app_module.app
+        ) as client:
+            response = client.post(
+                "/penguin-connect/messages/draft",
+                json={
+                    "participants": ["+14155550100", "friend@example.test"],
+                    "message": "Starting this thread",
+                    "copy_to_clipboard": True,
+                    "open_messages": True,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["success"])
+        self.assertEqual(body["participants_count"], 2)
+        self.assertEqual(body["draft"], "To: +14155550100, friend@example.test\n\nStarting this thread\n")
+        self.assertTrue(body["copied"])
+        self.assertTrue(body["opened_messages"])
+        mock_copy.assert_called_once_with(body["draft"])
+        mock_open.assert_called_once_with()
+
     def test_ui_endpoint_serves_console_assets(self):
         with TestClient(app_module.app) as client:
             html_response = client.get("/penguin-connect/ui")
@@ -293,13 +347,18 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("PenguinConnect Console", html_response.text)
         self.assertIn("contactSearch", html_response.text)
         self.assertIn("globalMessageSearch", html_response.text)
+        self.assertIn("stageDraftButton", html_response.text)
+        self.assertIn("createContactButton", html_response.text)
         self.assertEqual(css_response.status_code, 200)
         self.assertIn(".contact-list", css_response.text)
         self.assertIn(".search-result", css_response.text)
+        self.assertIn(".toggle-row", css_response.text)
         self.assertEqual(js_response.status_code, 200)
         self.assertIn("buildCodexPrompt", js_response.text)
         self.assertIn("renderContacts", js_response.text)
         self.assertIn("renderMessageSearchResults", js_response.text)
+        self.assertIn("stageDraft", js_response.text)
+        self.assertIn("createContact", js_response.text)
 
     def test_messages_endpoint_uses_header_display_name_for_own_gmail_messages(self):
         conn = self._get_connection()
