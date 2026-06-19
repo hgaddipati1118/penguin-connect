@@ -506,7 +506,7 @@ input[type="email"]:focus {
 
 .contact-bulk-actions {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
 }
 
@@ -671,6 +671,7 @@ input[type="email"]:focus {
 .contact-add,
 .contact-favorite,
 .contact-note-button,
+.contact-copy,
 .contact-create-result {
   display: inline-grid;
   min-width: 30px;
@@ -690,6 +691,10 @@ input[type="email"]:focus {
   font-size: 10px;
 }
 
+.contact-copy {
+  font-size: 10px;
+}
+
 .contact-favorite {
   font-size: 10px;
 }
@@ -704,6 +709,8 @@ input[type="email"]:focus {
 .contact-favorite:focus-visible,
 .contact-note-button:hover,
 .contact-note-button:focus-visible,
+.contact-copy:hover,
+.contact-copy:focus-visible,
 .contact-create-result:hover,
 .contact-create-result:focus-visible {
   border-color: var(--accent);
@@ -723,6 +730,7 @@ input[type="email"]:focus {
 .contact-add:disabled,
 .contact-favorite:disabled,
 .contact-note-button:disabled,
+.contact-copy:disabled,
 .contact-create-result:disabled {
   cursor: not-allowed;
   opacity: 0.45;

@@ -56,6 +56,7 @@ const el = {
   contactSearch: document.querySelector("#contactSearch"),
   contactSourceFilters: document.querySelector("#contactSourceFilters"),
   contactAddVisibleButton: document.querySelector("#contactAddVisibleButton"),
+  contactCopyVisibleButton: document.querySelector("#contactCopyVisibleButton"),
   contactSaveVisibleButton: document.querySelector("#contactSaveVisibleButton"),
   contactStatus: document.querySelector("#contactStatus"),
   contactList: document.querySelector("#contactList"),
@@ -1196,6 +1197,7 @@ function contactBulkListName() {
 function renderContactBulkActions() {
   const hasRecipients = visibleContactRecipientHandles().length > 0;
   el.contactAddVisibleButton.disabled = !hasRecipients;
+  el.contactCopyVisibleButton.disabled = !hasRecipients;
   el.contactSaveVisibleButton.disabled = !hasRecipients;
 }
 
@@ -1215,6 +1217,21 @@ function addVisibleContactsToDraft() {
     : "Contacts already added";
   el.contactStatus.textContent = status;
   el.draftState.textContent = status;
+}
+
+async function copyVisibleContacts() {
+  const participants = visibleContactRecipientHandles();
+  if (!participants.length) {
+    el.contactStatus.textContent = "No visible handles";
+    return;
+  }
+
+  try {
+    await copyText(participants.join("\n"));
+    el.contactStatus.textContent = `${participants.length} visible handle${participants.length === 1 ? "" : "s"} copied`;
+  } catch (error) {
+    el.contactStatus.textContent = error.message;
+  }
 }
 
 async function saveVisibleContactsAsRecipientList() {
@@ -1467,6 +1484,36 @@ function addContactToDraft(contact) {
   el.contactStatus.textContent = added ? "Added contact to new chat" : "Contact already in new chat";
 }
 
+async function copyContactHandle(contact) {
+  const handle = contactRecipientHandle(contact);
+  if (!handle) {
+    el.contactStatus.textContent = "No phone or email on contact";
+    return;
+  }
+
+  try {
+    await copyText(handle);
+    el.contactStatus.textContent = "Contact handle copied";
+  } catch (error) {
+    el.contactStatus.textContent = error.message;
+  }
+}
+
+async function copyParticipantHandle(participant) {
+  const handle = String(participant?.handle || "").trim();
+  if (!handle) {
+    el.threadPeopleState.textContent = "No handle";
+    return;
+  }
+
+  try {
+    await copyText(handle);
+    el.threadPeopleState.textContent = "Participant handle copied";
+  } catch (error) {
+    el.threadPeopleState.textContent = error.message;
+  }
+}
+
 async function useContact(contact) {
   const searchValue = contact.primary_handle || contact.phone_normalized || contactDisplayName(contact);
   state.focusMessageId = "";
@@ -1566,6 +1613,7 @@ function renderThreadPeople() {
       <div class="thread-person-actions">
         <button type="button" data-action="favorite">Star</button>
         <button type="button" data-action="search">Search</button>
+        <button type="button" data-action="copy">Copy</button>
         <button type="button" data-action="draft">New chat</button>
         <button type="button" data-action="contact">Create</button>
       </div>
@@ -1581,6 +1629,7 @@ function renderThreadPeople() {
     favoriteButton.disabled = !managedContact.contact_key;
     favoriteButton.addEventListener("click", () => toggleThreadParticipantFavorite(participant, contact));
     item.querySelector('[data-action="search"]').addEventListener("click", () => searchContactHandle(participant.handle));
+    item.querySelector('[data-action="copy"]').addEventListener("click", () => copyParticipantHandle(participant));
     item.querySelector('[data-action="draft"]').addEventListener("click", () => addParticipantToDraft(participant.handle));
     const contactButton = item.querySelector('[data-action="contact"]');
     contactButton.textContent = savedContact ? "Saved" : "Create";
@@ -1856,6 +1905,7 @@ function renderContacts() {
       <span class="contact-actions">
         <button class="contact-favorite" type="button" title="Favorite contact" aria-label="Favorite contact">Star</button>
         <button class="contact-note-button" type="button" title="Private contact note" aria-label="Private contact note">Note</button>
+        <button class="contact-copy" type="button" title="Copy contact handle" aria-label="Copy contact handle">Copy</button>
         <button class="contact-add" type="button" title="Add to new chat" aria-label="Add contact to new chat">+</button>
         <button class="contact-create-result" type="button" title="Create contact" aria-label="Create contact from search result">Create</button>
       </span>
@@ -1889,6 +1939,9 @@ function renderContacts() {
     const addButton = item.querySelector(".contact-add");
     addButton.disabled = !contactRecipientHandle(contact);
     addButton.addEventListener("click", () => addContactToDraft(contact));
+    const copyButton = item.querySelector(".contact-copy");
+    copyButton.disabled = !contactRecipientHandle(contact);
+    copyButton.addEventListener("click", () => copyContactHandle(contact));
     const createButton = item.querySelector(".contact-create-result");
     createButton.hidden = contact.is_saved !== false;
     createButton.disabled = !contactRecipientHandle(contact);
@@ -3189,7 +3242,31 @@ function useCodexAnswerAsDraft() {
 }
 
 async function copyText(value) {
-  await navigator.clipboard.writeText(value);
+  const text = String(value || "");
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch (_error) {
+      // Fall back for browser contexts that expose clipboard but deny writes.
+    }
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.top = "-1000px";
+  textarea.style.opacity = "0";
+  document.body.append(textarea);
+  textarea.select();
+  try {
+    if (!document.execCommand("copy")) {
+      throw new Error("Copy failed");
+    }
+  } finally {
+    textarea.remove();
+  }
 }
 
 function addFiles(fileList) {
@@ -3374,6 +3451,7 @@ el.contactRefreshButton.addEventListener("click", async () => {
   }
 });
 el.contactAddVisibleButton.addEventListener("click", addVisibleContactsToDraft);
+el.contactCopyVisibleButton.addEventListener("click", copyVisibleContacts);
 el.contactSaveVisibleButton.addEventListener("click", saveVisibleContactsAsRecipientList);
 el.messageFilter.addEventListener("input", renderMessages);
 el.messageViewFilters.addEventListener("click", (event) => {

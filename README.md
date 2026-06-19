@@ -165,7 +165,7 @@ images/audio/files, inline previews for local image attachments, inline playback
 for local audio attachments, cached Contacts search/refresh with saved/unsaved/favorite/noted
 source filters, conversation-participant fallback and related-thread shortcuts,
 private contact notes with note-aware search, contact creation, contact-to-thread matching, saved-contact resolution for
-selected-thread participants, contact-to-new-chat recipient picking with visible-result bulk add/save actions,
+selected-thread participants, contact-to-new-chat recipient picking with visible-result bulk add/copy/save actions,
 removable recipient chips, reusable saved recipient lists, selected-thread participant actions for contact
 search/new-chat/contact creation, participant favoriting, bulk add-all-to-draft, and save-as-list actions, local thread titles, notes and tags,
 follow-up scheduling/filtering plus bulk follow-up set/clear, read/unread management, bridge
