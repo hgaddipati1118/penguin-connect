@@ -728,6 +728,30 @@ def _noted_contact_keys(conn: sqlite3.Connection) -> list[str]:
     return [str(row["contact_key"] or "").strip() for row in rows if row["contact_key"]]
 
 
+def _contact_source_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    saved_count = int(conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0] or 0)
+    saved_keys = _all_contact_keys(conn)
+    unsaved_contacts = _conversation_participant_contact_results(
+        conn,
+        "",
+        limit=10000,
+        existing_keys=saved_keys,
+        include_all=True,
+    )
+    visible_keys = {key for key in saved_keys if key}
+    visible_keys.update(str(contact.get("contact_key") or "").strip() for contact in unsaved_contacts)
+    visible_keys.discard("")
+    favorite_keys = {key for key in _favorite_contact_keys(conn) if key}
+    noted_keys = {key for key in _noted_contact_keys(conn) if key}
+    return {
+        "all": saved_count + len(unsaved_contacts),
+        "contacts": saved_count,
+        "participants": len(unsaved_contacts),
+        "favorites": len(favorite_keys & visible_keys),
+        "noted": len(noted_keys & visible_keys),
+    }
+
+
 def _contact_matches_query(contact: dict, query: str) -> bool:
     clean_query = str(query or "").strip().lower()
     if not clean_query:
@@ -903,6 +927,7 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
     normalized_source = (source or "all").strip().lower()
     if normalized_source not in {"all", "contacts", "participants", "favorites", "noted"}:
         normalized_source = "all"
+    source_counts = _contact_source_counts(conn)
     favorite_keys = _favorite_contact_keys(conn) if normalized_source == "favorites" else []
     favorite_key_set = set(favorite_keys)
     favorite_order = {key: index for index, key in enumerate(favorite_keys)}
@@ -939,7 +964,8 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
         contact_params = [*params]
         contact_limit = ""
         if normalized_source not in {"favorites", "noted"}:
-            contact_params.append(limit_value)
+            contact_result_limit = max(1, limit_value // 2) if normalized_source == "all" and not query else limit_value
+            contact_params.append(contact_result_limit)
             contact_limit = "LIMIT ?"
         rows = conn.execute(
             f"""
@@ -967,7 +993,7 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
             "" if normalized_source in {"favorites", "noted"} else query,
             limit=limit_value if normalized_source in {"favorites", "noted"} else max(0, limit_value - len(contact_items)),
             existing_keys=existing_keys,
-            include_all=normalized_source in {"participants", "favorites", "noted"},
+            include_all=normalized_source in {"participants", "favorites", "noted"} or (normalized_source == "all" and not query),
             allowed_keys=favorite_key_set if normalized_source == "favorites" else (noted_key_set if normalized_source == "noted" else None),
         )
         if query and normalized_source in {"all", "participants"} and note_match_keys:
@@ -1016,6 +1042,7 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
         "count": len(contacts),
         "total_contacts": total_contacts,
         "participant_count": len(participant_items),
+        "source_counts": source_counts,
         "contacts": contacts,
     }
 

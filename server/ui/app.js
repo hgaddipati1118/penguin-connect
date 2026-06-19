@@ -7,6 +7,7 @@ const state = {
   senderEmail: "",
   attachments: [],
   contacts: [],
+  contactSourceCounts: {},
   contactSource: "all",
   contactSearchTimer: null,
   contactNoteEditorKey: "",
@@ -1905,7 +1906,11 @@ function renderContactSourceFilters() {
     const button = document.createElement("button");
     button.type = "button";
     button.dataset.contactSource = source.key;
-    button.textContent = source.label;
+    const count = state.contactSourceCounts[source.key];
+    button.textContent = Number.isFinite(count) ? `${source.label} ${count}` : source.label;
+    if (Number.isFinite(count)) {
+      button.title = `${source.label}: ${count}`;
+    }
     const active = state.contactSource === source.key;
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", active ? "true" : "false");
@@ -2510,15 +2515,10 @@ async function loadContacts({ force = false } = {}) {
   const browsesNoted = state.contactSource === "noted";
   const browsesSaved = state.contactSource === "contacts";
   renderContactSourceFilters();
-  if (!force && query.length < 2 && !browsesUnsaved && !browsesFavorites && !browsesNoted && !browsesSaved) {
-    state.contacts = [];
-    el.contactStatus.textContent = "Type 2+ chars to search contacts";
-    renderContacts();
-    buildCodexPrompt();
-    return;
-  }
 
-  if (browsesUnsaved && !query) {
+  if (!query && state.contactSource === "all") {
+    el.contactStatus.textContent = "Loading contacts";
+  } else if (browsesUnsaved && !query) {
     el.contactStatus.textContent = "Loading unsaved participants";
   } else if (browsesFavorites && !query) {
     el.contactStatus.textContent = "Loading favorite contacts";
@@ -2537,8 +2537,15 @@ async function loadContacts({ force = false } = {}) {
     });
     const payload = await api(`/penguin-connect/contacts?${params.toString()}`);
     state.contacts = payload.contacts || [];
+    state.contactSourceCounts = payload.source_counts || state.contactSourceCounts || {};
+    renderContactSourceFilters();
     const total = payload.total_contacts ?? 0;
-    if (state.contactSource === "participants") {
+    const counts = payload.source_counts || {};
+    if (!query && state.contactSource === "all") {
+      const savedCount = counts.contacts ?? total;
+      const unsavedCount = counts.participants ?? payload.participant_count ?? 0;
+      el.contactStatus.textContent = `${state.contacts.length} all entries · ${savedCount} saved · ${unsavedCount} unsaved`;
+    } else if (state.contactSource === "participants") {
       el.contactStatus.textContent = `${state.contacts.length} unsaved participant${state.contacts.length === 1 ? "" : "s"}`;
     } else if (state.contactSource === "favorites") {
       el.contactStatus.textContent = `${state.contacts.length} favorite contact${state.contacts.length === 1 ? "" : "s"}`;
@@ -3682,4 +3689,5 @@ renderCodexModes();
 renderCodexAnswerControls();
 loadStatus();
 loadConversations();
+loadContacts();
 loadRecipientLists();

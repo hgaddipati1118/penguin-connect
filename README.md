@@ -163,7 +163,7 @@ starred/noted-message filtering, local message starring and private
 message notes, opening synced attachment files, a per-thread media browser for loaded
 images/audio/files, inline previews for local image attachments, inline playback
 for local audio attachments, cached Contacts search/refresh with saved/unsaved/favorite/noted
-source filters including saved-contact browsing, conversation-participant fallback and related-thread shortcuts,
+source filters with counts, all/saved/unsaved contact browsing, conversation-participant fallback and related-thread shortcuts,
 private contact notes with note-aware search, contact creation, contact-to-thread matching, saved-contact resolution for
 selected-thread participants, contact-to-new-chat recipient picking with visible-result bulk add/copy/save actions,
 removable recipient chips, reusable saved recipient lists, selected-thread participant actions for contact

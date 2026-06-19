@@ -648,6 +648,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
                 "/penguin-connect/contacts/management",
                 json={"contact_key": "phone:15127436385", "note": "Met at demo day. Ask about pilots."},
             )
+            browse_response = client.get("/penguin-connect/contacts", params={"limit": 10})
             response = client.get("/penguin-connect/contacts", params={"search": "taylor", "limit": 10})
             phone_response = client.get("/penguin-connect/contacts", params={"search": "+15127436385", "limit": 10})
             note_search_response = client.get("/penguin-connect/contacts", params={"search": "pilots", "limit": 10})
@@ -669,10 +670,21 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(note_response.status_code, 200)
         self.assertTrue(note_response.json()["is_favorite"])
         self.assertTrue(note_response.json()["has_note"])
+        self.assertEqual(browse_response.status_code, 200)
+        browse_body = browse_response.json()
+        self.assertEqual(browse_body["source"], "all")
+        self.assertEqual(browse_body["count"], 2)
+        self.assertEqual(
+            browse_body["source_counts"],
+            {"all": 2, "contacts": 2, "participants": 0, "favorites": 1, "noted": 1},
+        )
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["count"], 1)
         self.assertEqual(body["total_contacts"], 2)
+        self.assertEqual(body["source_counts"]["contacts"], 2)
+        self.assertEqual(body["source_counts"]["favorites"], 1)
+        self.assertEqual(body["source_counts"]["noted"], 1)
         self.assertEqual(body["contacts"][0]["display_name"], "Taylor Example")
         self.assertEqual(body["contacts"][0]["contact_key"], "phone:15127436385")
         self.assertTrue(body["contacts"][0]["is_favorite"])
@@ -719,6 +731,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertFalse(unfavorite_response.json()["is_favorite"])
         self.assertEqual(empty_favorites_response.status_code, 200)
         self.assertEqual(empty_favorites_response.json()["count"], 0)
+        self.assertEqual(empty_favorites_response.json()["source_counts"]["favorites"], 0)
+        self.assertEqual(empty_favorites_response.json()["source_counts"]["noted"], 1)
 
     def test_contacts_endpoint_uses_phone_key_note_for_email_primary_contact(self):
         conn = self._get_connection()
@@ -803,6 +817,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
             conn.close()
 
         with TestClient(app_module.app) as client:
+            all_browse_response = client.get("/penguin-connect/contacts", params={"limit": 10})
             response = client.get("/penguin-connect/contacts", params={"search": "5550199", "limit": 10})
             saved_response = client.get("/penguin-connect/contacts", params={"search": "+15127436385", "limit": 10})
             saved_only_response = client.get(
@@ -830,11 +845,21 @@ class AppHttpIntegrationTests(unittest.TestCase):
                 params={"source": "noted", "search": "venue", "limit": 10},
             )
 
+        self.assertEqual(all_browse_response.status_code, 200)
+        all_browse_body = all_browse_response.json()
+        self.assertEqual(all_browse_body["source"], "all")
+        self.assertEqual(all_browse_body["count"], 3)
+        self.assertEqual(
+            all_browse_body["source_counts"],
+            {"all": 3, "contacts": 2, "participants": 1, "favorites": 0, "noted": 0},
+        )
+
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["count"], 1)
         self.assertEqual(body["total_contacts"], 2)
         self.assertEqual(body["participant_count"], 1)
+        self.assertEqual(body["source_counts"]["participants"], 1)
         result = body["contacts"][0]
         self.assertEqual(result["source"], "conversation")
         self.assertFalse(result["is_saved"])
@@ -872,6 +897,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(favorite_unsaved_body["source"], "favorites")
         self.assertEqual(favorite_unsaved_body["count"], 1)
         self.assertEqual(favorite_unsaved_body["participant_count"], 1)
+        self.assertEqual(favorite_unsaved_body["source_counts"]["favorites"], 1)
+        self.assertEqual(favorite_unsaved_body["source_counts"]["noted"], 1)
         self.assertEqual(favorite_unsaved_body["contacts"][0]["source"], "conversation")
         self.assertEqual(favorite_unsaved_body["contacts"][0]["contact_key"], "phone:14155550199")
         self.assertTrue(favorite_unsaved_body["contacts"][0]["is_favorite"])
@@ -1158,9 +1185,13 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("messageSearchContext", js_response.text)
         self.assertIn("contactContext", js_response.text)
         self.assertIn("contactSources", js_response.text)
+        self.assertIn("contactSourceCounts", js_response.text)
+        self.assertIn("source_counts", js_response.text)
         self.assertIn('{ key: "noted", label: "Noted" }', js_response.text)
         self.assertIn("No noted contacts", js_response.text)
+        self.assertIn("Loading contacts", js_response.text)
         self.assertIn("Loading saved contacts", js_response.text)
+        self.assertNotIn("Type 2+ chars to search contacts", js_response.text)
         self.assertIn("No saved contacts", js_response.text)
         self.assertIn("renderCodexModes", js_response.text)
         self.assertIn("askCodex", js_response.text)
