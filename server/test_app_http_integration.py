@@ -2314,6 +2314,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("messageContactDisplayName", js_response.text)
         self.assertIn("messageContactFromHandle", js_response.text)
         self.assertIn("lookupContactForMessageHandle", js_response.text)
+        self.assertIn("searchMessagesForMessageContact", js_response.text)
+        self.assertIn("searchMessagesForSearchResultContact", js_response.text)
+        self.assertIn("searchMessagesForLoadedMessageContact", js_response.text)
         self.assertIn("useMessageContactHandle", js_response.text)
         self.assertIn("useMessageSearchResultContact", js_response.text)
         self.assertIn("useLoadedMessageContact", js_response.text)
@@ -2324,11 +2327,19 @@ class AppHttpIntegrationTests(unittest.TestCase):
             js_response.text,
         )
         self.assertIn(
+            'findContactButton.addEventListener("click", () => searchMessagesForSearchResultContact(result));',
+            js_response.text,
+        )
+        self.assertIn(
             'addContactButton.addEventListener("click", () => addMessageSearchResultContactToDraft(result));',
             js_response.text,
         )
         self.assertIn(
             'contactButton.addEventListener("click", () => useLoadedMessageContact(message));',
+            js_response.text,
+        )
+        self.assertIn(
+            'findContactButton.addEventListener("click", () => searchMessagesForLoadedMessageContact(message));',
             js_response.text,
         )
         self.assertIn(
