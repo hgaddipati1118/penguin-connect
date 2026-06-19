@@ -253,6 +253,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
                 "/penguin-connect/conversations/amc_test/management",
                 json={
                     "pinned": True,
+                    "muted": True,
                     "title": "Local Taylor Thread",
                     "note": "Follow up after intro",
                     "labels": ["VIP", "#Hiring", "vip", " ".join(["long"] * 20)],
@@ -264,12 +265,14 @@ class AppHttpIntegrationTests(unittest.TestCase):
             archive_response = client.post("/penguin-connect/conversations/amc_test/management", json={"archived": True})
             archived_list_response = client.get("/penguin-connect/conversations")
             unarchive_response = client.post("/penguin-connect/conversations/amc_test/management", json={"archived": False})
+            unmute_response = client.post("/penguin-connect/conversations/amc_test/management", json={"muted": False})
 
         self.assertEqual(pin_response.status_code, 200)
         pin_body = pin_response.json()
         self.assertTrue(pin_body["success"])
         self.assertTrue(pin_body["is_pinned"])
         self.assertFalse(pin_body["is_archived"])
+        self.assertTrue(pin_body["is_muted"])
         self.assertEqual(pin_body["title"], "Local Taylor Thread")
         self.assertEqual(pin_body["note"], "Follow up after intro")
         self.assertEqual(pin_body["labels"], ["VIP", "Hiring", "long long long long long long lo"])
@@ -279,6 +282,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         pinned_conversation = pinned_list_response.json()["conversations"][0]
         self.assertTrue(pinned_conversation["is_pinned"])
         self.assertFalse(pinned_conversation["is_archived"])
+        self.assertTrue(pinned_conversation["is_muted"])
         self.assertEqual(pinned_conversation["title"], "Local Taylor Thread")
         self.assertEqual(pinned_conversation["note"], "Follow up after intro")
         self.assertEqual(pinned_conversation["labels"], ["VIP", "Hiring", "long long long long long long lo"])
@@ -289,6 +293,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         archive_body = archive_response.json()
         self.assertFalse(archive_body["is_pinned"])
         self.assertTrue(archive_body["is_archived"])
+        self.assertTrue(archive_body["is_muted"])
         self.assertEqual(archive_body["title"], "Local Taylor Thread")
         self.assertEqual(archive_body["note"], "Follow up after intro")
         self.assertEqual(archive_body["labels"], ["VIP", "Hiring", "long long long long long long lo"])
@@ -298,6 +303,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         archived_conversation = archived_list_response.json()["conversations"][0]
         self.assertFalse(archived_conversation["is_pinned"])
         self.assertTrue(archived_conversation["is_archived"])
+        self.assertTrue(archived_conversation["is_muted"])
         self.assertEqual(archived_conversation["title"], "Local Taylor Thread")
         self.assertEqual(archived_conversation["note"], "Follow up after intro")
         self.assertEqual(archived_conversation["labels"], ["VIP", "Hiring", "long long long long long long lo"])
@@ -308,6 +314,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
         unarchive_body = unarchive_response.json()
         self.assertFalse(unarchive_body["is_pinned"])
         self.assertFalse(unarchive_body["is_archived"])
+        self.assertTrue(unarchive_body["is_muted"])
+
+        self.assertEqual(unmute_response.status_code, 200)
+        self.assertFalse(unmute_response.json()["is_muted"])
 
     def test_conversation_management_endpoint_rejects_unknown_conversation(self):
         with TestClient(app_module.app) as client:
@@ -1138,6 +1148,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn('data-view="needsReply"', html_response.text)
         self.assertIn('data-view="drafts"', html_response.text)
         self.assertIn('data-view="unlabeled"', html_response.text)
+        self.assertIn('data-view="muted"', html_response.text)
         self.assertIn("labelFilters", html_response.text)
         self.assertIn("bulkActions", html_response.text)
         self.assertIn("bulkLabelsInput", html_response.text)
@@ -1148,8 +1159,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("bulkClearFollowUpButton", html_response.text)
         self.assertIn("bulkClearDraftsButton", html_response.text)
         self.assertIn("bulkPinButton", html_response.text)
+        self.assertIn("bulkMuteButton", html_response.text)
         self.assertIn("bulkArchiveButton", html_response.text)
         self.assertIn("pinButton", html_response.text)
+        self.assertIn("muteButton", html_response.text)
         self.assertIn("archiveButton", html_response.text)
         self.assertIn("threadLocalTitle", html_response.text)
         self.assertIn("threadFollowUpAt", html_response.text)
@@ -1198,6 +1211,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn(".unread-badge", css_response.text)
         self.assertIn(".label-badge", css_response.text)
         self.assertIn(".draft-badge", css_response.text)
+        self.assertIn(".muted-badge", css_response.text)
         self.assertIn(".followup-badge", css_response.text)
         self.assertIn(".attachment-link", css_response.text)
         self.assertIn(".audio-attachment", css_response.text)
@@ -1314,6 +1328,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("last_message_direction", js_response.text)
         self.assertIn('drafts: "Drafts"', js_response.text)
         self.assertIn('unlabeled: "Unlabeled"', js_response.text)
+        self.assertIn('muted: "Muted"', js_response.text)
         self.assertIn("renderLabelFilters", js_response.text)
         self.assertIn("conversationMatchesLabel", js_response.text)
         self.assertIn("conversationHasLabels", js_response.text)
@@ -1325,6 +1340,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("conversationHasDraft", js_response.text)
         self.assertIn("bulkPinSelected", js_response.text)
         self.assertIn("shouldBulkPin", js_response.text)
+        self.assertIn("bulkMuteSelected", js_response.text)
+        self.assertIn("shouldBulkMute", js_response.text)
         self.assertIn("bulkArchiveSelected", js_response.text)
         self.assertIn("shouldBulkArchive", js_response.text)
         self.assertIn("bulkApplyLabels", js_response.text)
@@ -1347,6 +1364,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("createContact", js_response.text)
         self.assertIn("setReadState", js_response.text)
         self.assertIn("setConversationManagement", js_response.text)
+        self.assertIn("is_muted", js_response.text)
         self.assertIn("saveConversationManagement", js_response.text)
         self.assertIn("scheduleDraftSave", js_response.text)
         self.assertIn("saveLocalDraft", js_response.text)

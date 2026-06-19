@@ -153,6 +153,7 @@ CREATE TABLE IF NOT EXISTS penguin_connect_conversation_management (
     conversation_id TEXT PRIMARY KEY REFERENCES penguin_connect_conversations(conversation_id) ON DELETE CASCADE,
     is_pinned INTEGER NOT NULL DEFAULT 0,
     is_archived INTEGER NOT NULL DEFAULT 0,
+    is_muted INTEGER NOT NULL DEFAULT 0,
     title TEXT NOT NULL DEFAULT '',
     note TEXT NOT NULL DEFAULT '',
     labels TEXT NOT NULL DEFAULT '[]',
@@ -207,6 +208,8 @@ CREATE INDEX IF NOT EXISTS idx_penguin_connect_message_management_starred
 ON penguin_connect_message_management(conversation_id, is_starred, updated_at);
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_conversation_management_flags
 ON penguin_connect_conversation_management(is_archived, is_pinned, updated_at);
+CREATE INDEX IF NOT EXISTS idx_penguin_connect_conversation_management_muted
+ON penguin_connect_conversation_management(is_muted, is_archived, updated_at);
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_jobs_ready ON penguin_connect_jobs(job_type, status, next_run_at, id);
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_jobs_lease ON penguin_connect_jobs(job_type, status, lease_until);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_penguin_connect_jobs_active_dedupe
@@ -341,7 +344,7 @@ def _merge_management_rows(conn: sqlite3.Connection, source_id: str, target_id: 
     if not source_id or not target_id or source_id == target_id:
         return
     source = conn.execute(
-        """SELECT is_pinned, is_archived, title, note, labels, draft_text, follow_up_at
+        """SELECT is_pinned, is_archived, is_muted, title, note, labels, draft_text, follow_up_at
            FROM penguin_connect_conversation_management
            WHERE conversation_id = ?""",
         (source_id,),
@@ -349,7 +352,7 @@ def _merge_management_rows(conn: sqlite3.Connection, source_id: str, target_id: 
     if not source:
         return
     target = conn.execute(
-        """SELECT is_pinned, is_archived, title, note, labels, draft_text, follow_up_at
+        """SELECT is_pinned, is_archived, is_muted, title, note, labels, draft_text, follow_up_at
            FROM penguin_connect_conversation_management
            WHERE conversation_id = ?""",
         (target_id,),
@@ -362,6 +365,7 @@ def _merge_management_rows(conn: sqlite3.Connection, source_id: str, target_id: 
         return
 
     merged_archived = bool(source["is_archived"] or target["is_archived"])
+    merged_muted = bool(source["is_muted"] or target["is_muted"])
     merged_pinned = bool(source["is_pinned"] or target["is_pinned"]) and not merged_archived
     notes = []
     for value in (target["note"], source["note"]):
@@ -387,6 +391,7 @@ def _merge_management_rows(conn: sqlite3.Connection, source_id: str, target_id: 
         """UPDATE penguin_connect_conversation_management
            SET is_pinned = ?,
                is_archived = ?,
+               is_muted = ?,
                title = ?,
                note = ?,
                labels = ?,
@@ -397,6 +402,7 @@ def _merge_management_rows(conn: sqlite3.Connection, source_id: str, target_id: 
         (
             1 if merged_pinned else 0,
             1 if merged_archived else 0,
+            1 if merged_muted else 0,
             title[:160],
             "\n\n".join(notes)[:4000],
             json.dumps(labels[:12]),
@@ -1457,9 +1463,15 @@ def init_db() -> None:
             conn.execute("ALTER TABLE penguin_connect_conversation_management ADD COLUMN draft_text TEXT NOT NULL DEFAULT ''")
         if "follow_up_at" not in management_columns:
             conn.execute("ALTER TABLE penguin_connect_conversation_management ADD COLUMN follow_up_at TEXT NOT NULL DEFAULT ''")
+        if "is_muted" not in management_columns:
+            conn.execute("ALTER TABLE penguin_connect_conversation_management ADD COLUMN is_muted INTEGER NOT NULL DEFAULT 0")
         conn.execute(
             """CREATE INDEX IF NOT EXISTS idx_penguin_connect_conversation_management_follow_up
                ON penguin_connect_conversation_management(follow_up_at, is_archived)"""
+        )
+        conn.execute(
+            """CREATE INDEX IF NOT EXISTS idx_penguin_connect_conversation_management_muted
+               ON penguin_connect_conversation_management(is_muted, is_archived, updated_at)"""
         )
         _migrate_legacy_conversation_ids(conn)
         _migrate_apple_messages_conversation_routes(conn)

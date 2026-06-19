@@ -49,6 +49,7 @@ const el = {
   selectVisibleButton: document.querySelector("#selectVisibleButton"),
   bulkMarkReadButton: document.querySelector("#bulkMarkReadButton"),
   bulkPinButton: document.querySelector("#bulkPinButton"),
+  bulkMuteButton: document.querySelector("#bulkMuteButton"),
   bulkArchiveButton: document.querySelector("#bulkArchiveButton"),
   clearSelectionButton: document.querySelector("#clearSelectionButton"),
   bulkLabelsInput: document.querySelector("#bulkLabelsInput"),
@@ -71,6 +72,7 @@ const el = {
   threadTitle: document.querySelector("#threadTitle"),
   syncButton: document.querySelector("#syncButton"),
   pinButton: document.querySelector("#pinButton"),
+  muteButton: document.querySelector("#muteButton"),
   archiveButton: document.querySelector("#archiveButton"),
   markReadButton: document.querySelector("#markReadButton"),
   markUnreadButton: document.querySelector("#markUnreadButton"),
@@ -177,6 +179,7 @@ const conversationViewLabels = {
   unread: "Unread",
   drafts: "Drafts",
   unlabeled: "Unlabeled",
+  muted: "Muted",
   pinned: "Pinned",
   archived: "Archived",
   all: "All",
@@ -556,15 +559,16 @@ function conversationSortValue(conversation) {
 }
 
 function conversationMatchesView(conversation, view = state.conversationView) {
-  if (view === "unread") return Number(conversation.unread_count || 0) > 0 && !conversation.is_archived;
-  if (view === "needsReply") return conversationNeedsReply(conversation) && !conversation.is_archived;
+  if (view === "unread") return Number(conversation.unread_count || 0) > 0 && !conversation.is_archived && !conversation.is_muted;
+  if (view === "needsReply") return conversationNeedsReply(conversation) && !conversation.is_archived && !conversation.is_muted;
   if (view === "followup") return hasFollowUp(conversation) && !conversation.is_archived;
   if (view === "drafts") return conversationHasDraft(conversation) && !conversation.is_archived;
   if (view === "unlabeled") return !conversationHasLabels(conversation) && !conversation.is_archived;
+  if (view === "muted") return Boolean(conversation.is_muted) && !conversation.is_archived;
   if (view === "pinned") return Boolean(conversation.is_pinned) && !conversation.is_archived;
   if (view === "archived") return Boolean(conversation.is_archived);
   if (view === "all") return true;
-  return !conversation.is_archived;
+  return !conversation.is_archived && !conversation.is_muted;
 }
 
 function conversationMatchesLabel(conversation, label = state.conversationLabel) {
@@ -581,6 +585,7 @@ function conversationViewCounts() {
     unread: state.conversations.filter((conversation) => conversationMatchesView(conversation, "unread")).length,
     drafts: state.conversations.filter((conversation) => conversationMatchesView(conversation, "drafts")).length,
     unlabeled: state.conversations.filter((conversation) => conversationMatchesView(conversation, "unlabeled")).length,
+    muted: state.conversations.filter((conversation) => conversationMatchesView(conversation, "muted")).length,
     pinned: state.conversations.filter((conversation) => conversationMatchesView(conversation, "pinned")).length,
     archived: state.conversations.filter((conversation) => conversationMatchesView(conversation, "archived")).length,
     all: state.conversations.length,
@@ -678,6 +683,12 @@ function shouldBulkPin(targets = selectedConversations()) {
   return !targets.every((conversation) => conversation.is_pinned);
 }
 
+function shouldBulkMute(targets = selectedConversations()) {
+  if (state.conversationView === "muted") return false;
+  if (!targets.length) return true;
+  return !targets.every((conversation) => conversation.is_muted);
+}
+
 function conversationHasUnread(conversation) {
   return Boolean(conversation.has_unread) || Number(conversation.unread_count || 0) > 0;
 }
@@ -705,6 +716,7 @@ function renderBulkActions(rows) {
   const selectedDraftCount = selectedRows.filter(conversationHasDraft).length;
   const markUnreadIntent = shouldBulkMarkUnread(selectedRows);
   const pinIntent = shouldBulkPin();
+  const muteIntent = shouldBulkMute();
   const archiveIntent = shouldBulkArchive();
   el.bulkState.textContent = state.bulkBusy ? "Updating selected" : (state.bulkMessage || `${selectedCount} selected`);
   el.selectVisibleButton.disabled = state.bulkBusy || !visibleCount || allVisibleSelected;
@@ -716,6 +728,10 @@ function renderBulkActions(rows) {
   el.bulkPinButton.title = pinIntent ? "Pin selected conversations" : "Unpin selected conversations";
   el.bulkPinButton.setAttribute("aria-label", el.bulkPinButton.title);
   el.bulkPinButton.disabled = state.bulkBusy || selectedCount === 0;
+  el.bulkMuteButton.textContent = muteIntent ? "Mute" : "Unmute";
+  el.bulkMuteButton.title = muteIntent ? "Mute selected conversations" : "Unmute selected conversations";
+  el.bulkMuteButton.setAttribute("aria-label", el.bulkMuteButton.title);
+  el.bulkMuteButton.disabled = state.bulkBusy || selectedCount === 0;
   el.bulkArchiveButton.textContent = archiveIntent ? "Archive" : "Restore";
   el.bulkArchiveButton.title = archiveIntent ? "Archive selected conversations" : "Restore selected conversations";
   el.bulkArchiveButton.setAttribute("aria-label", el.bulkArchiveButton.title);
@@ -1091,6 +1107,12 @@ function renderConversations() {
       const badge = document.createElement("span");
       badge.className = "badge status-badge";
       badge.textContent = "archived";
+      badges.append(badge);
+    }
+    if (conversation.is_muted) {
+      const badge = document.createElement("span");
+      badge.className = "badge muted-badge";
+      badge.textContent = "muted";
       badges.append(badge);
     }
     if (draftTextForConversation(conversation).trim()) {
@@ -2603,6 +2625,7 @@ function renderThreadControls() {
   const selected = state.selected;
   const hasSelection = Boolean(selected);
   el.pinButton.disabled = !hasSelection;
+  el.muteButton.disabled = !hasSelection;
   el.archiveButton.disabled = !hasSelection;
   el.saveManagementButton.disabled = !hasSelection;
   el.threadLocalTitle.disabled = !hasSelection;
@@ -2618,6 +2641,7 @@ function renderThreadControls() {
     el.threadStatus.textContent = "No conversation selected";
     el.managementState.textContent = "No thread";
     el.pinButton.textContent = "Pin";
+    el.muteButton.textContent = "Mute";
     el.archiveButton.textContent = "Archive";
     el.connectionButton.textContent = "Disconnect";
     return;
@@ -2627,11 +2651,13 @@ function renderThreadControls() {
   const excluded = selected.excluded ? " · excluded" : "";
   const managed = [
     selected.is_pinned ? "pinned" : "",
+    selected.is_muted ? "muted" : "",
     selected.is_archived ? "archived" : "",
     hasFollowUp(selected) ? `follow-up ${followUpLabel(selected)}` : "",
   ].filter(Boolean).join(" · ");
   el.threadStatus.textContent = `${status}${excluded}${managed ? ` · ${managed}` : ""} · ${unread} unread · ${selected.alias_email || "no alias"}`;
   el.pinButton.textContent = selected.is_pinned ? "Unpin" : "Pin";
+  el.muteButton.textContent = selected.is_muted ? "Unmute" : "Mute";
   el.archiveButton.textContent = selected.is_archived ? "Unarchive" : "Archive";
   el.connectionButton.textContent = status === "active" ? "Disconnect" : "Reconnect";
 }
@@ -2974,6 +3000,7 @@ async function setReadState(unread) {
 async function setConversationManagement(fields) {
   if (!state.selected) return;
   el.pinButton.disabled = true;
+  el.muteButton.disabled = true;
   el.archiveButton.disabled = true;
   el.saveManagementButton.disabled = true;
   el.threadStatus.textContent = "Updating thread";
@@ -2994,6 +3021,7 @@ function conversationManagementUpdates(result, fields = {}) {
   const updates = {
     is_pinned: Boolean(result.is_pinned),
     is_archived: Boolean(result.is_archived),
+    is_muted: Boolean(result.is_muted),
     title: result.title || "",
     note: result.note || "",
     labels: result.labels || [],
@@ -3094,6 +3122,32 @@ async function bulkPinSelected() {
     }
     state.selectedConversationIds.clear();
     state.bulkMessage = pinIntent ? `Pinned ${targets.length}` : `Unpinned ${targets.length}`;
+  } catch (error) {
+    state.bulkMessage = error.message;
+  } finally {
+    state.bulkBusy = false;
+    renderConversations();
+    renderThreadControls();
+    renderManagementFields();
+    buildCodexPrompt();
+  }
+}
+
+async function bulkMuteSelected() {
+  const targets = selectedConversationSnapshot();
+  if (!targets.length) return;
+  const muteIntent = shouldBulkMute(targets);
+  const actionLabel = muteIntent ? "Mute" : "Unmute";
+  if (!window.confirm(`${actionLabel} ${targets.length} selected conversation${targets.length === 1 ? "" : "s"}?`)) return;
+  state.bulkBusy = true;
+  state.bulkMessage = "";
+  renderConversations();
+  try {
+    for (const conversation of targets) {
+      await updateConversationManagement(conversation.conversation_id, { muted: muteIntent });
+    }
+    state.selectedConversationIds.clear();
+    state.bulkMessage = muteIntent ? `Muted ${targets.length}` : `Unmuted ${targets.length}`;
   } catch (error) {
     state.bulkMessage = error.message;
   } finally {
@@ -3379,6 +3433,7 @@ function selectedConversationContext() {
     `Participants: ${participants}`,
     `Unread count: ${Number(state.selected.unread_count || 0)}`,
     `Pinned: ${Boolean(state.selected.is_pinned)}`,
+    `Muted: ${Boolean(state.selected.is_muted)}`,
     `Archived: ${Boolean(state.selected.is_archived)}`,
     `Follow-up: ${hasFollowUp(state.selected) ? followUpLabel(state.selected) : "none"}`,
     `Thread tags: ${labels}`,
@@ -3782,6 +3837,7 @@ el.draftMessage.addEventListener("input", () => renderDraftPreview());
 el.sendButton.addEventListener("click", sendMessage);
 el.voiceMemoButton.addEventListener("click", toggleVoiceMemoRecording);
 el.pinButton.addEventListener("click", () => setConversationManagement({ pinned: !Boolean(state.selected?.is_pinned) }));
+el.muteButton.addEventListener("click", () => setConversationManagement({ muted: !Boolean(state.selected?.is_muted) }));
 el.archiveButton.addEventListener("click", () => setConversationManagement({ archived: !Boolean(state.selected?.is_archived) }));
 el.saveManagementButton.addEventListener("click", saveConversationManagement);
 el.threadLocalTitle.addEventListener("input", () => {
@@ -3907,6 +3963,7 @@ el.bulkClearFollowUpButton.addEventListener("click", bulkClearFollowUps);
 el.bulkClearDraftsButton.addEventListener("click", bulkClearDrafts);
 el.bulkMarkReadButton.addEventListener("click", bulkMarkSelectedRead);
 el.bulkPinButton.addEventListener("click", bulkPinSelected);
+el.bulkMuteButton.addEventListener("click", bulkMuteSelected);
 el.bulkArchiveButton.addEventListener("click", bulkArchiveSelected);
 
 renderEmojiButtons();

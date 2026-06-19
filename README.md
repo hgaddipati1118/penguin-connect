@@ -156,8 +156,8 @@ keeps the normal route-safety checks. It can also attach local files, including
 audio voice memos. The local UI supports replies, file/image attachments from picker, drag/drop, or paste, in-composer
 voice memo recording, emoji
 shortcuts, message-level reply targets and copy actions, thread filtering,
-needs-reply/unread/drafts/unlabeled/pinned/archived and label-based conversation views, bulk
-mark-read/mark-unread/pin-unpin/archive-restore/label add-remove/draft cleanup actions, latest-message previews in the conversation rail,
+needs-reply/unread/drafts/unlabeled/muted/pinned/archived and label-based conversation views, bulk
+mark-read/mark-unread/pin-unpin/mute-unmute/archive-restore/label add-remove/draft cleanup actions, latest-message previews in the conversation rail,
 global synced-message search with recent-message browsing, open/copy/reply actions and filters for current thread, unread, sent,
 files and audio plus date ranges, loaded-message filters for unread/sent/files/audio,
 starred/noted-message filtering, local message starring and private
@@ -168,7 +168,7 @@ source filters with counts, all/saved/unsaved contact browsing, conversation-par
 private contact notes with note-aware search, contact creation, contact-to-thread matching, saved-contact resolution for
 selected-thread participants, click-to-draft contact starts, contact-to-new-chat recipient picking with visible-result bulk add/copy/save actions,
 removable recipient chips, reusable saved recipient lists, selected-thread participant actions for contact
-search/new-chat/contact creation, participant favoriting, bulk add-all-to-draft, and save-as-list actions, local thread titles, notes and tags,
+search/new-chat/contact creation, participant favoriting, bulk add-all-to-draft, and save-as-list actions, local thread titles, notes, tags and muted state,
 follow-up scheduling/filtering plus bulk follow-up set/clear, read/unread management, bridge
 disconnect/reconnect controls, persistent per-thread reply drafts, new chat
 draft staging with live Messages-ready draft preview/copy, and a Codex prompt helper with

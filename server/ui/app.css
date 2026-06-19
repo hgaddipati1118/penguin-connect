@@ -165,13 +165,14 @@ h3 {
 
 .bulk-actions {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) repeat(5, auto);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: center;
   gap: 4px;
   margin: 0 18px 12px;
 }
 
 .bulk-actions span {
+  grid-column: 1 / -1;
   overflow: hidden;
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -205,13 +206,16 @@ h3 {
 }
 
 .bulk-actions button {
+  min-width: 0;
   min-height: 26px;
+  overflow: hidden;
   border: 1px solid var(--line);
   background: var(--panel);
   color: var(--muted);
   cursor: pointer;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 10px;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -445,6 +449,12 @@ input[type="date"]:focus {
   border-color: rgba(168, 83, 27, 0.45);
   background: rgba(168, 83, 27, 0.1);
   color: var(--warn);
+}
+
+.muted-badge {
+  border-color: rgba(109, 103, 94, 0.42);
+  background: rgba(109, 103, 94, 0.1);
+  color: var(--muted);
 }
 
 .followup-badge {

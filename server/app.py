@@ -116,6 +116,7 @@ class PenguinConnectReadStateRequest(BaseModel):
 class PenguinConnectConversationManagementRequest(BaseModel):
     pinned: bool | None = None
     archived: bool | None = None
+    muted: bool | None = None
     title: str | None = None
     note: str | None = None
     labels: list[str] | None = None
@@ -1407,7 +1408,7 @@ def _conversation_management_rows(conn: sqlite3.Connection, conversation_ids: li
         return {}
     placeholders = ",".join("?" for _ in ids)
     rows = conn.execute(
-        f"""SELECT conversation_id, is_pinned, is_archived, title, note, labels, draft_text, follow_up_at, updated_at
+        f"""SELECT conversation_id, is_pinned, is_archived, is_muted, title, note, labels, draft_text, follow_up_at, updated_at
             FROM penguin_connect_conversation_management
             WHERE conversation_id IN ({placeholders})""",
         ids,
@@ -1416,6 +1417,7 @@ def _conversation_management_rows(conn: sqlite3.Connection, conversation_ids: li
         row["conversation_id"]: {
             "is_pinned": bool(row["is_pinned"]),
             "is_archived": bool(row["is_archived"]),
+            "is_muted": bool(row["is_muted"]),
             "title": row["title"] or "",
             "note": row["note"] or "",
             "labels": _parse_management_labels(row["labels"]),
@@ -1434,6 +1436,7 @@ def _attach_conversation_management(conn: sqlite3.Connection, result: dict) -> d
         state = rows.get(conversation.get("conversation_id"), {})
         conversation["is_pinned"] = bool(state.get("is_pinned"))
         conversation["is_archived"] = bool(state.get("is_archived"))
+        conversation["is_muted"] = bool(state.get("is_muted"))
         conversation["title"] = state.get("title") or ""
         conversation["note"] = state.get("note") or ""
         conversation["labels"] = state.get("labels") or []
@@ -1493,7 +1496,7 @@ def _clean_management_follow_up(value: str | None) -> str:
 
 def _get_conversation_management(conn: sqlite3.Connection, conversation_id: str) -> dict:
     row = conn.execute(
-        """SELECT c.conversation_id, m.is_pinned, m.is_archived, m.title, m.note, m.labels, m.draft_text, m.follow_up_at, m.updated_at
+        """SELECT c.conversation_id, m.is_pinned, m.is_archived, m.is_muted, m.title, m.note, m.labels, m.draft_text, m.follow_up_at, m.updated_at
            FROM penguin_connect_conversations c
            LEFT JOIN penguin_connect_conversation_management m
              ON m.conversation_id = c.conversation_id
@@ -1507,6 +1510,7 @@ def _get_conversation_management(conn: sqlite3.Connection, conversation_id: str)
         "conversation_id": row["conversation_id"],
         "is_pinned": bool(row["is_pinned"] or 0),
         "is_archived": bool(row["is_archived"] or 0),
+        "is_muted": bool(row["is_muted"] or 0),
         "title": row["title"] or "",
         "note": row["note"] or "",
         "labels": _parse_management_labels(row["labels"]),
@@ -1522,6 +1526,7 @@ def _set_conversation_management(
     *,
     pinned: bool | None,
     archived: bool | None,
+    muted: bool | None,
     title: str | None,
     note: str | None,
     labels: list[str] | None,
@@ -1531,6 +1536,7 @@ def _set_conversation_management(
     current = _get_conversation_management(conn, conversation_id)
     is_pinned = current["is_pinned"] if pinned is None else bool(pinned)
     is_archived = current["is_archived"] if archived is None else bool(archived)
+    is_muted = current["is_muted"] if muted is None else bool(muted)
     clean_title = current["title"] if title is None else _clean_management_title(title)
     clean_note = current["note"] if note is None else _clean_management_note(note)
     clean_labels = current["labels"] if labels is None else _clean_management_labels(labels)
@@ -1543,11 +1549,12 @@ def _set_conversation_management(
 
     conn.execute(
         """INSERT INTO penguin_connect_conversation_management
-           (conversation_id, is_pinned, is_archived, title, note, labels, draft_text, follow_up_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+           (conversation_id, is_pinned, is_archived, is_muted, title, note, labels, draft_text, follow_up_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
            ON CONFLICT(conversation_id) DO UPDATE SET
              is_pinned = excluded.is_pinned,
              is_archived = excluded.is_archived,
+             is_muted = excluded.is_muted,
              title = excluded.title,
              note = excluded.note,
              labels = excluded.labels,
@@ -1558,6 +1565,7 @@ def _set_conversation_management(
             conversation_id,
             1 if is_pinned else 0,
             1 if is_archived else 0,
+            1 if is_muted else 0,
             clean_title,
             clean_note,
             json.dumps(clean_labels),
@@ -2111,6 +2119,7 @@ def set_penguinconnect_conversation_management(
             conversation_id,
             pinned=req.pinned,
             archived=req.archived,
+            muted=req.muted,
             title=req.title,
             note=req.note,
             labels=req.labels,
@@ -2122,6 +2131,7 @@ def set_penguinconnect_conversation_management(
             conversation_id=conversation_id,
             is_pinned=bool(result.get("is_pinned")),
             is_archived=bool(result.get("is_archived")),
+            is_muted=bool(result.get("is_muted")),
             has_title=bool(result.get("title")),
             has_note=bool(result.get("note")),
             label_count=len(result.get("labels") or []),
