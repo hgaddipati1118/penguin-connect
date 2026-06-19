@@ -157,6 +157,7 @@ const el = {
   messageSearchCount: document.querySelector("#messageSearchCount"),
   addSearchSendersButton: document.querySelector("#addSearchSendersButton"),
   saveSearchSendersButton: document.querySelector("#saveSearchSendersButton"),
+  createSearchSendersButton: document.querySelector("#createSearchSendersButton"),
   loadMoreSearchButton: document.querySelector("#loadMoreSearchButton"),
   messageDateFrom: document.querySelector("#messageDateFrom"),
   messageDateTo: document.querySelector("#messageDateTo"),
@@ -3186,6 +3187,34 @@ function messageSearchContactHandles({ onlyNew = false } = {}) {
   return handles.filter((handle) => !existingKeys.has(recipientCompareKey(handle)));
 }
 
+function messageSearchContactCandidates() {
+  return [
+    ...state.draftRecipientContactCache,
+    ...state.contacts,
+    ...Object.values(state.threadContactMatches || {}),
+    ...(state.selected?.contact_context || []),
+  ].filter((contact) => contact && typeof contact === "object");
+}
+
+function messageSearchCreatableContactItems() {
+  const seen = new Set();
+  const candidates = messageSearchContactCandidates();
+  const items = [];
+  for (const result of state.messageSearchResults) {
+    const handle = messageSearchContactHandle(result);
+    const key = recipientCompareKey(handle);
+    if (!handle || !key || seen.has(key)) continue;
+    seen.add(key);
+    const saved = bestContactForHandle(handle, candidates);
+    if (saved && saved.is_saved !== false) continue;
+    items.push({
+      handle,
+      contact: messageContactFromHandle(handle, messageSearchContactDisplayName(result) || searchResultConversationName(result)),
+    });
+  }
+  return items;
+}
+
 function addMessageSearchContactsToDraft() {
   const allHandles = messageSearchContactHandles();
   const handles = messageSearchContactHandles({ onlyNew: true });
@@ -3210,6 +3239,69 @@ function addMessageSearchContactsToDraft() {
   renderMessageSearchMoreControls();
   el.draftMessage.focus();
   return true;
+}
+
+async function createMessageSearchContacts() {
+  const allHandles = messageSearchContactHandles();
+  const items = messageSearchCreatableContactItems();
+  if (!allHandles.length) {
+    el.messageSearchStatus.textContent = "No sender handles in loaded results";
+    return;
+  }
+  if (!items.length) {
+    el.messageSearchStatus.textContent = "Search sender contacts already saved";
+    renderMessageSearchMoreControls();
+    return;
+  }
+
+  el.createSearchSendersButton.disabled = true;
+  el.messageSearchStatus.textContent = `Creating ${items.length} sender contact${items.length === 1 ? "" : "s"}`;
+  let created = 0;
+  let skipped = 0;
+  const failures = [];
+  for (const item of items) {
+    try {
+      const existing = await lookupContactForMessageHandle(item.handle);
+      if (existing && existing.is_saved !== false) {
+        skipped += 1;
+        continue;
+      }
+      await api("/penguin-connect/contacts", {
+        method: "POST",
+        body: JSON.stringify(contactCreatePayload(existing || item.contact)),
+      });
+      cacheDraftRecipientContact({
+        ...draftCreatedContactFromHandle(item.handle),
+        display_name: item.contact.display_name,
+      });
+      created += 1;
+      el.messageSearchStatus.textContent = `Created ${created}/${items.length}`;
+    } catch (error) {
+      failures.push(error.message);
+    }
+  }
+
+  try {
+    if (created) {
+      await api("/penguin-connect/contacts/refresh", { method: "POST", body: "{}" });
+    }
+    await loadContacts({ force: true });
+    await loadThreadContactMatches();
+    refreshDraftRecipientChips();
+  } catch (error) {
+    failures.push(error.message);
+  } finally {
+    renderMessageSearchMoreControls();
+    if (failures.length) {
+      el.messageSearchStatus.textContent = `Created ${created}; ${failures.length} failed`;
+    } else if (created) {
+      el.messageSearchStatus.textContent = `Created ${created} sender contact${created === 1 ? "" : "s"}`;
+    } else {
+      el.messageSearchStatus.textContent = skipped
+        ? "Search sender contacts already saved"
+        : "No sender contacts created";
+    }
+  }
 }
 
 function messageSearchRecipientListName() {
@@ -4314,6 +4406,7 @@ function renderMessageSearchMoreControls() {
   const canLoadMore = runnable && !state.messageSearchLoading && loaded >= limit && !atMax;
   const allSenderCount = messageSearchContactHandles().length;
   const newSenderCount = messageSearchContactHandles({ onlyNew: true }).length;
+  const creatableSenderCount = messageSearchCreatableContactItems().length;
   el.messageSearchMoreBar.hidden = !runnable;
   el.messageSearchCount.textContent = state.messageSearchLoading
     ? `Loading up to ${limit} results`
@@ -4330,6 +4423,12 @@ function renderMessageSearchMoreControls() {
     : (allSenderCount
       ? `Save ${allSenderCount} sender${allSenderCount === 1 ? "" : "s"}`
       : "Save senders");
+  el.createSearchSendersButton.disabled = state.messageSearchLoading || creatableSenderCount === 0;
+  el.createSearchSendersButton.textContent = state.messageSearchLoading
+    ? "Create contacts"
+    : (creatableSenderCount
+      ? `Create ${creatableSenderCount} contact${creatableSenderCount === 1 ? "" : "s"}`
+      : (allSenderCount ? "Contacts saved" : "Create contacts"));
   el.loadMoreSearchButton.disabled = !canLoadMore;
   el.loadMoreSearchButton.textContent = state.messageSearchLoading
     ? "Loading"
@@ -6602,6 +6701,7 @@ el.globalMessageSearchFilters.addEventListener("click", (event) => {
 el.loadMoreSearchButton.addEventListener("click", loadMoreMessageSearchResults);
 el.addSearchSendersButton.addEventListener("click", addMessageSearchContactsToDraft);
 el.saveSearchSendersButton.addEventListener("click", saveMessageSearchContactsAsRecipientList);
+el.createSearchSendersButton.addEventListener("click", createMessageSearchContacts);
 el.contactRefreshButton.addEventListener("click", async () => {
   el.contactRefreshButton.disabled = true;
   el.contactStatus.textContent = "Refreshing Contacts";
