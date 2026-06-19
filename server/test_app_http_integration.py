@@ -335,6 +335,40 @@ class AppHttpIntegrationTests(unittest.TestCase):
             conn.close()
         self.assertEqual(unread_count, 0)
 
+    def test_message_management_endpoint_stars_cached_message(self):
+        with TestClient(app_module.app) as client:
+            star_response = client.post(
+                "/penguin-connect/conversations/amc_test/messages/management",
+                json={"provider_message_id": "imsg-latest", "starred": True},
+            )
+            messages_response = client.get("/penguin-connect/conversations/amc_test/messages", params={"limit": 1})
+            unstar_response = client.post(
+                "/penguin-connect/conversations/amc_test/messages/management",
+                json={"provider_message_id": "imsg-latest", "starred": False},
+            )
+
+        self.assertEqual(star_response.status_code, 200)
+        self.assertTrue(star_response.json()["is_starred"])
+
+        self.assertEqual(messages_response.status_code, 200)
+        message = messages_response.json()["messages"][0]
+        self.assertEqual(message["provider_message_id"], "imsg-latest")
+        self.assertTrue(message["is_starred"])
+        self.assertEqual(message["message_note"], "")
+
+        self.assertEqual(unstar_response.status_code, 200)
+        self.assertFalse(unstar_response.json()["is_starred"])
+
+    def test_message_management_endpoint_rejects_unknown_message(self):
+        with TestClient(app_module.app) as client:
+            response = client.post(
+                "/penguin-connect/conversations/amc_test/messages/management",
+                json={"provider_message_id": "missing-message", "starred": True},
+            )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "message_not_found")
+
     def test_message_search_endpoint_searches_cached_messages(self):
         with TestClient(app_module.app) as client:
             response = client.get("/penguin-connect/messages/search", params={"query": "latest", "limit": 10})
@@ -817,6 +851,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn(".bulk-label-input", css_response.text)
         self.assertIn(".conversation-select", css_response.text)
         self.assertIn(".conversation-preview", css_response.text)
+        self.assertIn(".message.starred", css_response.text)
         self.assertIn(".message-actions", css_response.text)
         self.assertIn(".reply-context", css_response.text)
         self.assertIn(".thread-management", css_response.text)
@@ -882,6 +917,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("mergeConversationLabels", js_response.text)
         self.assertIn("conversationPreviewText", js_response.text)
         self.assertIn("setReplyContext", js_response.text)
+        self.assertIn("toggleMessageStar", js_response.text)
+        self.assertIn("isStarredMessage", js_response.text)
+        self.assertIn("messages/management", js_response.text)
         self.assertIn("messageCopyText", js_response.text)
         self.assertIn("renderManagementFields", js_response.text)
         self.assertIn("stageDraft", js_response.text)

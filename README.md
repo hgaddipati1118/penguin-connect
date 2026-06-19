@@ -159,7 +159,8 @@ unread/pinned/archived and label-based conversation views, bulk
 mark-read/archive/label actions, latest-message previews in the conversation rail,
 global synced-message search with filters for current thread, unread, sent,
 files and audio, loaded-message filters for unread/sent/files/audio,
-opening synced attachment files, a per-thread media browser for loaded
+starred-message filtering, local message starring, opening synced attachment
+files, a per-thread media browser for loaded
 images/audio/files, inline previews for local image attachments, inline playback
 for local audio attachments, cached Contacts search/refresh with saved/unsaved
 source filters, conversation-participant fallback and related-thread shortcuts,

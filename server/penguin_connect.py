@@ -3950,12 +3950,17 @@ def get_conversation_messages(conn: sqlite3.Connection, conversation_id: str, li
         own_sender_emails = _allowed_sender_emails(conv["gmail_email"], aliases)
 
     rows = conn.execute(
-        """SELECT provider, provider_message_id, direction, sender_email, sender_name,
-                  subject, body_text, message_timestamp, is_read, metadata,
-                  gmail_message_id, gmail_thread_id
-           FROM penguin_connect_messages
-           WHERE conversation_id = ?
-           ORDER BY message_timestamp DESC
+        """SELECT m.provider, m.provider_message_id, m.direction, m.sender_email, m.sender_name,
+                  m.subject, m.body_text, m.message_timestamp, m.is_read, m.metadata,
+                  m.gmail_message_id, m.gmail_thread_id,
+                  COALESCE(mm.is_starred, 0) AS is_starred,
+                  COALESCE(mm.note, '') AS message_note
+           FROM penguin_connect_messages m
+           LEFT JOIN penguin_connect_message_management mm
+             ON mm.conversation_id = m.conversation_id
+            AND mm.provider_message_id = m.provider_message_id
+           WHERE m.conversation_id = ?
+           ORDER BY m.message_timestamp DESC
            LIMIT ?""",
         (conversation_id, max(1, min(limit, 1000))),
     ).fetchall()
@@ -3993,6 +3998,8 @@ def get_conversation_messages(conn: sqlite3.Connection, conversation_id: str, li
                 "attachments": attachments,
                 "gmail_message_id": row["gmail_message_id"],
                 "gmail_thread_id": row["gmail_thread_id"],
+                "is_starred": bool(row["is_starred"]),
+                "message_note": row["message_note"],
             }
         )
 

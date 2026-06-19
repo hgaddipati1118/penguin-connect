@@ -118,6 +118,7 @@ const emojiChoices = ["👍", "🙏", "🔥", "❤️", "😂", "👀", "✅", "
 
 const messageViews = [
   { key: "all", label: "All" },
+  { key: "starred", label: "Starred" },
   { key: "unread", label: "Unread" },
   { key: "files", label: "Files" },
   { key: "audio", label: "Audio" },
@@ -567,6 +568,10 @@ function isUnreadMessage(message) {
   return message.is_read === false || message.is_read === 0;
 }
 
+function isStarredMessage(message) {
+  return message.is_starred === true || message.is_starred === 1;
+}
+
 function attachmentRows(message) {
   const metadata = message.metadata && typeof message.metadata === "object" ? message.metadata : {};
   if (Array.isArray(message.attachments)) return message.attachments;
@@ -594,6 +599,7 @@ function isImageAttachment(attachment) {
 }
 
 function messageMatchesView(message, view = state.messageView) {
+  if (view === "starred") return isStarredMessage(message);
   if (view === "unread") return isUnreadMessage(message);
   if (view === "files") return attachmentRows(message).length > 0;
   if (view === "audio") return attachmentRows(message).some(isAudioAttachment);
@@ -604,6 +610,7 @@ function messageMatchesView(message, view = state.messageView) {
 function messageViewCounts() {
   return {
     all: state.messages.length,
+    starred: state.messages.filter(isStarredMessage).length,
     unread: state.messages.filter(isUnreadMessage).length,
     files: state.messages.filter((message) => attachmentRows(message).length > 0).length,
     audio: state.messages.filter((message) => attachmentRows(message).some(isAudioAttachment)).length,
@@ -711,6 +718,30 @@ function setReplyContext(message) {
   renderReplyContext();
   el.composer.focus();
   buildCodexPrompt();
+}
+
+async function toggleMessageStar(message) {
+  if (!state.selected || !message.provider_message_id) return;
+  const nextStarred = !isStarredMessage(message);
+  try {
+    const result = await api(`/penguin-connect/conversations/${encodeURIComponent(state.selected.conversation_id)}/messages/management`, {
+      method: "POST",
+      body: JSON.stringify({
+        provider_message_id: message.provider_message_id,
+        starred: nextStarred,
+      }),
+    });
+    state.messages = state.messages.map((item) => (
+      item.provider_message_id === message.provider_message_id
+        ? { ...item, is_starred: Boolean(result.is_starred) }
+        : item
+    ));
+    el.sendState.textContent = result.is_starred ? "Message starred" : "Message unstarred";
+    renderMessages();
+    buildCodexPrompt();
+  } catch (error) {
+    el.sendState.textContent = error.message;
+  }
 }
 
 function renderReplyContext() {
@@ -1422,7 +1453,8 @@ function renderMessages() {
     const item = document.createElement("article");
     const focused = state.focusMessageId && message.provider_message_id === state.focusMessageId;
     const unread = isUnreadMessage(message);
-    item.className = `message ${isOwnMessage(message) ? "mine" : ""} ${unread ? "unread" : ""} ${focused ? "focused" : ""}`;
+    const starred = isStarredMessage(message);
+    item.className = `message ${isOwnMessage(message) ? "mine" : ""} ${unread ? "unread" : ""} ${starred ? "starred" : ""} ${focused ? "focused" : ""}`;
     item.dataset.messageId = message.provider_message_id || "";
     const attachments = attachmentRows(message);
     item.innerHTML = `
@@ -1433,6 +1465,7 @@ function renderMessages() {
       <div class="message-body"></div>
       <div class="message-attachments"></div>
       <div class="message-actions">
+        <button type="button" data-action="star">Star</button>
         <button type="button" data-action="reply">Reply</button>
         <button type="button" data-action="copy">Copy</button>
       </div>
@@ -1440,6 +1473,11 @@ function renderMessages() {
     item.querySelector(".message-head span").textContent = messageSender(message);
     item.querySelector("time").textContent = messageTime(message);
     item.querySelector(".message-body").textContent = message.body_text || message.text || "";
+    const starButton = item.querySelector('[data-action="star"]');
+    starButton.textContent = starred ? "Unstar" : "Star";
+    starButton.classList.toggle("active", starred);
+    starButton.disabled = !message.provider_message_id;
+    starButton.addEventListener("click", () => toggleMessageStar(message));
     item.querySelector('[data-action="reply"]').addEventListener("click", () => setReplyContext(message));
     item.querySelector('[data-action="copy"]').addEventListener("click", async () => {
       await copyText(messageCopyText(message));

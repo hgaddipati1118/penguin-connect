@@ -108,6 +108,10 @@ class PenguinConnectConversationManagementRequest(BaseModel):
     labels: list[str] | None = None
     draft_text: str | None = None
 
+class PenguinConnectMessageManagementRequest(BaseModel):
+    provider_message_id: str = ""
+    starred: bool = False
+
 def _map_sqlite_error(exc: sqlite3.OperationalError) -> HTTPException:
     msg = str(exc).lower()
     if "unable to open database file" in msg:
@@ -1099,6 +1103,44 @@ def _set_conversation_management(
     return _get_conversation_management(conn, conversation_id)
 
 
+def _set_message_management(
+    conn: sqlite3.Connection,
+    conversation_id: str,
+    provider_message_id: str,
+    *,
+    starred: bool,
+) -> dict:
+    clean_provider_id = str(provider_message_id or "").strip()[:500]
+    if not clean_provider_id:
+        raise HTTPException(status_code=400, detail="message_id_required")
+
+    row = conn.execute(
+        """SELECT provider_message_id
+           FROM penguin_connect_messages
+           WHERE conversation_id = ? AND provider_message_id = ?
+           LIMIT 1""",
+        (conversation_id, clean_provider_id),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="message_not_found")
+
+    conn.execute(
+        """INSERT INTO penguin_connect_message_management
+           (conversation_id, provider_message_id, is_starred, updated_at)
+           VALUES (?, ?, ?, datetime('now'))
+           ON CONFLICT(conversation_id, provider_message_id) DO UPDATE SET
+             is_starred = excluded.is_starred,
+             updated_at = datetime('now')""",
+        (conversation_id, clean_provider_id, 1 if starred else 0),
+    )
+    return {
+        "success": True,
+        "conversation_id": conversation_id,
+        "provider_message_id": clean_provider_id,
+        "is_starred": bool(starred),
+    }
+
+
 def _set_conversation_read_state(conn: sqlite3.Connection, conversation_id: str, *, unread: bool) -> dict:
     conv = conn.execute(
         "SELECT conversation_id, status FROM penguin_connect_conversations WHERE conversation_id = ?",
@@ -1523,6 +1565,33 @@ def set_penguinconnect_conversation_read_state(conversation_id: str, req: Pengui
         return result
     finally:
         conn.close()
+
+
+@app.post("/api/penguin-connect/conversations/{conversation_id}/messages/management")
+@app.post("/penguin-connect/conversations/{conversation_id}/messages/management")
+def set_penguinconnect_message_management(
+    conversation_id: str,
+    req: PenguinConnectMessageManagementRequest,
+):
+    conn = get_connection()
+    try:
+        result = _set_message_management(
+            conn,
+            conversation_id,
+            req.provider_message_id,
+            starred=req.starred,
+        )
+        log_action(
+            "api_set_message_management",
+            conversation_id=conversation_id,
+            provider_message_id=result.get("provider_message_id"),
+            is_starred=bool(result.get("is_starred")),
+        )
+        conn.commit()
+        return result
+    finally:
+        conn.close()
+
 
 @app.get("/api/penguin-connect/conversations/{conversation_id}/alias")
 @app.get("/penguin-connect/conversations/{conversation_id}/alias")
