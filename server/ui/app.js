@@ -2861,6 +2861,15 @@ function contactMessageSearchQuery(contact) {
   return contactRecipientHandle(contact) || contactDisplayName(contact);
 }
 
+async function copyContactRecentMessage(result) {
+  try {
+    await copyText(messageCopyText(result));
+    el.contactStatus.textContent = "Recent message copied";
+  } catch (error) {
+    el.contactStatus.textContent = error.message;
+  }
+}
+
 function renderContactInspectorMessages(container, contact) {
   container.replaceChildren();
   const key = contactDetailKey(contact);
@@ -2896,7 +2905,12 @@ function renderContactInspectorMessages(container, contact) {
         <span class="contact-message-preview-top"></span>
         <span class="contact-message-preview-body"></span>
       </button>
-      <button class="contact-message-preview-open" type="button">Open</button>
+      <span class="contact-message-preview-actions">
+        <button type="button" data-action="open">Open</button>
+        <button type="button" data-action="reply">Reply</button>
+        <button type="button" data-action="draft">Draft</button>
+        <button type="button" data-action="copy">Copy</button>
+      </span>
     `;
     item.querySelector(".contact-message-preview-top").textContent = [
       searchResultConversationName(result),
@@ -2910,7 +2924,14 @@ function renderContactInspectorMessages(container, contact) {
     });
     if (attachmentChips) item.append(attachmentChips);
     item.querySelector(".contact-message-preview-main").addEventListener("click", () => useMessageSearchResult(result));
-    item.querySelector(".contact-message-preview-open").addEventListener("click", () => useMessageSearchResult(result));
+    const openButton = item.querySelector('[data-action="open"]');
+    openButton.disabled = !result.conversation_id;
+    openButton.addEventListener("click", () => useMessageSearchResult(result));
+    const replyButton = item.querySelector('[data-action="reply"]');
+    replyButton.disabled = !result.conversation_id;
+    replyButton.addEventListener("click", () => replyToMessageSearchResult(result));
+    item.querySelector('[data-action="draft"]').addEventListener("click", () => useMessageAsNewChatDraft(result));
+    item.querySelector('[data-action="copy"]').addEventListener("click", () => copyContactRecentMessage(result));
     container.append(item);
   }
 }

@@ -845,7 +845,7 @@ input[type="date"]:focus {
 
 .contact-message-preview {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
   align-items: center;
   padding: 6px;
@@ -882,9 +882,16 @@ input[type="date"]:focus {
   font-size: 12px;
 }
 
+.contact-message-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
 .contact-inspector-actions button,
 .contact-inspector-close,
-.contact-message-preview-open {
+.contact-message-preview-actions button {
   min-height: 26px;
   border: 1px solid var(--line);
   background: var(--panel);
@@ -905,8 +912,8 @@ input[type="date"]:focus {
 .contact-inspector-actions button:focus-visible,
 .contact-inspector-close:hover,
 .contact-inspector-close:focus-visible,
-.contact-message-preview-open:hover,
-.contact-message-preview-open:focus-visible {
+.contact-message-preview-actions button:hover,
+.contact-message-preview-actions button:focus-visible {
   border-color: var(--accent);
   color: var(--accent);
 }
@@ -917,6 +924,11 @@ input[type="date"]:focus {
 }
 
 .contact-inspector-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.contact-message-preview-actions button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
 }
