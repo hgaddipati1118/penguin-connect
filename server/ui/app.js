@@ -427,6 +427,7 @@ async function loadThreadContactMatches(conversation = state.selected) {
   if (!participants.length) {
     state.threadContactMatches = {};
     renderThreadPeople();
+    refreshDraftRecipientChips();
     buildCodexPrompt();
     return;
   }
@@ -450,6 +451,7 @@ async function loadThreadContactMatches(conversation = state.selected) {
   }
   state.threadContactMatches = matches;
   renderThreadPeople();
+  refreshDraftRecipientChips();
   buildCodexPrompt();
 }
 
@@ -1411,6 +1413,10 @@ function draftRecipientDisplay(recipient) {
   };
 }
 
+function refreshDraftRecipientChips() {
+  renderDraftRecipientChips(uniqueRecipientValues(draftRecipientValues()));
+}
+
 function buildMessagesDraftText(participants = uniqueRecipientValues(draftRecipientValues()), message = el.draftMessage.value) {
   if (!participants.length) return "";
   const body = String(message || "").trim().slice(0, 50000);
@@ -1553,13 +1559,17 @@ function renderDraftRecipientChips(values = uniqueRecipientValues(draftRecipient
         <span class="draft-recipient-chip-label"></span>
         <span class="draft-recipient-chip-detail"></span>
       </span>
+      <button class="draft-recipient-contact-button" type="button" title="Create contact" aria-label="Create contact from recipient">+</button>
       <button type="button" title="Remove recipient" aria-label="Remove recipient">x</button>
     `;
     chip.querySelector(".draft-recipient-chip-label").textContent = display.label;
     const detail = chip.querySelector(".draft-recipient-chip-detail");
     detail.textContent = display.detail;
     detail.hidden = !display.detail;
-    chip.querySelector("button").addEventListener("click", () => removeDraftRecipient(index));
+    const contactButton = chip.querySelector(".draft-recipient-contact-button");
+    contactButton.hidden = display.known;
+    contactButton.addEventListener("click", () => prefillContactFromDraftRecipient(recipient));
+    chip.querySelector('button[aria-label="Remove recipient"]').addEventListener("click", () => removeDraftRecipient(index));
     el.draftRecipientChips.append(chip);
   });
 }
@@ -1972,6 +1982,13 @@ function fillContactFormFromHandle(value, stateText = "Prefilled from thread") {
   }
   el.createContactState.textContent = stateText;
   el.newContactFirst.focus();
+}
+
+function prefillContactFromDraftRecipient(value) {
+  const handle = String(value || "").trim();
+  if (!handle) return;
+  fillContactFormFromHandle(handle, "Prefilled from new chat");
+  el.draftState.textContent = "Contact form prefilled";
 }
 
 function fillContactFormFromContact(contact) {
@@ -3310,6 +3327,7 @@ async function loadConversations({ autoSelect = true } = {}) {
     el.senderBadge.textContent = "Messages";
     renderConversations();
     renderContacts();
+    refreshDraftRecipientChips();
     if (autoSelect && !state.selected && state.conversations.length) {
       await selectConversation(state.conversations.find((conversation) => !conversation.is_archived) || state.conversations[0]);
     }
@@ -3372,11 +3390,13 @@ async function loadContacts({ force = false } = {}) {
       el.contactStatus.textContent = `${state.contacts.length} ${contactSourceLabel().toLowerCase()} contacts · ${total} saved`;
     }
     renderContacts();
+    refreshDraftRecipientChips();
     buildCodexPrompt();
   } catch (error) {
     state.contacts = [];
     el.contactStatus.textContent = error.message;
     renderContacts();
+    refreshDraftRecipientChips();
     buildCodexPrompt();
   }
 }

@@ -1659,6 +1659,14 @@ textarea:focus,
   line-height: 1;
 }
 
+.draft-recipient-contact-button {
+  color: var(--accent);
+}
+
+.draft-recipient-contact-button[hidden] {
+  display: none;
+}
+
 .draft-recipient-chip button:hover,
 .draft-recipient-chip button:focus-visible {
   border-color: var(--accent);
