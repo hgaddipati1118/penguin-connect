@@ -479,6 +479,19 @@ input[type="date"]:focus {
   white-space: nowrap;
 }
 
+.conversation-contact-context {
+  overflow: hidden;
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-contact-context[hidden] {
+  display: none;
+}
+
 .conversation-preview {
   overflow: hidden;
   color: var(--muted);

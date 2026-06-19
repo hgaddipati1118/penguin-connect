@@ -549,6 +549,30 @@ function conversationPreviewText(conversation) {
   return sender ? `${sender}: ${preview}` : preview;
 }
 
+function conversationContactContextItems(conversation) {
+  return Array.isArray(conversation?.contact_context)
+    ? conversation.contact_context.filter((contact) => contact && typeof contact === "object")
+    : [];
+}
+
+function conversationContactContextText(conversation) {
+  const items = conversationContactContextItems(conversation).slice(0, 3).map((contact) => {
+    const name = String(contact.display_name || contact.primary_handle || contact.handle || "").trim();
+    const handle = String(contact.primary_handle || contact.handle || "").trim();
+    const organization = String(contact.organization || "").trim();
+    const note = String(contact.contact_note || "").trim();
+    return [
+      name,
+      handle && handle !== name ? handle : "",
+      organization && organization !== name ? organization : "",
+      note ? `note: ${trim(note, 72)}` : "",
+    ].filter(Boolean).join(" · ");
+  }).filter(Boolean);
+  if (!items.length) return "";
+  const extra = conversationContactContextItems(conversation).length - items.length;
+  return `${items.join(" / ")}${extra > 0 ? ` / +${extra} more` : ""}`;
+}
+
 function labelKey(label) {
   return String(label || "").trim().toLowerCase();
 }
@@ -1209,6 +1233,7 @@ function renderConversations() {
           <span class="conversation-badges"></span>
         </span>
         <span class="conversation-meta"></span>
+        <span class="conversation-contact-context"></span>
         <span class="conversation-preview"></span>
       </button>
     `;
@@ -1296,6 +1321,10 @@ function renderConversations() {
       conversation.source_service_name || conversation.source_provider || "source",
       conversation.last_message_ts ? formatTime(conversation.last_message_ts) : conversation.status || "",
     ].filter(Boolean).join(" · ");
+    const contactContext = mainButton.querySelector(".conversation-contact-context");
+    const contactContextText = conversationContactContextText(conversation);
+    contactContext.textContent = contactContextText;
+    contactContext.hidden = !contactContextText;
     const preview = mainButton.querySelector(".conversation-preview");
     const previewText = conversationPreviewText(conversation);
     preview.textContent = previewText;
