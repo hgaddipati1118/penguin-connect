@@ -154,6 +154,7 @@ const contactSources = [
 
 const conversationViewLabels = {
   inbox: "Inbox",
+  needsReply: "Needs reply",
   followup: "Follow-up",
   unread: "Unread",
   drafts: "Drafts",
@@ -491,6 +492,11 @@ function conversationHasLabels(conversation) {
   return labelsForConversation(conversation).length > 0;
 }
 
+function conversationNeedsReply(conversation) {
+  const direction = String(conversation?.last_message_direction || "").toLowerCase();
+  return Boolean(conversation?.last_message_ts) && !["manual_to_imessage", "email_to_imessage"].includes(direction);
+}
+
 function followUpValue(conversation) {
   return String(conversation?.follow_up_at || "").trim();
 }
@@ -532,6 +538,7 @@ function conversationSortValue(conversation) {
 
 function conversationMatchesView(conversation, view = state.conversationView) {
   if (view === "unread") return Number(conversation.unread_count || 0) > 0 && !conversation.is_archived;
+  if (view === "needsReply") return conversationNeedsReply(conversation) && !conversation.is_archived;
   if (view === "followup") return hasFollowUp(conversation) && !conversation.is_archived;
   if (view === "drafts") return conversationHasDraft(conversation) && !conversation.is_archived;
   if (view === "unlabeled") return !conversationHasLabels(conversation) && !conversation.is_archived;
@@ -550,6 +557,7 @@ function conversationMatchesLabel(conversation, label = state.conversationLabel)
 function conversationViewCounts() {
   return {
     inbox: state.conversations.filter((conversation) => conversationMatchesView(conversation, "inbox")).length,
+    needsReply: state.conversations.filter((conversation) => conversationMatchesView(conversation, "needsReply")).length,
     followup: state.conversations.filter((conversation) => conversationMatchesView(conversation, "followup")).length,
     unread: state.conversations.filter((conversation) => conversationMatchesView(conversation, "unread")).length,
     drafts: state.conversations.filter((conversation) => conversationMatchesView(conversation, "drafts")).length,

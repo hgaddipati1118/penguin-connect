@@ -1272,6 +1272,7 @@ def _attach_conversation_previews(conn: sqlite3.Connection, result: dict) -> dic
     for conversation in conversations:
         conversation["last_message_preview"] = ""
         conversation["last_message_sender"] = ""
+        conversation["last_message_direction"] = ""
         conversation["last_message_has_attachments"] = False
     if not ids:
         return result
@@ -1308,6 +1309,7 @@ def _attach_conversation_previews(conn: sqlite3.Connection, result: dict) -> dic
         previews[row["conversation_id"]] = {
             "last_message_provider_id": row["provider_message_id"],
             "last_message_sender": _conversation_preview_sender(row),
+            "last_message_direction": row["direction"],
             "last_message_preview": preview,
             "last_message_ts": row["message_timestamp"],
             "last_message_has_attachments": has_attachments,
