@@ -647,6 +647,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
                 "/penguin-connect/contacts",
                 params={"source": "noted", "search": "demo day", "limit": 10},
             )
+            saved_response = client.get("/penguin-connect/contacts", params={"source": "contacts", "limit": 10})
             favorites_response = client.get("/penguin-connect/contacts", params={"source": "favorites", "limit": 1})
             unfavorite_response = client.post(
                 "/penguin-connect/contacts/management",
@@ -692,6 +693,12 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(noted_search_body["source"], "noted")
         self.assertEqual(noted_search_body["count"], 1)
         self.assertEqual(noted_search_body["contacts"][0]["display_name"], "Taylor Example")
+
+        self.assertEqual(saved_response.status_code, 200)
+        saved_body = saved_response.json()
+        self.assertEqual(saved_body["source"], "contacts")
+        self.assertEqual(saved_body["count"], 2)
+        self.assertTrue(all(contact["source"] == "contacts" for contact in saved_body["contacts"]))
 
         self.assertEqual(favorites_response.status_code, 200)
         favorites_body = favorites_response.json()
@@ -1140,6 +1147,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("contactSources", js_response.text)
         self.assertIn('{ key: "noted", label: "Noted" }', js_response.text)
         self.assertIn("No noted contacts", js_response.text)
+        self.assertIn("Loading saved contacts", js_response.text)
+        self.assertIn("No saved contacts", js_response.text)
         self.assertIn("renderCodexModes", js_response.text)
         self.assertIn("askCodex", js_response.text)
         self.assertIn("useCodexAnswerAsDraft", js_response.text)

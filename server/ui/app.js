@@ -1881,6 +1881,8 @@ function renderContacts() {
       empty.textContent = el.contactSearch.value.trim() ? "No favorite matches" : "No favorite contacts";
     } else if (state.contactSource === "noted") {
       empty.textContent = el.contactSearch.value.trim() ? "No noted matches" : "No noted contacts";
+    } else if (state.contactSource === "contacts") {
+      empty.textContent = el.contactSearch.value.trim() ? "No saved matches" : "No saved contacts";
     } else if (state.contactSource === "participants") {
       empty.textContent = el.contactSearch.value.trim() ? "No unsaved participants" : "No unsaved participants";
     } else {
@@ -2464,8 +2466,9 @@ async function loadContacts({ force = false } = {}) {
   const browsesUnsaved = state.contactSource === "participants";
   const browsesFavorites = state.contactSource === "favorites";
   const browsesNoted = state.contactSource === "noted";
+  const browsesSaved = state.contactSource === "contacts";
   renderContactSourceFilters();
-  if (!force && query.length < 2 && !browsesUnsaved && !browsesFavorites && !browsesNoted) {
+  if (!force && query.length < 2 && !browsesUnsaved && !browsesFavorites && !browsesNoted && !browsesSaved) {
     state.contacts = [];
     el.contactStatus.textContent = "Type 2+ chars to search contacts";
     renderContacts();
@@ -2479,6 +2482,8 @@ async function loadContacts({ force = false } = {}) {
     el.contactStatus.textContent = "Loading favorite contacts";
   } else if (browsesNoted && !query) {
     el.contactStatus.textContent = "Loading noted contacts";
+  } else if (browsesSaved && !query) {
+    el.contactStatus.textContent = "Loading saved contacts";
   } else {
     el.contactStatus.textContent = "Searching";
   }
@@ -2497,6 +2502,8 @@ async function loadContacts({ force = false } = {}) {
       el.contactStatus.textContent = `${state.contacts.length} favorite contact${state.contacts.length === 1 ? "" : "s"}`;
     } else if (state.contactSource === "noted") {
       el.contactStatus.textContent = `${state.contacts.length} noted contact${state.contacts.length === 1 ? "" : "s"}`;
+    } else if (state.contactSource === "contacts") {
+      el.contactStatus.textContent = `${state.contacts.length} saved contact${state.contacts.length === 1 ? "" : "s"} · ${total} saved`;
     } else if (query) {
       const participantCount = payload.participant_count || 0;
       const suffix = participantCount ? ` · ${participantCount} unsaved` : "";
@@ -3426,7 +3433,13 @@ el.contactSourceFilters.addEventListener("click", (event) => {
   state.contactSource = contactSources.some((source) => source.key === button.dataset.contactSource)
     ? button.dataset.contactSource
     : "all";
-  loadContacts({ force: state.contactSource === "participants" || state.contactSource === "favorites" || state.contactSource === "noted" || el.contactSearch.value.trim().length >= 2 });
+  loadContacts({
+    force: state.contactSource === "participants"
+      || state.contactSource === "favorites"
+      || state.contactSource === "noted"
+      || state.contactSource === "contacts"
+      || el.contactSearch.value.trim().length >= 2,
+  });
 });
 el.globalMessageSearch.addEventListener("input", scheduleMessageSearch);
 el.globalMessageSearchFilters.addEventListener("click", (event) => {
