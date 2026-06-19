@@ -183,7 +183,7 @@ h3 {
 .bulk-label-row {
   display: grid;
   grid-column: 1 / -1;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) repeat(2, auto);
   gap: 4px;
 }
 

@@ -45,6 +45,7 @@ const el = {
   clearSelectionButton: document.querySelector("#clearSelectionButton"),
   bulkLabelsInput: document.querySelector("#bulkLabelsInput"),
   bulkLabelButton: document.querySelector("#bulkLabelButton"),
+  bulkRemoveLabelButton: document.querySelector("#bulkRemoveLabelButton"),
   conversationList: document.querySelector("#conversationList"),
   contactRefreshButton: document.querySelector("#contactRefreshButton"),
   contactSearch: document.querySelector("#contactSearch"),
@@ -454,6 +455,12 @@ function mergeConversationLabels(conversation, additions) {
   return labels;
 }
 
+function removeConversationLabels(conversation, removals) {
+  const removeKeys = new Set((removals || []).map(labelKey).filter(Boolean));
+  if (!removeKeys.size) return labelsForConversation(conversation);
+  return labelsForConversation(conversation).filter((label) => !removeKeys.has(labelKey(label)));
+}
+
 function conversationPreviewText(conversation) {
   const preview = String(conversation?.last_message_preview || "").trim();
   if (!preview) return "";
@@ -630,6 +637,7 @@ function renderBulkActions(rows) {
   el.bulkMarkReadButton.disabled = state.bulkBusy || selectedCount === 0;
   el.bulkArchiveButton.disabled = state.bulkBusy || selectedCount === 0;
   el.bulkLabelButton.disabled = state.bulkBusy || selectedCount === 0 || labelCount === 0;
+  el.bulkRemoveLabelButton.disabled = state.bulkBusy || selectedCount === 0 || labelCount === 0;
   el.bulkLabelsInput.disabled = state.bulkBusy;
   el.clearSelectionButton.disabled = state.bulkBusy || selectedCount === 0;
 }
@@ -2695,6 +2703,42 @@ async function bulkApplyLabels() {
   }
 }
 
+async function bulkRemoveLabels() {
+  const targets = selectedConversationSnapshot();
+  const labels = cleanBulkLabels(el.bulkLabelsInput.value);
+  if (!targets.length || !labels.length) {
+    state.bulkMessage = targets.length ? "Add label text" : "Select conversations";
+    renderConversations();
+    return;
+  }
+
+  state.bulkBusy = true;
+  state.bulkMessage = "";
+  renderConversations();
+  try {
+    let changedCount = 0;
+    for (const conversation of targets) {
+      const nextLabels = removeConversationLabels(conversation, labels);
+      if (nextLabels.length !== labelsForConversation(conversation).length) changedCount += 1;
+      await updateConversationManagement(conversation.conversation_id, {
+        labels: nextLabels,
+      });
+    }
+    state.selectedConversationIds.clear();
+    el.bulkLabelsInput.value = "";
+    state.bulkMessage = changedCount
+      ? `Removed labels from ${changedCount}`
+      : "No matching labels";
+  } catch (error) {
+    state.bulkMessage = error.message;
+  } finally {
+    state.bulkBusy = false;
+    renderConversations();
+    renderManagementFields();
+    buildCodexPrompt();
+  }
+}
+
 async function saveLocalDraft(conversationId, draftText, { silent = false } = {}) {
   if (!conversationId) return;
   try {
@@ -3275,6 +3319,7 @@ el.clearSelectionButton.addEventListener("click", () => {
 });
 el.bulkLabelsInput.addEventListener("input", renderConversations);
 el.bulkLabelButton.addEventListener("click", bulkApplyLabels);
+el.bulkRemoveLabelButton.addEventListener("click", bulkRemoveLabels);
 el.bulkMarkReadButton.addEventListener("click", bulkMarkSelectedRead);
 el.bulkArchiveButton.addEventListener("click", bulkArchiveSelected);
 

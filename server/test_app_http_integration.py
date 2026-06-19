@@ -1043,6 +1043,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("bulkActions", html_response.text)
         self.assertIn("bulkLabelsInput", html_response.text)
         self.assertIn("bulkLabelButton", html_response.text)
+        self.assertIn("bulkRemoveLabelButton", html_response.text)
         self.assertIn("bulkArchiveButton", html_response.text)
         self.assertIn("pinButton", html_response.text)
         self.assertIn("archiveButton", html_response.text)
