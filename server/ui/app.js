@@ -117,6 +117,7 @@ const el = {
   senderBadge: document.querySelector("#senderBadge"),
   replyContext: document.querySelector("#replyContext"),
   replyContextText: document.querySelector("#replyContextText"),
+  replyQuoteToggle: document.querySelector("#replyQuoteToggle"),
   clearReplyContextButton: document.querySelector("#clearReplyContextButton"),
   composer: document.querySelector("#composer"),
   emojiRow: document.querySelector("#emojiRow"),
@@ -1007,6 +1008,7 @@ function setReplyContext(message) {
     snippet: messageSnippet(message, 160),
     provider_message_id: message.provider_message_id || "",
   };
+  el.replyQuoteToggle.checked = true;
   renderReplyContext();
   el.composer.focus();
   buildCodexPrompt();
@@ -1174,6 +1176,21 @@ function renderReplyContext() {
   }
   el.replyContext.hidden = false;
   el.replyContextText.textContent = `${state.replyContext.sender} · ${state.replyContext.snippet}`;
+}
+
+function replyContextQuoteText(context = state.replyContext) {
+  if (!context) return "";
+  const sender = context.sender || "sender";
+  const time = context.time ? ` at ${context.time}` : "";
+  const snippet = String(context.snippet || "").trim();
+  return [`Re: ${sender}${time}`, snippet ? `> ${snippet}` : ""].filter(Boolean).join("\n");
+}
+
+function outgoingReplyText(message) {
+  const body = String(message || "");
+  if (!state.replyContext || !el.replyQuoteToggle.checked) return body;
+  const quote = replyContextQuoteText();
+  return body.trim() ? `${quote}\n\n${body}` : quote;
 }
 
 function renderEmojiButtons(target = "reply") {
@@ -3576,7 +3593,8 @@ async function sendMessage() {
   }
   const conversationId = state.selected.conversation_id;
   const message = el.composer.value;
-  if (!message.trim() && !state.attachments.length) {
+  const outboundMessage = outgoingReplyText(message);
+  if (!outboundMessage.trim() && !state.attachments.length) {
     el.sendState.textContent = "Nothing to send";
     return;
   }
@@ -3587,7 +3605,7 @@ async function sendMessage() {
     await api(`/penguin-connect/conversations/${encodeURIComponent(conversationId)}/send`, {
       method: "POST",
       body: JSON.stringify({
-        message,
+        message: outboundMessage,
         attachments,
       }),
     });
