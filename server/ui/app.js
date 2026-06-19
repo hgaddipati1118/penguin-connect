@@ -3,6 +3,9 @@ const state = {
   selected: null,
   messages: [],
   messagesLoading: false,
+  messageLimit: 200,
+  messageLimitStep: 200,
+  messageLimitMax: 1000,
   replyContext: null,
   threadActionMessage: "",
   attachments: [],
@@ -113,6 +116,8 @@ const el = {
   messageSearchStatus: document.querySelector("#messageSearchStatus"),
   messageSearchResults: document.querySelector("#messageSearchResults"),
   messageViewFilters: document.querySelector("#messageViewFilters"),
+  loadedMessageCount: document.querySelector("#loadedMessageCount"),
+  loadMoreMessagesButton: document.querySelector("#loadMoreMessagesButton"),
   messageFilter: document.querySelector("#messageFilter"),
   messageList: document.querySelector("#messageList"),
   senderBadge: document.querySelector("#senderBadge"),
@@ -2741,6 +2746,23 @@ function renderMessageViewFilters() {
   }
 }
 
+function renderMessageHistoryControls() {
+  const hasSelection = Boolean(state.selected);
+  const loaded = state.messages.length;
+  const limit = state.messageLimit;
+  const atMax = limit >= state.messageLimitMax;
+  const canLoadMore = hasSelection && !state.messagesLoading && loaded >= limit && !atMax;
+  el.loadedMessageCount.textContent = hasSelection
+    ? (state.messagesLoading
+      ? `Loading up to ${limit} messages`
+      : `${loaded} loaded · window ${limit}${atMax ? " max" : ""}`)
+    : "No thread loaded";
+  el.loadMoreMessagesButton.disabled = !canLoadMore;
+  el.loadMoreMessagesButton.textContent = state.messagesLoading
+    ? "Loading"
+    : (atMax ? "Max loaded" : "Load older");
+}
+
 function mediaTypeForAttachment(attachment) {
   if (isImageAttachment(attachment)) return "image";
   if (isAudioAttachment(attachment)) return "audio";
@@ -2875,6 +2897,7 @@ function renderThreadMedia() {
 function renderMessages() {
   const query = el.messageFilter.value.trim().toLowerCase();
   renderMessageViewFilters();
+  renderMessageHistoryControls();
   const rows = [...state.messages].reverse().filter((message) => {
     const haystack = [
       message.sender_name,
@@ -3488,6 +3511,7 @@ async function selectConversation(conversation) {
   state.selected = conversation;
   state.messages = [];
   state.messagesLoading = true;
+  state.messageLimit = 200;
   state.threadActionMessage = "";
   resetThreadContactMatches();
   clearReplyContext();
@@ -3507,12 +3531,16 @@ async function selectConversation(conversation) {
   await loadMessages();
 }
 
-async function loadMessages() {
+async function loadMessages({ preserveScroll = false } = {}) {
   if (!state.selected) return;
+  const conversationId = state.selected.conversation_id;
+  const beforeScrollHeight = preserveScroll ? el.messageList.scrollHeight : 0;
+  const beforeScrollTop = preserveScroll ? el.messageList.scrollTop : 0;
   state.messagesLoading = true;
   renderMessages();
   try {
-    const payload = await api(`/penguin-connect/conversations/${encodeURIComponent(state.selected.conversation_id)}/messages?limit=200`);
+    const payload = await api(`/penguin-connect/conversations/${encodeURIComponent(conversationId)}/messages?limit=${state.messageLimit}`);
+    if (state.selected?.conversation_id !== conversationId) return;
     state.messages = payload.messages || [];
     state.messagesLoading = false;
     renderMessages();
@@ -3520,7 +3548,9 @@ async function loadMessages() {
     buildCodexPrompt();
     requestAnimationFrame(() => {
       const focused = el.messageList.querySelector(".message.focused");
-      if (focused) {
+      if (preserveScroll) {
+        el.messageList.scrollTop = Math.max(0, el.messageList.scrollHeight - beforeScrollHeight + beforeScrollTop);
+      } else if (focused) {
         focused.scrollIntoView({ block: "center" });
       } else {
         el.messageList.scrollTop = el.messageList.scrollHeight;
@@ -3529,7 +3559,16 @@ async function loadMessages() {
   } catch (error) {
     state.messagesLoading = false;
     el.messageList.innerHTML = `<div class="error-state">${error.message}</div>`;
+    renderMessageHistoryControls();
   }
+}
+
+async function loadOlderMessages() {
+  if (!state.selected || state.messagesLoading) return;
+  const nextLimit = Math.min(state.messageLimit + state.messageLimitStep, state.messageLimitMax);
+  if (nextLimit <= state.messageLimit) return;
+  state.messageLimit = nextLimit;
+  await loadMessages({ preserveScroll: true });
 }
 
 async function refreshLocalMessages() {
@@ -4590,6 +4629,7 @@ el.threadNote.addEventListener("input", () => {
 el.markReadButton.addEventListener("click", () => setReadState(false));
 el.markUnreadButton.addEventListener("click", () => setReadState(true));
 el.openMessagesButton.addEventListener("click", openSelectedConversationInMessages);
+el.loadMoreMessagesButton.addEventListener("click", loadOlderMessages);
 el.connectionButton.addEventListener("click", toggleConnection);
 el.clearReplyContextButton.addEventListener("click", clearReplyContext);
 el.clearButton.addEventListener("click", () => {
