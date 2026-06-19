@@ -580,6 +580,25 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertTrue(primary["success"])
         self.assertTrue(alias["success"])
 
+    def test_sender_gate_defaults_to_conversation_owner_for_local_send(self):
+        with mock.patch("penguin_connect.send_imessage", return_value=(True, None)) as mock_send:
+            result = penguin_connect.send_manual_message(
+                self.conn,
+                conversation_id="amc_test",
+                body_text="hello from local console",
+            )
+
+        self.assertTrue(result["success"])
+        mock_send.assert_called_once_with("chat-123", "hello from local console", attachment_paths=None)
+        row = self.conn.execute(
+            """SELECT sender_email, sender_name, body_text, direction
+               FROM penguin_connect_messages
+               WHERE direction = 'manual_to_imessage'"""
+        ).fetchone()
+        self.assertEqual(row["sender_email"], "owner@gmail.com")
+        self.assertEqual(row["sender_name"], "Me")
+        self.assertEqual(row["body_text"], "hello from local console")
+
     def test_send_manual_message_forwards_attachment_paths(self):
         with tempfile.NamedTemporaryFile(suffix=".m4a") as audio_file, mock.patch(
             "penguin_connect.send_imessage",
@@ -5248,7 +5267,7 @@ class PenguinConnectTests(unittest.TestCase):
                 "2026-03-04T10:00:00+00:00",
                 "2026-03-04T10:00:00+00:00",
                 "2026-03-04T10:05:00+00:00",
-                "2026-03-20T10:05:00+00:00",
+                "2099-03-20T10:05:00+00:00",
             ),
         )
 

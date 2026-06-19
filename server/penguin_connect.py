@@ -8526,8 +8526,8 @@ def reconnect_conversation(conn: sqlite3.Connection, conversation_id: str) -> di
 def send_manual_message(
     conn: sqlite3.Connection,
     conversation_id: str,
-    sender_email: str,
-    body_text: str,
+    sender_email: str = "",
+    body_text: str = "",
     attachment_paths: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     body_text = _rewrite_markdown_links_for_source_message(body_text)
@@ -8565,12 +8565,15 @@ def send_manual_message(
     except Exception:
         send_as = []
 
-    if not _sender_allowed(sender_email, conv["gmail_email"], send_as):
+    resolved_sender_email = _normalize_email(sender_email) or _normalize_email(
+        account["primary_send_as"] or conv["gmail_email"]
+    )
+    if not _sender_allowed(resolved_sender_email, conv["gmail_email"], send_as):
         log_action(
             "manual_send_result",
             success=False,
             error="sender_not_connected_gmail",
-            sender_email=_normalize_email(sender_email),
+            sender_email=resolved_sender_email,
             **_conversation_log_fields(conv),
         )
         return {
@@ -8580,8 +8583,8 @@ def send_manual_message(
         }
 
     source_provider = _conversation_source_provider(conv)
-    provider_id = f"manual:{hashlib.sha1(f'{sender_email}:{_now_iso()}:{body_text}'.encode('utf-8')).hexdigest()}"
-    sender_display_name = _friendly_email_sender_name(sender_email, sender_email, own_sender=True)
+    provider_id = f"manual:{hashlib.sha1(f'{resolved_sender_email}:{_now_iso()}:{body_text}'.encode('utf-8')).hexdigest()}"
+    sender_display_name = _friendly_email_sender_name(resolved_sender_email, resolved_sender_email, own_sender=True)
     ok, err = _send_to_source_conversation(
         conv,
         body_text,
@@ -8589,7 +8592,7 @@ def send_manual_message(
         action_context={
             "action": "manual_send",
             "provider_message_id": provider_id,
-            "sender_email": _normalize_email(sender_email),
+            "sender_email": resolved_sender_email,
         },
     )
     if not ok:
@@ -8597,7 +8600,7 @@ def send_manual_message(
             "manual_send_result",
             success=False,
             error=err or f"failed_to_send_{source_provider}",
-            sender_email=_normalize_email(sender_email),
+            sender_email=resolved_sender_email,
             provider_message_id=provider_id,
             **_conversation_log_fields(conv),
             **message_fingerprint(body_text),
@@ -8613,7 +8616,7 @@ def send_manual_message(
         (
             conversation_id,
             provider_id,
-            _normalize_email(sender_email),
+            resolved_sender_email,
             sender_display_name,
             _provider_subject(source_provider, conv["display_name"] or "Conversation"),
             body_text[:20000],
@@ -8631,7 +8634,7 @@ def send_manual_message(
     log_action(
         "manual_send_result",
         success=True,
-        sender_email=_normalize_email(sender_email),
+        sender_email=resolved_sender_email,
         provider_message_id=provider_id,
         attachment_count=len(attachment_paths),
         **_conversation_log_fields(conv),

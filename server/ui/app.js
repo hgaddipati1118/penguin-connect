@@ -1569,11 +1569,13 @@ async function loadStatus() {
   try {
     const status = await api("/penguin-connect/health");
     state.senderEmail = status.gmail?.gmail_email || "";
-    el.statusLine.textContent = status.ok ? `Bridge ready · ${state.senderEmail || "no gmail"}` : "Bridge warning";
-    el.senderBadge.textContent = state.senderEmail || "No sender";
+    el.statusLine.textContent = status.ok
+      ? `Bridge ready · local sender ${state.senderEmail || "configured"}`
+      : "Bridge warning";
+    el.senderBadge.textContent = state.senderEmail ? `Local · ${state.senderEmail}` : "Local sender";
   } catch (error) {
     el.statusLine.textContent = `Bridge offline · ${error.message}`;
-    el.senderBadge.textContent = "No sender";
+    el.senderBadge.textContent = "Local sender";
   }
 }
 
@@ -1588,7 +1590,7 @@ async function loadConversations() {
       renderThreadControls();
       renderManagementFields();
     }
-    el.senderBadge.textContent = state.senderEmail || "No sender";
+    el.senderBadge.textContent = state.senderEmail ? `Local · ${state.senderEmail}` : "Local sender";
     renderConversations();
     renderContacts();
     if (!state.selected && state.conversations.length) {
@@ -1760,11 +1762,6 @@ async function sendMessage() {
     el.sendState.textContent = "Nothing to send";
     return;
   }
-  if (!state.senderEmail) {
-    el.sendState.textContent = "No connected Gmail sender";
-    return;
-  }
-
   el.sendButton.disabled = true;
   el.sendState.textContent = "Sending";
   try {
@@ -1780,7 +1777,6 @@ async function sendMessage() {
     await api(`/penguin-connect/conversations/${encodeURIComponent(conversationId)}/send`, {
       method: "POST",
       body: JSON.stringify({
-        sender_email: state.senderEmail,
         message,
         attachments,
       }),

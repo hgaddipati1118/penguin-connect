@@ -785,6 +785,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("codexAnswer", html_response.text)
         self.assertIn("askCodexButton", html_response.text)
         self.assertIn("useCodexDraftButton", html_response.text)
+        self.assertIn("senderBadge", html_response.text)
         self.assertIn("threadPeople", html_response.text)
         self.assertIn("threadPeopleState", html_response.text)
         self.assertIn("threadMedia", html_response.text)
@@ -839,6 +840,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("askCodex", js_response.text)
         self.assertIn("useCodexAnswerAsDraft", js_response.text)
         self.assertIn("renderCodexAnswerControls", js_response.text)
+        self.assertIn("Local sender", js_response.text)
         self.assertIn("conversationDisplayName", js_response.text)
         self.assertIn("sourceDisplayName", js_response.text)
         self.assertIn("conversationParticipants", js_response.text)
@@ -1019,6 +1021,35 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(row["sender_email"], "owner@gmail.com")
         self.assertEqual(row["sender_name"], "Me")
         self.assertEqual(row["body_text"], "Hello from Gmail")
+        self.assertEqual(row["direction"], "manual_to_imessage")
+
+    def test_send_endpoint_defaults_to_local_conversation_sender(self):
+        with mock.patch("penguin_connect.send_imessage", return_value=(True, None)) as mock_send, TestClient(
+            app_module.app
+        ) as client:
+            response = client.post(
+                "/penguin-connect/conversations/amc_test/send",
+                json={"message": "Hello from local console"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["success"])
+        mock_send.assert_called_once_with("chat-123", "Hello from local console", attachment_paths=None)
+
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                """SELECT sender_email, sender_name, body_text, direction
+                   FROM penguin_connect_messages
+                   WHERE direction = 'manual_to_imessage'"""
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row["sender_email"], "owner@gmail.com")
+        self.assertEqual(row["sender_name"], "Me")
+        self.assertEqual(row["body_text"], "Hello from local console")
         self.assertEqual(row["direction"], "manual_to_imessage")
 
     def test_send_endpoint_forwards_attachment_paths(self):

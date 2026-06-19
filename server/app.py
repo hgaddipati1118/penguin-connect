@@ -73,7 +73,7 @@ class PenguinConnectBrowserAttachment(BaseModel):
     size: int | None = None
 
 class PenguinConnectSendRequest(BaseModel):
-    sender_email: str
+    sender_email: str = ""
     message: str = ""
     attachment_paths: list[str] | None = None
     attachments: list[PenguinConnectBrowserAttachment] | None = None
@@ -1635,7 +1635,7 @@ def send_penguinconnect_conversation_message(conversation_id: str, req: PenguinC
         log_action(
             "api_manual_send_request",
             conversation_id=conversation_id,
-            sender_email=req.sender_email,
+            sender_email=req.sender_email or None,
             success=bool(result.get("success")),
             error=result.get("error"),
             attachment_count=len(attachment_paths),
@@ -1643,6 +1643,8 @@ def send_penguinconnect_conversation_message(conversation_id: str, req: PenguinC
         if not result.get("success"):
             if result.get("error") == "sender_not_connected_gmail":
                 raise HTTPException(status_code=403, detail="sender_not_connected_gmail")
+            if result.get("error") == "gmail_not_connected":
+                raise HTTPException(status_code=403, detail="local_sender_not_configured")
             raise HTTPException(status_code=400, detail=result.get("error", "penguin_connect_send_failed"))
         conn.commit()
         return result

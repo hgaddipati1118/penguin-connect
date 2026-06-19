@@ -363,7 +363,7 @@ curl -s -X POST http://127.0.0.1:9000/penguin-connect/conversations/sync \
 ./scripts/penguin_connect_excluded_chats.py
 curl -s -X POST http://127.0.0.1:9000/penguin-connect/conversations/<conversation_id>/send \
   -H 'Content-Type: application/json' \
-  -d '{"sender_email":"you@gmail.com","message":"hello"}' | jq
+  -d '{"message":"hello"}' | jq
 ```
 
 Operational note:
