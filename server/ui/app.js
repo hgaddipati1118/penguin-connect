@@ -454,6 +454,14 @@ async function loadThreadContactMatches(conversation = state.selected) {
 }
 
 function conversationHaystack(conversation) {
+  const contactContext = Array.isArray(conversation.contact_context)
+    ? conversation.contact_context.flatMap((contact) => [
+      contact.display_name,
+      contact.primary_handle,
+      contact.organization,
+      contact.contact_note,
+    ])
+    : [];
   const raw = [
     conversation.conversation_id,
     conversation.title,
@@ -466,8 +474,10 @@ function conversationHaystack(conversation) {
     conversation.note,
     conversation.draft_text,
     conversation.follow_up_at,
+    conversation.contact_context_text,
     ...(conversation.labels || []),
     ...participantValuesForConversation(conversation),
+    ...contactContext,
   ].join(" ").toLowerCase();
   return `${raw} ${digitsOnly(raw)}`;
 }

@@ -1560,6 +1560,116 @@ def _attach_conversation_management(conn: sqlite3.Connection, result: dict) -> d
     return result
 
 
+def _conversation_dict_participant_handles(conversation: dict) -> list[str]:
+    values: list[str] = []
+    raw = conversation.get("participants")
+    if isinstance(raw, list):
+        values.extend(str(value or "").strip() for value in raw)
+    elif isinstance(raw, str):
+        try:
+            parsed = json.loads(raw or "[]")
+        except Exception:
+            parsed = []
+        if isinstance(parsed, list):
+            values.extend(str(value or "").strip() for value in parsed)
+    source_identifier = str(conversation.get("source_chat_identifier") or "").strip()
+    if source_identifier and _contact_handle_type(source_identifier) != "handle":
+        values.append(source_identifier)
+
+    handles: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        key = _contact_compare_key(value)
+        if not value or not key or key in seen:
+            continue
+        seen.add(key)
+        handles.append(value)
+    return handles
+
+
+def _conversation_contact_context_text(items: list[dict]) -> str:
+    parts: list[str] = []
+    for item in items:
+        parts.extend(
+            str(item.get(key) or "").strip()
+            for key in ("display_name", "primary_handle", "organization", "contact_note")
+            if str(item.get(key) or "").strip()
+        )
+    return " ".join(parts)
+
+
+def _attach_conversation_contact_context(conn: sqlite3.Connection, result: dict) -> dict:
+    conversations = [conversation for conversation in result.get("conversations") or [] if isinstance(conversation, dict)]
+    handle_entries: list[tuple[dict, str, str]] = []
+    handle_keys: set[str] = set()
+    for conversation in conversations:
+        conversation["contact_context"] = []
+        conversation["contact_context_text"] = ""
+        for handle in _conversation_dict_participant_handles(conversation):
+            key = _contact_compare_key(handle)
+            if not key:
+                continue
+            handle_entries.append((conversation, handle, key))
+            handle_keys.add(key)
+    if not handle_keys:
+        return result
+
+    saved_contacts = _attach_contact_management(
+        conn,
+        [_contact_to_dict(row) for row in _contact_rows_for_keys(conn, handle_keys)],
+    )
+    saved_by_key: dict[str, dict] = {}
+    for contact in saved_contacts:
+        for key in _contact_candidate_keys(contact):
+            if key in handle_keys:
+                saved_by_key[key] = contact
+
+    participant_contacts = _attach_contact_management(
+        conn,
+        [
+            {
+                "id": f"conversation-participant:{key}",
+                "contact_key": key,
+                "contact_keys": [key],
+                "display_name": handle,
+                "first_name": "",
+                "last_name": "",
+                "organization": "",
+                "phone": handle if _contact_handle_type(handle) == "phone" else "",
+                "phone_normalized": _contact_phone_search_key(handle) if _contact_handle_type(handle) == "phone" else "",
+                "email": handle if _contact_handle_type(handle) == "email" else "",
+                "primary_handle": handle,
+                "handle_type": _contact_handle_type(handle),
+                "source": "conversation",
+                "is_saved": False,
+            }
+            for _conversation, handle, key in handle_entries
+            if key not in saved_by_key
+        ],
+    )
+    participant_by_key = {str(contact.get("contact_key") or ""): contact for contact in participant_contacts}
+
+    for conversation, handle, key in handle_entries:
+        contact = saved_by_key.get(key) or participant_by_key.get(key)
+        if not contact:
+            continue
+        item = {
+            "handle": handle,
+            "display_name": contact.get("display_name") or handle,
+            "primary_handle": contact.get("primary_handle") or handle,
+            "organization": contact.get("organization") or "",
+            "contact_note": contact.get("contact_note") or "",
+            "is_favorite": bool(contact.get("is_favorite")),
+            "is_saved": contact.get("is_saved") is not False,
+        }
+        if len(conversation["contact_context"]) < 12:
+            conversation["contact_context"].append(item)
+
+    for conversation in conversations:
+        conversation["contact_context_text"] = _conversation_contact_context_text(conversation["contact_context"])
+    return result
+
+
 def _parse_management_labels(raw_value: str | None) -> list[str]:
     try:
         parsed = json.loads(raw_value or "[]")
@@ -2208,6 +2318,7 @@ def get_penguinconnect_conversations():
         result = _attach_conversation_unread_counts(conn, result)
         result = _attach_conversation_previews(conn, result)
         result = _attach_conversation_management(conn, result)
+        result = _attach_conversation_contact_context(conn, result)
         conn.commit()
         return result
     except sqlite3.OperationalError as exc:

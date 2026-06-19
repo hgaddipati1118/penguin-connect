@@ -247,6 +247,23 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(conversation["last_message_direction"], "imessage_to_gmail")
         self.assertEqual(conversation["last_message_provider_id"], "imsg-latest")
         self.assertFalse(conversation["last_message_has_attachments"])
+        self.assertEqual(conversation["contact_context"][0]["display_name"], "Taylor Example")
+        self.assertEqual(conversation["contact_context"][0]["primary_handle"], "+1 (512) 743-6385")
+        self.assertIn("Taylor Example", conversation["contact_context_text"])
+
+    def test_conversations_endpoint_includes_participant_contact_notes_for_search(self):
+        with TestClient(app_module.app) as client:
+            note_response = client.post(
+                "/penguin-connect/contacts/management",
+                json={"contact_key": "phone:15127436385", "note": "Ask about launch seating."},
+            )
+            response = client.get("/penguin-connect/conversations")
+
+        self.assertEqual(note_response.status_code, 200)
+        self.assertEqual(response.status_code, 200)
+        conversation = response.json()["conversations"][0]
+        self.assertEqual(conversation["contact_context"][0]["contact_note"], "Ask about launch seating.")
+        self.assertIn("Ask about launch seating.", conversation["contact_context_text"])
 
     def test_conversations_endpoint_returns_cached_threads_without_gmail_account(self):
         conn = self._get_connection()
@@ -1595,6 +1612,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("conversationDisplayName", js_response.text)
         self.assertIn("sourceDisplayName", js_response.text)
         self.assertIn("conversationParticipants", js_response.text)
+        self.assertIn("contact_context_text", js_response.text)
+        self.assertIn("contact_context", js_response.text)
         self.assertIn("loadThreadContactMatches", js_response.text)
         self.assertIn("source=all", js_response.text)
         self.assertIn("toggleThreadParticipantFavorite", js_response.text)
