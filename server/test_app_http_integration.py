@@ -2079,6 +2079,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("Showing ${count} thread", js_response.text)
         self.assertIn('aria-label="Filter conversations for contact"', js_response.text)
         self.assertIn("copyParticipantHandle", js_response.text)
+        self.assertIn("searchMessagesForParticipant", js_response.text)
+        self.assertIn('data-action="messages"', js_response.text)
         self.assertIn("saveVisibleContactsAsRecipientList", js_response.text)
         self.assertIn("renderThreadPeople", js_response.text)
         self.assertIn("fillContactFormFromHandle", js_response.text)
