@@ -172,7 +172,7 @@ thread-name-aware unsaved participant search, private contact notes with note-aw
 selected-thread participants, copyable recent contact history, click-to-draft contact starts, contact-to-new-chat recipient picking with visible-result bulk add/copy/save actions,
 selected/visible contact bulk favorite and unfavorite actions,
 removable recipient chips, reusable saved recipient lists, selected-thread participant actions for contact
-search/new-chat/contact creation, participant favoriting, bulk add-all-to-draft, and save-as-list actions, local thread titles, notes, tags and muted state,
+search/new-chat/contact creation, participant favoriting, bulk add-all, copy-all, and save-as-list actions, local thread titles, notes, tags and muted state,
 follow-up scheduling/filtering plus bulk follow-up set/clear, read/unread management, bridge
 disconnect/reconnect controls, persistent per-thread reply drafts, new chat
 draft staging with live Messages-ready draft preview, copy-recipients/copy-body/copy-draft actions,

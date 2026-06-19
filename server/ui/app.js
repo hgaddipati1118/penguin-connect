@@ -163,6 +163,7 @@ const el = {
   threadStatus: document.querySelector("#threadStatus"),
   threadPeopleState: document.querySelector("#threadPeopleState"),
   threadPeopleAddAllButton: document.querySelector("#threadPeopleAddAllButton"),
+  threadPeopleCopyAllButton: document.querySelector("#threadPeopleCopyAllButton"),
   threadPeopleSaveListButton: document.querySelector("#threadPeopleSaveListButton"),
   threadPeopleCreateAllButton: document.querySelector("#threadPeopleCreateAllButton"),
   threadPeople: document.querySelector("#threadPeople"),
@@ -3297,6 +3298,21 @@ function addThreadParticipantsToDraft() {
   el.draftState.textContent = status;
 }
 
+async function copyThreadParticipants() {
+  const participants = currentThreadParticipantHandles();
+  if (!participants.length) {
+    el.threadPeopleState.textContent = "No participants";
+    return;
+  }
+
+  try {
+    await copyText(participants.join("\n"));
+    el.threadPeopleState.textContent = `Copied ${participants.length} participant${participants.length === 1 ? "" : "s"}`;
+  } catch (error) {
+    el.threadPeopleState.textContent = error.message;
+  }
+}
+
 function recipientListLabel(list) {
   return String(list.name || "").trim() || "Recipient list";
 }
@@ -4741,6 +4757,7 @@ function renderThreadPeople() {
   const participants = conversationParticipants();
   const hasParticipants = Boolean(state.selected && participants.length);
   el.threadPeopleAddAllButton.disabled = !hasParticipants;
+  el.threadPeopleCopyAllButton.disabled = !hasParticipants;
   el.threadPeopleSaveListButton.disabled = !hasParticipants;
   el.threadPeopleCreateAllButton.disabled = !hasParticipants;
   const matchedCount = participants.filter((participant) => {
@@ -8064,6 +8081,7 @@ el.draftFileInput.addEventListener("change", (event) => {
   event.target.value = "";
 });
 el.threadPeopleAddAllButton.addEventListener("click", addThreadParticipantsToDraft);
+el.threadPeopleCopyAllButton.addEventListener("click", copyThreadParticipants);
 el.threadPeopleSaveListButton.addEventListener("click", saveThreadParticipantsAsRecipientList);
 el.threadPeopleCreateAllButton.addEventListener("click", createUnknownThreadParticipants);
 el.sendDraftButton.addEventListener("click", sendDraftIfExisting);
