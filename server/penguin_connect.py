@@ -45,6 +45,7 @@ from quoted_content import extract_latest_email_text
 DEFAULT_BACKFILL_DAYS = 7
 SYNC_MODES = {"startup_catchup", "backfill", "incremental"}
 KEYCHAIN_PREFIX = "penguinconnect-local-bridge.gmail"
+LOCAL_MESSAGES_ACCOUNT_EMAIL = "local@penguinconnect.local"
 PENGUINCONNECT_HEADER = "X-PenguinConnect-Bridge"
 GMAIL_SCOPES = [
     "https://mail.google.com/",
@@ -3449,6 +3450,7 @@ def ensure_conversations_discovered(
     gmail_email: str,
     *,
     max_chats: int | None | object = _USE_DEFAULT_DISCOVERY_LIMIT,
+    provision_aliases: bool = True,
 ) -> int:
     if max_chats is _USE_DEFAULT_DISCOVERY_LIMIT:
         discovery_limit: int | None = int(os.environ.get("PENGUIN_CONNECT_CHAT_DISCOVERY_LIMIT", "500"))
@@ -3620,7 +3622,7 @@ def ensure_conversations_discovered(
                 continue
             _merge_conversation_into_target(conn, existing_row["conversation_id"], conversation_id)
 
-        if status == "active" and not excluded:
+        if provision_aliases and status == "active" and not excluded:
             alias_row = _ensure_active_alias(conn, gmail_email, conversation_id, fresh=False)
             conn.execute(
                 "UPDATE penguin_connect_conversations SET alias_email = ? WHERE conversation_id = ?",
@@ -3637,6 +3639,19 @@ def ensure_conversations_discovered(
         grouped_thread_count=len(grouped_chats),
     )
     return count
+
+
+def ensure_local_imessage_conversations_discovered(
+    conn: sqlite3.Connection,
+    *,
+    max_chats: int | None | object = _USE_DEFAULT_DISCOVERY_LIMIT,
+) -> int:
+    return ensure_conversations_discovered(
+        conn,
+        LOCAL_MESSAGES_ACCOUNT_EMAIL,
+        max_chats=max_chats,
+        provision_aliases=False,
+    )
 
 
 def ensure_whatsapp_conversations_discovered(
@@ -3852,6 +3867,15 @@ def list_conversations(conn: sqlite3.Connection) -> dict[str, Any]:
                 raise
 
         refresh_conversation_exclusions(conn, account_email)
+    else:
+        try:
+            existing_count = conn.execute("SELECT COUNT(*) FROM penguin_connect_conversations").fetchone()[0]
+            if existing_count == 0:
+                ensure_local_imessage_conversations_discovered(conn)
+        except sqlite3.OperationalError as exc:
+            msg = str(exc).lower()
+            if "locked" not in msg and "busy" not in msg:
+                raise
 
     query = """SELECT c.conversation_id, c.source_provider, c.source_chat_id, c.source_chat_identifier,
                       c.source_service_name, c.display_name, c.chat_type, c.exclude_from_sync,
@@ -3928,15 +3952,126 @@ def get_conversation_alias(conn: sqlite3.Connection, conversation_id: str) -> di
     }
 
 
+def _cache_local_source_messages_for_view(
+    conn: sqlite3.Connection,
+    conv: sqlite3.Row,
+    *,
+    limit: int = 200,
+) -> int:
+    source_provider = _conversation_source_provider(conv)
+    if source_provider not in {"imessage", "apple_messages", "sms", "rcs"}:
+        return 0
+    if (conv["gmail_email"] or "").strip().lower() != LOCAL_MESSAGES_ACCOUNT_EMAIL:
+        return 0
+    if (conv["status"] or "").strip().lower() != "active" or bool(conv["exclude_from_sync"]):
+        return 0
+
+    state = conn.execute(
+        "SELECT * FROM penguin_connect_sync_state WHERE conversation_id = ?",
+        (conv["conversation_id"],),
+    ).fetchone()
+    since = state["last_source_ts"] if state else None
+    since_native_message_id = state["last_source_native_message_id"] if state else None
+    messages = _fetch_source_messages_for_conversation(
+        conv,
+        limit=max(1, min(int(limit or 200), 1000)),
+        since=since,
+        since_native_message_id=since_native_message_id,
+    )
+    if not messages:
+        return 0
+
+    messages = sorted(
+        messages,
+        key=lambda msg: (
+            msg.get("timestamp") or "",
+            _imessage_native_message_sort_value(msg.get("native_message_id")),
+        ),
+    )
+    unread_count = _get_apple_messages_unread_count_for_conversation(conv)
+    last_ts = state["last_source_ts"] if state else None
+    last_native_message_id = since_native_message_id
+    stored = 0
+
+    for msg in messages:
+        ts = msg.get("timestamp")
+        text = msg.get("text") or ""
+        attachments = msg.get("attachments") or []
+        if not ts or (not text and not attachments):
+            continue
+
+        provider_id = _provider_message_id(source_provider, msg)
+        existing = conn.execute(
+            """SELECT 1
+               FROM penguin_connect_messages
+               WHERE conversation_id = ? AND provider_message_id = ?
+               LIMIT 1""",
+            (conv["conversation_id"], provider_id),
+        ).fetchone()
+        last_ts, last_native_message_id = _merge_imessage_sync_cursor(
+            last_ts,
+            last_native_message_id,
+            ts,
+            msg.get("native_message_id"),
+        )
+        if existing:
+            continue
+
+        is_from_me = 1 if msg.get("is_from_me") else 0
+        unread = False
+        if not is_from_me:
+            unread = True if unread_count is None else unread_count > 0
+
+        sender_name, subject_name = _resolve_sender_and_subject(conn, conv, msg)
+        metadata = {
+            "source_chat_id": msg.get("chat_id") or conv["source_chat_id"],
+            "native_message_id": msg.get("native_message_id"),
+            "is_from_me": bool(is_from_me),
+            "attachments": attachments,
+            "local_cache_only": True,
+        }
+        cursor = conn.execute(
+            """INSERT OR IGNORE INTO penguin_connect_messages
+               (conversation_id, provider, provider_message_id, direction,
+                sender_email, sender_name, subject, body_text, message_timestamp,
+                is_read, metadata)
+               VALUES (?, 'imessage', ?, 'imessage_local', NULL, ?, ?, ?, ?, ?, ?)""",
+            (
+                conv["conversation_id"],
+                provider_id,
+                sender_name,
+                _provider_subject(source_provider, subject_name),
+                text[:20000],
+                ts,
+                0 if unread else 1,
+                json.dumps(metadata),
+            ),
+        )
+        if cursor.rowcount > 0:
+            stored += 1
+
+    if last_ts:
+        _upsert_sync_state(conn, conv["conversation_id"], last_ts, last_native_message_id, None, None)
+        conn.execute(
+            "UPDATE penguin_connect_conversations SET last_synced_at = datetime('now'), updated_at = datetime('now') WHERE conversation_id = ?",
+            (conv["conversation_id"],),
+        )
+    if stored or last_ts:
+        conn.commit()
+    return stored
+
+
 def get_conversation_messages(conn: sqlite3.Connection, conversation_id: str, limit: int = 200) -> dict[str, Any]:
     conv = conn.execute(
-        """SELECT conversation_id, gmail_email, source_provider, display_name, status, exclude_from_sync
+        """SELECT *
            FROM penguin_connect_conversations
            WHERE conversation_id = ?""",
         (conversation_id,),
     ).fetchone()
     if not conv:
         return {"found": False, "messages": []}
+
+    _cache_local_source_messages_for_view(conn, conv, limit=limit)
 
     account = conn.execute(
         "SELECT send_as_aliases FROM penguin_connect_accounts WHERE gmail_email = ? LIMIT 1",

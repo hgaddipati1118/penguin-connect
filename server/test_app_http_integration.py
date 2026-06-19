@@ -11,6 +11,7 @@ from unittest import mock
 from fastapi.testclient import TestClient
 
 import app as app_module
+import penguin_connect
 from db import SCHEMA
 
 class AppHttpIntegrationTests(unittest.TestCase):
@@ -265,6 +266,56 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(len(body["conversations"]), 1)
         self.assertEqual(body["conversations"][0]["conversation_id"], "amc_test")
         self.assertEqual(body["conversations"][0]["last_message_preview"], "Latest message")
+
+    def test_conversations_endpoint_discovers_local_threads_without_gmail_account(self):
+        conn = self._get_connection()
+        try:
+            conn.execute("DELETE FROM penguin_connect_messages")
+            conn.execute("DELETE FROM penguin_connect_aliases")
+            conn.execute("DELETE FROM penguin_connect_conversations")
+            conn.execute("DELETE FROM penguin_connect_accounts")
+            conn.commit()
+        finally:
+            conn.close()
+
+        with mock.patch(
+            "penguin_connect.browse_imessage_chats",
+            return_value={
+                "available": True,
+                "chats": [
+                    {
+                        "chat_id": "chat-local-http",
+                        "chat_identifier": "+15551234567",
+                        "service": "iMessage",
+                        "name": "+15551234567",
+                        "chat_type": "dm",
+                        "participants": ["+15551234567"],
+                    }
+                ],
+            },
+        ), TestClient(app_module.app) as client:
+            response = client.get("/penguin-connect/conversations")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertFalse(body["connected"])
+        self.assertEqual(body["gmail_email"], "")
+        self.assertEqual(len(body["conversations"]), 1)
+        self.assertEqual(body["conversations"][0]["source_chat_id"], "chat-local-http")
+        self.assertIsNone(body["conversations"][0]["alias_email"])
+
+        verify_conn = self._get_connection()
+        try:
+            row = verify_conn.execute(
+                "SELECT gmail_email, alias_email FROM penguin_connect_conversations WHERE source_chat_id = ?",
+                ("chat-local-http",),
+            ).fetchone()
+            alias_count = verify_conn.execute("SELECT COUNT(*) FROM penguin_connect_aliases").fetchone()[0]
+        finally:
+            verify_conn.close()
+        self.assertEqual(row["gmail_email"], penguin_connect.LOCAL_MESSAGES_ACCOUNT_EMAIL)
+        self.assertIsNone(row["alias_email"])
+        self.assertEqual(alias_count, 0)
 
     def test_conversation_management_endpoint_pins_and_archives(self):
         with TestClient(app_module.app) as client:
@@ -1512,6 +1563,74 @@ class AppHttpIntegrationTests(unittest.TestCase):
         body = response.json()
         self.assertEqual(body["messages"][0]["provider_message_id"], "imsg-self")
         self.assertEqual(body["messages"][0]["sender_name"], "Me")
+
+    def test_messages_endpoint_caches_local_imessage_rows_without_gmail_account(self):
+        conn = self._get_connection()
+        try:
+            conn.execute("DELETE FROM penguin_connect_messages")
+            conn.execute("DELETE FROM penguin_connect_accounts")
+            conn.execute(
+                """UPDATE penguin_connect_conversations
+                   SET gmail_email = ?, alias_email = NULL
+                   WHERE conversation_id = ?""",
+                (penguin_connect.LOCAL_MESSAGES_ACCOUNT_EMAIL, "amc_test"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with mock.patch(
+            "penguin_connect.fetch_imessage_messages",
+            return_value=[
+                {
+                    "native_message_id": "http-local-1",
+                    "timestamp": "2026-03-11T12:00:00+00:00",
+                    "text": "HTTP local message",
+                    "is_from_me": False,
+                    "handle": "+15551234567",
+                    "attachments": [{"filename": "/tmp/http-local.m4a", "mime_type": "audio/mp4"}],
+                    "chat_id": "chat-123",
+                },
+                {
+                    "native_message_id": "http-local-2",
+                    "timestamp": "2026-03-11T12:01:00+00:00",
+                    "text": "HTTP self message",
+                    "is_from_me": True,
+                    "handle": "",
+                    "attachments": [],
+                    "chat_id": "chat-123",
+                },
+            ],
+        ), mock.patch("penguin_connect._get_imessage_unread_count", return_value=1), TestClient(
+            app_module.app
+        ) as client:
+            response = client.get("/penguin-connect/conversations/amc_test/messages", params={"limit": 50})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["found"])
+        self.assertEqual(
+            [message["provider_message_id"] for message in body["messages"]],
+            ["imessage:http-local-2", "imessage:http-local-1"],
+        )
+        self.assertEqual(body["messages"][0]["sender_name"], "Me")
+        self.assertEqual(body["messages"][0]["direction"], "imessage_local")
+        self.assertEqual(body["messages"][1]["attachments"][0]["mime_type"], "audio/mp4")
+        self.assertFalse(body["messages"][1]["is_read"])
+
+        verify_conn = self._get_connection()
+        try:
+            stored = verify_conn.execute(
+                """SELECT direction, gmail_message_id, metadata
+                   FROM penguin_connect_messages
+                   WHERE provider_message_id = ?""",
+                ("imessage:http-local-1",),
+            ).fetchone()
+        finally:
+            verify_conn.close()
+        self.assertEqual(stored["direction"], "imessage_local")
+        self.assertIsNone(stored["gmail_message_id"])
+        self.assertTrue(json.loads(stored["metadata"])["local_cache_only"])
 
     def test_alias_endpoint_returns_not_found_for_unknown_conversation(self):
         with TestClient(app_module.app) as client:

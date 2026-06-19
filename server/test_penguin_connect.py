@@ -2050,6 +2050,42 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(result["conversations"][0]["conversation_id"], "amc_test")
         self.assertEqual(result["conversations"][0]["source_chat_id"], "chat-123")
 
+    def test_list_conversations_discovers_local_rows_without_gmail_account_when_cache_empty(self):
+        self.conn.execute("DELETE FROM penguin_connect_messages")
+        self.conn.execute("DELETE FROM penguin_connect_conversations")
+        self.conn.execute("DELETE FROM penguin_connect_accounts")
+
+        with mock.patch(
+            "penguin_connect.browse_imessage_chats",
+            return_value={
+                "available": True,
+                "chats": [
+                    {
+                        "chat_id": "chat-local-1",
+                        "chat_identifier": "+15551234567",
+                        "service": "iMessage",
+                        "name": "+15551234567",
+                        "chat_type": "dm",
+                        "participants": ["+15551234567"],
+                    }
+                ],
+            },
+        ):
+            result = penguin_connect.list_conversations(self.conn)
+
+        self.assertFalse(result["connected"])
+        self.assertEqual(result["gmail_email"], "")
+        self.assertEqual(len(result["conversations"]), 1)
+        conversation = result["conversations"][0]
+        self.assertEqual(conversation["gmail_email"] if "gmail_email" in conversation else "", "")
+        self.assertEqual(conversation["source_chat_id"], "chat-local-1")
+        self.assertEqual(conversation["source_service_name"], "iMessage")
+        self.assertIsNone(conversation["alias_email"])
+        stored = self.conn.execute("SELECT gmail_email, alias_email FROM penguin_connect_conversations").fetchone()
+        self.assertEqual(stored["gmail_email"], penguin_connect.LOCAL_MESSAGES_ACCOUNT_EMAIL)
+        self.assertIsNone(stored["alias_email"])
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM penguin_connect_aliases").fetchone()[0], 0)
+
     def test_list_conversations_discovers_when_cache_empty(self):
         self.conn.execute("DELETE FROM penguin_connect_conversations WHERE gmail_email = ?", ("owner@gmail.com",))
         with mock.patch("penguin_connect.ensure_conversations_discovered", return_value=0) as mock_discover:
@@ -2058,6 +2094,73 @@ class PenguinConnectTests(unittest.TestCase):
         mock_discover.assert_called_once_with(self.conn, "owner@gmail.com")
         self.assertTrue(result["connected"])
         self.assertEqual(result["conversations"], [])
+
+    def test_get_conversation_messages_caches_local_imessage_rows_without_gmail_account(self):
+        self.conn.execute("DELETE FROM penguin_connect_messages")
+        self.conn.execute("DELETE FROM penguin_connect_accounts")
+        self.conn.execute(
+            "UPDATE penguin_connect_conversations SET gmail_email = ?, alias_email = NULL WHERE conversation_id = ?",
+            (penguin_connect.LOCAL_MESSAGES_ACCOUNT_EMAIL, "amc_test"),
+        )
+        with mock.patch(
+            "penguin_connect.fetch_imessage_messages",
+            return_value=[
+                {
+                    "native_message_id": "local-1",
+                    "timestamp": "2026-03-04T09:00:00+00:00",
+                    "text": "cached directly from Messages",
+                    "is_from_me": False,
+                    "handle": "+15551234567",
+                    "attachments": [{"filename": "/tmp/local.m4a", "mime_type": "audio/mp4"}],
+                    "chat_id": "chat-123",
+                },
+                {
+                    "native_message_id": "local-2",
+                    "timestamp": "2026-03-04T09:01:00+00:00",
+                    "text": "sent from Messages",
+                    "is_from_me": True,
+                    "handle": "",
+                    "attachments": [],
+                    "chat_id": "chat-123",
+                },
+            ],
+        ), mock.patch("penguin_connect._get_imessage_unread_count", return_value=1):
+            result = penguin_connect.get_conversation_messages(self.conn, "amc_test", limit=50)
+
+        self.assertTrue(result["found"])
+        self.assertEqual([message["provider_message_id"] for message in result["messages"]], ["imessage:local-2", "imessage:local-1"])
+        self.assertEqual(result["messages"][0]["sender_name"], "Me")
+        self.assertEqual(result["messages"][0]["direction"], "imessage_local")
+        self.assertEqual(result["messages"][1]["body_text"], "cached directly from Messages")
+        self.assertEqual(result["messages"][1]["attachments"][0]["mime_type"], "audio/mp4")
+        self.assertFalse(result["messages"][1]["is_read"])
+        stored = self.conn.execute(
+            """SELECT direction, gmail_message_id, metadata
+               FROM penguin_connect_messages
+               WHERE provider_message_id = ?""",
+            ("imessage:local-1",),
+        ).fetchone()
+        metadata = json.loads(stored["metadata"])
+        self.assertEqual(stored["direction"], "imessage_local")
+        self.assertIsNone(stored["gmail_message_id"])
+        self.assertTrue(metadata["local_cache_only"])
+        state = self.conn.execute(
+            "SELECT last_source_ts, last_source_native_message_id FROM penguin_connect_sync_state WHERE conversation_id = ?",
+            ("amc_test",),
+        ).fetchone()
+        self.assertEqual(state["last_source_ts"], "2026-03-04T09:01:00+00:00")
+        self.assertEqual(state["last_source_native_message_id"], "local-2")
+
+    def test_get_conversation_messages_does_not_cache_local_rows_for_gmail_backed_conversation(self):
+        self.conn.execute("DELETE FROM penguin_connect_messages")
+
+        with mock.patch("penguin_connect.fetch_imessage_messages") as mock_fetch:
+            result = penguin_connect.get_conversation_messages(self.conn, "amc_test", limit=50)
+
+        self.assertTrue(result["found"])
+        self.assertEqual(result["messages"], [])
+        mock_fetch.assert_not_called()
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM penguin_connect_messages").fetchone()[0], 0)
 
     def test_list_conversations_marks_entries_excluded_from_file(self):
         exclusions_path = Path(os.environ["PENGUIN_CONNECT_EXCLUDED_CHATS_FILE"])
