@@ -39,6 +39,7 @@ const state = {
   activeContactMessageKey: "",
   activeContactMessages: [],
   activeContactMessagesLoading: false,
+  activeContactMessagesBulkBusy: false,
   activeContactMessagesToken: 0,
   activeContactMessagesError: "",
   activeContactMessageNoteEditorId: "",
@@ -2436,6 +2437,7 @@ function resetActiveContactMessages() {
   state.activeContactMessageKey = "";
   state.activeContactMessages = [];
   state.activeContactMessagesLoading = false;
+  state.activeContactMessagesBulkBusy = false;
   state.activeContactMessagesError = "";
   state.activeContactMessageNoteEditorId = "";
   state.activeContactMessagesLimit = 3;
@@ -3730,7 +3732,15 @@ function renderContactRelatedThreads(container, contact) {
 }
 
 function contactMessageSearchQuery(contact) {
-  return contactRecipientHandle(contact) || contactDisplayName(contact);
+  const normalizedPhone = String(contact?.phone_normalized || "").trim();
+  if (normalizedPhone.length >= 7) return normalizedPhone;
+
+  const primaryHandle = String(contact?.primary_handle || "").trim();
+  const phone = String(contact?.phone || "").trim();
+  const phoneDigits = digitsOnly(phone || primaryHandle);
+  if (phoneDigits.length >= 7 && !primaryHandle.includes("@")) return phoneDigits;
+
+  return contact?.email || primaryHandle || phone || contactDisplayName(contact);
 }
 
 async function copyContactRecentMessage(result) {
@@ -3819,6 +3829,92 @@ async function toggleContactRecentMessageStar(result) {
   }
 }
 
+function contactRecentManageableMessages() {
+  const seen = new Set();
+  const messages = [];
+  for (const result of state.activeContactMessages) {
+    if (!result?.conversation_id || !result.provider_message_id) continue;
+    const key = messageSearchResultKey(result);
+    if (!key || key === "::" || seen.has(key)) continue;
+    seen.add(key);
+    messages.push(result);
+  }
+  return messages;
+}
+
+async function bulkUpdateContactRecentMessages(results, payloadForResult, { starting, empty, complete }) {
+  const targets = results.filter((result) => result?.conversation_id && result.provider_message_id);
+  if (!targets.length) {
+    el.contactStatus.textContent = empty;
+    renderContactInspector();
+    return;
+  }
+
+  state.activeContactMessagesBulkBusy = true;
+  renderContactInspector();
+  el.contactStatus.textContent = starting;
+  let updated = 0;
+  const failures = [];
+  for (const result of targets) {
+    try {
+      const response = await api(`/penguin-connect/conversations/${encodeURIComponent(result.conversation_id)}/messages/management`, {
+        method: "POST",
+        body: JSON.stringify({
+          provider_message_id: result.provider_message_id,
+          ...payloadForResult(result),
+        }),
+      });
+      mergeMessageManagement(response);
+      removeMessageSearchResultIfFiltered(response);
+      updated += 1;
+      el.contactStatus.textContent = `Updated ${updated}/${targets.length}`;
+    } catch (error) {
+      failures.push(error.message);
+    }
+  }
+
+  state.activeContactMessagesBulkBusy = false;
+  if (failures.length) {
+    el.contactStatus.textContent = `Updated ${updated}; ${failures.length} failed`;
+  } else {
+    el.contactStatus.textContent = complete(updated);
+  }
+  renderContactInspector();
+  renderMessageSearchResults();
+  renderConversations();
+  renderThreadHeader();
+  renderThreadControls();
+  renderMessages();
+  buildCodexPrompt();
+}
+
+async function starLoadedContactRecentMessages() {
+  const targets = contactRecentManageableMessages().filter((result) => !isStarredMessage(result));
+  await bulkUpdateContactRecentMessages(targets, () => ({ starred: true }), {
+    starting: `Starring ${targets.length} recent message${targets.length === 1 ? "" : "s"}`,
+    empty: "Recent messages already starred",
+    complete: (updated) => `Starred ${updated} recent message${updated === 1 ? "" : "s"}`,
+  });
+}
+
+async function markLoadedContactRecentMessagesRead() {
+  const targets = contactRecentManageableMessages().filter(isUnreadMessage);
+  await bulkUpdateContactRecentMessages(targets, () => ({ unread: false }), {
+    starting: `Marking ${targets.length} recent message${targets.length === 1 ? "" : "s"} read`,
+    empty: "Recent messages already read",
+    complete: (updated) => `Marked ${updated} recent message${updated === 1 ? "" : "s"} read`,
+  });
+}
+
+async function markLoadedContactRecentMessagesUnread() {
+  const targets = contactRecentManageableMessages().filter((result) => !isUnreadMessage(result));
+  await bulkUpdateContactRecentMessages(targets, () => ({ unread: true }), {
+    starting: `Marking ${targets.length} recent message${targets.length === 1 ? "" : "s"} unread`,
+    empty: "Recent messages already unread",
+    complete: (updated) => `Marked ${updated} recent message${updated === 1 ? "" : "s"} unread`,
+  });
+}
+
 function renderContactInspectorMessages(container, contact) {
   container.replaceChildren();
   const key = contactDetailKey(contact);
@@ -3830,11 +3926,46 @@ function renderContactInspectorMessages(container, contact) {
 
   const header = document.createElement("div");
   header.className = "contact-inspector-messages-head";
-  header.textContent = state.activeContactMessagesLoading
+  const headerLabel = document.createElement("span");
+  headerLabel.textContent = state.activeContactMessagesLoading
     ? "Loading recent messages"
     : state.activeContactMessagesError
       ? state.activeContactMessagesError
       : `${state.activeContactMessages.length} recent message${state.activeContactMessages.length === 1 ? "" : "s"}`;
+  header.append(headerLabel);
+  if (!state.activeContactMessagesLoading && !state.activeContactMessagesError && state.activeContactMessages.length) {
+    const manageableMessages = contactRecentManageableMessages();
+    const bulkBusy = state.activeContactMessagesBulkBusy;
+    const unstarredCount = manageableMessages.filter((result) => !isStarredMessage(result)).length;
+    const unreadCount = manageableMessages.filter(isUnreadMessage).length;
+    const readCount = manageableMessages.length - unreadCount;
+    const actions = document.createElement("span");
+    actions.className = "contact-inspector-message-bulk";
+    actions.innerHTML = `
+      <button type="button" data-action="star-recent">Star loaded</button>
+      <button type="button" data-action="read-recent">Mark read</button>
+      <button type="button" data-action="unread-recent">Mark unread</button>
+    `;
+    const starButton = actions.querySelector('[data-action="star-recent"]');
+    starButton.disabled = bulkBusy || unstarredCount === 0;
+    starButton.textContent = bulkBusy
+      ? "Updating"
+      : (unstarredCount ? `Star ${unstarredCount}` : "All starred");
+    starButton.addEventListener("click", starLoadedContactRecentMessages);
+    const readButton = actions.querySelector('[data-action="read-recent"]');
+    readButton.disabled = bulkBusy || unreadCount === 0;
+    readButton.textContent = bulkBusy
+      ? "Updating"
+      : (unreadCount ? `Mark ${unreadCount} read` : "All read");
+    readButton.addEventListener("click", markLoadedContactRecentMessagesRead);
+    const unreadButton = actions.querySelector('[data-action="unread-recent"]');
+    unreadButton.disabled = bulkBusy || readCount === 0;
+    unreadButton.textContent = bulkBusy
+      ? "Updating"
+      : (readCount ? `Mark ${readCount} unread` : "All unread");
+    unreadButton.addEventListener("click", markLoadedContactRecentMessagesUnread);
+    header.append(actions);
+  }
   container.append(header);
 
   if (state.activeContactMessagesLoading) return;
@@ -3985,6 +4116,7 @@ async function loadContactInspectorMessages(contact, { limit = 3 } = {}) {
   state.activeContactMessageKey = key;
   state.activeContactMessages = [];
   state.activeContactMessagesLoading = true;
+  state.activeContactMessagesBulkBusy = false;
   state.activeContactMessagesError = "";
   state.activeContactMessageNoteEditorId = "";
   state.activeContactMessagesLimit = targetLimit;
