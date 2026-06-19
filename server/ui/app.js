@@ -376,9 +376,24 @@ function handleType(value) {
   return "handle";
 }
 
+function participantValuesForConversation(conversation) {
+  const raw = conversation?.participants;
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw !== "string") return [];
+  const text = raw.trim();
+  if (!text) return [];
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) return parsed;
+  } catch (_error) {
+    return splitValues(text);
+  }
+  return [];
+}
+
 function conversationParticipants(conversation = state.selected) {
   if (!conversation) return [];
-  const values = Array.isArray(conversation.participants) ? conversation.participants : [];
+  const values = participantValuesForConversation(conversation);
   const sourceIdentifier = String(conversation.source_chat_identifier || "").trim();
   const candidates = [...values];
   if (sourceIdentifier && handleType(sourceIdentifier) !== "handle") {
@@ -445,7 +460,7 @@ function conversationHaystack(conversation) {
     conversation.draft_text,
     conversation.follow_up_at,
     ...(conversation.labels || []),
-    ...(conversation.participants || []),
+    ...participantValuesForConversation(conversation),
   ].join(" ").toLowerCase();
   return `${raw} ${digitsOnly(raw)}`;
 }
@@ -1691,6 +1706,38 @@ function fillContactFormFromContact(contact) {
   fillContactFormFromHandle(handle, "Prefilled from search");
 }
 
+function contactHandleCandidate(value) {
+  const handle = String(value || "").trim();
+  const type = handleType(handle);
+  return type === "phone" || type === "email" ? handle : "";
+}
+
+function messageSearchContactHandle(result) {
+  const participants = participantValuesForConversation(result);
+  const isMine = result.sender_name === "Me"
+    || result.direction === "manual_to_imessage"
+    || result.direction === "email_to_imessage"
+    || Boolean(result.metadata?.is_from_me);
+  const senderCandidates = isMine ? [] : [result.sender_email, result.sender_name];
+  const threadCandidates = [result.source_chat_identifier, ...participants];
+  const candidates = isMine ? threadCandidates : [...senderCandidates, ...threadCandidates];
+  for (const candidate of candidates) {
+    const handle = contactHandleCandidate(candidate);
+    if (handle) return handle;
+  }
+  return "";
+}
+
+function fillContactFormFromMessageSearchResult(result) {
+  const handle = messageSearchContactHandle(result);
+  if (!handle) {
+    el.messageSearchStatus.textContent = "No contact handle on result";
+    return;
+  }
+  fillContactFormFromHandle(handle, "Prefilled from message search");
+  el.messageSearchStatus.textContent = "Contact form prefilled";
+}
+
 function searchContactHandle(value) {
   const handle = String(value || "").trim();
   if (!handle) return;
@@ -2280,10 +2327,12 @@ function renderMessageSearchResults() {
       <span class="search-result-actions">
         <button type="button" data-action="reply">Reply</button>
         <button type="button" data-action="copy">Copy</button>
+        <button type="button" data-action="contact">Contact</button>
         <button type="button" data-action="open">Open</button>
       </span>
     `;
     const sender = result.sender_name || result.sender_email || result.direction || "unknown";
+    const contactHandle = messageSearchContactHandle(result);
     item.querySelector(".search-result-top").textContent = [
       searchResultConversationName(result),
       sender,
@@ -2296,6 +2345,9 @@ function renderMessageSearchResults() {
       await copyText(messageCopyText(result));
       el.sendState.textContent = "Search result copied";
     });
+    const contactButton = item.querySelector('[data-action="contact"]');
+    contactButton.disabled = !contactHandle;
+    contactButton.addEventListener("click", () => fillContactFormFromMessageSearchResult(result));
     item.querySelector('[data-action="open"]').addEventListener("click", () => useMessageSearchResult(result));
     el.messageSearchResults.append(item);
   }

@@ -1161,6 +1161,11 @@ input[type="date"]:focus {
   color: var(--accent);
 }
 
+.search-result-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .search-result-top,
 .search-result-body {
   overflow: hidden;
