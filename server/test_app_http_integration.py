@@ -717,6 +717,14 @@ class AppHttpIntegrationTests(unittest.TestCase):
                 "/penguin-connect/contacts",
                 params={"source": "participants", "limit": 10},
             )
+            favorite_unsaved_response = client.post(
+                "/penguin-connect/contacts/management",
+                json={"contact_key": "phone:14155550199", "favorite": True},
+            )
+            favorite_unsaved_search_response = client.get(
+                "/penguin-connect/contacts",
+                params={"source": "favorites", "search": "5550199", "limit": 10},
+            )
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
@@ -750,6 +758,17 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(unsaved_body["count"], 1)
         self.assertEqual(unsaved_body["participant_count"], 1)
         self.assertEqual(unsaved_body["contacts"][0]["primary_handle"], "+1 (415) 555-0199")
+
+        self.assertEqual(favorite_unsaved_response.status_code, 200)
+        self.assertTrue(favorite_unsaved_response.json()["is_favorite"])
+        self.assertEqual(favorite_unsaved_search_response.status_code, 200)
+        favorite_unsaved_body = favorite_unsaved_search_response.json()
+        self.assertEqual(favorite_unsaved_body["source"], "favorites")
+        self.assertEqual(favorite_unsaved_body["count"], 1)
+        self.assertEqual(favorite_unsaved_body["participant_count"], 1)
+        self.assertEqual(favorite_unsaved_body["contacts"][0]["source"], "conversation")
+        self.assertEqual(favorite_unsaved_body["contacts"][0]["contact_key"], "phone:14155550199")
+        self.assertTrue(favorite_unsaved_body["contacts"][0]["is_favorite"])
 
     def test_contacts_refresh_endpoint_runs_refresh_once(self):
         with mock.patch(
@@ -989,6 +1008,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn(".thread-person-actions", css_response.text)
         self.assertIn(".thread-person-name", css_response.text)
         self.assertIn(".thread-person.known-contact", css_response.text)
+        self.assertIn(".thread-person.favorite-contact", css_response.text)
         self.assertIn(".media-filters", css_response.text)
         self.assertIn(".thread-media", css_response.text)
         self.assertIn(".media-item", css_response.text)
@@ -1007,7 +1027,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("sourceDisplayName", js_response.text)
         self.assertIn("conversationParticipants", js_response.text)
         self.assertIn("loadThreadContactMatches", js_response.text)
-        self.assertIn("source=contacts", js_response.text)
+        self.assertIn("source=all", js_response.text)
+        self.assertIn("toggleThreadParticipantFavorite", js_response.text)
+        self.assertIn("refreshContactPanelAfterExternalManagement", js_response.text)
+        self.assertIn("contactManagementKeyForHandle", js_response.text)
         self.assertIn("contactMatchesHandle", js_response.text)
         self.assertIn("renderThreadPeople", js_response.text)
         self.assertIn("fillContactFormFromHandle", js_response.text)

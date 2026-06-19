@@ -287,7 +287,8 @@ function contactMatchesHandle(contact, handle) {
 }
 
 function bestContactForHandle(handle, contacts) {
-  return (contacts || []).find((contact) => contact.is_saved !== false && contactMatchesHandle(contact, handle)) || null;
+  const matches = (contacts || []).filter((contact) => contactMatchesHandle(contact, handle));
+  return matches.find((contact) => contact.is_saved !== false) || matches[0] || null;
 }
 
 function threadContactKey(handle) {
@@ -296,6 +297,15 @@ function threadContactKey(handle) {
 
 function threadContactMatch(handle) {
   return state.threadContactMatches[threadContactKey(handle)] || null;
+}
+
+function contactManagementKeyForHandle(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text) return "";
+  if (text.includes("@")) return `email:${text}`;
+  const digits = digitsOnly(text);
+  if (digits.length >= 7) return `phone:${digits}`;
+  return `handle:${text}`;
 }
 
 function resetThreadContactMatches() {
@@ -348,7 +358,7 @@ async function loadThreadContactMatches(conversation = state.selected) {
     const key = threadContactKey(participant.handle);
     if (!key) return null;
     try {
-      const payload = await api(`/penguin-connect/contacts?search=${encodeURIComponent(participant.handle)}&limit=5&source=contacts`);
+      const payload = await api(`/penguin-connect/contacts?search=${encodeURIComponent(participant.handle)}&limit=5&source=all`);
       const match = bestContactForHandle(participant.handle, payload.contacts || []);
       return match ? [key, match] : null;
     } catch (_error) {
@@ -1309,7 +1319,10 @@ function renderContactRelatedThreads(container, contact) {
 function renderThreadPeople() {
   el.threadPeople.replaceChildren();
   const participants = conversationParticipants();
-  const matchedCount = participants.filter((participant) => threadContactMatch(participant.handle)).length;
+  const matchedCount = participants.filter((participant) => {
+    const contact = threadContactMatch(participant.handle);
+    return contact && contact.is_saved !== false;
+  }).length;
   el.threadPeopleState.textContent = state.selected
     ? `${participants.length} participant${participants.length === 1 ? "" : "s"}${matchedCount ? ` · ${matchedCount} saved` : ""}`
     : "No thread";
@@ -1330,8 +1343,11 @@ function renderThreadPeople() {
 
   for (const participant of participants) {
     const contact = threadContactMatch(participant.handle);
+    const managedContact = participantManagedContact(participant, contact);
+    const savedContact = contact && contact.is_saved !== false;
+    const favorite = isFavoriteContact(managedContact);
     const item = document.createElement("div");
-    item.className = `thread-person ${contact ? "known-contact" : "unknown-contact"}`;
+    item.className = `thread-person ${savedContact ? "known-contact" : "unknown-contact"} ${favorite ? "favorite-contact" : ""}`;
     item.innerHTML = `
       <div class="thread-person-main">
         <span class="thread-person-name"></span>
@@ -1339,21 +1355,27 @@ function renderThreadPeople() {
         <span class="thread-person-type"></span>
       </div>
       <div class="thread-person-actions">
+        <button type="button" data-action="favorite">Star</button>
         <button type="button" data-action="search">Search</button>
         <button type="button" data-action="draft">New chat</button>
         <button type="button" data-action="contact">Create</button>
       </div>
     `;
-    item.querySelector(".thread-person-name").textContent = contact ? contactDisplayName(contact) : "Unknown contact";
+    item.querySelector(".thread-person-name").textContent = savedContact ? contactDisplayName(contact) : "Unknown contact";
     item.querySelector(".thread-person-handle").textContent = participant.handle;
     item.querySelector(".thread-person-type").textContent = contact
       ? `${participant.type} · ${contactHandleText(contact)}`
       : participant.type;
+    const favoriteButton = item.querySelector('[data-action="favorite"]');
+    favoriteButton.textContent = favorite ? "Unstar" : "Star";
+    favoriteButton.classList.toggle("active", favorite);
+    favoriteButton.disabled = !managedContact.contact_key;
+    favoriteButton.addEventListener("click", () => toggleThreadParticipantFavorite(participant, contact));
     item.querySelector('[data-action="search"]').addEventListener("click", () => searchContactHandle(participant.handle));
     item.querySelector('[data-action="draft"]').addEventListener("click", () => addParticipantToDraft(participant.handle));
     const contactButton = item.querySelector('[data-action="contact"]');
-    contactButton.textContent = contact ? "Saved" : "Create";
-    contactButton.disabled = Boolean(contact);
+    contactButton.textContent = savedContact ? "Saved" : "Create";
+    contactButton.disabled = Boolean(savedContact);
     contactButton.addEventListener("click", () => fillContactFormFromHandle(participant.handle));
     el.threadPeople.append(item);
   }
@@ -1411,6 +1433,22 @@ function mergeContactManagement(result) {
   if (state.contactSource === "favorites" && !result.is_favorite) {
     state.contacts = state.contacts.filter((contact) => contact.contact_key !== contactKey);
   }
+  for (const [key, contact] of Object.entries(state.threadContactMatches)) {
+    if (contact?.contact_key !== contactKey) continue;
+    state.threadContactMatches[key] = {
+      ...contact,
+      is_favorite: Boolean(result.is_favorite),
+      contact_note: result.contact_note || "",
+    };
+  }
+}
+
+async function refreshContactPanelAfterExternalManagement() {
+  if (state.contactSource === "favorites") {
+    await loadContacts({ force: true });
+    return;
+  }
+  renderContacts();
 }
 
 async function toggleContactFavorite(contact) {
@@ -1434,6 +1472,55 @@ async function toggleContactFavorite(contact) {
     buildCodexPrompt();
   } catch (error) {
     el.contactStatus.textContent = error.message;
+  }
+}
+
+function participantManagedContact(participant, contact) {
+  if (contact?.contact_key) return contact;
+  const contactKey = contactManagementKeyForHandle(participant.handle);
+  return {
+    id: `participant:${contactKey}`,
+    contact_key: contactKey,
+    display_name: participant.handle,
+    primary_handle: participant.handle,
+    handle_type: participant.type,
+    source: "conversation",
+    is_saved: false,
+    is_favorite: false,
+    contact_note: "",
+  };
+}
+
+async function toggleThreadParticipantFavorite(participant, contact) {
+  const managedContact = participantManagedContact(participant, contact);
+  const contactKey = managedContact.contact_key || "";
+  if (!contactKey) {
+    el.threadPeopleState.textContent = "No contact key";
+    return;
+  }
+  const nextFavorite = !isFavoriteContact(managedContact);
+  try {
+    const result = await api("/penguin-connect/contacts/management", {
+      method: "POST",
+      body: JSON.stringify({
+        contact_key: contactKey,
+        favorite: nextFavorite,
+      }),
+    });
+    const key = threadContactKey(participant.handle);
+    state.threadContactMatches[key] = {
+      ...managedContact,
+      contact_key: result.contact_key || contactKey,
+      is_favorite: Boolean(result.is_favorite),
+      contact_note: result.contact_note || managedContact.contact_note || "",
+    };
+    mergeContactManagement(result);
+    el.threadPeopleState.textContent = result.is_favorite ? "Participant favorited" : "Participant unfavorited";
+    renderThreadPeople();
+    await refreshContactPanelAfterExternalManagement();
+    buildCodexPrompt();
+  } catch (error) {
+    el.threadPeopleState.textContent = error.message;
   }
 }
 
@@ -2509,9 +2596,12 @@ function selectedConversationContext() {
   const note = el.threadNote.value.trim() || "none";
   const participants = conversationParticipants().slice(0, 14).map((participant) => {
     const contact = threadContactMatch(participant.handle);
-    return contact
-      ? `${contactDisplayName(contact)} <${participant.handle}>`
-      : `${participant.handle} (unknown contact)`;
+    const managedContact = participantManagedContact(participant, contact);
+    const favorite = isFavoriteContact(managedContact) ? " favorite" : "";
+    const note = contactNoteText(managedContact) ? ` note:${trim(contactNoteText(managedContact), 80)}` : "";
+    return contact && contact.is_saved !== false
+      ? `${contactDisplayName(contact)} <${participant.handle}>${favorite}${note}`
+      : `${participant.handle} (unknown contact${favorite}${note})`;
   }).join(", ") || "unknown";
   return [
     `Conversation: ${conversationDisplayName(state.selected)}`,

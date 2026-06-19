@@ -726,6 +726,11 @@ input[type="email"]:focus {
   background: rgba(239, 248, 243, 0.7);
 }
 
+.thread-person.favorite-contact {
+  border-color: rgba(191, 128, 35, 0.42);
+  background-image: linear-gradient(90deg, rgba(191, 128, 35, 0.08), transparent 46%);
+}
+
 .thread-person-main {
   display: grid;
   min-width: 0;
@@ -784,6 +789,11 @@ input[type="email"]:focus {
 .thread-person-actions button:focus-visible {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+.thread-person-actions button.active {
+  border-color: rgba(191, 128, 35, 0.65);
+  color: #7a4d10;
 }
 
 .thread-person-actions button:disabled {
