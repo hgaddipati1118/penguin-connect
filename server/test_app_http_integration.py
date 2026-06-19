@@ -1253,6 +1253,45 @@ class AppHttpIntegrationTests(unittest.TestCase):
         mock_open.assert_not_called()
         mock_open_addressed.assert_called_once_with(["+14155550100", "friend@example.test"])
 
+    def test_messages_draft_endpoint_stages_browser_attachments(self):
+        data = base64.b64encode(b"fake image bytes").decode("ascii")
+        with mock.patch("app._copy_to_clipboard") as mock_copy, mock.patch("app._open_messages_app") as mock_open, mock.patch(
+            "app._open_attachment_folder"
+        ) as mock_open_attachments, TestClient(app_module.app) as client:
+            response = client.post(
+                "/penguin-connect/messages/draft",
+                json={
+                    "participants": ["+14155550100"],
+                    "message": "Photo for the new thread",
+                    "attachments": [
+                        {
+                            "filename": "photo.png",
+                            "mime_type": "image/png",
+                            "size": len(b"fake image bytes"),
+                            "data_base64": data,
+                        }
+                    ],
+                    "copy_to_clipboard": False,
+                    "open_messages": False,
+                    "open_attachments": True,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["success"])
+        self.assertEqual(body["attachment_count"], 1)
+        attachment_path = Path(body["attachment_paths"][0])
+        self.assertEqual(attachment_path.parent, Path(body["attachment_folder"]))
+        self.assertEqual(attachment_path.read_bytes(), b"fake image bytes")
+        self.assertTrue(str(attachment_path).startswith(str(self.db_path.parent)))
+        self.assertFalse(body["opened_messages"])
+        self.assertFalse(body["opened_addressed"])
+        self.assertTrue(body["opened_attachments"])
+        mock_copy.assert_not_called()
+        mock_open.assert_not_called()
+        mock_open_attachments.assert_called_once_with(attachment_path.parent)
+
     def test_recipient_lists_can_be_saved_updated_listed_and_deleted(self):
         with TestClient(app_module.app) as client:
             create_response = client.post(
@@ -1362,6 +1401,13 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("copyDraftBodyButton", html_response.text)
         self.assertIn("copyDraftPreviewButton", html_response.text)
         self.assertIn("openAddressedDraftButton", html_response.text)
+        self.assertIn("draftEmojiRow", html_response.text)
+        self.assertIn("draftVoiceMemoButton", html_response.text)
+        self.assertIn("draftVoiceMemoTimer", html_response.text)
+        self.assertIn("draftAttachmentDrop", html_response.text)
+        self.assertIn("draftFileInput", html_response.text)
+        self.assertIn("draftAttachmentList", html_response.text)
+        self.assertIn("draftOpenAttachmentsToggle", html_response.text)
         self.assertIn("recipientListName", html_response.text)
         self.assertIn("saveRecipientListButton", html_response.text)
         self.assertIn("recipientLists", html_response.text)
@@ -1589,14 +1635,20 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("messageCopyText", js_response.text)
         self.assertIn("renderManagementFields", js_response.text)
         self.assertIn("stageDraft", js_response.text)
+        self.assertIn("draftAttachments", js_response.text)
         self.assertIn("buildMessagesDraftText", js_response.text)
         self.assertIn("draftRecipientLine", js_response.text)
         self.assertIn("renderDraftPreview", js_response.text)
+        self.assertIn("filesAsBrowserAttachments", js_response.text)
+        self.assertIn("renderAllEmojiButtons", js_response.text)
+        self.assertIn("renderAllVoiceMemoControls", js_response.text)
         self.assertIn("copyDraftRecipients", js_response.text)
         self.assertIn("copyDraftBody", js_response.text)
         self.assertIn("copyDraftPreview", js_response.text)
         self.assertIn("openAddressedDraft", js_response.text)
         self.assertIn("open_addressed", js_response.text)
+        self.assertIn("open_attachments", js_response.text)
+        self.assertIn("attachment_folder", js_response.text)
         self.assertIn("createContact", js_response.text)
         self.assertIn("setReadState", js_response.text)
         self.assertIn("setConversationManagement", js_response.text)

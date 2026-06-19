@@ -169,6 +169,17 @@
           </div>
           <div class="recipient-lists" id="recipientLists" aria-live="polite"></div>
           <textarea id="draftMessage" rows="4" placeholder="Draft message"></textarea>
+          <div class="emoji-row" id="draftEmojiRow" aria-label="New chat emoji shortcuts"></div>
+          <div class="voice-memo-row" id="draftVoiceMemoRow">
+            <button class="quiet-button" id="draftVoiceMemoButton" type="button" title="Record new chat voice memo">Record</button>
+            <span class="voice-memo-timer" id="draftVoiceMemoTimer">00:00</span>
+            <span class="voice-memo-status" id="draftVoiceMemoStatus">Mic ready</span>
+          </div>
+          <div class="attachment-drop" id="draftAttachmentDrop">
+            <input id="draftFileInput" type="file" multiple />
+            <label for="draftFileInput">Files & images for new chat</label>
+          </div>
+          <div class="attachment-list" id="draftAttachmentList"></div>
           <div class="draft-preview" id="draftPreview" aria-live="polite">
             <div class="draft-preview-head">
               <span id="draftPreviewTitle">No recipients</span>
@@ -184,6 +195,7 @@
           <div class="toggle-row">
             <label><input id="draftCopyToggle" type="checkbox" checked /> Copy</label>
             <label><input id="draftOpenToggle" type="checkbox" checked /> Open Messages</label>
+            <label><input id="draftOpenAttachmentsToggle" type="checkbox" checked /> Open files</label>
           </div>
           <div class="send-row">
             <button class="primary-button" id="stageDraftButton" type="button">Stage draft</button>

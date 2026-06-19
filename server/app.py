@@ -100,9 +100,11 @@ class PenguinConnectContactManagementRequest(BaseModel):
 class PenguinConnectDraftCreateRequest(BaseModel):
     participants: list[str] | None = None
     message: str = ""
+    attachments: list[PenguinConnectBrowserAttachment] | None = None
     copy_to_clipboard: bool = True
     open_messages: bool = True
     open_addressed: bool = False
+    open_attachments: bool = False
 
 class PenguinConnectRecipientListRequest(BaseModel):
     list_id: str = ""
@@ -190,32 +192,78 @@ def _decode_ui_attachment_data(raw_value: str) -> bytes:
         raise HTTPException(status_code=400, detail="invalid_attachment_data") from exc
 
 
-def _stage_ui_attachments(attachments: list[PenguinConnectBrowserAttachment] | None) -> tuple[list[str], Path | None]:
-    if not attachments:
-        return [], None
+def _write_ui_attachments_to_dir(
+    attachments: list[PenguinConnectBrowserAttachment],
+    staged_dir: Path,
+) -> list[str]:
     max_bytes = _ui_attachment_max_bytes()
     total_max_bytes = _ui_attachment_total_max_bytes()
     total_bytes = 0
-    staged_dir = Path(tempfile.mkdtemp(prefix="penguinconnect-ui-attachments-"))
     staged_paths: list[str] = []
-    try:
-        for idx, attachment in enumerate(attachments, 1):
-            data = _decode_ui_attachment_data(attachment.data_base64)
-            if not data:
-                raise HTTPException(status_code=400, detail="empty_attachment")
-            declared_size = int(attachment.size or len(data))
-            if len(data) > max_bytes or declared_size > max_bytes:
-                raise HTTPException(status_code=413, detail="attachment_too_large")
-            total_bytes += len(data)
-            if total_bytes > total_max_bytes:
-                raise HTTPException(status_code=413, detail="attachments_too_large")
+    staged_dir.mkdir(parents=True, exist_ok=True)
+    for idx, attachment in enumerate(attachments, 1):
+        data = _decode_ui_attachment_data(attachment.data_base64)
+        if not data:
+            raise HTTPException(status_code=400, detail="empty_attachment")
+        declared_size = int(attachment.size or len(data))
+        if len(data) > max_bytes or declared_size > max_bytes:
+            raise HTTPException(status_code=413, detail="attachment_too_large")
+        total_bytes += len(data)
+        if total_bytes > total_max_bytes:
+            raise HTTPException(status_code=413, detail="attachments_too_large")
 
-            filename = _safe_ui_attachment_filename(attachment.filename, idx)
-            out_path = staged_dir / filename
-            if out_path.exists():
-                out_path = staged_dir / f"{out_path.stem or 'attachment'}-{idx}{out_path.suffix}"
-            out_path.write_bytes(data)
-            staged_paths.append(str(out_path))
+        filename = _safe_ui_attachment_filename(attachment.filename, idx)
+        out_path = staged_dir / filename
+        if out_path.exists():
+            out_path = staged_dir / f"{out_path.stem or 'attachment'}-{idx}{out_path.suffix}"
+        out_path.write_bytes(data)
+        staged_paths.append(str(out_path))
+    return staged_paths
+
+
+def _stage_ui_attachments(attachments: list[PenguinConnectBrowserAttachment] | None) -> tuple[list[str], Path | None]:
+    if not attachments:
+        return [], None
+    staged_dir = Path(tempfile.mkdtemp(prefix="penguinconnect-ui-attachments-"))
+    try:
+        staged_paths = _write_ui_attachments_to_dir(attachments, staged_dir)
+    except Exception:
+        shutil.rmtree(staged_dir, ignore_errors=True)
+        raise
+    if not staged_paths:
+        shutil.rmtree(staged_dir, ignore_errors=True)
+        return [], None
+    return staged_paths, staged_dir
+
+
+def _draft_attachment_root() -> Path:
+    return DB_PATH.parent / "message-draft-attachments"
+
+
+def _cleanup_old_draft_attachment_dirs(max_age_seconds: int = 24 * 60 * 60) -> None:
+    root = _draft_attachment_root()
+    if not root.exists():
+        return
+    cutoff = time.time() - max_age_seconds
+    for child in root.iterdir():
+        try:
+            if child.is_dir() and child.stat().st_mtime < cutoff:
+                shutil.rmtree(child, ignore_errors=True)
+        except OSError:
+            continue
+
+
+def _stage_messages_draft_attachments(
+    attachments: list[PenguinConnectBrowserAttachment] | None,
+) -> tuple[list[str], Path | None]:
+    if not attachments:
+        return [], None
+    _cleanup_old_draft_attachment_dirs()
+    root = _draft_attachment_root()
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    staged_dir = root / f"{stamp}-{uuid.uuid4().hex[:8]}"
+    try:
+        staged_paths = _write_ui_attachments_to_dir(attachments, staged_dir)
     except Exception:
         shutil.rmtree(staged_dir, ignore_errors=True)
         raise
@@ -383,6 +431,17 @@ def _open_messages_addressed(participants: list[str]) -> str:
     except subprocess.CalledProcessError as exc:
         raise HTTPException(status_code=400, detail="open_messages_addressed_failed") from exc
     return url
+
+
+def _open_attachment_folder(path: Path) -> None:
+    try:
+        subprocess.run(["open", str(path)], check=True, timeout=10.0)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=501, detail="open_unavailable") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="open_attachments_timeout") from exc
+    except subprocess.CalledProcessError as exc:
+        raise HTTPException(status_code=400, detail="open_attachments_failed") from exc
 
 
 def _codex_prompt_max_chars() -> int:
@@ -2063,30 +2122,47 @@ def create_penguinconnect_messages_draft(req: PenguinConnectDraftCreateRequest):
     body_text = _messages_body_text(req.message)
     recipient_line = _messages_recipient_line(participants)
     messages_url = _messages_address_url(participants)
+    attachment_paths: list[str] = []
+    attachment_dir: Path | None = None
     copied = False
     opened_messages = False
     opened_addressed = False
-    if req.copy_to_clipboard:
-        _copy_to_clipboard(draft)
-        copied = True
-    if req.open_addressed:
-        messages_url = _open_messages_addressed(participants)
-        opened_addressed = True
-    elif req.open_messages:
-        _open_messages_app()
-        opened_messages = True
-    return {
-        "success": True,
-        "participants_count": len(participants),
-        "participants": participants,
-        "recipient_line": recipient_line,
-        "body": body_text,
-        "draft": draft,
-        "messages_url": messages_url,
-        "copied": copied,
-        "opened_messages": opened_messages,
-        "opened_addressed": opened_addressed,
-    }
+    opened_attachments = False
+    success = False
+    try:
+        attachment_paths, attachment_dir = _stage_messages_draft_attachments(req.attachments)
+        if req.copy_to_clipboard:
+            _copy_to_clipboard(draft)
+            copied = True
+        if req.open_addressed:
+            messages_url = _open_messages_addressed(participants)
+            opened_addressed = True
+        elif req.open_messages:
+            _open_messages_app()
+            opened_messages = True
+        if req.open_attachments and attachment_dir:
+            _open_attachment_folder(attachment_dir)
+            opened_attachments = True
+        success = True
+        return {
+            "success": True,
+            "participants_count": len(participants),
+            "participants": participants,
+            "recipient_line": recipient_line,
+            "body": body_text,
+            "draft": draft,
+            "messages_url": messages_url,
+            "copied": copied,
+            "opened_messages": opened_messages,
+            "opened_addressed": opened_addressed,
+            "opened_attachments": opened_attachments,
+            "attachment_count": len(attachment_paths),
+            "attachment_folder": str(attachment_dir) if attachment_dir else "",
+            "attachment_paths": attachment_paths,
+        }
+    finally:
+        if attachment_dir and not success:
+            shutil.rmtree(attachment_dir, ignore_errors=True)
 
 @app.post("/api/penguin-connect/codex/ask")
 @app.post("/penguin-connect/codex/ask")

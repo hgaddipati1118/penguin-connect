@@ -6,6 +6,9 @@ const state = {
   replyContext: null,
   senderEmail: "",
   attachments: [],
+  draftAttachments: [],
+  draftAttachmentFolder: "",
+  draftAttachmentPaths: [],
   contacts: [],
   contactSourceCounts: {},
   contactSource: "all",
@@ -35,7 +38,11 @@ const state = {
   voiceMemoChunks: [],
   voiceMemoStartedAt: 0,
   voiceMemoTimerId: 0,
-  voiceMemoStatus: "",
+  voiceMemoTarget: "",
+  voiceMemoStatus: {
+    reply: "",
+    draft: "",
+  },
 };
 
 const el = {
@@ -124,6 +131,14 @@ const el = {
   saveRecipientListButton: document.querySelector("#saveRecipientListButton"),
   recipientLists: document.querySelector("#recipientLists"),
   draftMessage: document.querySelector("#draftMessage"),
+  draftEmojiRow: document.querySelector("#draftEmojiRow"),
+  draftVoiceMemoRow: document.querySelector("#draftVoiceMemoRow"),
+  draftVoiceMemoButton: document.querySelector("#draftVoiceMemoButton"),
+  draftVoiceMemoTimer: document.querySelector("#draftVoiceMemoTimer"),
+  draftVoiceMemoStatus: document.querySelector("#draftVoiceMemoStatus"),
+  draftAttachmentDrop: document.querySelector("#draftAttachmentDrop"),
+  draftFileInput: document.querySelector("#draftFileInput"),
+  draftAttachmentList: document.querySelector("#draftAttachmentList"),
   draftPreview: document.querySelector("#draftPreview"),
   draftPreviewTitle: document.querySelector("#draftPreviewTitle"),
   draftPreviewText: document.querySelector("#draftPreviewText"),
@@ -133,6 +148,7 @@ const el = {
   openAddressedDraftButton: document.querySelector("#openAddressedDraftButton"),
   draftCopyToggle: document.querySelector("#draftCopyToggle"),
   draftOpenToggle: document.querySelector("#draftOpenToggle"),
+  draftOpenAttachmentsToggle: document.querySelector("#draftOpenAttachmentsToggle"),
   stageDraftButton: document.querySelector("#stageDraftButton"),
   clearDraftButton: document.querySelector("#clearDraftButton"),
   createContactState: document.querySelector("#createContactState"),
@@ -1025,8 +1041,10 @@ function renderReplyContext() {
   el.replyContextText.textContent = `${state.replyContext.sender} · ${state.replyContext.snippet}`;
 }
 
-function renderEmojiButtons() {
-  el.emojiRow.replaceChildren();
+function renderEmojiButtons(target = "reply") {
+  const row = target === "draft" ? el.draftEmojiRow : el.emojiRow;
+  const textarea = target === "draft" ? el.draftMessage : el.composer;
+  row.replaceChildren();
   for (const emoji of emojiChoices) {
     const button = document.createElement("button");
     button.type = "button";
@@ -1034,16 +1052,25 @@ function renderEmojiButtons() {
     button.textContent = emoji;
     button.title = `Insert ${emoji}`;
     button.addEventListener("click", () => {
-      const start = el.composer.selectionStart ?? el.composer.value.length;
-      const end = el.composer.selectionEnd ?? el.composer.value.length;
-      el.composer.value = `${el.composer.value.slice(0, start)}${emoji}${el.composer.value.slice(end)}`;
-      el.composer.focus();
-      el.composer.selectionStart = start + emoji.length;
-      el.composer.selectionEnd = start + emoji.length;
-      buildCodexPrompt();
+      const start = textarea.selectionStart ?? textarea.value.length;
+      const end = textarea.selectionEnd ?? textarea.value.length;
+      textarea.value = `${textarea.value.slice(0, start)}${emoji}${textarea.value.slice(end)}`;
+      textarea.focus();
+      textarea.selectionStart = start + emoji.length;
+      textarea.selectionEnd = start + emoji.length;
+      if (target === "draft") {
+        renderDraftPreview();
+      } else {
+        buildCodexPrompt();
+      }
     });
-    el.emojiRow.append(button);
+    row.append(button);
   }
+}
+
+function renderAllEmojiButtons() {
+  renderEmojiButtons("reply");
+  renderEmojiButtons("draft");
 }
 
 function renderConversations() {
@@ -1227,12 +1254,20 @@ function renderDraftPreview(values = uniqueRecipientValues(draftRecipientValues(
   const recipients = uniqueRecipientValues(values);
   const body = draftBodyText();
   const draft = draftText || buildMessagesDraftText(recipients);
+  const attachments = state.draftAttachments || [];
   const count = recipients.length;
   const mode = count > 1 ? "Group chat" : "Direct chat";
   el.draftPreviewTitle.textContent = count
-    ? `${mode} · ${count} recipient${count === 1 ? "" : "s"}`
+    ? `${mode} · ${count} recipient${count === 1 ? "" : "s"}${attachments.length ? ` · ${attachments.length} file${attachments.length === 1 ? "" : "s"}` : ""}`
     : "No recipients";
-  el.draftPreviewText.textContent = draft || "Add recipients to preview the Messages draft.";
+  const attachmentLines = attachments.length
+    ? [
+      "",
+      `Attachments staged separately: ${attachments.map((file) => file.name || "attachment").join(", ")}`,
+      state.draftAttachmentFolder ? `Folder: ${state.draftAttachmentFolder}` : "",
+    ].filter(Boolean).join("\n")
+    : "";
+  el.draftPreviewText.textContent = (draft ? `${draft}${attachmentLines}` : "") || "Add recipients to preview the Messages draft.";
   el.copyDraftRecipientsButton.disabled = !recipients.length;
   el.copyDraftBodyButton.disabled = !body;
   el.copyDraftPreviewButton.disabled = !draft;
@@ -1301,18 +1336,27 @@ async function openAddressedDraft() {
   el.openAddressedDraftButton.disabled = true;
   el.draftState.textContent = "Opening addressed chat";
   try {
+    const attachments = await filesAsBrowserAttachments(state.draftAttachments);
     const result = await api("/penguin-connect/messages/draft", {
       method: "POST",
       body: JSON.stringify({
         participants,
         message: el.draftMessage.value,
+        attachments,
         copy_to_clipboard: false,
         open_messages: false,
         open_addressed: true,
+        open_attachments: el.draftOpenAttachmentsToggle.checked,
       }),
     });
+    state.draftAttachmentFolder = result.attachment_folder || "";
+    state.draftAttachmentPaths = result.attachment_paths || [];
     renderDraftPreview(result.participants || participants, result.draft || "");
-    el.draftState.textContent = result.opened_addressed ? "Addressed chat opened" : "Address ready";
+    const actions = [
+      result.opened_addressed ? "addressed chat opened" : "",
+      result.opened_attachments ? "files opened" : result.attachment_count ? "files staged" : "",
+    ].filter(Boolean).join(" + ");
+    el.draftState.textContent = actions || "Address ready";
   } catch (error) {
     el.draftState.textContent = error.message;
   } finally {
@@ -2547,24 +2591,61 @@ function renderMessages() {
   }
 }
 
-function renderAttachments() {
-  el.attachmentList.replaceChildren();
-  for (const [index, file] of state.attachments.entries()) {
+function renderAttachments(target = "reply") {
+  const { list } = attachmentElementsFor(target);
+  const files = attachmentFilesFor(target);
+  list.replaceChildren();
+  for (const [index, file] of files.entries()) {
     const chip = document.createElement("div");
     chip.className = "attachment-chip";
     chip.innerHTML = `<span></span><button class="remove-button" type="button" title="Remove">×</button>`;
     chip.querySelector("span").textContent = `${file.name} · ${Math.ceil(file.size / 1024)} KB`;
     chip.querySelector("button").addEventListener("click", () => {
-      state.attachments.splice(index, 1);
-      renderAttachments();
-      buildCodexPrompt();
+      const nextFiles = attachmentFilesFor(target).slice();
+      nextFiles.splice(index, 1);
+      setAttachmentFilesFor(target, nextFiles);
+      if (target === "draft") {
+        state.draftAttachmentFolder = "";
+        state.draftAttachmentPaths = [];
+      }
+      renderAttachments(target);
+      if (target === "draft") {
+        renderDraftPreview();
+      } else {
+        buildCodexPrompt();
+      }
     });
-    el.attachmentList.append(chip);
+    list.append(chip);
   }
 }
 
 function voiceMemoRecordingSupported() {
   return Boolean(window.MediaRecorder && navigator.mediaDevices?.getUserMedia);
+}
+
+function voiceMemoElementsFor(target = "reply") {
+  return target === "draft"
+    ? {
+      button: el.draftVoiceMemoButton,
+      timer: el.draftVoiceMemoTimer,
+      status: el.draftVoiceMemoStatus,
+      state: el.draftState,
+    }
+    : {
+      button: el.voiceMemoButton,
+      timer: el.voiceMemoTimer,
+      status: el.voiceMemoStatus,
+      state: el.sendState,
+    };
+}
+
+function setVoiceMemoStatus(target, value) {
+  state.voiceMemoStatus[target] = value;
+}
+
+function renderAllVoiceMemoControls() {
+  renderVoiceMemoControls("reply");
+  renderVoiceMemoControls("draft");
 }
 
 function voiceMemoMimeType() {
@@ -2600,18 +2681,21 @@ function clearVoiceMemoTimer() {
   state.voiceMemoTimerId = 0;
 }
 
-function renderVoiceMemoControls() {
+function renderVoiceMemoControls(target = "reply") {
+  const controls = voiceMemoElementsFor(target);
   const supported = voiceMemoRecordingSupported();
-  const recording = state.voiceMemoRecorder?.state === "recording";
-  el.voiceMemoButton.disabled = !supported;
-  el.voiceMemoButton.textContent = recording ? "Stop" : "Record";
-  el.voiceMemoButton.title = recording ? "Stop voice memo recording" : "Record voice memo";
-  el.voiceMemoButton.classList.toggle("recording", recording);
-  el.voiceMemoTimer.textContent = recording
+  const activeRecording = state.voiceMemoRecorder?.state === "recording";
+  const recording = activeRecording && state.voiceMemoTarget === target;
+  const recordingElsewhere = activeRecording && state.voiceMemoTarget && state.voiceMemoTarget !== target;
+  controls.button.disabled = !supported || recordingElsewhere;
+  controls.button.textContent = recording ? "Stop" : "Record";
+  controls.button.title = recording ? "Stop voice memo recording" : "Record voice memo";
+  controls.button.classList.toggle("recording", recording);
+  controls.timer.textContent = recording
     ? voiceMemoDurationText(Date.now() - state.voiceMemoStartedAt)
     : "00:00";
-  el.voiceMemoStatus.textContent = supported
-    ? state.voiceMemoStatus || "Mic ready"
+  controls.status.textContent = supported
+    ? (recordingElsewhere ? "Recording elsewhere" : state.voiceMemoStatus[target] || "Mic ready")
     : "Mic unavailable";
 }
 
@@ -2632,6 +2716,7 @@ function makeVoiceMemoFile(blob, mimeType) {
 }
 
 function finishVoiceMemoRecording(recorder) {
+  const target = state.voiceMemoTarget || "reply";
   clearVoiceMemoTimer();
   stopVoiceMemoStream();
   const chunks = state.voiceMemoChunks;
@@ -2639,24 +2724,28 @@ function finishVoiceMemoRecording(recorder) {
   state.voiceMemoRecorder = null;
   state.voiceMemoChunks = [];
   state.voiceMemoStartedAt = 0;
+  state.voiceMemoTarget = "";
   if (!chunks.length) {
-    state.voiceMemoStatus = "No audio captured";
-    renderVoiceMemoControls();
+    setVoiceMemoStatus(target, "No audio captured");
+    renderAllVoiceMemoControls();
     return;
   }
   const blob = new Blob(chunks, { type: mimeType });
-  state.attachments.push(normalizeAttachmentFile(makeVoiceMemoFile(blob, mimeType)));
-  state.voiceMemoStatus = "Voice memo added";
-  el.sendState.textContent = "Voice memo attached";
-  renderAttachments();
-  renderVoiceMemoControls();
-  buildCodexPrompt();
+  addFiles([makeVoiceMemoFile(blob, mimeType)], target);
+  setVoiceMemoStatus(target, "Voice memo added");
+  voiceMemoElementsFor(target).state.textContent = "Voice memo attached";
+  renderAllVoiceMemoControls();
 }
 
-async function startVoiceMemoRecording() {
+async function startVoiceMemoRecording(target = "reply") {
   if (!voiceMemoRecordingSupported()) {
-    state.voiceMemoStatus = "Mic unavailable";
-    renderVoiceMemoControls();
+    setVoiceMemoStatus(target, "Mic unavailable");
+    renderAllVoiceMemoControls();
+    return;
+  }
+  if (state.voiceMemoRecorder?.state === "recording") {
+    setVoiceMemoStatus(target, "Recording elsewhere");
+    renderAllVoiceMemoControls();
     return;
   }
   try {
@@ -2667,7 +2756,8 @@ async function startVoiceMemoRecording() {
     state.voiceMemoRecorder = recorder;
     state.voiceMemoChunks = [];
     state.voiceMemoStartedAt = Date.now();
-    state.voiceMemoStatus = "Recording";
+    state.voiceMemoTarget = target;
+    setVoiceMemoStatus(target, "Recording");
     recorder.addEventListener("dataavailable", (event) => {
       if (event.data && event.data.size > 0) {
         state.voiceMemoChunks.push(event.data);
@@ -2675,39 +2765,41 @@ async function startVoiceMemoRecording() {
     });
     recorder.addEventListener("stop", () => finishVoiceMemoRecording(recorder), { once: true });
     recorder.addEventListener("error", (event) => {
-      state.voiceMemoStatus = event.error?.message || "Recording failed";
+      setVoiceMemoStatus(target, event.error?.message || "Recording failed");
       state.voiceMemoRecorder = null;
       state.voiceMemoChunks = [];
+      state.voiceMemoTarget = "";
       clearVoiceMemoTimer();
       stopVoiceMemoStream();
-      renderVoiceMemoControls();
+      renderAllVoiceMemoControls();
     });
     recorder.start();
-    state.voiceMemoTimerId = window.setInterval(renderVoiceMemoControls, 500);
-    renderVoiceMemoControls();
+    state.voiceMemoTimerId = window.setInterval(renderAllVoiceMemoControls, 500);
+    renderAllVoiceMemoControls();
   } catch (error) {
-    state.voiceMemoStatus = error.name === "NotAllowedError" ? "Mic permission denied" : error.message || "Recording failed";
+    setVoiceMemoStatus(target, error.name === "NotAllowedError" ? "Mic permission denied" : error.message || "Recording failed");
     state.voiceMemoRecorder = null;
     state.voiceMemoChunks = [];
+    state.voiceMemoTarget = "";
     clearVoiceMemoTimer();
     stopVoiceMemoStream();
-    renderVoiceMemoControls();
+    renderAllVoiceMemoControls();
   }
 }
 
 function stopVoiceMemoRecording() {
   const recorder = state.voiceMemoRecorder;
   if (!recorder || recorder.state === "inactive") return;
-  state.voiceMemoStatus = "Saving voice memo";
+  setVoiceMemoStatus(state.voiceMemoTarget || "reply", "Saving voice memo");
   recorder.stop();
-  renderVoiceMemoControls();
+  renderAllVoiceMemoControls();
 }
 
-function toggleVoiceMemoRecording() {
-  if (state.voiceMemoRecorder?.state === "recording") {
+function toggleVoiceMemoRecording(target = "reply") {
+  if (state.voiceMemoRecorder?.state === "recording" && state.voiceMemoTarget === target) {
     stopVoiceMemoRecording();
   } else {
-    startVoiceMemoRecording();
+    startVoiceMemoRecording(target);
   }
 }
 
@@ -3019,6 +3111,19 @@ function readFileAsBase64(file) {
   });
 }
 
+async function filesAsBrowserAttachments(files) {
+  const attachments = [];
+  for (const file of files || []) {
+    attachments.push({
+      filename: file.name,
+      mime_type: file.type || "application/octet-stream",
+      size: file.size,
+      data_base64: await readFileAsBase64(file),
+    });
+  }
+  return attachments;
+}
+
 async function sendMessage() {
   if (!state.selected) return;
   if (state.voiceMemoRecorder?.state === "recording") {
@@ -3034,15 +3139,7 @@ async function sendMessage() {
   el.sendButton.disabled = true;
   el.sendState.textContent = "Sending";
   try {
-    const attachments = [];
-    for (const file of state.attachments) {
-      attachments.push({
-        filename: file.name,
-        mime_type: file.type || "application/octet-stream",
-        size: file.size,
-        data_base64: await readFileAsBase64(file),
-      });
-    }
+    const attachments = await filesAsBrowserAttachments(state.attachments);
     await api(`/penguin-connect/conversations/${encodeURIComponent(conversationId)}/send`, {
       method: "POST",
       body: JSON.stringify({
@@ -3699,16 +3796,44 @@ async function copyText(value) {
   }
 }
 
-function addFiles(fileList) {
+function attachmentFilesFor(target = "reply") {
+  return target === "draft" ? state.draftAttachments : state.attachments;
+}
+
+function setAttachmentFilesFor(target = "reply", files = []) {
+  if (target === "draft") {
+    state.draftAttachments = files;
+  } else {
+    state.attachments = files;
+  }
+}
+
+function attachmentElementsFor(target = "reply") {
+  return target === "draft"
+    ? { list: el.draftAttachmentList, state: el.draftState }
+    : { list: el.attachmentList, state: el.sendState };
+}
+
+function addFiles(fileList, target = "reply") {
   const files = Array.from(fileList || []).filter(Boolean);
+  const current = attachmentFilesFor(target);
   for (const file of files) {
-    state.attachments.push(normalizeAttachmentFile(file));
+    current.push(normalizeAttachmentFile(file));
   }
+  setAttachmentFilesFor(target, current);
   if (files.length) {
-    el.sendState.textContent = `${files.length} attachment${files.length === 1 ? "" : "s"} added`;
+    attachmentElementsFor(target).state.textContent = `${files.length} attachment${files.length === 1 ? "" : "s"} added`;
+    if (target === "draft") {
+      state.draftAttachmentFolder = "";
+      state.draftAttachmentPaths = [];
+    }
   }
-  renderAttachments();
-  buildCodexPrompt();
+  renderAttachments(target);
+  if (target === "draft") {
+    renderDraftPreview();
+  } else {
+    buildCodexPrompt();
+  }
 }
 
 function attachmentExtensionForType(type) {
@@ -3749,11 +3874,11 @@ function clipboardAttachmentFiles(event) {
     .filter((file) => file && file.size > 0);
 }
 
-function handleAttachmentPaste(event) {
+function handleAttachmentPaste(event, target = "reply") {
   const files = clipboardAttachmentFiles(event);
   if (!files.length) return;
   event.preventDefault();
-  addFiles(files);
+  addFiles(files, target);
 }
 
 function clearDraftForm() {
@@ -3762,7 +3887,11 @@ function clearDraftForm() {
   el.draftMessage.value = "";
   el.draftState.textContent = "Idle";
   state.activeRecipientListId = "";
+  state.draftAttachments = [];
+  state.draftAttachmentFolder = "";
+  state.draftAttachmentPaths = [];
   renderDraftRecipientChips();
+  renderAttachments("draft");
   renderDraftPreview([]);
   renderRecipientLists();
 }
@@ -3777,18 +3906,24 @@ async function stageDraft() {
   el.stageDraftButton.disabled = true;
   el.draftState.textContent = "Staging";
   try {
+    const attachments = await filesAsBrowserAttachments(state.draftAttachments);
     const result = await api("/penguin-connect/messages/draft", {
       method: "POST",
       body: JSON.stringify({
         participants,
         message: el.draftMessage.value,
+        attachments,
         copy_to_clipboard: el.draftCopyToggle.checked,
         open_messages: el.draftOpenToggle.checked,
+        open_attachments: el.draftOpenAttachmentsToggle.checked,
       }),
     });
+    state.draftAttachmentFolder = result.attachment_folder || "";
+    state.draftAttachmentPaths = result.attachment_paths || [];
     const actions = [
       result.copied ? "copied" : "",
       result.opened_messages ? "opened" : "",
+      result.opened_attachments ? "files opened" : result.attachment_count ? "files staged" : "",
     ].filter(Boolean).join(" + ");
     renderDraftPreview(result.participants || participants, result.draft || "");
     el.draftState.textContent = actions ? `Draft ${actions}` : "Draft ready";
@@ -3928,7 +4063,8 @@ el.draftRecipients.addEventListener("blur", (event) => {
 });
 el.draftMessage.addEventListener("input", () => renderDraftPreview());
 el.sendButton.addEventListener("click", sendMessage);
-el.voiceMemoButton.addEventListener("click", toggleVoiceMemoRecording);
+el.voiceMemoButton.addEventListener("click", () => toggleVoiceMemoRecording("reply"));
+el.draftVoiceMemoButton.addEventListener("click", () => toggleVoiceMemoRecording("draft"));
 el.pinButton.addEventListener("click", () => setConversationManagement({ pinned: !Boolean(state.selected?.is_pinned) }));
 el.muteButton.addEventListener("click", () => setConversationManagement({ muted: !Boolean(state.selected?.is_muted) }));
 el.archiveButton.addEventListener("click", () => setConversationManagement({ archived: !Boolean(state.selected?.is_archived) }));
@@ -3978,7 +4114,14 @@ el.copyThreadButton.addEventListener("click", async () => {
   await copyText(threadText(40));
   el.sendState.textContent = "Thread copied";
 });
-el.fileInput.addEventListener("change", (event) => addFiles(event.target.files));
+el.fileInput.addEventListener("change", (event) => {
+  addFiles(event.target.files);
+  event.target.value = "";
+});
+el.draftFileInput.addEventListener("change", (event) => {
+  addFiles(event.target.files, "draft");
+  event.target.value = "";
+});
 el.threadPeopleAddAllButton.addEventListener("click", addThreadParticipantsToDraft);
 el.threadPeopleSaveListButton.addEventListener("click", saveThreadParticipantsAsRecipientList);
 el.stageDraftButton.addEventListener("click", stageDraft);
@@ -4000,8 +4143,20 @@ el.attachmentDrop.addEventListener("drop", (event) => {
   el.attachmentDrop.classList.remove("dragging");
   addFiles(event.dataTransfer.files);
 });
+el.draftAttachmentDrop.addEventListener("dragover", (event) => {
+  event.preventDefault();
+  el.draftAttachmentDrop.classList.add("dragging");
+});
+el.draftAttachmentDrop.addEventListener("dragleave", () => el.draftAttachmentDrop.classList.remove("dragging"));
+el.draftAttachmentDrop.addEventListener("drop", (event) => {
+  event.preventDefault();
+  el.draftAttachmentDrop.classList.remove("dragging");
+  addFiles(event.dataTransfer.files, "draft");
+});
 el.composer.addEventListener("paste", handleAttachmentPaste);
 el.attachmentDrop.addEventListener("paste", handleAttachmentPaste);
+el.draftMessage.addEventListener("paste", (event) => handleAttachmentPaste(event, "draft"));
+el.draftAttachmentDrop.addEventListener("paste", (event) => handleAttachmentPaste(event, "draft"));
 el.composer.addEventListener("input", () => {
   scheduleDraftSave();
   buildCodexPrompt();
@@ -4062,8 +4217,8 @@ el.bulkPinButton.addEventListener("click", bulkPinSelected);
 el.bulkMuteButton.addEventListener("click", bulkMuteSelected);
 el.bulkArchiveButton.addEventListener("click", bulkArchiveSelected);
 
-renderEmojiButtons();
-renderVoiceMemoControls();
+renderAllEmojiButtons();
+renderAllVoiceMemoControls();
 renderMessages();
 renderContacts();
 renderContactSourceFilters();
