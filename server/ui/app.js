@@ -90,6 +90,7 @@ const el = {
   contactAddVisibleButton: document.querySelector("#contactAddVisibleButton"),
   contactCopyVisibleButton: document.querySelector("#contactCopyVisibleButton"),
   contactSaveVisibleButton: document.querySelector("#contactSaveVisibleButton"),
+  contactCreateVisibleButton: document.querySelector("#contactCreateVisibleButton"),
   contactClearSelectedButton: document.querySelector("#contactClearSelectedButton"),
   contactStatus: document.querySelector("#contactStatus"),
   contactMoreBar: document.querySelector("#contactMoreBar"),
@@ -1676,9 +1677,19 @@ function selectedContactRecipientHandles() {
   );
 }
 
+function selectedContacts() {
+  return state.contacts.filter(isContactSelected);
+}
+
 function contactBulkRecipientHandles() {
   const selected = selectedContactRecipientHandles();
   return selected.length ? selected : visibleContactRecipientHandles();
+}
+
+function contactBulkCreatableContacts() {
+  const selected = selectedContacts();
+  const contacts = selected.length ? selected : state.contacts;
+  return contacts.filter((contact) => contact.is_saved === false && contactRecipientHandle(contact));
 }
 
 function pruneSelectedContacts() {
@@ -1700,14 +1711,19 @@ function renderContactBulkActions() {
   const selectedCount = selectedContactRecipientHandles().length;
   const visibleCount = visibleContactRecipientHandles().length;
   const hasRecipients = selectedCount ? selectedCount > 0 : visibleCount > 0;
+  const creatableCount = contactBulkCreatableContacts().length;
   el.contactSelectVisibleButton.disabled = visibleCount === 0;
   el.contactAddVisibleButton.disabled = !hasRecipients;
   el.contactCopyVisibleButton.disabled = !hasRecipients;
   el.contactSaveVisibleButton.disabled = !hasRecipients;
+  el.contactCreateVisibleButton.disabled = !creatableCount;
   el.contactClearSelectedButton.disabled = selectedCount === 0;
   el.contactAddVisibleButton.textContent = selectedCount ? "Add selected" : "Add visible";
   el.contactCopyVisibleButton.textContent = selectedCount ? "Copy selected" : "Copy visible";
   el.contactSaveVisibleButton.textContent = selectedCount ? "Save selected" : "Save visible";
+  el.contactCreateVisibleButton.textContent = selectedCount
+    ? `Create ${creatableCount || "unknown"}`
+    : "Create unknown";
   el.contactClearSelectedButton.textContent = selectedCount ? `Clear ${selectedCount}` : "Clear selected";
 }
 
@@ -1813,6 +1829,76 @@ async function saveVisibleContactsAsRecipientList() {
   } catch (error) {
     el.contactStatus.textContent = error.message;
   } finally {
+    renderContactBulkActions();
+  }
+}
+
+function contactNamePartsForCreate(contact) {
+  const handle = contactRecipientHandle(contact);
+  const display = contactDisplayName(contact);
+  const key = recipientCompareKey(display);
+  const handleKey = recipientCompareKey(handle);
+  if (!display || key === handleKey || handleType(display) === "phone" || handleType(display) === "email") {
+    return { firstName: "", lastName: "" };
+  }
+  const parts = display.split(/\s+/).filter(Boolean);
+  return {
+    firstName: parts.shift() || display,
+    lastName: parts.join(" "),
+  };
+}
+
+function contactCreatePayload(contact) {
+  const handle = contactRecipientHandle(contact);
+  const name = contactNamePartsForCreate(contact);
+  return {
+    first_name: name.firstName,
+    last_name: name.lastName,
+    organization: "",
+    phones: handleType(handle) === "email" ? [] : [handle],
+    emails: handleType(handle) === "email" ? [handle] : [],
+    refresh_after: false,
+  };
+}
+
+async function createVisibleUnknownContacts() {
+  const contacts = contactBulkCreatableContacts();
+  if (!contacts.length) {
+    el.contactStatus.textContent = "No unknown contacts visible";
+    return;
+  }
+
+  el.contactCreateVisibleButton.disabled = true;
+  el.contactStatus.textContent = `Creating ${contacts.length} contact${contacts.length === 1 ? "" : "s"}`;
+  let created = 0;
+  const failures = [];
+  for (const contact of contacts) {
+    try {
+      await api("/penguin-connect/contacts", {
+        method: "POST",
+        body: JSON.stringify(contactCreatePayload(contact)),
+      });
+      created += 1;
+      el.contactStatus.textContent = `Created ${created}/${contacts.length}`;
+    } catch (error) {
+      failures.push(error.message);
+    }
+  }
+
+  try {
+    if (created) {
+      await api("/penguin-connect/contacts/refresh", { method: "POST", body: "{}" });
+    }
+    state.selectedContactKeys.clear();
+    await loadContacts({ force: true });
+    await loadThreadContactMatches();
+  } catch (error) {
+    failures.push(error.message);
+  } finally {
+    const failedCount = failures.length;
+    el.contactStatus.textContent = failedCount
+      ? `Created ${created}; ${failedCount} failed`
+      : `Created ${created} contact${created === 1 ? "" : "s"}`;
     renderContactBulkActions();
   }
 }
@@ -4680,6 +4766,7 @@ el.contactSelectVisibleButton.addEventListener("click", selectVisibleContacts);
 el.contactAddVisibleButton.addEventListener("click", addVisibleContactsToDraft);
 el.contactCopyVisibleButton.addEventListener("click", copyVisibleContacts);
 el.contactSaveVisibleButton.addEventListener("click", saveVisibleContactsAsRecipientList);
+el.contactCreateVisibleButton.addEventListener("click", createVisibleUnknownContacts);
 el.contactClearSelectedButton.addEventListener("click", clearSelectedContacts);
 el.messageFilter.addEventListener("input", renderMessages);
 el.messageViewFilters.addEventListener("click", (event) => {
