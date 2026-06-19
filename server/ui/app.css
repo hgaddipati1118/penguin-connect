@@ -573,6 +573,48 @@ input[type="date"]:focus {
   font-size: 11px;
 }
 
+.contact-more {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 30px;
+  margin: 8px 0;
+  padding: 6px 7px;
+  border: 1px solid var(--line);
+  background: rgba(255, 253, 248, 0.56);
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+.contact-more[hidden] {
+  display: none;
+}
+
+.contact-more button {
+  min-height: 22px;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 10px;
+}
+
+.contact-more button:hover:not(:disabled),
+.contact-more button:focus-visible {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.contact-more button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
 .contact-source-filters {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));

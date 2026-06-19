@@ -15,6 +15,11 @@ const state = {
   contacts: [],
   contactSourceCounts: {},
   contactSource: "all",
+  contactLimit: 20,
+  contactLimitStep: 20,
+  contactLimitMax: 100,
+  contactsLoading: false,
+  contactLoadToken: 0,
   contactSearchTimer: null,
   contactNoteEditorKey: "",
   selectedContactKeys: new Set(),
@@ -87,6 +92,9 @@ const el = {
   contactSaveVisibleButton: document.querySelector("#contactSaveVisibleButton"),
   contactClearSelectedButton: document.querySelector("#contactClearSelectedButton"),
   contactStatus: document.querySelector("#contactStatus"),
+  contactMoreBar: document.querySelector("#contactMoreBar"),
+  contactCount: document.querySelector("#contactCount"),
+  loadMoreContactsButton: document.querySelector("#loadMoreContactsButton"),
   contactList: document.querySelector("#contactList"),
   threadProvider: document.querySelector("#threadProvider"),
   threadTitle: document.querySelector("#threadTitle"),
@@ -2499,9 +2507,25 @@ function renderContactSourceFilters() {
   }
 }
 
+function renderContactMoreControls() {
+  const loaded = state.contacts.length;
+  const limit = state.contactLimit;
+  const atMax = limit >= state.contactLimitMax;
+  const canLoadMore = !state.contactsLoading && loaded >= limit && !atMax;
+  el.contactMoreBar.hidden = !state.contactsLoading && loaded === 0 && state.contactSource === "all" && !el.contactSearch.value.trim();
+  el.contactCount.textContent = state.contactsLoading
+    ? `Loading up to ${limit} contacts`
+    : `${loaded} loaded · window ${limit}${atMax ? " max" : ""}`;
+  el.loadMoreContactsButton.disabled = !canLoadMore;
+  el.loadMoreContactsButton.textContent = state.contactsLoading
+    ? "Loading"
+    : (atMax ? "Max shown" : "Show more");
+}
+
 function renderContacts() {
   el.contactList.replaceChildren();
   renderContactBulkActions();
+  renderContactMoreControls();
   if (!state.contacts.length) {
     const empty = document.createElement("div");
     empty.className = "empty-state compact-state";
@@ -3412,11 +3436,15 @@ async function loadConversations({ autoSelect = true } = {}) {
 
 async function loadContacts({ force = false } = {}) {
   const query = el.contactSearch.value.trim();
+  const loadToken = state.contactLoadToken + 1;
+  state.contactLoadToken = loadToken;
   const browsesUnsaved = state.contactSource === "participants";
   const browsesFavorites = state.contactSource === "favorites";
   const browsesNoted = state.contactSource === "noted";
   const browsesSaved = state.contactSource === "contacts";
   renderContactSourceFilters();
+  state.contactsLoading = true;
+  renderContactMoreControls();
 
   if (!query && state.contactSource === "all") {
     el.contactStatus.textContent = "Loading contacts";
@@ -3434,11 +3462,13 @@ async function loadContacts({ force = false } = {}) {
   try {
     const params = new URLSearchParams({
       search: query,
-      limit: "20",
+      limit: String(state.contactLimit),
       source: state.contactSource,
     });
     const payload = await api(`/penguin-connect/contacts?${params.toString()}`);
+    if (loadToken !== state.contactLoadToken) return;
     state.contacts = payload.contacts || [];
+    state.contactsLoading = false;
     state.contactSourceCounts = payload.source_counts || state.contactSourceCounts || {};
     pruneSelectedContacts();
     renderContactSourceFilters();
@@ -3467,7 +3497,9 @@ async function loadContacts({ force = false } = {}) {
     refreshDraftRecipientChips();
     buildCodexPrompt();
   } catch (error) {
+    if (loadToken !== state.contactLoadToken) return;
     state.contacts = [];
+    state.contactsLoading = false;
     el.contactStatus.textContent = error.message;
     renderContacts();
     refreshDraftRecipientChips();
@@ -3476,8 +3508,21 @@ async function loadContacts({ force = false } = {}) {
 }
 
 function scheduleContactSearch() {
+  resetContactLimit();
   clearTimeout(state.contactSearchTimer);
   state.contactSearchTimer = setTimeout(() => loadContacts(), 180);
+}
+
+function resetContactLimit() {
+  state.contactLimit = 20;
+}
+
+async function loadMoreContacts() {
+  if (state.contactsLoading) return;
+  const nextLimit = Math.min(state.contactLimit + state.contactLimitStep, state.contactLimitMax);
+  if (nextLimit <= state.contactLimit) return;
+  state.contactLimit = nextLimit;
+  await loadContacts();
 }
 
 async function loadMessageSearch() {
@@ -4560,6 +4605,7 @@ async function createContact() {
     const searchValue = [firstName, lastName].filter(Boolean).join(" ") || organization || phones[0] || emails[0] || "";
     if (searchValue) el.contactSearch.value = searchValue;
     state.contactSource = "all";
+    resetContactLimit();
     renderContactSourceFilters();
     await loadContacts({ force: true });
     await loadThreadContactMatches();
@@ -4588,6 +4634,7 @@ el.contactSourceFilters.addEventListener("click", (event) => {
     ? button.dataset.contactSource
     : "all";
   state.selectedContactKeys.clear();
+  resetContactLimit();
   loadContacts({
     force: state.contactSource === "participants"
       || state.contactSource === "favorites"
@@ -4596,6 +4643,7 @@ el.contactSourceFilters.addEventListener("click", (event) => {
       || el.contactSearch.value.trim().length >= 2,
   });
 });
+el.loadMoreContactsButton.addEventListener("click", loadMoreContacts);
 el.globalMessageSearch.addEventListener("input", scheduleMessageSearch);
 el.messageDateFrom.addEventListener("input", scheduleMessageSearch);
 el.messageDateTo.addEventListener("input", scheduleMessageSearch);
