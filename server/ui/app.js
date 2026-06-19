@@ -92,6 +92,9 @@ const el = {
   managementState: document.querySelector("#managementState"),
   globalMessageSearch: document.querySelector("#globalMessageSearch"),
   globalMessageSearchFilters: document.querySelector("#globalMessageSearchFilters"),
+  messageDateFrom: document.querySelector("#messageDateFrom"),
+  messageDateTo: document.querySelector("#messageDateTo"),
+  clearMessageDatesButton: document.querySelector("#clearMessageDatesButton"),
   messageSearchStatus: document.querySelector("#messageSearchStatus"),
   messageSearchResults: document.querySelector("#messageSearchResults"),
   messageViewFilters: document.querySelector("#messageViewFilters"),
@@ -2096,7 +2099,8 @@ function renderMessageSearchFilters() {
 function renderMessageSearchResults() {
   el.messageSearchResults.replaceChildren();
   const query = el.globalMessageSearch.value.trim();
-  if (!query && state.messageSearchView === "all") {
+  const hasDateFilter = Boolean(el.messageDateFrom.value.trim() || el.messageDateTo.value.trim());
+  if (!query && state.messageSearchView === "all" && !hasDateFilter) {
     el.messageSearchResults.hidden = true;
     return;
   }
@@ -2781,11 +2785,14 @@ function scheduleContactSearch() {
 
 async function loadMessageSearch() {
   const query = el.globalMessageSearch.value.trim();
+  const dateFrom = el.messageDateFrom.value.trim();
+  const dateTo = el.messageDateTo.value.trim();
+  const hasDateFilter = Boolean(dateFrom || dateTo);
   const scoped = state.messageSearchView !== "all";
   renderMessageSearchFilters();
-  if (query.length < 2 && !scoped) {
+  if (query.length < 2 && !scoped && !hasDateFilter) {
     state.messageSearchResults = [];
-    el.messageSearchStatus.textContent = "Type 2+ chars to search local cache";
+    el.messageSearchStatus.textContent = "Type 2+ chars or choose dates";
     renderMessageSearchResults();
     buildCodexPrompt();
     return;
@@ -2799,19 +2806,26 @@ async function loadMessageSearch() {
   }
 
   const view = messageSearchViews.find((item) => item.key === state.messageSearchView) || messageSearchViews[0];
-  el.messageSearchStatus.textContent = query ? "Searching local cache" : `Loading ${view.label.toLowerCase()} messages`;
+  el.messageSearchStatus.textContent = query
+    ? "Searching local cache"
+    : hasDateFilter
+      ? "Loading messages in date range"
+      : `Loading ${view.label.toLowerCase()} messages`;
   try {
     const params = new URLSearchParams({
       query,
       limit: "30",
       view: state.messageSearchView,
     });
+    if (dateFrom) params.set("date_from", dateFrom);
+    if (dateTo) params.set("date_to", dateTo);
     if (state.messageSearchView === "current" && state.selected?.conversation_id) {
       params.set("conversation_id", state.selected.conversation_id);
     }
     const payload = await api(`/penguin-connect/messages/search?${params.toString()}`);
     state.messageSearchResults = payload.messages || [];
-    el.messageSearchStatus.textContent = `${state.messageSearchResults.length} ${view.label.toLowerCase()} match${state.messageSearchResults.length === 1 ? "" : "es"}`;
+    const rangeSuffix = hasDateFilter ? " in range" : "";
+    el.messageSearchStatus.textContent = `${state.messageSearchResults.length} ${view.label.toLowerCase()} match${state.messageSearchResults.length === 1 ? "" : "es"}${rangeSuffix}`;
     renderMessageSearchResults();
     buildCodexPrompt();
   } catch (error) {
@@ -3385,7 +3399,10 @@ function plannedAttachmentText() {
 
 function messageSearchContext(limit = 8) {
   const query = el.globalMessageSearch.value.trim();
-  if (!query && state.messageSearchView === "all") return "none";
+  const dateFrom = el.messageDateFrom.value.trim();
+  const dateTo = el.messageDateTo.value.trim();
+  const dateRange = [dateFrom || "start", dateTo || "now"].join(" to ");
+  if (!query && state.messageSearchView === "all" && !dateFrom && !dateTo) return "none";
   const view = messageSearchViews.find((item) => item.key === state.messageSearchView) || messageSearchViews[0];
   const rows = state.messageSearchResults.slice(0, limit).map((result) => {
     const sender = result.sender_name || result.sender_email || result.direction || "unknown";
@@ -3394,6 +3411,7 @@ function messageSearchContext(limit = 8) {
   return [
     `View: ${view.label}`,
     `Query: ${query || "none"}`,
+    `Date range: ${dateFrom || dateTo ? dateRange : "none"}`,
     rows.length ? rows.join("\n") : "No loaded results",
   ].join("\n");
 }
@@ -3703,6 +3721,13 @@ el.contactSourceFilters.addEventListener("click", (event) => {
   });
 });
 el.globalMessageSearch.addEventListener("input", scheduleMessageSearch);
+el.messageDateFrom.addEventListener("input", scheduleMessageSearch);
+el.messageDateTo.addEventListener("input", scheduleMessageSearch);
+el.clearMessageDatesButton.addEventListener("click", () => {
+  el.messageDateFrom.value = "";
+  el.messageDateTo.value = "";
+  loadMessageSearch();
+});
 el.globalMessageSearchFilters.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-message-search-view]");
   if (!button) return;

@@ -16,6 +16,7 @@ import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
@@ -1113,6 +1114,27 @@ def _stored_message_attachment(
     return path, display_name, media_type
 
 
+def _message_search_date_bound(value: str, *, end: bool) -> dict[str, str] | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+        try:
+            parsed = datetime.strptime(raw, "%Y-%m-%d")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid_message_search_date") from exc
+        sql_value = (parsed + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00") if end else f"{raw}T00:00:00"
+        return {"display": raw, "sql": sql_value}
+
+    normalized = raw.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid_message_search_date") from exc
+    display = parsed.isoformat()
+    return {"display": display, "sql": display}
+
+
 def _search_messages(
     conn: sqlite3.Connection,
     query: str,
@@ -1120,16 +1142,37 @@ def _search_messages(
     limit: int,
     view: str = "all",
     conversation_id: str = "",
+    date_from: str = "",
+    date_to: str = "",
 ) -> dict:
     search = (query or "").strip()
     normalized_view = (view or "all").strip().lower()
     if normalized_view not in {"all", "recent", "current", "unread", "files", "audio", "mine"}:
         normalized_view = "all"
     target_conversation_id = (conversation_id or "").strip()
-    if not search and normalized_view == "all":
-        return {"query": "", "view": normalized_view, "conversation_id": "", "count": 0, "messages": []}
+    start_bound = _message_search_date_bound(date_from, end=False)
+    end_bound = _message_search_date_bound(date_to, end=True)
+    has_date_filter = bool(start_bound or end_bound)
+    if not search and normalized_view == "all" and not has_date_filter:
+        return {
+            "query": "",
+            "view": normalized_view,
+            "conversation_id": "",
+            "date_from": "",
+            "date_to": "",
+            "count": 0,
+            "messages": [],
+        }
     if normalized_view == "current" and not target_conversation_id:
-        return {"query": search, "view": normalized_view, "conversation_id": "", "count": 0, "messages": []}
+        return {
+            "query": search,
+            "view": normalized_view,
+            "conversation_id": "",
+            "date_from": start_bound.get("display") if start_bound else "",
+            "date_to": end_bound.get("display") if end_bound else "",
+            "count": 0,
+            "messages": [],
+        }
 
     conditions: list[str] = []
     params: list[object] = []
@@ -1152,6 +1195,12 @@ def _search_messages(
             ) LIKE ?"""
         )
         params.append(f"%{search.lower()}%")
+    if start_bound:
+        conditions.append("m.message_timestamp >= ?")
+        params.append(start_bound["sql"])
+    if end_bound:
+        conditions.append("m.message_timestamp < ?")
+        params.append(end_bound["sql"])
 
     if normalized_view == "current":
         conditions.append("c.conversation_id = ?")
@@ -1235,6 +1284,8 @@ def _search_messages(
         "query": search,
         "view": normalized_view,
         "conversation_id": target_conversation_id if normalized_view == "current" else "",
+        "date_from": start_bound.get("display") if start_bound else "",
+        "date_to": end_bound.get("display") if end_bound else "",
         "count": len(messages),
         "messages": messages,
     }
@@ -1887,10 +1938,20 @@ def search_penguinconnect_messages(
     limit: int = Query(25, ge=1, le=100),
     view: str = "all",
     conversation_id: str = "",
+    date_from: str = "",
+    date_to: str = "",
 ):
     conn = get_connection()
     try:
-        return _search_messages(conn, query, limit=limit, view=view, conversation_id=conversation_id)
+        return _search_messages(
+            conn,
+            query,
+            limit=limit,
+            view=view,
+            conversation_id=conversation_id,
+            date_from=date_from,
+            date_to=date_to,
+        )
     finally:
         conn.close()
 

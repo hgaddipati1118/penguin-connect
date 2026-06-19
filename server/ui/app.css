@@ -247,8 +247,27 @@ h3 {
   margin: 0;
 }
 
+.message-date-range {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(120px, 1fr)) auto;
+  gap: 8px;
+}
+
+.message-date-field {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
 .message-filter span,
-.message-search span {
+.message-search span,
+.message-date-field span {
   color: var(--muted);
   font-size: 12px;
   white-space: nowrap;
@@ -297,7 +316,8 @@ input[type="search"] {
 
 input[type="text"],
 input[type="tel"],
-input[type="email"] {
+input[type="email"],
+input[type="date"] {
   width: 100%;
   min-height: 36px;
   border: 1px solid var(--line);
@@ -309,8 +329,16 @@ input[type="email"] {
 
 input[type="text"]:focus,
 input[type="tel"]:focus,
-input[type="email"]:focus {
+input[type="email"]:focus,
+input[type="date"]:focus {
   border-color: var(--accent);
+}
+
+.message-date-field input[type="date"] {
+  min-height: 34px;
+  border: 0;
+  background: transparent;
+  padding: 0;
 }
 
 .conversation-list {
@@ -1444,7 +1472,8 @@ textarea {
 textarea:focus,
 .search-box:focus-within,
 .message-filter:focus-within,
-.message-search:focus-within {
+.message-search:focus-within,
+.message-date-field:focus-within {
   border-color: var(--accent);
 }
 
@@ -1816,5 +1845,9 @@ textarea:focus,
 
   .message {
     max-width: 100%;
+  }
+
+  .message-date-range {
+    grid-template-columns: 1fr;
   }
 }

@@ -159,7 +159,7 @@ shortcuts, message-level reply targets and copy actions, thread filtering,
 needs-reply/unread/drafts/unlabeled/pinned/archived and label-based conversation views, bulk
 mark-read/mark-unread/pin-unpin/archive-restore/label add-remove/draft cleanup actions, latest-message previews in the conversation rail,
 global synced-message search with recent-message browsing, open/copy/reply actions and filters for current thread, unread, sent,
-files and audio, loaded-message filters for unread/sent/files/audio,
+files and audio plus date ranges, loaded-message filters for unread/sent/files/audio,
 starred/noted-message filtering, local message starring and private
 message notes, per-message read/unread toggles, opening synced attachment files, a per-thread media browser for loaded
 images/audio/files, inline previews for local image attachments, inline playback

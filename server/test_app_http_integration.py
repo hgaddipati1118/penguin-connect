@@ -559,6 +559,14 @@ class AppHttpIntegrationTests(unittest.TestCase):
             files_response = client.get("/penguin-connect/messages/search", params={"view": "files", "limit": 10})
             unread_response = client.get("/penguin-connect/messages/search", params={"view": "unread", "limit": 10})
             mine_response = client.get("/penguin-connect/messages/search", params={"view": "mine", "limit": 10})
+            date_response = client.get(
+                "/penguin-connect/messages/search",
+                params={"date_from": "2026-03-11", "date_to": "2026-03-11", "limit": 10},
+            )
+            invalid_date_response = client.get(
+                "/penguin-connect/messages/search",
+                params={"date_from": "not-a-date", "limit": 10},
+            )
             current_response = client.get(
                 "/penguin-connect/messages/search",
                 params={"view": "current", "conversation_id": "amc_test", "limit": 10},
@@ -594,6 +602,17 @@ class AppHttpIntegrationTests(unittest.TestCase):
 
         self.assertEqual(mine_response.status_code, 200)
         self.assertEqual([message["provider_message_id"] for message in mine_response.json()["messages"]], ["manual-sent"])
+
+        self.assertEqual(date_response.status_code, 200)
+        date_body = date_response.json()
+        self.assertEqual(date_body["date_from"], "2026-03-11")
+        self.assertEqual(date_body["date_to"], "2026-03-11")
+        date_ids = {message["provider_message_id"] for message in date_body["messages"]}
+        self.assertEqual(date_ids, {"imsg-audio", "imsg-file", "manual-sent"})
+        self.assertNotIn("imsg-latest", date_ids)
+
+        self.assertEqual(invalid_date_response.status_code, 400)
+        self.assertEqual(invalid_date_response.json()["detail"], "invalid_message_search_date")
 
         self.assertEqual(current_response.status_code, 200)
         current_body = current_response.json()
@@ -1099,6 +1118,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("contactSaveVisibleButton", html_response.text)
         self.assertIn("globalMessageSearch", html_response.text)
         self.assertIn("globalMessageSearchFilters", html_response.text)
+        self.assertIn("messageDateFrom", html_response.text)
+        self.assertIn("messageDateTo", html_response.text)
+        self.assertIn("clearMessageDatesButton", html_response.text)
         self.assertIn("messageViewFilters", html_response.text)
         self.assertIn("stageDraftButton", html_response.text)
         self.assertIn("draftRecipientChips", html_response.text)
@@ -1170,6 +1192,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn(".search-result-actions", css_response.text)
         self.assertIn(".message-search-filters", css_response.text)
         self.assertIn(".message-view-filters", css_response.text)
+        self.assertIn(".message-date-range", css_response.text)
+        self.assertIn(".message-date-field", css_response.text)
         self.assertIn(".toggle-row", css_response.text)
         self.assertIn(".unread-badge", css_response.text)
         self.assertIn(".label-badge", css_response.text)
@@ -1268,6 +1292,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("renderMessageSearchResults", js_response.text)
         self.assertIn("replyToMessageSearchResult", js_response.text)
         self.assertIn("renderMessageSearchFilters", js_response.text)
+        self.assertIn("date_from", js_response.text)
+        self.assertIn("date_to", js_response.text)
+        self.assertIn("Type 2+ chars or choose dates", js_response.text)
         self.assertIn("messageSearchViews", js_response.text)
         self.assertIn('{ key: "recent", label: "Recent" }', js_response.text)
         self.assertIn("renderMessageViewFilters", js_response.text)
