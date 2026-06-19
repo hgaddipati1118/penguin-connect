@@ -165,7 +165,7 @@ h3 {
 
 .bulk-actions {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) repeat(4, auto);
+  grid-template-columns: minmax(0, 1fr) repeat(5, auto);
   align-items: center;
   gap: 4px;
   margin: 0 18px 12px;
@@ -206,6 +206,7 @@ h3 {
   cursor: pointer;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 10px;
+  white-space: nowrap;
 }
 
 .bulk-actions button:hover {

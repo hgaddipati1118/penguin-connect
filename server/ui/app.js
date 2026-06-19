@@ -41,6 +41,7 @@ const el = {
   bulkState: document.querySelector("#bulkState"),
   selectVisibleButton: document.querySelector("#selectVisibleButton"),
   bulkMarkReadButton: document.querySelector("#bulkMarkReadButton"),
+  bulkPinButton: document.querySelector("#bulkPinButton"),
   bulkArchiveButton: document.querySelector("#bulkArchiveButton"),
   clearSelectionButton: document.querySelector("#clearSelectionButton"),
   bulkLabelsInput: document.querySelector("#bulkLabelsInput"),
@@ -629,6 +630,12 @@ function shouldBulkArchive(targets = selectedConversations()) {
   return !targets.every((conversation) => conversation.is_archived);
 }
 
+function shouldBulkPin(targets = selectedConversations()) {
+  if (state.conversationView === "pinned") return false;
+  if (!targets.length) return true;
+  return !targets.every((conversation) => conversation.is_pinned);
+}
+
 function pruneSelectedConversations() {
   const ids = new Set(state.conversations.map((conversation) => conversation.conversation_id));
   for (const selectedId of state.selectedConversationIds) {
@@ -642,10 +649,15 @@ function renderBulkActions(rows) {
   const allVisibleSelected = visibleCount > 0 && rows.every((conversation) => state.selectedConversationIds.has(conversation.conversation_id));
   const labelCount = cleanBulkLabels(el.bulkLabelsInput.value).length;
   const bulkFollowUpValue = el.bulkFollowUpAt.value.trim();
+  const pinIntent = shouldBulkPin();
   const archiveIntent = shouldBulkArchive();
   el.bulkState.textContent = state.bulkBusy ? "Updating selected" : (state.bulkMessage || `${selectedCount} selected`);
   el.selectVisibleButton.disabled = state.bulkBusy || !visibleCount || allVisibleSelected;
   el.bulkMarkReadButton.disabled = state.bulkBusy || selectedCount === 0;
+  el.bulkPinButton.textContent = pinIntent ? "Pin" : "Unpin";
+  el.bulkPinButton.title = pinIntent ? "Pin selected conversations" : "Unpin selected conversations";
+  el.bulkPinButton.setAttribute("aria-label", el.bulkPinButton.title);
+  el.bulkPinButton.disabled = state.bulkBusy || selectedCount === 0;
   el.bulkArchiveButton.textContent = archiveIntent ? "Archive" : "Restore";
   el.bulkArchiveButton.title = archiveIntent ? "Archive selected conversations" : "Restore selected conversations";
   el.bulkArchiveButton.setAttribute("aria-label", el.bulkArchiveButton.title);
@@ -2691,6 +2703,32 @@ async function bulkArchiveSelected() {
   }
 }
 
+async function bulkPinSelected() {
+  const targets = selectedConversationSnapshot();
+  if (!targets.length) return;
+  const pinIntent = shouldBulkPin(targets);
+  const actionLabel = pinIntent ? "Pin" : "Unpin";
+  if (!window.confirm(`${actionLabel} ${targets.length} selected conversation${targets.length === 1 ? "" : "s"}?`)) return;
+  state.bulkBusy = true;
+  state.bulkMessage = "";
+  renderConversations();
+  try {
+    for (const conversation of targets) {
+      await updateConversationManagement(conversation.conversation_id, { pinned: pinIntent });
+    }
+    state.selectedConversationIds.clear();
+    state.bulkMessage = pinIntent ? `Pinned ${targets.length}` : `Unpinned ${targets.length}`;
+  } catch (error) {
+    state.bulkMessage = error.message;
+  } finally {
+    state.bulkBusy = false;
+    renderConversations();
+    renderThreadControls();
+    renderManagementFields();
+    buildCodexPrompt();
+  }
+}
+
 async function bulkApplyLabels() {
   const targets = selectedConversationSnapshot();
   const labels = cleanBulkLabels(el.bulkLabelsInput.value);
@@ -3407,6 +3445,7 @@ el.bulkFollowUpAt.addEventListener("input", renderConversations);
 el.bulkSetFollowUpButton.addEventListener("click", bulkSetFollowUp);
 el.bulkClearFollowUpButton.addEventListener("click", bulkClearFollowUps);
 el.bulkMarkReadButton.addEventListener("click", bulkMarkSelectedRead);
+el.bulkPinButton.addEventListener("click", bulkPinSelected);
 el.bulkArchiveButton.addEventListener("click", bulkArchiveSelected);
 
 renderEmojiButtons();
