@@ -40,6 +40,16 @@ CREATE TABLE IF NOT EXISTS contacts (
 CREATE INDEX IF NOT EXISTS idx_contacts_phone ON contacts(phone_normalized);
 CREATE INDEX IF NOT EXISTS idx_contacts_email ON contacts(email);
 
+CREATE TABLE IF NOT EXISTS penguin_connect_contact_management (
+    contact_key TEXT PRIMARY KEY,
+    is_favorite INTEGER NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT '',
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_penguin_connect_contact_management_favorite
+ON penguin_connect_contact_management(is_favorite, updated_at);
+
 CREATE TABLE IF NOT EXISTS penguin_connect_accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     gmail_email TEXT NOT NULL UNIQUE,

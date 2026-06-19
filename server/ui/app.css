@@ -467,7 +467,7 @@ input[type="email"]:focus {
 
 .contact-source-filters {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
   margin: 0 0 8px;
 }
@@ -516,6 +516,11 @@ input[type="email"]:focus {
 .contact-item:hover,
 .contact-item:focus-within {
   border-color: var(--accent);
+}
+
+.contact-item.favorite-contact {
+  border-color: rgba(191, 128, 35, 0.42);
+  background-image: linear-gradient(90deg, rgba(191, 128, 35, 0.08), transparent 46%);
 }
 
 .contact-main {
@@ -583,6 +588,7 @@ input[type="email"]:focus {
 }
 
 .contact-add,
+.contact-favorite,
 .contact-create-result {
   display: inline-grid;
   min-width: 30px;
@@ -602,15 +608,27 @@ input[type="email"]:focus {
   font-size: 10px;
 }
 
+.contact-favorite {
+  font-size: 10px;
+}
+
 .contact-add:hover,
 .contact-add:focus-visible,
+.contact-favorite:hover,
+.contact-favorite:focus-visible,
 .contact-create-result:hover,
 .contact-create-result:focus-visible {
   border-color: var(--accent);
   color: var(--accent);
 }
 
+.contact-favorite.active {
+  border-color: rgba(191, 128, 35, 0.65);
+  color: #7a4d10;
+}
+
 .contact-add:disabled,
+.contact-favorite:disabled,
 .contact-create-result:disabled {
   cursor: not-allowed;
   opacity: 0.45;

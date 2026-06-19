@@ -630,20 +630,46 @@ class AppHttpIntegrationTests(unittest.TestCase):
 
     def test_contacts_endpoint_searches_cached_contacts(self):
         with TestClient(app_module.app) as client:
+            favorite_response = client.post(
+                "/penguin-connect/contacts/management",
+                json={"contact_key": "phone:15127436385", "favorite": True},
+            )
             response = client.get("/penguin-connect/contacts", params={"search": "taylor", "limit": 10})
             phone_response = client.get("/penguin-connect/contacts", params={"search": "+15127436385", "limit": 10})
+            favorites_response = client.get("/penguin-connect/contacts", params={"source": "favorites", "limit": 1})
+            unfavorite_response = client.post(
+                "/penguin-connect/contacts/management",
+                json={"contact_key": "phone:15127436385", "favorite": False},
+            )
+            empty_favorites_response = client.get("/penguin-connect/contacts", params={"source": "favorites", "limit": 10})
 
+        self.assertEqual(favorite_response.status_code, 200)
+        self.assertTrue(favorite_response.json()["is_favorite"])
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["count"], 1)
         self.assertEqual(body["total_contacts"], 2)
         self.assertEqual(body["contacts"][0]["display_name"], "Taylor Example")
+        self.assertEqual(body["contacts"][0]["contact_key"], "phone:15127436385")
+        self.assertTrue(body["contacts"][0]["is_favorite"])
         self.assertEqual(body["contacts"][0]["primary_handle"], "+1 (512) 743-6385")
         self.assertEqual(body["contacts"][0]["handle_type"], "phone")
         self.assertEqual(phone_response.status_code, 200)
         phone_body = phone_response.json()
         self.assertEqual(phone_body["count"], 1)
         self.assertEqual(phone_body["contacts"][0]["display_name"], "Taylor Example")
+        self.assertTrue(phone_body["contacts"][0]["is_favorite"])
+
+        self.assertEqual(favorites_response.status_code, 200)
+        favorites_body = favorites_response.json()
+        self.assertEqual(favorites_body["source"], "favorites")
+        self.assertEqual(favorites_body["count"], 1)
+        self.assertEqual(favorites_body["contacts"][0]["contact_key"], "phone:15127436385")
+
+        self.assertEqual(unfavorite_response.status_code, 200)
+        self.assertFalse(unfavorite_response.json()["is_favorite"])
+        self.assertEqual(empty_favorites_response.status_code, 200)
+        self.assertEqual(empty_favorites_response.json()["count"], 0)
 
     def test_contacts_endpoint_searches_unsaved_conversation_participants(self):
         conn = self._get_connection()
@@ -857,6 +883,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(css_response.status_code, 200)
         self.assertIn(".contact-list", css_response.text)
         self.assertIn(".contact-source-filters", css_response.text)
+        self.assertIn(".favorite-contact", css_response.text)
+        self.assertIn(".contact-favorite", css_response.text)
         self.assertIn(".contact-add", css_response.text)
         self.assertIn(".contact-actions", css_response.text)
         self.assertIn(".contact-related", css_response.text)
@@ -919,6 +947,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("fillContactFormFromContact", js_response.text)
         self.assertIn("renderContactSourceFilters", js_response.text)
         self.assertIn("renderContacts", js_response.text)
+        self.assertIn("toggleContactFavorite", js_response.text)
+        self.assertIn("contacts/management", js_response.text)
         self.assertIn("findConversationsForContact", js_response.text)
         self.assertIn("renderContactRelatedThreads", js_response.text)
         self.assertIn("openContactConversation", js_response.text)

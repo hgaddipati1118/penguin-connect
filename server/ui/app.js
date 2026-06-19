@@ -130,6 +130,7 @@ const messageViews = [
 
 const contactSources = [
   { key: "all", label: "All" },
+  { key: "favorites", label: "Favorites" },
   { key: "contacts", label: "Saved" },
   { key: "participants", label: "Unsaved" },
 ];
@@ -1263,6 +1264,47 @@ function contactSourceLabel() {
   return (contactSources.find((source) => source.key === state.contactSource) || contactSources[0]).label;
 }
 
+function isFavoriteContact(contact) {
+  return contact.is_favorite === true || contact.is_favorite === 1;
+}
+
+function mergeContactManagement(result) {
+  const contactKey = result.contact_key || "";
+  if (!contactKey) return;
+  state.contacts = state.contacts.map((contact) => (
+    contact.contact_key === contactKey
+      ? { ...contact, is_favorite: Boolean(result.is_favorite) }
+      : contact
+  ));
+  if (state.contactSource === "favorites" && !result.is_favorite) {
+    state.contacts = state.contacts.filter((contact) => contact.contact_key !== contactKey);
+  }
+}
+
+async function toggleContactFavorite(contact) {
+  const contactKey = contact.contact_key || "";
+  if (!contactKey) {
+    el.contactStatus.textContent = "No contact key";
+    return;
+  }
+  const nextFavorite = !isFavoriteContact(contact);
+  try {
+    const result = await api("/penguin-connect/contacts/management", {
+      method: "POST",
+      body: JSON.stringify({
+        contact_key: contactKey,
+        favorite: nextFavorite,
+      }),
+    });
+    mergeContactManagement(result);
+    el.contactStatus.textContent = result.is_favorite ? "Contact favorited" : "Contact unfavorited";
+    renderContacts();
+    buildCodexPrompt();
+  } catch (error) {
+    el.contactStatus.textContent = error.message;
+  }
+}
+
 function renderContactSourceFilters() {
   el.contactSourceFilters.replaceChildren();
   for (const source of contactSources) {
@@ -1282,7 +1324,9 @@ function renderContacts() {
   if (!state.contacts.length) {
     const empty = document.createElement("div");
     empty.className = "empty-state compact-state";
-    if (state.contactSource === "participants") {
+    if (state.contactSource === "favorites") {
+      empty.textContent = el.contactSearch.value.trim() ? "No favorite matches" : "No favorite contacts";
+    } else if (state.contactSource === "participants") {
       empty.textContent = el.contactSearch.value.trim() ? "No unsaved participants" : "No unsaved participants";
     } else {
       empty.textContent = el.contactSearch.value.trim() ? "No contacts" : "Search Contacts";
@@ -1293,7 +1337,8 @@ function renderContacts() {
 
   for (const contact of state.contacts) {
     const item = document.createElement("div");
-    item.className = "contact-item";
+    const favorite = isFavoriteContact(contact);
+    item.className = `contact-item ${favorite ? "favorite-contact" : ""}`;
     item.innerHTML = `
       <button class="contact-main" type="button">
         <span class="contact-name"></span>
@@ -1301,6 +1346,7 @@ function renderContacts() {
         <span class="contact-meta"></span>
       </button>
       <span class="contact-actions">
+        <button class="contact-favorite" type="button" title="Favorite contact" aria-label="Favorite contact">Star</button>
         <button class="contact-add" type="button" title="Add to new chat" aria-label="Add contact to new chat">+</button>
         <button class="contact-create-result" type="button" title="Create contact" aria-label="Create contact from search result">Create</button>
       </span>
@@ -1312,6 +1358,11 @@ function renderContacts() {
       ? contact.organization
       : contact.handle_type || "contact";
     item.querySelector(".contact-main").addEventListener("click", () => useContact(contact));
+    const favoriteButton = item.querySelector(".contact-favorite");
+    favoriteButton.textContent = favorite ? "Unstar" : "Star";
+    favoriteButton.classList.toggle("active", favorite);
+    favoriteButton.disabled = !contact.contact_key;
+    favoriteButton.addEventListener("click", () => toggleContactFavorite(contact));
     const addButton = item.querySelector(".contact-add");
     addButton.disabled = !contactRecipientHandle(contact);
     addButton.addEventListener("click", () => addContactToDraft(contact));
@@ -1797,8 +1848,9 @@ async function loadConversations() {
 async function loadContacts({ force = false } = {}) {
   const query = el.contactSearch.value.trim();
   const browsesUnsaved = state.contactSource === "participants";
+  const browsesFavorites = state.contactSource === "favorites";
   renderContactSourceFilters();
-  if (!force && query.length < 2 && !browsesUnsaved) {
+  if (!force && query.length < 2 && !browsesUnsaved && !browsesFavorites) {
     state.contacts = [];
     el.contactStatus.textContent = "Type 2+ chars to search contacts";
     renderContacts();
@@ -1806,7 +1858,9 @@ async function loadContacts({ force = false } = {}) {
     return;
   }
 
-  el.contactStatus.textContent = browsesUnsaved && !query ? "Loading unsaved participants" : "Searching";
+  el.contactStatus.textContent = browsesUnsaved && !query
+    ? "Loading unsaved participants"
+    : (browsesFavorites && !query ? "Loading favorite contacts" : "Searching");
   try {
     const params = new URLSearchParams({
       search: query,
@@ -1818,6 +1872,8 @@ async function loadContacts({ force = false } = {}) {
     const total = payload.total_contacts ?? 0;
     if (state.contactSource === "participants") {
       el.contactStatus.textContent = `${state.contacts.length} unsaved participant${state.contacts.length === 1 ? "" : "s"}`;
+    } else if (state.contactSource === "favorites") {
+      el.contactStatus.textContent = `${state.contacts.length} favorite contact${state.contacts.length === 1 ? "" : "s"}`;
     } else if (query) {
       const participantCount = payload.participant_count || 0;
       const suffix = participantCount ? ` · ${participantCount} unsaved` : "";
@@ -2508,7 +2564,7 @@ el.contactSourceFilters.addEventListener("click", (event) => {
   state.contactSource = contactSources.some((source) => source.key === button.dataset.contactSource)
     ? button.dataset.contactSource
     : "all";
-  loadContacts({ force: state.contactSource === "participants" || el.contactSearch.value.trim().length >= 2 });
+  loadContacts({ force: state.contactSource === "participants" || state.contactSource === "favorites" || el.contactSearch.value.trim().length >= 2 });
 });
 el.globalMessageSearch.addEventListener("input", scheduleMessageSearch);
 el.globalMessageSearchFilters.addEventListener("click", (event) => {
