@@ -127,6 +127,7 @@ const el = {
   bulkSetFollowUpButton: document.querySelector("#bulkSetFollowUpButton"),
   bulkClearFollowUpButton: document.querySelector("#bulkClearFollowUpButton"),
   bulkAddPeopleButton: document.querySelector("#bulkAddPeopleButton"),
+  bulkCopyPeopleButton: document.querySelector("#bulkCopyPeopleButton"),
   bulkSavePeopleButton: document.querySelector("#bulkSavePeopleButton"),
   bulkCreatePeopleButton: document.querySelector("#bulkCreatePeopleButton"),
   bulkClearDraftsButton: document.querySelector("#bulkClearDraftsButton"),
@@ -1288,6 +1289,8 @@ function renderBulkActions(rows) {
   el.bulkClearFollowUpButton.disabled = state.bulkBusy || selectedCount === 0;
   el.bulkAddPeopleButton.disabled = state.bulkBusy || selectedPeopleCount === 0;
   el.bulkAddPeopleButton.textContent = selectedPeopleCount ? `Add ${selectedPeopleCount} people` : "Add people";
+  el.bulkCopyPeopleButton.disabled = state.bulkBusy || selectedPeopleCount === 0;
+  el.bulkCopyPeopleButton.textContent = selectedPeopleCount ? `Copy ${selectedPeopleCount} people` : "Copy people";
   el.bulkSavePeopleButton.disabled = state.bulkBusy || selectedPeopleCount === 0;
   el.bulkSavePeopleButton.textContent = selectedPeopleCount ? `Save ${selectedPeopleCount} people` : "Save people";
   el.bulkCreatePeopleButton.disabled = state.bulkBusy || selectedCreatablePeopleCount === 0;
@@ -6932,6 +6935,24 @@ function addSelectedConversationPeopleToDraft() {
   renderConversations();
 }
 
+async function copySelectedConversationPeople() {
+  const targets = selectedConversationSnapshot();
+  const participants = selectedConversationParticipantHandles(targets);
+  if (!participants.length) {
+    state.bulkMessage = targets.length ? "No selected people" : "Select conversations";
+    renderConversations();
+    return;
+  }
+
+  try {
+    await copyText(participants.join("\n"));
+    state.bulkMessage = `Copied ${participants.length} selected ${participants.length === 1 ? "person" : "people"}`;
+  } catch (error) {
+    state.bulkMessage = error.message;
+  }
+  renderConversations();
+}
+
 async function createSelectedConversationPeopleContacts() {
   const targets = selectedConversationSnapshot();
   const allHandles = selectedConversationParticipantHandles(targets);
@@ -8179,6 +8200,7 @@ el.bulkFollowUpAt.addEventListener("input", renderConversations);
 el.bulkSetFollowUpButton.addEventListener("click", bulkSetFollowUp);
 el.bulkClearFollowUpButton.addEventListener("click", bulkClearFollowUps);
 el.bulkAddPeopleButton.addEventListener("click", addSelectedConversationPeopleToDraft);
+el.bulkCopyPeopleButton.addEventListener("click", copySelectedConversationPeople);
 el.bulkSavePeopleButton.addEventListener("click", saveSelectedConversationPeopleAsRecipientList);
 el.bulkCreatePeopleButton.addEventListener("click", createSelectedConversationPeopleContacts);
 el.bulkClearDraftsButton.addEventListener("click", bulkClearDrafts);
