@@ -81,6 +81,18 @@
             <input id="contactSearch" type="search" placeholder="Search names, phones, email" autocomplete="off" />
           </label>
           <div class="contact-source-filters" id="contactSourceFilters" aria-label="Contact source filters"></div>
+          <label class="contact-sort">
+            <span>Sort</span>
+            <select id="contactSort" aria-label="Sort contacts">
+              <option value="default">Default</option>
+              <option value="name">Name</option>
+              <option value="favorite">Favorites first</option>
+              <option value="noted">Notes first</option>
+              <option value="saved">Saved first</option>
+              <option value="unsaved">Unsaved first</option>
+              <option value="recent">Recently imported</option>
+            </select>
+          </label>
           <div class="contact-bulk-actions" id="contactBulkActions" aria-label="Visible contact actions">
             <button type="button" id="contactSelectVisibleButton">Select visible</button>
             <button type="button" id="contactAddVisibleButton">Add visible</button>

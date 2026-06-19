@@ -26,6 +26,7 @@ const state = {
   contacts: [],
   contactSourceCounts: {},
   contactSource: "all",
+  contactSort: "default",
   contactLimit: 20,
   contactLimitStep: 20,
   contactLimitMax: 100,
@@ -132,6 +133,7 @@ const el = {
   contactRefreshButton: document.querySelector("#contactRefreshButton"),
   contactSearch: document.querySelector("#contactSearch"),
   contactSourceFilters: document.querySelector("#contactSourceFilters"),
+  contactSort: document.querySelector("#contactSort"),
   contactSelectVisibleButton: document.querySelector("#contactSelectVisibleButton"),
   contactAddVisibleButton: document.querySelector("#contactAddVisibleButton"),
   contactCopyVisibleButton: document.querySelector("#contactCopyVisibleButton"),
@@ -350,6 +352,16 @@ const contactSources = [
   { key: "participants", label: "Unsaved" },
 ];
 
+const contactSortLabels = {
+  default: "Default",
+  name: "Name",
+  favorite: "Favorites first",
+  noted: "Notes first",
+  saved: "Saved first",
+  unsaved: "Unsaved first",
+  recent: "Recently imported",
+};
+
 const conversationViewLabels = {
   inbox: "Inbox",
   needsReply: "Needs reply",
@@ -474,6 +486,61 @@ function contactHandleText(contact) {
 
 function contactRecipientHandle(contact) {
   return contact.primary_handle || contact.phone || contact.email || contact.phone_normalized || "";
+}
+
+function contactNameSortValue(contact) {
+  return contactDisplayName(contact).toLowerCase();
+}
+
+function contactHandleSortValue(contact) {
+  return String(contactRecipientHandle(contact) || contactHandleText(contact) || "").toLowerCase();
+}
+
+function contactImportedSortValue(contact) {
+  const value = Date.parse(contact.imported_at || "");
+  return Number.isNaN(value) ? 0 : value;
+}
+
+function compareContactName(a, b) {
+  return contactNameSortValue(a).localeCompare(contactNameSortValue(b))
+    || contactHandleSortValue(a).localeCompare(contactHandleSortValue(b));
+}
+
+function compareContactFavorite(a, b) {
+  return Number(isFavoriteContact(b)) - Number(isFavoriteContact(a)) || compareContactName(a, b);
+}
+
+function compareContactNoted(a, b) {
+  return Number(Boolean(contactNoteText(b))) - Number(Boolean(contactNoteText(a))) || compareContactName(a, b);
+}
+
+function compareContactSaved(a, b) {
+  return Number(Boolean(b.is_saved)) - Number(Boolean(a.is_saved)) || compareContactName(a, b);
+}
+
+function compareContactUnsaved(a, b) {
+  return Number(!b.is_saved) - Number(!a.is_saved) || compareContactName(a, b);
+}
+
+function compareContactRecent(a, b) {
+  return contactImportedSortValue(b) - contactImportedSortValue(a) || compareContactName(a, b);
+}
+
+function compareContacts(a, b) {
+  if (state.contactSort === "name") return compareContactName(a, b);
+  if (state.contactSort === "favorite") return compareContactFavorite(a, b);
+  if (state.contactSort === "noted") return compareContactNoted(a, b);
+  if (state.contactSort === "saved") return compareContactSaved(a, b);
+  if (state.contactSort === "unsaved") return compareContactUnsaved(a, b);
+  if (state.contactSort === "recent") return compareContactRecent(a, b);
+  return 0;
+}
+
+function visibleContacts() {
+  return state.contacts
+    .map((contact, index) => ({ contact, index }))
+    .sort((a, b) => compareContacts(a.contact, b.contact) || a.index - b.index)
+    .map((item) => item.contact);
 }
 
 function contactNeedles(contact) {
@@ -2616,7 +2683,7 @@ function addDraftRecipientFromSuggestion(contact) {
 }
 
 function visibleContactRecipientHandles() {
-  return uniqueRecipientValues(state.contacts.map(contactRecipientHandle));
+  return uniqueRecipientValues(visibleContacts().map(contactRecipientHandle));
 }
 
 function contactSelectionKey(contact) {
@@ -2676,7 +2743,7 @@ function clearActiveContact() {
 }
 
 function visibleContactSelectionKeys() {
-  return new Set(state.contacts.map(contactSelectionKey).filter(Boolean));
+  return new Set(visibleContacts().map(contactSelectionKey).filter(Boolean));
 }
 
 function isContactSelected(contact) {
@@ -2703,7 +2770,7 @@ function contactBulkRecipientHandles() {
 
 function contactBulkCreatableContacts() {
   const selected = selectedContacts();
-  const contacts = selected.length ? selected : state.contacts;
+  const contacts = selected.length ? selected : visibleContacts();
   return contacts.filter((contact) => contact.is_saved === false && contactRecipientHandle(contact));
 }
 
@@ -4797,6 +4864,10 @@ function renderContactSourceFilters() {
     button.setAttribute("aria-pressed", active ? "true" : "false");
     el.contactSourceFilters.append(button);
   }
+  const knownSort = Object.prototype.hasOwnProperty.call(contactSortLabels, state.contactSort);
+  if (!knownSort) state.contactSort = "default";
+  el.contactSort.value = state.contactSort;
+  el.contactSort.title = `Sort contacts by ${contactSortLabels[state.contactSort]}`;
 }
 
 function renderContactMoreControls() {
@@ -4816,10 +4887,11 @@ function renderContactMoreControls() {
 
 function renderContacts() {
   el.contactList.replaceChildren();
+  const contacts = visibleContacts();
   renderContactBulkActions();
   renderContactMoreControls();
   renderContactInspector();
-  if (!state.contacts.length) {
+  if (!contacts.length) {
     const empty = document.createElement("div");
     empty.className = "empty-state compact-state";
     if (state.contactSource === "favorites") {
@@ -4837,7 +4909,7 @@ function renderContacts() {
     return;
   }
 
-  for (const contact of state.contacts) {
+  for (const contact of contacts) {
     const item = document.createElement("div");
     const favorite = isFavoriteContact(contact);
     const noteText = contactNoteText(contact);
@@ -7526,6 +7598,11 @@ el.contactSourceFilters.addEventListener("click", (event) => {
       || state.contactSource === "contacts"
       || el.contactSearch.value.trim().length >= 2,
   });
+});
+el.contactSort.addEventListener("change", () => {
+  state.contactSort = contactSortLabels[el.contactSort.value] ? el.contactSort.value : "default";
+  renderContactSourceFilters();
+  renderContacts();
 });
 el.loadMoreContactsButton.addEventListener("click", loadMoreContacts);
 el.globalMessageSearch.addEventListener("input", scheduleMessageSearch);
