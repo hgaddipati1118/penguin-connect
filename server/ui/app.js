@@ -112,6 +112,7 @@ const el = {
   bulkClearFollowUpButton: document.querySelector("#bulkClearFollowUpButton"),
   bulkAddPeopleButton: document.querySelector("#bulkAddPeopleButton"),
   bulkSavePeopleButton: document.querySelector("#bulkSavePeopleButton"),
+  bulkCreatePeopleButton: document.querySelector("#bulkCreatePeopleButton"),
   bulkClearDraftsButton: document.querySelector("#bulkClearDraftsButton"),
   conversationList: document.querySelector("#conversationList"),
   contactRefreshButton: document.querySelector("#contactRefreshButton"),
@@ -931,6 +932,7 @@ function renderBulkActions(rows) {
   const bulkFollowUpValue = el.bulkFollowUpAt.value.trim();
   const selectedDraftCount = selectedRows.filter(conversationHasDraft).length;
   const selectedPeopleCount = selectedConversationParticipantHandles(selectedRows).length;
+  const selectedCreatablePeopleCount = selectedConversationCreatablePeople(selectedRows).length;
   const markUnreadIntent = shouldBulkMarkUnread(selectedRows);
   const pinIntent = shouldBulkPin();
   const muteIntent = shouldBulkMute();
@@ -961,6 +963,8 @@ function renderBulkActions(rows) {
   el.bulkAddPeopleButton.textContent = selectedPeopleCount ? `Add ${selectedPeopleCount} people` : "Add people";
   el.bulkSavePeopleButton.disabled = state.bulkBusy || selectedPeopleCount === 0;
   el.bulkSavePeopleButton.textContent = selectedPeopleCount ? `Save ${selectedPeopleCount} people` : "Save people";
+  el.bulkCreatePeopleButton.disabled = state.bulkBusy || selectedCreatablePeopleCount === 0;
+  el.bulkCreatePeopleButton.textContent = selectedCreatablePeopleCount ? `Create ${selectedCreatablePeopleCount}` : "Create people";
   el.bulkClearDraftsButton.disabled = state.bulkBusy || selectedDraftCount === 0;
   el.bulkClearDraftsButton.title = selectedDraftCount
     ? `Clear ${selectedDraftCount} selected reply draft${selectedDraftCount === 1 ? "" : "s"}`
@@ -6216,6 +6220,29 @@ function selectedConversationParticipantHandles(targets = selectedConversationSn
   );
 }
 
+function selectedConversationPeopleContactCandidates(targets = selectedConversationSnapshot()) {
+  return [
+    ...state.draftRecipientContactCache,
+    ...state.contacts,
+    ...Object.values(state.threadContactMatches || {}),
+    ...(state.selected?.contact_context || []),
+    ...targets.flatMap((conversation) => Array.isArray(conversation.contact_context) ? conversation.contact_context : []),
+  ].filter((contact) => contact && typeof contact === "object");
+}
+
+function selectedConversationCreatablePeople(targets = selectedConversationSnapshot()) {
+  const candidates = selectedConversationPeopleContactCandidates(targets);
+  return selectedConversationParticipantHandles(targets)
+    .filter((handle) => {
+      const saved = bestContactForHandle(handle, candidates);
+      return !(saved && saved.is_saved !== false);
+    })
+    .map((handle) => ({
+      handle,
+      contact: messageContactFromHandle(handle, handle),
+    }));
+}
+
 function selectedConversationPeopleListName(targets = selectedConversationSnapshot()) {
   if (targets.length === 1) return `${conversationDisplayName(targets[0])} people`;
   const query = el.conversationSearch.value.trim();
@@ -6241,6 +6268,75 @@ function addSelectedConversationPeopleToDraft() {
     : "Selected people already added";
   el.draftState.textContent = state.bulkMessage;
   renderConversations();
+}
+
+async function createSelectedConversationPeopleContacts() {
+  const targets = selectedConversationSnapshot();
+  const allHandles = selectedConversationParticipantHandles(targets);
+  const items = selectedConversationCreatablePeople(targets);
+  if (!allHandles.length) {
+    state.bulkMessage = targets.length ? "No selected people" : "Select conversations";
+    renderConversations();
+    return;
+  }
+  if (!items.length) {
+    state.bulkMessage = "Selected people contacts already saved";
+    renderConversations();
+    return;
+  }
+
+  state.bulkBusy = true;
+  state.bulkMessage = `Creating ${items.length} selected contact${items.length === 1 ? "" : "s"}`;
+  renderConversations();
+  let created = 0;
+  let skipped = 0;
+  const failures = [];
+  for (const item of items) {
+    try {
+      const existing = await lookupContactForMessageHandle(item.handle);
+      if (existing && existing.is_saved !== false) {
+        skipped += 1;
+        continue;
+      }
+      await api("/penguin-connect/contacts", {
+        method: "POST",
+        body: JSON.stringify(contactCreatePayload(existing || item.contact)),
+      });
+      cacheDraftRecipientContact({
+        ...draftCreatedContactFromHandle(item.handle),
+        display_name: item.contact.display_name,
+      });
+      created += 1;
+      state.bulkMessage = `Created ${created}/${items.length}`;
+      renderConversations();
+    } catch (error) {
+      failures.push(error.message);
+    }
+  }
+
+  try {
+    if (created) {
+      await api("/penguin-connect/contacts/refresh", { method: "POST", body: "{}" });
+    }
+    await loadContacts({ force: true });
+    await loadThreadContactMatches();
+    refreshDraftRecipientChips();
+  } catch (error) {
+    failures.push(error.message);
+  } finally {
+    state.bulkBusy = false;
+    if (failures.length) {
+      state.bulkMessage = `Created ${created}; ${failures.length} failed`;
+    } else if (created) {
+      state.bulkMessage = `Created ${created} selected contact${created === 1 ? "" : "s"}`;
+    } else {
+      state.bulkMessage = skipped
+        ? "Selected people contacts already saved"
+        : "No selected contacts created";
+    }
+    renderConversations();
+    renderContacts();
+  }
 }
 
 async function saveSelectedConversationPeopleAsRecipientList() {
@@ -7406,6 +7502,7 @@ el.bulkSetFollowUpButton.addEventListener("click", bulkSetFollowUp);
 el.bulkClearFollowUpButton.addEventListener("click", bulkClearFollowUps);
 el.bulkAddPeopleButton.addEventListener("click", addSelectedConversationPeopleToDraft);
 el.bulkSavePeopleButton.addEventListener("click", saveSelectedConversationPeopleAsRecipientList);
+el.bulkCreatePeopleButton.addEventListener("click", createSelectedConversationPeopleContacts);
 el.bulkClearDraftsButton.addEventListener("click", bulkClearDrafts);
 el.bulkMarkReadButton.addEventListener("click", bulkMarkSelectedRead);
 el.bulkPinButton.addEventListener("click", bulkPinSelected);
