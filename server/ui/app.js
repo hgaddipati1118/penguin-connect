@@ -29,6 +29,8 @@ const state = {
   draftRecipientSuggestionQuery: "",
   draftRecipientSuggestions: [],
   draftRecipientContactCache: [],
+  activeContactKey: "",
+  activeContact: null,
   contactNoteEditorKey: "",
   selectedContactKeys: new Set(),
   recipientLists: [],
@@ -104,6 +106,7 @@ const el = {
   contactCreateVisibleButton: document.querySelector("#contactCreateVisibleButton"),
   contactClearSelectedButton: document.querySelector("#contactClearSelectedButton"),
   contactStatus: document.querySelector("#contactStatus"),
+  contactInspector: document.querySelector("#contactInspector"),
   contactMoreBar: document.querySelector("#contactMoreBar"),
   contactCount: document.querySelector("#contactCount"),
   loadMoreContactsButton: document.querySelector("#loadMoreContactsButton"),
@@ -1960,6 +1963,38 @@ function contactSelectionKey(contact) {
   return compareKey ? `handle:${compareKey}` : "";
 }
 
+function contactDetailKey(contact) {
+  return contactSelectionKey(contact)
+    || recipientCompareKey(contactRecipientHandle(contact))
+    || recipientCompareKey(contactDisplayName(contact));
+}
+
+function isActiveContact(contact) {
+  const key = contactDetailKey(contact);
+  return Boolean(key && key === state.activeContactKey);
+}
+
+function activeContact() {
+  if (!state.activeContactKey) return null;
+  return state.contacts.find(isActiveContact) || state.activeContact || null;
+}
+
+function setActiveContact(contact, { rerenderList = true } = {}) {
+  const key = contactDetailKey(contact);
+  if (!key) return;
+  state.activeContactKey = key;
+  state.activeContact = contact;
+  renderContactInspector();
+  if (rerenderList) renderContacts();
+}
+
+function clearActiveContact() {
+  state.activeContactKey = "";
+  state.activeContact = null;
+  renderContactInspector();
+  renderContacts();
+}
+
 function visibleContactSelectionKeys() {
   return new Set(state.contacts.map(contactSelectionKey).filter(Boolean));
 }
@@ -2735,6 +2770,78 @@ function renderContactRelatedThreads(container, contact) {
   }
 }
 
+function renderContactInspector() {
+  const contact = activeContact();
+  el.contactInspector.replaceChildren();
+  el.contactInspector.hidden = !contact;
+  if (!contact) return;
+  state.activeContact = contact;
+
+  const favorite = isFavoriteContact(contact);
+  const noteText = contactNoteText(contact);
+  const handle = contactRecipientHandle(contact);
+  el.contactInspector.innerHTML = `
+    <div class="contact-inspector-head">
+      <div class="contact-inspector-main">
+        <span class="contact-inspector-name"></span>
+        <span class="contact-inspector-handle"></span>
+        <span class="contact-inspector-meta"></span>
+      </div>
+      <button class="contact-inspector-close" type="button" title="Clear contact detail" aria-label="Clear contact detail">x</button>
+    </div>
+    <div class="contact-inspector-actions">
+      <button type="button" data-action="add">Add</button>
+      <button type="button" data-action="copy">Copy</button>
+      <button type="button" data-action="find">Find</button>
+      <button type="button" data-action="messages">Msg</button>
+      <button type="button" data-action="favorite"></button>
+      <button type="button" data-action="note">Note</button>
+      <button type="button" data-action="create">Create</button>
+    </div>
+    <div class="contact-inspector-note" hidden></div>
+    <div class="contact-inspector-related"></div>
+  `;
+  el.contactInspector.querySelector(".contact-inspector-name").textContent = contactDisplayName(contact);
+  el.contactInspector.querySelector(".contact-inspector-handle").textContent = contactHandleText(contact);
+  el.contactInspector.querySelector(".contact-inspector-meta").textContent = [
+    contact.organization && contact.organization !== contactDisplayName(contact) ? contact.organization : "",
+    contact.is_saved === false ? "unsaved participant" : contact.handle_type || "contact",
+    favorite ? "favorite" : "",
+  ].filter(Boolean).join(" · ");
+
+  const note = el.contactInspector.querySelector(".contact-inspector-note");
+  note.hidden = !noteText;
+  note.textContent = noteText;
+
+  const addButton = el.contactInspector.querySelector('[data-action="add"]');
+  addButton.disabled = !handle;
+  addButton.addEventListener("click", () => addContactToDraft(contact));
+  const copyButton = el.contactInspector.querySelector('[data-action="copy"]');
+  copyButton.disabled = !handle;
+  copyButton.addEventListener("click", () => copyContactHandle(contact));
+  const findButton = el.contactInspector.querySelector('[data-action="find"]');
+  findButton.disabled = !(handle || contactDisplayName(contact));
+  findButton.addEventListener("click", () => searchMessagesForContact(contact));
+  const messagesButton = el.contactInspector.querySelector('[data-action="messages"]');
+  messagesButton.disabled = !handle;
+  messagesButton.addEventListener("click", () => openContactInMessages(contact));
+  const favoriteButton = el.contactInspector.querySelector('[data-action="favorite"]');
+  favoriteButton.textContent = favorite ? "Unstar" : "Star";
+  favoriteButton.classList.toggle("active", favorite);
+  favoriteButton.disabled = !contactFavoriteManagementKey(contact);
+  favoriteButton.addEventListener("click", () => toggleContactFavorite(contact));
+  const noteButton = el.contactInspector.querySelector('[data-action="note"]');
+  noteButton.textContent = noteText ? "Edit note" : "Note";
+  noteButton.disabled = !contactNoteManagementKey(contact);
+  noteButton.addEventListener("click", () => editContactNote(contact));
+  const createButton = el.contactInspector.querySelector('[data-action="create"]');
+  createButton.hidden = contact.is_saved !== false;
+  createButton.disabled = !handle;
+  createButton.addEventListener("click", () => fillContactFormFromContact(contact));
+  el.contactInspector.querySelector(".contact-inspector-close").addEventListener("click", clearActiveContact);
+  renderContactRelatedThreads(el.contactInspector.querySelector(".contact-inspector-related"), contact);
+}
+
 function renderThreadPeople() {
   el.threadPeople.replaceChildren();
   const participants = conversationParticipants();
@@ -2942,6 +3049,19 @@ function mergeContactManagement(result, { updatedFavorite = true, updatedNote = 
         : contact.note_contact_key || "",
     };
   }
+  if (state.activeContact && contactManagementKeyMatches(state.activeContact, contactKey)) {
+    state.activeContact = {
+      ...state.activeContact,
+      is_favorite: updatedFavorite ? Boolean(result.is_favorite) : state.activeContact.is_favorite,
+      favorite_contact_key: updatedFavorite
+        ? (result.is_favorite ? contactKey : "")
+        : state.activeContact.favorite_contact_key || "",
+      contact_note: updatedNote ? result.contact_note || "" : state.activeContact.contact_note || "",
+      note_contact_key: updatedNote
+        ? (String(result.contact_note || "").trim() ? contactKey : "")
+        : state.activeContact.note_contact_key || "",
+    };
+  }
 }
 
 async function refreshContactPanelAfterExternalManagement() {
@@ -2969,6 +3089,7 @@ async function toggleContactFavorite(contact) {
     });
     mergeContactManagement(result, { updatedNote: false });
     el.contactStatus.textContent = result.is_favorite ? "Contact favorited" : "Contact unfavorited";
+    renderContactInspector();
     renderContacts();
     buildCodexPrompt();
   } catch (error) {
@@ -3054,6 +3175,7 @@ async function saveContactNote(contact, noteValue) {
     mergeContactManagement(result, { updatedFavorite: false });
     state.contactNoteEditorKey = "";
     el.contactStatus.textContent = result.has_note ? "Contact note saved" : "Contact note cleared";
+    renderContactInspector();
     renderContacts();
     buildCodexPrompt();
   } catch (error) {
@@ -3098,6 +3220,7 @@ function renderContacts() {
   el.contactList.replaceChildren();
   renderContactBulkActions();
   renderContactMoreControls();
+  renderContactInspector();
   if (!state.contacts.length) {
     const empty = document.createElement("div");
     empty.className = "empty-state compact-state";
@@ -3122,7 +3245,8 @@ function renderContacts() {
     const noteText = contactNoteText(contact);
     const editingNote = state.contactNoteEditorKey === contactNoteManagementKey(contact);
     const selected = isContactSelected(contact);
-    item.className = `contact-item ${favorite ? "favorite-contact" : ""} ${noteText ? "noted-contact" : ""} ${selected ? "selected-contact" : ""}`;
+    const active = isActiveContact(contact);
+    item.className = `contact-item ${favorite ? "favorite-contact" : ""} ${noteText ? "noted-contact" : ""} ${selected ? "selected-contact" : ""} ${active ? "active-contact" : ""}`;
     item.innerHTML = `
       <button class="contact-select-toggle" type="button" title="Select contact" aria-label="Select contact"></button>
       <button class="contact-main" type="button">
@@ -3136,6 +3260,7 @@ function renderContacts() {
         <button class="contact-copy" type="button" title="Copy contact handle" aria-label="Copy contact handle">Copy</button>
         <button class="contact-search-messages" type="button" title="Search local Messages" aria-label="Search local Messages for contact">Find</button>
         <button class="contact-message" type="button" title="Open in Messages" aria-label="Open contact in Messages">Msg</button>
+        <button class="contact-details" type="button" title="Show contact detail" aria-label="Show contact detail">Info</button>
         <button class="contact-add" type="button" title="Add to new chat" aria-label="Add contact to new chat">+</button>
         <button class="contact-create-result" type="button" title="Create contact" aria-label="Create contact from search result">Create</button>
       </span>
@@ -3161,7 +3286,10 @@ function renderContacts() {
     selectButton.disabled = !contactSelectionKey(contact) || !contactRecipientHandle(contact);
     selectButton.setAttribute("aria-pressed", selected ? "true" : "false");
     selectButton.addEventListener("click", () => toggleContactSelection(contact));
-    item.querySelector(".contact-main").addEventListener("click", () => useContact(contact));
+    item.querySelector(".contact-main").addEventListener("click", () => {
+      setActiveContact(contact, { rerenderList: false });
+      useContact(contact);
+    });
     const favoriteButton = item.querySelector(".contact-favorite");
     favoriteButton.textContent = favorite ? "Unstar" : "Star";
     favoriteButton.classList.toggle("active", favorite);
@@ -3184,6 +3312,9 @@ function renderContacts() {
     const messageButton = item.querySelector(".contact-message");
     messageButton.disabled = !contactRecipientHandle(contact);
     messageButton.addEventListener("click", () => openContactInMessages(contact));
+    const detailsButton = item.querySelector(".contact-details");
+    detailsButton.classList.toggle("active", active);
+    detailsButton.addEventListener("click", () => setActiveContact(contact));
     const createButton = item.querySelector(".contact-create-result");
     createButton.hidden = contact.is_saved !== false;
     createButton.disabled = !contactRecipientHandle(contact);
