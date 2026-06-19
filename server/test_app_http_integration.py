@@ -352,7 +352,15 @@ class AppHttpIntegrationTests(unittest.TestCase):
                 "/penguin-connect/conversations/amc_test/messages/management",
                 json={"provider_message_id": "imsg-latest", "note": "Ask about timing"},
             )
+            mark_unread_response = client.post(
+                "/penguin-connect/conversations/amc_test/messages/management",
+                json={"provider_message_id": "imsg-latest", "unread": True},
+            )
             messages_response = client.get("/penguin-connect/conversations/amc_test/messages", params={"limit": 1})
+            mark_read_response = client.post(
+                "/penguin-connect/conversations/amc_test/messages/management",
+                json={"provider_message_id": "imsg-latest", "unread": False},
+            )
             unstar_response = client.post(
                 "/penguin-connect/conversations/amc_test/messages/management",
                 json={"provider_message_id": "imsg-latest", "starred": False},
@@ -371,11 +379,26 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(note_body["message_note"], "Ask about timing")
         self.assertTrue(note_body["has_note"])
 
+        self.assertEqual(mark_unread_response.status_code, 200)
+        unread_body = mark_unread_response.json()
+        self.assertFalse(unread_body["is_read"])
+        self.assertEqual(unread_body["unread_count"], 1)
+        self.assertTrue(unread_body["has_unread"])
+        self.assertTrue(unread_body["is_starred"])
+        self.assertEqual(unread_body["message_note"], "Ask about timing")
+
         self.assertEqual(messages_response.status_code, 200)
         message = messages_response.json()["messages"][0]
         self.assertEqual(message["provider_message_id"], "imsg-latest")
         self.assertTrue(message["is_starred"])
         self.assertEqual(message["message_note"], "Ask about timing")
+        self.assertFalse(message["is_read"])
+
+        self.assertEqual(mark_read_response.status_code, 200)
+        read_body = mark_read_response.json()
+        self.assertTrue(read_body["is_read"])
+        self.assertEqual(read_body["unread_count"], 0)
+        self.assertFalse(read_body["has_unread"])
 
         self.assertEqual(unstar_response.status_code, 200)
         unstar_body = unstar_response.json()
@@ -1278,6 +1301,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("conversationPreviewText", js_response.text)
         self.assertIn("setReplyContext", js_response.text)
         self.assertIn("toggleMessageStar", js_response.text)
+        self.assertIn("toggleMessageRead", js_response.text)
+        self.assertIn("Message marked unread", js_response.text)
         self.assertIn("isStarredMessage", js_response.text)
         self.assertIn("saveMessageNote", js_response.text)
         self.assertIn("hasMessageNote", js_response.text)

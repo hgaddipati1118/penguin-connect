@@ -160,7 +160,7 @@ mark-read/mark-unread/pin-unpin/archive-restore/label add-remove/draft cleanup a
 global synced-message search with recent-message browsing, open/copy/reply actions and filters for current thread, unread, sent,
 files and audio, loaded-message filters for unread/sent/files/audio,
 starred/noted-message filtering, local message starring and private
-message notes, opening synced attachment files, a per-thread media browser for loaded
+message notes, per-message read/unread toggles, opening synced attachment files, a per-thread media browser for loaded
 images/audio/files, inline previews for local image attachments, inline playback
 for local audio attachments, cached Contacts search/refresh with saved/unsaved/favorite/noted
 source filters with counts, all/saved/unsaved contact browsing, conversation-participant fallback and related-thread shortcuts,

@@ -125,6 +125,7 @@ class PenguinConnectMessageManagementRequest(BaseModel):
     provider_message_id: str = ""
     starred: bool | None = None
     note: str | None = None
+    unread: bool | None = None
 
 def _map_sqlite_error(exc: sqlite3.OperationalError) -> HTTPException:
     msg = str(exc).lower()
@@ -1524,13 +1525,14 @@ def _set_message_management(
     starred: bool | None,
     note: str | None = None,
     update_note: bool = False,
+    unread: bool | None = None,
 ) -> dict:
     clean_provider_id = str(provider_message_id or "").strip()[:500]
     if not clean_provider_id:
         raise HTTPException(status_code=400, detail="message_id_required")
 
     row = conn.execute(
-        """SELECT provider_message_id
+        """SELECT provider_message_id, is_read
            FROM penguin_connect_messages
            WHERE conversation_id = ? AND provider_message_id = ?
            LIMIT 1""",
@@ -1563,6 +1565,21 @@ def _set_message_management(
              updated_at = datetime('now')""",
         (conversation_id, clean_provider_id, 1 if next_starred else 0, next_note),
     )
+    next_is_read = bool(row["is_read"])
+    if unread is not None:
+        next_is_read = not bool(unread)
+        conn.execute(
+            """UPDATE penguin_connect_messages
+               SET is_read = ?
+               WHERE conversation_id = ? AND provider_message_id = ?""",
+            (1 if next_is_read else 0, conversation_id, clean_provider_id),
+        )
+    unread_count = conn.execute(
+        """SELECT COUNT(*)
+           FROM penguin_connect_messages
+           WHERE conversation_id = ? AND COALESCE(is_read, 0) = 0""",
+        (conversation_id,),
+    ).fetchone()[0]
     return {
         "success": True,
         "conversation_id": conversation_id,
@@ -1570,6 +1587,9 @@ def _set_message_management(
         "is_starred": bool(next_starred),
         "message_note": next_note,
         "has_note": bool(next_note),
+        "is_read": bool(next_is_read),
+        "unread_count": int(unread_count or 0),
+        "has_unread": int(unread_count or 0) > 0,
     }
 
 
@@ -2094,6 +2114,7 @@ def set_penguinconnect_message_management(
             starred=req.starred if "starred" in field_set else None,
             note=req.note,
             update_note="note" in field_set,
+            unread=req.unread if "unread" in field_set else None,
         )
         log_action(
             "api_set_message_management",
@@ -2102,6 +2123,7 @@ def set_penguinconnect_message_management(
             is_starred=bool(result.get("is_starred")),
             has_note=bool(result.get("has_note")),
             note_length=len(result.get("message_note") or ""),
+            unread_count=result.get("unread_count"),
         )
         conn.commit()
         return result

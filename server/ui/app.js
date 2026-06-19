@@ -895,15 +895,24 @@ function setReplyContext(message) {
 function mergeMessageManagement(result) {
   const providerMessageId = result.provider_message_id || "";
   if (!providerMessageId) return;
+  const hasReadState = typeof result.is_read === "boolean";
   state.messages = state.messages.map((item) => (
     item.provider_message_id === providerMessageId
       ? {
         ...item,
         is_starred: Boolean(result.is_starred),
         message_note: result.message_note || "",
+        is_read: hasReadState ? Boolean(result.is_read) : item.is_read,
       }
       : item
   ));
+  const unreadCount = Number(result.unread_count);
+  if (state.selected && Number.isFinite(unreadCount)) {
+    updateConversationFields(state.selected.conversation_id, {
+      unread_count: unreadCount,
+      has_unread: Boolean(result.has_unread),
+    });
+  }
 }
 
 async function toggleMessageStar(message) {
@@ -919,6 +928,29 @@ async function toggleMessageStar(message) {
     });
     mergeMessageManagement(result);
     el.sendState.textContent = result.is_starred ? "Message starred" : "Message unstarred";
+    renderMessages();
+    buildCodexPrompt();
+  } catch (error) {
+    el.sendState.textContent = error.message;
+  }
+}
+
+async function toggleMessageRead(message) {
+  if (!state.selected || !message.provider_message_id) return;
+  const nextUnread = !isUnreadMessage(message);
+  try {
+    const result = await api(`/penguin-connect/conversations/${encodeURIComponent(state.selected.conversation_id)}/messages/management`, {
+      method: "POST",
+      body: JSON.stringify({
+        provider_message_id: message.provider_message_id,
+        unread: nextUnread,
+      }),
+    });
+    mergeMessageManagement(result);
+    el.sendState.textContent = nextUnread ? "Message marked unread" : "Message marked read";
+    renderConversations();
+    renderThreadHeader();
+    renderThreadControls();
     renderMessages();
     buildCodexPrompt();
   } catch (error) {
@@ -2305,6 +2337,7 @@ function renderMessages() {
       <div class="message-attachments"></div>
       <div class="message-actions">
         <button type="button" data-action="star">Star</button>
+        <button type="button" data-action="read-state">Mark unread</button>
         <button type="button" data-action="note">Note</button>
         <button type="button" data-action="reply">Reply</button>
         <button type="button" data-action="copy">Copy</button>
@@ -2347,6 +2380,11 @@ function renderMessages() {
     starButton.classList.toggle("active", starred);
     starButton.disabled = !message.provider_message_id;
     starButton.addEventListener("click", () => toggleMessageStar(message));
+    const readButton = item.querySelector('[data-action="read-state"]');
+    readButton.textContent = unread ? "Mark read" : "Mark unread";
+    readButton.classList.toggle("active", unread);
+    readButton.disabled = !message.provider_message_id;
+    readButton.addEventListener("click", () => toggleMessageRead(message));
     const noteButton = item.querySelector('[data-action="note"]');
     noteButton.textContent = noted ? "Edit note" : "Note";
     noteButton.classList.toggle("active", noted || Boolean(editingNote));
