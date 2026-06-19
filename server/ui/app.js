@@ -636,6 +636,16 @@ function shouldBulkPin(targets = selectedConversations()) {
   return !targets.every((conversation) => conversation.is_pinned);
 }
 
+function conversationHasUnread(conversation) {
+  return Boolean(conversation.has_unread) || Number(conversation.unread_count || 0) > 0;
+}
+
+function shouldBulkMarkUnread(targets = selectedConversations()) {
+  if (state.conversationView === "unread") return false;
+  if (!targets.length) return false;
+  return targets.every((conversation) => !conversationHasUnread(conversation));
+}
+
 function pruneSelectedConversations() {
   const ids = new Set(state.conversations.map((conversation) => conversation.conversation_id));
   for (const selectedId of state.selectedConversationIds) {
@@ -644,15 +654,20 @@ function pruneSelectedConversations() {
 }
 
 function renderBulkActions(rows) {
-  const selectedCount = selectedConversations().length;
+  const selectedRows = selectedConversations();
+  const selectedCount = selectedRows.length;
   const visibleCount = rows.length;
   const allVisibleSelected = visibleCount > 0 && rows.every((conversation) => state.selectedConversationIds.has(conversation.conversation_id));
   const labelCount = cleanBulkLabels(el.bulkLabelsInput.value).length;
   const bulkFollowUpValue = el.bulkFollowUpAt.value.trim();
+  const markUnreadIntent = shouldBulkMarkUnread(selectedRows);
   const pinIntent = shouldBulkPin();
   const archiveIntent = shouldBulkArchive();
   el.bulkState.textContent = state.bulkBusy ? "Updating selected" : (state.bulkMessage || `${selectedCount} selected`);
   el.selectVisibleButton.disabled = state.bulkBusy || !visibleCount || allVisibleSelected;
+  el.bulkMarkReadButton.textContent = markUnreadIntent ? "Mark unread" : "Mark read";
+  el.bulkMarkReadButton.title = markUnreadIntent ? "Mark selected conversations unread" : "Mark selected conversations read";
+  el.bulkMarkReadButton.setAttribute("aria-label", el.bulkMarkReadButton.title);
   el.bulkMarkReadButton.disabled = state.bulkBusy || selectedCount === 0;
   el.bulkPinButton.textContent = pinIntent ? "Pin" : "Unpin";
   el.bulkPinButton.title = pinIntent ? "Pin selected conversations" : "Unpin selected conversations";
@@ -2648,6 +2663,7 @@ function selectedConversationSnapshot() {
 async function bulkMarkSelectedRead() {
   const targets = selectedConversationSnapshot();
   if (!targets.length) return;
+  const markUnreadIntent = shouldBulkMarkUnread(targets);
   state.bulkBusy = true;
   state.bulkMessage = "";
   renderConversations();
@@ -2655,18 +2671,18 @@ async function bulkMarkSelectedRead() {
     for (const conversation of targets) {
       const result = await api(`/penguin-connect/conversations/${encodeURIComponent(conversation.conversation_id)}/read-state`, {
         method: "POST",
-        body: JSON.stringify({ unread: false }),
+        body: JSON.stringify({ unread: markUnreadIntent }),
       });
       updateConversationFields(conversation.conversation_id, {
         unread_count: result.unread_count || 0,
         has_unread: Boolean(result.has_unread),
       });
       if (state.selected?.conversation_id === conversation.conversation_id) {
-        state.messages = state.messages.map((message) => ({ ...message, is_read: true }));
+        state.messages = state.messages.map((message) => ({ ...message, is_read: !markUnreadIntent }));
       }
     }
     state.selectedConversationIds.clear();
-    state.bulkMessage = `Marked ${targets.length} read`;
+    state.bulkMessage = markUnreadIntent ? `Marked ${targets.length} unread` : `Marked ${targets.length} read`;
   } catch (error) {
     state.bulkMessage = error.message;
   } finally {

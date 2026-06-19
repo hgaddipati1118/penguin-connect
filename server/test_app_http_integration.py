@@ -1192,6 +1192,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("followUpLabel", js_response.text)
         self.assertIn("follow_up_at", js_response.text)
         self.assertIn("bulkMarkSelectedRead", js_response.text)
+        self.assertIn("shouldBulkMarkUnread", js_response.text)
         self.assertIn("bulkPinSelected", js_response.text)
         self.assertIn("shouldBulkPin", js_response.text)
         self.assertIn("bulkArchiveSelected", js_response.text)
