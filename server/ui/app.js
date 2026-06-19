@@ -156,7 +156,9 @@ const el = {
   messageSearchMoreBar: document.querySelector("#messageSearchMoreBar"),
   messageSearchCount: document.querySelector("#messageSearchCount"),
   addSearchSendersButton: document.querySelector("#addSearchSendersButton"),
+  addSearchParticipantsButton: document.querySelector("#addSearchParticipantsButton"),
   saveSearchSendersButton: document.querySelector("#saveSearchSendersButton"),
+  saveSearchParticipantsButton: document.querySelector("#saveSearchParticipantsButton"),
   createSearchSendersButton: document.querySelector("#createSearchSendersButton"),
   loadMoreSearchButton: document.querySelector("#loadMoreSearchButton"),
   messageDateFrom: document.querySelector("#messageDateFrom"),
@@ -3187,6 +3189,24 @@ function messageSearchContactHandles({ onlyNew = false } = {}) {
   return handles.filter((handle) => !existingKeys.has(recipientCompareKey(handle)));
 }
 
+function messageSearchParticipantHandlesForResult(result) {
+  const candidates = [...participantValuesForConversation(result)];
+  const sourceIdentifier = String(result?.source_chat_identifier || "").trim();
+  if (sourceIdentifier && handleType(sourceIdentifier) !== "handle") {
+    candidates.push(sourceIdentifier);
+  }
+  const senderHandle = messageSearchContactHandle(result);
+  if (senderHandle) candidates.push(senderHandle);
+  return uniqueRecipientValues(candidates.map(contactHandleCandidate).filter(Boolean));
+}
+
+function messageSearchParticipantHandles({ onlyNew = false } = {}) {
+  const handles = uniqueRecipientValues(state.messageSearchResults.flatMap(messageSearchParticipantHandlesForResult));
+  if (!onlyNew) return handles;
+  const existingKeys = new Set(uniqueRecipientValues(draftRecipientValues()).map(recipientCompareKey));
+  return handles.filter((handle) => !existingKeys.has(recipientCompareKey(handle)));
+}
+
 function messageSearchContactCandidates() {
   return [
     ...state.draftRecipientContactCache,
@@ -3234,6 +3254,32 @@ function addMessageSearchContactsToDraft() {
   const recipients = uniqueRecipientValues([...draftRecipientValues(), ...handles]);
   setDraftRecipients(recipients, { focus: true });
   const status = `Added ${handles.length} search sender${handles.length === 1 ? "" : "s"} to new chat`;
+  el.messageSearchStatus.textContent = status;
+  el.draftState.textContent = status;
+  renderMessageSearchMoreControls();
+  el.draftMessage.focus();
+  return true;
+}
+
+function addMessageSearchParticipantsToDraft() {
+  const allHandles = messageSearchParticipantHandles();
+  const handles = messageSearchParticipantHandles({ onlyNew: true });
+  if (!allHandles.length) {
+    el.messageSearchStatus.textContent = "No participant handles in loaded results";
+    return false;
+  }
+  if (!handles.length) {
+    const status = "All search participants already in new chat";
+    el.messageSearchStatus.textContent = status;
+    el.draftState.textContent = status;
+    renderMessageSearchMoreControls();
+    el.draftMessage.focus();
+    return false;
+  }
+
+  const recipients = uniqueRecipientValues([...draftRecipientValues(), ...handles]);
+  setDraftRecipients(recipients, { focus: true });
+  const status = `Added ${handles.length} search participant${handles.length === 1 ? "" : "s"} to new chat`;
   el.messageSearchStatus.textContent = status;
   el.draftState.textContent = status;
   renderMessageSearchMoreControls();
@@ -3311,6 +3357,13 @@ function messageSearchRecipientListName() {
   return `${view.label} search senders`;
 }
 
+function messageSearchParticipantListName() {
+  const query = trim(el.globalMessageSearch.value, 56);
+  if (query) return `Search participants: ${query}`;
+  const view = messageSearchViews.find((item) => item.key === state.messageSearchView) || messageSearchViews[0];
+  return `${view.label} search participants`;
+}
+
 async function saveMessageSearchContactsAsRecipientList() {
   const participants = messageSearchContactHandles();
   if (!participants.length) {
@@ -3325,6 +3378,39 @@ async function saveMessageSearchContactsAsRecipientList() {
       method: "POST",
       body: JSON.stringify({
         name: messageSearchRecipientListName(),
+        participants,
+      }),
+    });
+    const saved = result.recipient_list || {};
+    state.activeRecipientListId = saved.list_id || "";
+    el.recipientListName.value = recipientListLabel(saved);
+    setDraftRecipients(participants, { focus: true });
+    mergeRecipientList(saved);
+    renderRecipientLists();
+    const status = `${recipientListLabel(saved)} saved`;
+    el.messageSearchStatus.textContent = status;
+    el.draftState.textContent = status;
+  } catch (error) {
+    el.messageSearchStatus.textContent = error.message;
+  } finally {
+    renderMessageSearchMoreControls();
+  }
+}
+
+async function saveMessageSearchParticipantsAsRecipientList() {
+  const participants = messageSearchParticipantHandles();
+  if (!participants.length) {
+    el.messageSearchStatus.textContent = "No participant handles in loaded results";
+    return;
+  }
+
+  el.saveSearchParticipantsButton.disabled = true;
+  el.messageSearchStatus.textContent = "Saving search participants";
+  try {
+    const result = await api("/penguin-connect/recipient-lists", {
+      method: "POST",
+      body: JSON.stringify({
+        name: messageSearchParticipantListName(),
         participants,
       }),
     });
@@ -4406,6 +4492,8 @@ function renderMessageSearchMoreControls() {
   const canLoadMore = runnable && !state.messageSearchLoading && loaded >= limit && !atMax;
   const allSenderCount = messageSearchContactHandles().length;
   const newSenderCount = messageSearchContactHandles({ onlyNew: true }).length;
+  const allParticipantCount = messageSearchParticipantHandles().length;
+  const newParticipantCount = messageSearchParticipantHandles({ onlyNew: true }).length;
   const creatableSenderCount = messageSearchCreatableContactItems().length;
   el.messageSearchMoreBar.hidden = !runnable;
   el.messageSearchCount.textContent = state.messageSearchLoading
@@ -4417,12 +4505,24 @@ function renderMessageSearchMoreControls() {
     : (newSenderCount
       ? `Add ${newSenderCount} sender${newSenderCount === 1 ? "" : "s"}`
       : (allSenderCount ? "All senders added" : "Add senders"));
+  el.addSearchParticipantsButton.disabled = state.messageSearchLoading || allParticipantCount === 0 || newParticipantCount === 0;
+  el.addSearchParticipantsButton.textContent = state.messageSearchLoading
+    ? "Add participants"
+    : (newParticipantCount
+      ? `Add ${newParticipantCount} participant${newParticipantCount === 1 ? "" : "s"}`
+      : (allParticipantCount ? "All participants added" : "Add participants"));
   el.saveSearchSendersButton.disabled = state.messageSearchLoading || allSenderCount === 0;
   el.saveSearchSendersButton.textContent = state.messageSearchLoading
     ? "Save senders"
     : (allSenderCount
       ? `Save ${allSenderCount} sender${allSenderCount === 1 ? "" : "s"}`
       : "Save senders");
+  el.saveSearchParticipantsButton.disabled = state.messageSearchLoading || allParticipantCount === 0;
+  el.saveSearchParticipantsButton.textContent = state.messageSearchLoading
+    ? "Save participants"
+    : (allParticipantCount
+      ? `Save ${allParticipantCount} participant${allParticipantCount === 1 ? "" : "s"}`
+      : "Save participants");
   el.createSearchSendersButton.disabled = state.messageSearchLoading || creatableSenderCount === 0;
   el.createSearchSendersButton.textContent = state.messageSearchLoading
     ? "Create contacts"
@@ -6700,7 +6800,9 @@ el.globalMessageSearchFilters.addEventListener("click", (event) => {
 });
 el.loadMoreSearchButton.addEventListener("click", loadMoreMessageSearchResults);
 el.addSearchSendersButton.addEventListener("click", addMessageSearchContactsToDraft);
+el.addSearchParticipantsButton.addEventListener("click", addMessageSearchParticipantsToDraft);
 el.saveSearchSendersButton.addEventListener("click", saveMessageSearchContactsAsRecipientList);
+el.saveSearchParticipantsButton.addEventListener("click", saveMessageSearchParticipantsAsRecipientList);
 el.createSearchSendersButton.addEventListener("click", createMessageSearchContacts);
 el.contactRefreshButton.addEventListener("click", async () => {
   el.contactRefreshButton.disabled = true;
