@@ -199,6 +199,7 @@ const el = {
   askCodexButton: document.querySelector("#askCodexButton"),
   copyCodexAnswerButton: document.querySelector("#copyCodexAnswerButton"),
   useCodexDraftButton: document.querySelector("#useCodexDraftButton"),
+  useCodexNewChatButton: document.querySelector("#useCodexNewChatButton"),
 };
 
 const emojiChoices = ["👍", "🙏", "🔥", "❤️", "😂", "👀", "✅", "🤔", "😭", "🚀"];
@@ -4548,6 +4549,7 @@ function renderCodexAnswerControls() {
   el.askCodexButton.disabled = state.codexBusy;
   el.copyCodexAnswerButton.disabled = state.codexBusy || !hasAnswer;
   el.useCodexDraftButton.disabled = state.codexBusy || !hasAnswer;
+  el.useCodexNewChatButton.disabled = state.codexBusy || !hasAnswer;
 }
 
 function codexModeConfig() {
@@ -4625,6 +4627,16 @@ function useCodexAnswerAsDraft() {
   scheduleDraftSave();
   buildCodexPrompt();
   el.sendState.textContent = "Codex answer moved to draft";
+}
+
+function useCodexAnswerAsNewChatDraft() {
+  const answer = codexAnswerText();
+  if (!answer) return;
+  el.draftMessage.value = answer;
+  renderDraftPreview();
+  buildCodexPrompt();
+  el.draftState.textContent = "Codex answer moved to new chat";
+  el.draftMessage.focus();
 }
 
 async function copyText(value) {
@@ -5040,6 +5052,7 @@ el.copyCodexAnswerButton.addEventListener("click", async () => {
   el.sendState.textContent = "Codex answer copied";
 });
 el.useCodexDraftButton.addEventListener("click", useCodexAnswerAsDraft);
+el.useCodexNewChatButton.addEventListener("click", useCodexAnswerAsNewChatDraft);
 el.codexQuestion.addEventListener("input", buildCodexPrompt);
 el.codexModes.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-codex-mode]");
