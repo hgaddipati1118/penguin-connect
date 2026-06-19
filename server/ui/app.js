@@ -75,6 +75,7 @@ const state = {
   messageNoteEditorId: "",
   mediaView: "all",
   conversationView: "inbox",
+  conversationSort: "recent",
   conversationLabel: "",
   conversationActivitySnapshot: new Map(),
   activityStatusUntil: 0,
@@ -107,6 +108,7 @@ const el = {
   refreshButton: document.querySelector("#refreshButton"),
   conversationSearch: document.querySelector("#conversationSearch"),
   conversationFilters: document.querySelector("#conversationFilters"),
+  conversationSort: document.querySelector("#conversationSort"),
   labelFilters: document.querySelector("#labelFilters"),
   bulkActions: document.querySelector("#bulkActions"),
   bulkState: document.querySelector("#bulkState"),
@@ -359,6 +361,14 @@ const conversationViewLabels = {
   pinned: "Pinned",
   archived: "Archived",
   all: "All",
+};
+
+const conversationSortLabels = {
+  recent: "Recent",
+  priority: "Priority",
+  unread: "Unread",
+  followup: "Follow-up",
+  name: "A-Z",
 };
 
 const messageSearchViews = [
@@ -787,6 +797,61 @@ function conversationSortValue(conversation) {
   return Number.isNaN(value) ? 0 : value;
 }
 
+function pinnedSortDiff(a, b) {
+  return Number(b.is_pinned) - Number(a.is_pinned);
+}
+
+function unreadSortValue(conversation) {
+  return Number(conversation.unread_count || 0);
+}
+
+function dueFollowUpSortValue(conversation) {
+  return followUpStatus(conversation) === "due" ? 1 : 0;
+}
+
+function conversationNameSortValue(conversation) {
+  return conversationDisplayName(conversation).toLowerCase();
+}
+
+function compareConversationRecent(a, b) {
+  return conversationSortValue(b) - conversationSortValue(a)
+    || conversationNameSortValue(a).localeCompare(conversationNameSortValue(b));
+}
+
+function compareConversationFollowUp(a, b) {
+  return pinnedSortDiff(a, b) || followUpSortValue(a) - followUpSortValue(b) || compareConversationRecent(a, b);
+}
+
+function compareConversationPriority(a, b) {
+  return pinnedSortDiff(a, b)
+    || Number(conversationNeedsReply(b)) - Number(conversationNeedsReply(a))
+    || unreadSortValue(b) - unreadSortValue(a)
+    || dueFollowUpSortValue(b) - dueFollowUpSortValue(a)
+    || Number(hasFollowUp(b)) - Number(hasFollowUp(a))
+    || compareConversationRecent(a, b);
+}
+
+function compareConversationUnread(a, b) {
+  return pinnedSortDiff(a, b)
+    || unreadSortValue(b) - unreadSortValue(a)
+    || Number(conversationNeedsReply(b)) - Number(conversationNeedsReply(a))
+    || compareConversationRecent(a, b);
+}
+
+function compareConversationName(a, b) {
+  return pinnedSortDiff(a, b)
+    || conversationNameSortValue(a).localeCompare(conversationNameSortValue(b))
+    || compareConversationRecent(a, b);
+}
+
+function compareConversations(a, b) {
+  if (state.conversationSort === "priority") return compareConversationPriority(a, b);
+  if (state.conversationSort === "unread") return compareConversationUnread(a, b);
+  if (state.conversationSort === "followup") return compareConversationFollowUp(a, b);
+  if (state.conversationSort === "name") return compareConversationName(a, b);
+  return pinnedSortDiff(a, b) || compareConversationRecent(a, b);
+}
+
 function conversationActivitySignature(conversation) {
   return [
     conversation.last_message_provider_id || "",
@@ -881,6 +946,10 @@ function renderConversationFilters() {
     button.classList.toggle("active", view === state.conversationView);
     button.setAttribute("aria-pressed", view === state.conversationView ? "true" : "false");
   }
+  const knownSort = Object.prototype.hasOwnProperty.call(conversationSortLabels, state.conversationSort);
+  if (!knownSort) state.conversationSort = "recent";
+  el.conversationSort.value = state.conversationSort;
+  el.conversationSort.title = `Sort conversations by ${conversationSortLabels[state.conversationSort]}`;
 }
 
 function renderLabelFilters() {
@@ -922,13 +991,11 @@ function visibleConversationRows() {
     const haystack = conversationHaystack(conversation);
     return !query || haystack.includes(query) || (digitQuery.length >= 3 && haystack.includes(digitQuery));
   }).sort((a, b) => {
-    if (state.conversationView === "followup") {
+    if (state.conversationSort === "recent" && state.conversationView === "followup") {
       const followUpDiff = followUpSortValue(a) - followUpSortValue(b);
-      if (followUpDiff) return followUpDiff;
+      return pinnedSortDiff(a, b) || followUpDiff || compareConversationRecent(a, b);
     }
-    const pinnedDiff = Number(b.is_pinned) - Number(a.is_pinned);
-    if (pinnedDiff) return pinnedDiff;
-    return conversationSortValue(b) - conversationSortValue(a);
+    return compareConversations(a, b);
   });
 }
 
@@ -7675,6 +7742,10 @@ el.conversationFilters.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-view]");
   if (!button) return;
   state.conversationView = button.dataset.view || "inbox";
+  renderConversations();
+});
+el.conversationSort.addEventListener("change", () => {
+  state.conversationSort = conversationSortLabels[el.conversationSort.value] ? el.conversationSort.value : "recent";
   renderConversations();
 });
 el.labelFilters.addEventListener("click", (event) => {
