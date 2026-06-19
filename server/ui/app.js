@@ -109,6 +109,10 @@ const el = {
   saveRecipientListButton: document.querySelector("#saveRecipientListButton"),
   recipientLists: document.querySelector("#recipientLists"),
   draftMessage: document.querySelector("#draftMessage"),
+  draftPreview: document.querySelector("#draftPreview"),
+  draftPreviewTitle: document.querySelector("#draftPreviewTitle"),
+  draftPreviewText: document.querySelector("#draftPreviewText"),
+  copyDraftPreviewButton: document.querySelector("#copyDraftPreviewButton"),
   draftCopyToggle: document.querySelector("#draftCopyToggle"),
   draftOpenToggle: document.querySelector("#draftOpenToggle"),
   stageDraftButton: document.querySelector("#stageDraftButton"),
@@ -1135,6 +1139,42 @@ function uniqueRecipientValues(values) {
   return recipients;
 }
 
+function buildMessagesDraftText(participants = uniqueRecipientValues(draftRecipientValues()), message = el.draftMessage.value) {
+  if (!participants.length) return "";
+  const body = String(message || "").trim().slice(0, 50000);
+  return body ? `To: ${participants.join(", ")}\n\n${body}\n` : `To: ${participants.join(", ")}\n`;
+}
+
+function renderDraftPreview(values = uniqueRecipientValues(draftRecipientValues()), draftText = "") {
+  const recipients = uniqueRecipientValues(values);
+  const draft = draftText || buildMessagesDraftText(recipients);
+  const count = recipients.length;
+  const mode = count > 1 ? "Group chat" : "Direct chat";
+  el.draftPreviewTitle.textContent = count
+    ? `${mode} · ${count} recipient${count === 1 ? "" : "s"}`
+    : "No recipients";
+  el.draftPreviewText.textContent = draft || "Add recipients to preview the Messages draft.";
+  el.copyDraftPreviewButton.disabled = !draft;
+}
+
+async function copyDraftPreview() {
+  const participants = setDraftRecipients(draftRecipientValues());
+  const draft = buildMessagesDraftText(participants);
+  if (!draft) {
+    el.draftState.textContent = "Add recipient";
+    el.draftRecipients.focus();
+    return;
+  }
+
+  try {
+    await copyText(draft);
+    renderDraftPreview(participants, draft);
+    el.draftState.textContent = "Draft copied";
+  } catch (error) {
+    el.draftState.textContent = error.message;
+  }
+}
+
 function renderDraftRecipientChips(values = uniqueRecipientValues(draftRecipientValues())) {
   el.draftRecipientChips.replaceChildren();
   if (!values.length) return;
@@ -1156,6 +1196,7 @@ function setDraftRecipients(values, { focus = false } = {}) {
   const recipients = uniqueRecipientValues(values);
   el.draftRecipients.value = recipients.join(", ");
   renderDraftRecipientChips(recipients);
+  renderDraftPreview(recipients);
   if (focus) el.draftRecipients.focus();
   return recipients;
 }
@@ -3339,6 +3380,7 @@ function clearDraftForm() {
   el.draftState.textContent = "Idle";
   state.activeRecipientListId = "";
   renderDraftRecipientChips();
+  renderDraftPreview([]);
   renderRecipientLists();
 }
 
@@ -3365,6 +3407,7 @@ async function stageDraft() {
       result.copied ? "copied" : "",
       result.opened_messages ? "opened" : "",
     ].filter(Boolean).join(" + ");
+    renderDraftPreview(result.participants || participants, result.draft || "");
     el.draftState.textContent = actions ? `Draft ${actions}` : "Draft ready";
   } catch (error) {
     el.draftState.textContent = error.message;
@@ -3484,11 +3527,16 @@ el.mediaFilters.addEventListener("click", (event) => {
     : "all";
   renderThreadMedia();
 });
-el.draftRecipients.addEventListener("input", () => renderDraftRecipientChips());
+el.draftRecipients.addEventListener("input", () => {
+  const recipients = uniqueRecipientValues(draftRecipientValues());
+  renderDraftRecipientChips(recipients);
+  renderDraftPreview(recipients);
+});
 el.draftRecipients.addEventListener("blur", (event) => {
   if (event.relatedTarget && el.draftRecipientChips.contains(event.relatedTarget)) return;
   setDraftRecipients(draftRecipientValues());
 });
+el.draftMessage.addEventListener("input", () => renderDraftPreview());
 el.sendButton.addEventListener("click", sendMessage);
 el.pinButton.addEventListener("click", () => setConversationManagement({ pinned: !Boolean(state.selected?.is_pinned) }));
 el.archiveButton.addEventListener("click", () => setConversationManagement({ archived: !Boolean(state.selected?.is_archived) }));
@@ -3542,6 +3590,7 @@ el.fileInput.addEventListener("change", (event) => addFiles(event.target.files))
 el.threadPeopleAddAllButton.addEventListener("click", addThreadParticipantsToDraft);
 el.threadPeopleSaveListButton.addEventListener("click", saveThreadParticipantsAsRecipientList);
 el.stageDraftButton.addEventListener("click", stageDraft);
+el.copyDraftPreviewButton.addEventListener("click", copyDraftPreview);
 el.saveRecipientListButton.addEventListener("click", saveRecipientList);
 el.clearDraftButton.addEventListener("click", clearDraftForm);
 el.createContactButton.addEventListener("click", createContact);
@@ -3622,6 +3671,7 @@ renderMessages();
 renderContacts();
 renderContactSourceFilters();
 renderDraftRecipientChips();
+renderDraftPreview();
 renderRecipientLists();
 renderMessageSearchFilters();
 renderMessageSearchResults();

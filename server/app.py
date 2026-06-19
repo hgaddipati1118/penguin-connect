@@ -1911,6 +1911,7 @@ def create_penguinconnect_messages_draft(req: PenguinConnectDraftCreateRequest):
     return {
         "success": True,
         "participants_count": len(participants),
+        "participants": participants,
         "draft": draft,
         "copied": copied,
         "opened_messages": opened_messages,

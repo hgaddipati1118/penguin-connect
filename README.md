@@ -170,7 +170,7 @@ removable recipient chips, reusable saved recipient lists, selected-thread parti
 search/new-chat/contact creation, participant favoriting, bulk add-all-to-draft, and save-as-list actions, local thread titles, notes and tags,
 follow-up scheduling/filtering plus bulk follow-up set/clear, read/unread management, bridge
 disconnect/reconnect controls, persistent per-thread reply drafts, new chat
-draft staging, and a Codex prompt helper with
+draft staging with live Messages-ready draft preview/copy, and a Codex prompt helper with
 reply, summary, follow-up, contact-cleanup, and custom-question modes that can
 copy or run a local `codex exec` prompt over recent thread context, search
 results, contact results, local notes, tags, and your draft, then place the

@@ -933,7 +933,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
             response = client.post(
                 "/penguin-connect/messages/draft",
                 json={
-                    "participants": ["+14155550100", "friend@example.test"],
+                    "participants": ["+14155550100", "friend@example.test", "+1 (415) 555-0100", ""],
                     "message": "Starting this thread",
                     "copy_to_clipboard": True,
                     "open_messages": True,
@@ -944,6 +944,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         body = response.json()
         self.assertTrue(body["success"])
         self.assertEqual(body["participants_count"], 2)
+        self.assertEqual(body["participants"], ["+14155550100", "friend@example.test"])
         self.assertEqual(body["draft"], "To: +14155550100, friend@example.test\n\nStarting this thread\n")
         self.assertTrue(body["copied"])
         self.assertTrue(body["opened_messages"])
@@ -1039,6 +1040,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
 
         self.assertEqual(html_response.status_code, 200)
         self.assertIn("PenguinConnect Console", html_response.text)
+        self.assertIn('rel="icon"', html_response.text)
         self.assertIn("contactSearch", html_response.text)
         self.assertIn("contactSourceFilters", html_response.text)
         self.assertIn("contactBulkActions", html_response.text)
@@ -1050,6 +1052,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("messageViewFilters", html_response.text)
         self.assertIn("stageDraftButton", html_response.text)
         self.assertIn("draftRecipientChips", html_response.text)
+        self.assertIn("draftPreviewText", html_response.text)
+        self.assertIn("copyDraftPreviewButton", html_response.text)
         self.assertIn("recipientListName", html_response.text)
         self.assertIn("saveRecipientListButton", html_response.text)
         self.assertIn("recipientLists", html_response.text)
@@ -1247,6 +1251,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("messageCopyText", js_response.text)
         self.assertIn("renderManagementFields", js_response.text)
         self.assertIn("stageDraft", js_response.text)
+        self.assertIn("buildMessagesDraftText", js_response.text)
+        self.assertIn("renderDraftPreview", js_response.text)
+        self.assertIn("copyDraftPreview", js_response.text)
         self.assertIn("createContact", js_response.text)
         self.assertIn("setReadState", js_response.text)
         self.assertIn("setConversationManagement", js_response.text)
@@ -1258,6 +1265,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("handleAttachmentPaste", js_response.text)
         self.assertIn("clipboardAttachmentFiles", js_response.text)
         self.assertIn("normalizeAttachmentFile", js_response.text)
+        self.assertIn(".draft-preview", css_response.text)
 
     def test_messages_endpoint_uses_header_display_name_for_own_gmail_messages(self):
         conn = self._get_connection()

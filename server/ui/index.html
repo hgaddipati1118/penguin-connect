@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>PenguinConnect Console</title>
+    <link rel="icon" href="data:," />
     <link rel="stylesheet" href="/penguin-connect/ui/app.css" />
   </head>
   <body>
@@ -154,6 +155,13 @@
           </div>
           <div class="recipient-lists" id="recipientLists" aria-live="polite"></div>
           <textarea id="draftMessage" rows="4" placeholder="Draft message"></textarea>
+          <div class="draft-preview" id="draftPreview" aria-live="polite">
+            <div class="draft-preview-head">
+              <span id="draftPreviewTitle">No recipients</span>
+              <button class="quiet-button" id="copyDraftPreviewButton" type="button" disabled>Copy draft</button>
+            </div>
+            <pre id="draftPreviewText">Add recipients to preview the Messages draft.</pre>
+          </div>
           <div class="toggle-row">
             <label><input id="draftCopyToggle" type="checkbox" checked /> Copy</label>
             <label><input id="draftOpenToggle" type="checkbox" checked /> Open Messages</label>
