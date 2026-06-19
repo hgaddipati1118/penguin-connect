@@ -2039,11 +2039,37 @@ textarea:focus,
   background: var(--panel);
 }
 
+.attachment-chip.with-preview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  width: min(340px, 100%);
+  align-items: center;
+}
+
 .attachment-chip span {
   overflow: hidden;
   max-width: 210px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.attachment-chip.with-preview span {
+  max-width: 100%;
+}
+
+.attachment-chip audio {
+  grid-column: 1 / -1;
+  width: 100%;
+  max-width: 100%;
+}
+
+.attachment-chip img {
+  grid-column: 1 / -1;
+  width: min(160px, 100%);
+  max-height: 110px;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  background: var(--panel-alt);
 }
 
 #codexQuestion,

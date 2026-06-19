@@ -65,6 +65,8 @@ const state = {
   },
 };
 
+const attachmentPreviewUrls = new WeakMap();
+
 const el = {
   statusLine: document.querySelector("#statusLine"),
   refreshButton: document.querySelector("#refreshButton"),
@@ -1016,6 +1018,69 @@ function attachmentLocalPath(attachment) {
 function attachmentLabel(attachment) {
   const label = basename(attachment.transfer_name || attachment.filename || attachment.mime_type || "attachment");
   return String(attachment.mime_type || "").startsWith("audio/") ? `audio:${label}` : label;
+}
+
+function attachmentLikeFromFile(file) {
+  return {
+    transfer_name: file?.name || "",
+    filename: file?.name || "",
+    mime_type: file?.type || "",
+  };
+}
+
+function attachmentFileKind(file) {
+  const attachment = attachmentLikeFromFile(file);
+  if (isAudioAttachment(attachment)) return "audio";
+  if (isImageAttachment(attachment)) return "image";
+  return "file";
+}
+
+function attachmentFileKindLabel(file) {
+  const kind = attachmentFileKind(file);
+  if (kind === "audio") {
+    return /^voice[-_\s]?memo/i.test(file?.name || "") ? "Voice memo" : "Audio";
+  }
+  if (kind === "image") return "Image";
+  return "File";
+}
+
+function attachmentSizeLabel(file) {
+  const size = Number(file?.size || 0);
+  if (!Number.isFinite(size) || size <= 0) return "";
+  if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.max(1, Math.ceil(size / 1024))} KB`;
+}
+
+function attachmentFileLabel(file) {
+  return [
+    attachmentFileKindLabel(file),
+    basename(file?.name || "attachment"),
+    attachmentSizeLabel(file),
+  ].filter(Boolean).join(" · ");
+}
+
+function attachmentPreviewUrl(file) {
+  if (!file || typeof URL === "undefined" || !URL.createObjectURL) return "";
+  const current = attachmentPreviewUrls.get(file);
+  if (current) return current;
+  const url = URL.createObjectURL(file);
+  attachmentPreviewUrls.set(file, url);
+  return url;
+}
+
+function revokeAttachmentPreview(file) {
+  const url = file ? attachmentPreviewUrls.get(file) : "";
+  if (!url) return;
+  if (typeof URL !== "undefined" && URL.revokeObjectURL) {
+    URL.revokeObjectURL(url);
+  }
+  attachmentPreviewUrls.delete(file);
+}
+
+function revokeAttachmentPreviews(files) {
+  for (const file of files || []) {
+    revokeAttachmentPreview(file);
+  }
 }
 
 function attachmentUrl(message, index) {
@@ -3583,6 +3648,30 @@ function renderMessages() {
   }
 }
 
+function renderAttachmentFilePreview(chip, file) {
+  const kind = attachmentFileKind(file);
+  if (kind !== "audio" && kind !== "image") return;
+  const url = attachmentPreviewUrl(file);
+  if (!url) return;
+
+  chip.classList.add("with-preview", `${kind}-attachment-chip`);
+  if (kind === "audio") {
+    const audio = document.createElement("audio");
+    audio.controls = true;
+    audio.preload = "metadata";
+    audio.src = url;
+    audio.setAttribute("aria-label", attachmentFileLabel(file));
+    chip.append(audio);
+    return;
+  }
+
+  const image = document.createElement("img");
+  image.src = url;
+  image.alt = attachmentFileLabel(file);
+  image.loading = "lazy";
+  chip.append(image);
+}
+
 function renderAttachments(target = "reply") {
   const { list } = attachmentElementsFor(target);
   const files = attachmentFilesFor(target);
@@ -3591,9 +3680,11 @@ function renderAttachments(target = "reply") {
     const chip = document.createElement("div");
     chip.className = "attachment-chip";
     chip.innerHTML = `<span></span><button class="remove-button" type="button" title="Remove">×</button>`;
-    chip.querySelector("span").textContent = `${file.name} · ${Math.ceil(file.size / 1024)} KB`;
+    chip.querySelector("span").textContent = attachmentFileLabel(file);
+    renderAttachmentFilePreview(chip, file);
     chip.querySelector("button").addEventListener("click", () => {
       const nextFiles = attachmentFilesFor(target).slice();
+      revokeAttachmentPreview(nextFiles[index]);
       nextFiles.splice(index, 1);
       setAttachmentFilesFor(target, nextFiles);
       if (target === "draft") {
@@ -4267,6 +4358,7 @@ async function sendMessage() {
     });
     el.composer.value = "";
     clearReplyContext();
+    revokeAttachmentPreviews(state.attachments);
     state.attachments = [];
     state.replyMediaAttachments = [];
     renderAttachments();
@@ -5049,6 +5141,7 @@ function clearDraftForm() {
   el.draftMessage.value = "";
   el.draftState.textContent = "Idle";
   state.activeRecipientListId = "";
+  revokeAttachmentPreviews(state.draftAttachments);
   state.draftAttachments = [];
   state.draftMediaAttachments = [];
   state.draftAttachmentFolder = "";
@@ -5282,6 +5375,7 @@ el.clearReplyContextButton.addEventListener("click", clearReplyContext);
 el.clearButton.addEventListener("click", () => {
   el.composer.value = "";
   clearReplyContext();
+  revokeAttachmentPreviews(state.attachments);
   state.attachments = [];
   state.replyMediaAttachments = [];
   renderAttachments();
