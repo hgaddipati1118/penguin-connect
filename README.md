@@ -156,7 +156,8 @@ and keeps the normal Apple Messages route-safety checks; Gmail is not required
 for local manual sends. It can also attach local files, including audio voice
 memos. The local UI supports replies, file/image attachments from picker, drag/drop, or paste, in-composer
 voice memo recording, emoji
-shortcuts, message-level reply targets and copy actions, thread filtering,
+shortcuts, visible-page auto-refresh for cached conversations and the selected
+thread, message-level reply targets and copy actions, thread filtering,
 needs-reply/unread/drafts/unlabeled/muted/pinned/archived and label-based conversation views, bulk
 mark-read/mark-unread/pin-unpin/mute-unmute/archive-restore/label add-remove/draft cleanup actions, latest-message previews in the conversation rail,
 global synced-message search with recent-message browsing, open/copy/reply actions and filters for current thread, unread, sent,

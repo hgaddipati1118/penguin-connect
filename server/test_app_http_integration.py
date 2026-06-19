@@ -1859,6 +1859,15 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("Messages ready", js_response.text)
         self.assertIn("local send enabled", js_response.text)
         self.assertIn("refreshLocalMessages", js_response.text)
+        self.assertIn("autoRefreshIntervalFromUrl", js_response.text)
+        self.assertIn("auto_refresh_ms", js_response.text)
+        self.assertIn("autoRefreshIntervalMs", js_response.text)
+        self.assertIn("shouldAutoRefreshLocalState", js_response.text)
+        self.assertIn("autoRefreshLocalState", js_response.text)
+        self.assertIn("startAutoRefresh", js_response.text)
+        self.assertIn("preserveManagementEditing", js_response.text)
+        self.assertIn("quiet = false", js_response.text)
+        self.assertIn("document.addEventListener(\"visibilitychange\"", js_response.text)
         self.assertIn("Local Messages refreshed", js_response.text)
         self.assertIn("localRefreshBusy", js_response.text)
         self.assertNotIn("Sync requested", js_response.text)
@@ -2104,7 +2113,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("refreshConversationsForSearchResult", js_response.text)
         self.assertIn("Loading imported thread", js_response.text)
         self.assertIn("loadConversations({ autoSelect: false })", js_response.text)
-        self.assertIn("async function loadConversations({ autoSelect = true } = {})", js_response.text)
+        self.assertIn(
+            "async function loadConversations({ autoSelect = true, preserveManagementEditing = false } = {})",
+            js_response.text,
+        )
         self.assertIn("renderMessageSearchFilters", js_response.text)
         self.assertIn("date_from", js_response.text)
         self.assertIn("date_to", js_response.text)

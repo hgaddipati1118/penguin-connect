@@ -1,5 +1,12 @@
 const newChatDraftStorageKey = "penguin-connect:new-chat-draft:v1";
 
+function autoRefreshIntervalFromUrl() {
+  const value = Number(new URLSearchParams(window.location.search).get("auto_refresh_ms"));
+  return Number.isFinite(value) && value >= 1000 && value <= 60000 ? value : 10000;
+}
+
+const autoRefreshIntervalMs = autoRefreshIntervalFromUrl();
+
 const state = {
   conversations: [],
   selected: null,
@@ -72,6 +79,8 @@ const state = {
   bulkBusy: false,
   bulkMessage: "",
   localRefreshBusy: false,
+  autoRefreshBusy: false,
+  autoRefreshTimerId: 0,
   draftSaveTimer: null,
   replyMediaAttachments: [],
   codexMode: "reply",
@@ -5796,6 +5805,15 @@ function renderManagementFields() {
   el.managementState.textContent = "Saved";
 }
 
+function isThreadManagementEditing() {
+  return [
+    el.threadLocalTitle,
+    el.threadFollowUpAt,
+    el.threadTags,
+    el.threadNote,
+  ].includes(document.activeElement);
+}
+
 function syncSelectedConversation(fields) {
   if (!state.selected) return;
   Object.assign(state.selected, fields);
@@ -5837,7 +5855,7 @@ async function loadStatus() {
   }
 }
 
-async function loadConversations({ autoSelect = true } = {}) {
+async function loadConversations({ autoSelect = true, preserveManagementEditing = false } = {}) {
   try {
     const payload = await api("/penguin-connect/conversations");
     state.conversations = payload.conversations || [];
@@ -5845,7 +5863,9 @@ async function loadConversations({ autoSelect = true } = {}) {
       state.selected = state.conversations.find((conversation) => conversation.conversation_id === state.selected.conversation_id) || state.selected;
       renderThreadHeader();
       renderThreadControls();
-      renderManagementFields();
+      if (!preserveManagementEditing || !isThreadManagementEditing()) {
+        renderManagementFields();
+      }
     }
     el.senderBadge.textContent = "Messages";
     renderConversations();
@@ -6059,13 +6079,17 @@ async function selectConversation(conversation) {
   await loadMessages();
 }
 
-async function loadMessages({ preserveScroll = false } = {}) {
+async function loadMessages({ preserveScroll = false, quiet = false } = {}) {
   if (!state.selected) return;
   const conversationId = state.selected.conversation_id;
   const beforeScrollHeight = preserveScroll ? el.messageList.scrollHeight : 0;
   const beforeScrollTop = preserveScroll ? el.messageList.scrollTop : 0;
   state.messagesLoading = true;
-  renderMessages();
+  if (quiet) {
+    renderMessageHistoryControls();
+  } else {
+    renderMessages();
+  }
   try {
     const payload = await api(`/penguin-connect/conversations/${encodeURIComponent(conversationId)}/messages?limit=${state.messageLimit}`);
     if (state.selected?.conversation_id !== conversationId) return;
@@ -6086,7 +6110,12 @@ async function loadMessages({ preserveScroll = false } = {}) {
     });
   } catch (error) {
     state.messagesLoading = false;
-    el.messageList.innerHTML = `<div class="error-state">${error.message}</div>`;
+    if (!quiet) {
+      el.messageList.innerHTML = `<div class="error-state">${error.message}</div>`;
+    } else {
+      state.threadActionMessage = error.message;
+      renderThreadControls();
+    }
     renderMessageHistoryControls();
   }
 }
@@ -6129,6 +6158,41 @@ async function refreshLocalMessages() {
     state.localRefreshBusy = false;
     renderThreadControls();
   }
+}
+
+function shouldAutoRefreshLocalState() {
+  return !document.hidden
+    && !state.localRefreshBusy
+    && !state.autoRefreshBusy
+    && state.voiceMemoRecorder?.state !== "recording";
+}
+
+async function autoRefreshLocalState() {
+  if (!shouldAutoRefreshLocalState()) return;
+  const conversationId = state.selected?.conversation_id || "";
+  state.autoRefreshBusy = true;
+  try {
+    await loadStatus();
+    await loadConversations({
+      autoSelect: false,
+      preserveManagementEditing: true,
+    });
+    if (conversationId && state.selected?.conversation_id === conversationId && !state.messagesLoading) {
+      await loadMessages({ preserveScroll: true, quiet: true });
+    }
+  } finally {
+    state.autoRefreshBusy = false;
+  }
+}
+
+function startAutoRefresh() {
+  if (state.autoRefreshTimerId) return;
+  state.autoRefreshTimerId = window.setInterval(autoRefreshLocalState, autoRefreshIntervalMs);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      autoRefreshLocalState();
+    }
+  });
 }
 
 function readFileAsBase64(file) {
@@ -7623,5 +7687,6 @@ renderCodexModes();
 renderCodexAnswerControls();
 loadStatus();
 loadConversations();
+startAutoRefresh();
 loadContacts();
 loadRecipientLists();
