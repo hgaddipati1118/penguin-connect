@@ -1359,12 +1359,17 @@ def _search_messages(
             m.is_read,
             m.metadata,
             m.gmail_message_id,
-            m.gmail_thread_id
+            m.gmail_thread_id,
+            COALESCE(mm.is_starred, 0) AS is_starred,
+            COALESCE(mm.note, '') AS message_note
         FROM penguin_connect_messages m
         JOIN penguin_connect_conversations c
           ON c.conversation_id = m.conversation_id
         LEFT JOIN penguin_connect_conversation_management cm
           ON cm.conversation_id = c.conversation_id
+        LEFT JOIN penguin_connect_message_management mm
+          ON mm.conversation_id = m.conversation_id
+         AND mm.provider_message_id = m.provider_message_id
         WHERE {where_clause}
         ORDER BY m.message_timestamp DESC, m.id DESC
         LIMIT ?
@@ -1379,6 +1384,8 @@ def _search_messages(
         item["metadata"] = metadata
         item["labels"] = _parse_management_labels(row["labels"])
         item["is_read"] = bool(row["is_read"])
+        item["is_starred"] = bool(row["is_starred"])
+        item["message_note"] = row["message_note"] or ""
         if metadata.get("is_from_me"):
             item["sender_name"] = "Me"
         if isinstance(metadata.get("attachments"), list):

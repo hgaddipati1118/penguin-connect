@@ -522,6 +522,18 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(response.json()["detail"], "message_not_found")
 
     def test_message_search_endpoint_searches_cached_messages(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """INSERT INTO penguin_connect_message_management
+                   (conversation_id, provider_message_id, is_starred, note)
+                   VALUES (?, ?, 1, ?)""",
+                ("amc_test", "imsg-latest", "Search-level note"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
         with TestClient(app_module.app) as client:
             response = client.get("/penguin-connect/messages/search", params={"query": "latest", "limit": 10})
 
@@ -531,6 +543,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(body["messages"][0]["conversation_id"], "amc_test")
         self.assertEqual(body["messages"][0]["display_name"], "Taylor")
         self.assertEqual(body["messages"][0]["provider_message_id"], "imsg-latest")
+        self.assertTrue(body["messages"][0]["is_starred"])
+        self.assertEqual(body["messages"][0]["message_note"], "Search-level note")
 
     def test_message_search_endpoint_imports_raw_local_imessage_hits_without_gmail_account(self):
         conn = self._get_connection()
@@ -1474,7 +1488,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn(".recipient-list-tools", css_response.text)
         self.assertIn(".recipient-list-item", css_response.text)
         self.assertIn(".search-result", css_response.text)
+        self.assertIn(".search-result.starred", css_response.text)
         self.assertIn(".search-result-actions", css_response.text)
+        self.assertIn(".search-result-actions button.active", css_response.text)
         self.assertIn(".search-result-actions button:disabled", css_response.text)
         self.assertIn(".message-search-filters", css_response.text)
         self.assertIn(".message-view-filters", css_response.text)
@@ -1579,6 +1595,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("useRecipientList", js_response.text)
         self.assertIn("renderMessageSearchResults", js_response.text)
         self.assertIn("replyToMessageSearchResult", js_response.text)
+        self.assertIn("toggleMessageSearchResultStar", js_response.text)
+        self.assertIn("Search result starred", js_response.text)
         self.assertIn("participantValuesForConversation", js_response.text)
         self.assertIn("messageSearchContactHandle", js_response.text)
         self.assertIn("fillContactFormFromMessageSearchResult", js_response.text)

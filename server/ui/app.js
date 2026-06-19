@@ -958,6 +958,7 @@ function mergeMessageManagement(result) {
   const providerMessageId = result.provider_message_id || "";
   if (!providerMessageId) return;
   const hasReadState = typeof result.is_read === "boolean";
+  const conversationId = result.conversation_id || state.selected?.conversation_id || "";
   state.messages = state.messages.map((item) => (
     item.provider_message_id === providerMessageId
       ? {
@@ -968,9 +969,20 @@ function mergeMessageManagement(result) {
       }
       : item
   ));
+  state.messageSearchResults = state.messageSearchResults.map((item) => (
+    item.provider_message_id === providerMessageId
+      && (!conversationId || !item.conversation_id || item.conversation_id === conversationId)
+      ? {
+        ...item,
+        is_starred: Boolean(result.is_starred),
+        message_note: result.message_note || "",
+        is_read: hasReadState ? Boolean(result.is_read) : item.is_read,
+      }
+      : item
+  ));
   const unreadCount = Number(result.unread_count);
-  if (state.selected && Number.isFinite(unreadCount)) {
-    updateConversationFields(state.selected.conversation_id, {
+  if (conversationId && Number.isFinite(unreadCount)) {
+    updateConversationFields(conversationId, {
       unread_count: unreadCount,
       has_unread: Boolean(result.has_unread),
     });
@@ -994,6 +1006,27 @@ async function toggleMessageStar(message) {
     buildCodexPrompt();
   } catch (error) {
     el.sendState.textContent = error.message;
+  }
+}
+
+async function toggleMessageSearchResultStar(result) {
+  if (!result?.conversation_id || !result.provider_message_id) return;
+  const nextStarred = !isStarredMessage(result);
+  try {
+    const response = await api(`/penguin-connect/conversations/${encodeURIComponent(result.conversation_id)}/messages/management`, {
+      method: "POST",
+      body: JSON.stringify({
+        provider_message_id: result.provider_message_id,
+        starred: nextStarred,
+      }),
+    });
+    mergeMessageManagement(response);
+    el.messageSearchStatus.textContent = response.is_starred ? "Search result starred" : "Search result unstarred";
+    renderMessageSearchResults();
+    renderMessages();
+    buildCodexPrompt();
+  } catch (error) {
+    el.messageSearchStatus.textContent = error.message;
   }
 }
 
@@ -2318,13 +2351,15 @@ function renderMessageSearchResults() {
 
   for (const result of state.messageSearchResults) {
     const item = document.createElement("div");
-    item.className = "search-result";
+    const starred = isStarredMessage(result);
+    item.className = `search-result ${starred ? "starred" : ""}`;
     item.innerHTML = `
       <button class="search-result-main" type="button">
         <span class="search-result-top"></span>
         <span class="search-result-body"></span>
       </button>
       <span class="search-result-actions">
+        <button type="button" data-action="star">Star</button>
         <button type="button" data-action="reply">Reply</button>
         <button type="button" data-action="copy">Copy</button>
         <button type="button" data-action="contact">Contact</button>
@@ -2340,6 +2375,11 @@ function renderMessageSearchResults() {
     ].filter(Boolean).join(" · ");
     item.querySelector(".search-result-body").textContent = messageSnippet(result);
     item.querySelector(".search-result-main").addEventListener("click", () => useMessageSearchResult(result));
+    const starButton = item.querySelector('[data-action="star"]');
+    starButton.textContent = starred ? "Unstar" : "Star";
+    starButton.classList.toggle("active", starred);
+    starButton.disabled = !result.conversation_id || !result.provider_message_id;
+    starButton.addEventListener("click", () => toggleMessageSearchResultStar(result));
     item.querySelector('[data-action="reply"]').addEventListener("click", () => replyToMessageSearchResult(result));
     item.querySelector('[data-action="copy"]').addEventListener("click", async () => {
       await copyText(messageCopyText(result));

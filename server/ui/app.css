@@ -1126,6 +1126,11 @@ input[type="date"]:focus {
   border-color: var(--accent);
 }
 
+.search-result.starred {
+  border-color: rgba(191, 128, 35, 0.45);
+  box-shadow: inset 3px 0 0 rgba(191, 128, 35, 0.36);
+}
+
 .search-result-main {
   display: grid;
   min-width: 0;
@@ -1159,6 +1164,11 @@ input[type="date"]:focus {
 .search-result-actions button:focus-visible {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+.search-result-actions button.active {
+  border-color: rgba(191, 128, 35, 0.52);
+  color: var(--warn);
 }
 
 .search-result-actions button:disabled {
