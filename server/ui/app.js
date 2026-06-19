@@ -164,6 +164,7 @@ const el = {
   saveSearchSendersButton: document.querySelector("#saveSearchSendersButton"),
   saveSearchParticipantsButton: document.querySelector("#saveSearchParticipantsButton"),
   createSearchSendersButton: document.querySelector("#createSearchSendersButton"),
+  createSearchParticipantsButton: document.querySelector("#createSearchParticipantsButton"),
   loadMoreSearchButton: document.querySelector("#loadMoreSearchButton"),
   messageDateFrom: document.querySelector("#messageDateFrom"),
   messageDateTo: document.querySelector("#messageDateTo"),
@@ -3307,23 +3308,47 @@ function messageSearchContactCandidates() {
   ].filter((contact) => contact && typeof contact === "object");
 }
 
-function messageSearchCreatableContactItems() {
+function messageSearchCreatableContactItemsFromResults({ handlesForResult, displayNameForHandle, fallbackNameForHandle }) {
   const seen = new Set();
   const candidates = messageSearchContactCandidates();
   const items = [];
   for (const result of state.messageSearchResults) {
-    const handle = messageSearchContactHandle(result);
-    const key = recipientCompareKey(handle);
-    if (!handle || !key || seen.has(key)) continue;
-    seen.add(key);
-    const saved = bestContactForHandle(handle, candidates);
-    if (saved && saved.is_saved !== false) continue;
-    items.push({
-      handle,
-      contact: messageContactFromHandle(handle, messageSearchContactDisplayName(result) || searchResultConversationName(result)),
-    });
+    for (const handle of handlesForResult(result)) {
+      const key = recipientCompareKey(handle);
+      if (!handle || !key || seen.has(key)) continue;
+      seen.add(key);
+      const saved = bestContactForHandle(handle, candidates);
+      if (saved && saved.is_saved !== false) continue;
+      items.push({
+        handle,
+        contact: messageContactFromHandle(
+          handle,
+          displayNameForHandle(result, handle) || fallbackNameForHandle(result, handle),
+        ),
+      });
+    }
   }
   return items;
+}
+
+function messageSearchCreatableContactItems() {
+  return messageSearchCreatableContactItemsFromResults({
+    handlesForResult: (result) => [messageSearchContactHandle(result)].filter(Boolean),
+    displayNameForHandle: (result) => messageSearchContactDisplayName(result),
+    fallbackNameForHandle: (result) => searchResultConversationName(result),
+  });
+}
+
+function messageSearchCreatableParticipantContactItems() {
+  return messageSearchCreatableContactItemsFromResults({
+    handlesForResult: messageSearchParticipantHandlesForResult,
+    displayNameForHandle: (result, handle) => (
+      recipientCompareKey(messageSearchContactHandle(result)) === recipientCompareKey(handle)
+        ? messageSearchContactDisplayName(result)
+        : ""
+    ),
+    fallbackNameForHandle: (_result, handle) => handle,
+  });
 }
 
 function addMessageSearchContactsToDraft() {
@@ -3378,21 +3403,27 @@ function addMessageSearchParticipantsToDraft() {
   return true;
 }
 
-async function createMessageSearchContacts() {
-  const allHandles = messageSearchContactHandles();
-  const items = messageSearchCreatableContactItems();
+async function createMessageSearchContactItems({
+  allHandles,
+  items,
+  button,
+  label,
+  noHandlesStatus,
+  alreadySavedStatus,
+  noCreatedStatus,
+}) {
   if (!allHandles.length) {
-    el.messageSearchStatus.textContent = "No sender handles in loaded results";
+    el.messageSearchStatus.textContent = noHandlesStatus;
     return;
   }
   if (!items.length) {
-    el.messageSearchStatus.textContent = "Search sender contacts already saved";
+    el.messageSearchStatus.textContent = alreadySavedStatus;
     renderMessageSearchMoreControls();
     return;
   }
 
-  el.createSearchSendersButton.disabled = true;
-  el.messageSearchStatus.textContent = `Creating ${items.length} sender contact${items.length === 1 ? "" : "s"}`;
+  button.disabled = true;
+  el.messageSearchStatus.textContent = `Creating ${items.length} ${label} contact${items.length === 1 ? "" : "s"}`;
   let created = 0;
   let skipped = 0;
   const failures = [];
@@ -3432,13 +3463,37 @@ async function createMessageSearchContacts() {
     if (failures.length) {
       el.messageSearchStatus.textContent = `Created ${created}; ${failures.length} failed`;
     } else if (created) {
-      el.messageSearchStatus.textContent = `Created ${created} sender contact${created === 1 ? "" : "s"}`;
+      el.messageSearchStatus.textContent = `Created ${created} ${label} contact${created === 1 ? "" : "s"}`;
     } else {
       el.messageSearchStatus.textContent = skipped
-        ? "Search sender contacts already saved"
-        : "No sender contacts created";
+        ? alreadySavedStatus
+        : noCreatedStatus;
     }
   }
+}
+
+async function createMessageSearchContacts() {
+  await createMessageSearchContactItems({
+    allHandles: messageSearchContactHandles(),
+    items: messageSearchCreatableContactItems(),
+    button: el.createSearchSendersButton,
+    label: "sender",
+    noHandlesStatus: "No sender handles in loaded results",
+    alreadySavedStatus: "Search sender contacts already saved",
+    noCreatedStatus: "No sender contacts created",
+  });
+}
+
+async function createMessageSearchParticipantContacts() {
+  await createMessageSearchContactItems({
+    allHandles: messageSearchParticipantHandles(),
+    items: messageSearchCreatableParticipantContactItems(),
+    button: el.createSearchParticipantsButton,
+    label: "participant",
+    noHandlesStatus: "No participant handles in loaded results",
+    alreadySavedStatus: "Search participant contacts already saved",
+    noCreatedStatus: "No participant contacts created",
+  });
 }
 
 function messageSearchRecipientListName() {
@@ -4591,6 +4646,7 @@ function renderMessageSearchMoreControls() {
   const allParticipantCount = messageSearchParticipantHandles().length;
   const newParticipantCount = messageSearchParticipantHandles({ onlyNew: true }).length;
   const creatableSenderCount = messageSearchCreatableContactItems().length;
+  const creatableParticipantCount = messageSearchCreatableParticipantContactItems().length;
   el.messageSearchMoreBar.hidden = !runnable;
   el.messageSearchCount.textContent = state.messageSearchLoading
     ? `Loading up to ${limit} results`
@@ -4643,6 +4699,12 @@ function renderMessageSearchMoreControls() {
     : (creatableSenderCount
       ? `Create ${creatableSenderCount} contact${creatableSenderCount === 1 ? "" : "s"}`
       : (allSenderCount ? "Contacts saved" : "Create contacts"));
+  el.createSearchParticipantsButton.disabled = bulkBusy || creatableParticipantCount === 0;
+  el.createSearchParticipantsButton.textContent = state.messageSearchLoading
+    ? "Create participants"
+    : (creatableParticipantCount
+      ? `Create ${creatableParticipantCount} participant${creatableParticipantCount === 1 ? "" : "s"}`
+      : (allParticipantCount ? "Participant contacts saved" : "Create participants"));
   el.loadMoreSearchButton.disabled = state.messageSearchBulkBusy || !canLoadMore;
   el.loadMoreSearchButton.textContent = state.messageSearchLoading
     ? "Loading"
@@ -6921,6 +6983,7 @@ el.addSearchParticipantsButton.addEventListener("click", addMessageSearchPartici
 el.saveSearchSendersButton.addEventListener("click", saveMessageSearchContactsAsRecipientList);
 el.saveSearchParticipantsButton.addEventListener("click", saveMessageSearchParticipantsAsRecipientList);
 el.createSearchSendersButton.addEventListener("click", createMessageSearchContacts);
+el.createSearchParticipantsButton.addEventListener("click", createMessageSearchParticipantContacts);
 el.contactRefreshButton.addEventListener("click", async () => {
   el.contactRefreshButton.disabled = true;
   el.contactStatus.textContent = "Refreshing Contacts";
