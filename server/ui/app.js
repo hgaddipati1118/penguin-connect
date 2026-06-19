@@ -157,6 +157,7 @@ const conversationViewLabels = {
   followup: "Follow-up",
   unread: "Unread",
   drafts: "Drafts",
+  unlabeled: "Unlabeled",
   pinned: "Pinned",
   archived: "Archived",
   all: "All",
@@ -486,6 +487,10 @@ function conversationHasDraft(conversation) {
   return Boolean(draftTextForConversation(conversation).trim());
 }
 
+function conversationHasLabels(conversation) {
+  return labelsForConversation(conversation).length > 0;
+}
+
 function followUpValue(conversation) {
   return String(conversation?.follow_up_at || "").trim();
 }
@@ -529,6 +534,7 @@ function conversationMatchesView(conversation, view = state.conversationView) {
   if (view === "unread") return Number(conversation.unread_count || 0) > 0 && !conversation.is_archived;
   if (view === "followup") return hasFollowUp(conversation) && !conversation.is_archived;
   if (view === "drafts") return conversationHasDraft(conversation) && !conversation.is_archived;
+  if (view === "unlabeled") return !conversationHasLabels(conversation) && !conversation.is_archived;
   if (view === "pinned") return Boolean(conversation.is_pinned) && !conversation.is_archived;
   if (view === "archived") return Boolean(conversation.is_archived);
   if (view === "all") return true;
@@ -547,6 +553,7 @@ function conversationViewCounts() {
     followup: state.conversations.filter((conversation) => conversationMatchesView(conversation, "followup")).length,
     unread: state.conversations.filter((conversation) => conversationMatchesView(conversation, "unread")).length,
     drafts: state.conversations.filter((conversation) => conversationMatchesView(conversation, "drafts")).length,
+    unlabeled: state.conversations.filter((conversation) => conversationMatchesView(conversation, "unlabeled")).length,
     pinned: state.conversations.filter((conversation) => conversationMatchesView(conversation, "pinned")).length,
     archived: state.conversations.filter((conversation) => conversationMatchesView(conversation, "archived")).length,
     all: state.conversations.length,
