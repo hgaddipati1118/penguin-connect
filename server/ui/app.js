@@ -4197,15 +4197,19 @@ async function openContactConversation(contact, conversation) {
 
 function contactRelatedThreadMetaText(conversation) {
   const unread = Number(conversation.unread_count || 0);
+  const labels = labelsForConversation(conversation).slice(0, 2).map((label) => `#${label}`);
+  const note = String(conversation.note || "").replace(/\s+/g, " ").trim();
   return [
     conversation.chat_type || "chat",
     conversation.source_service_name || conversation.source_provider || conversation.provider || "",
     unread > 0 ? `${unread} unread` : "",
+    ...labels,
+    note ? `note: ${trim(note, 72)}` : "",
     formatTime(conversation.last_message_ts || conversation.latest_timestamp || conversation.updated_at || ""),
   ].filter(Boolean).join(" · ");
 }
 
-function renderContactRelatedThreads(container, contact) {
+function renderContactRelatedThreads(container, contact, terms = []) {
   container.replaceChildren();
   const matches = findConversationsForContact(contact, 4);
   if (!matches.length) {
@@ -4225,13 +4229,14 @@ function renderContactRelatedThreads(container, contact) {
     button.className = "contact-thread-link";
     const title = document.createElement("span");
     title.className = "contact-thread-title";
-    title.textContent = conversationDisplayName(conversation);
+    appendHighlightedText(title, conversationDisplayName(conversation), terms);
     const meta = document.createElement("span");
     meta.className = "contact-thread-meta";
-    meta.textContent = contactRelatedThreadMetaText(conversation);
+    const metaText = contactRelatedThreadMetaText(conversation);
+    appendHighlightedText(meta, metaText, terms);
     button.append(title, meta);
-    button.title = meta.textContent
-      ? `Open ${conversationDisplayName(conversation)} · ${meta.textContent}`
+    button.title = metaText
+      ? `Open ${conversationDisplayName(conversation)} · ${metaText}`
       : `Open ${conversationDisplayName(conversation)}`;
     button.addEventListener("click", (event) => {
       event.stopPropagation();
@@ -5317,7 +5322,7 @@ function renderContacts() {
       });
       noteEditor.querySelector('[data-action="clear-contact-note"]').addEventListener("click", () => saveContactNote(contact, ""));
     }
-    renderContactRelatedThreads(item.querySelector(".contact-related"), contact);
+    renderContactRelatedThreads(item.querySelector(".contact-related"), contact, terms);
     el.contactList.append(item);
   }
 }
