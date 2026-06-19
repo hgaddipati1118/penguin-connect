@@ -185,6 +185,7 @@ const el = {
   draftCopyToggle: document.querySelector("#draftCopyToggle"),
   draftOpenToggle: document.querySelector("#draftOpenToggle"),
   draftOpenAttachmentsToggle: document.querySelector("#draftOpenAttachmentsToggle"),
+  sendDraftButton: document.querySelector("#sendDraftButton"),
   stageDraftButton: document.querySelector("#stageDraftButton"),
   clearDraftButton: document.querySelector("#clearDraftButton"),
   createContactState: document.querySelector("#createContactState"),
@@ -5159,37 +5160,104 @@ async function stageDraft() {
     el.draftState.textContent = "Add recipient";
     return;
   }
+  if (state.voiceMemoRecorder?.state === "recording" && state.voiceMemoTarget === "draft") {
+    el.draftState.textContent = "Stop voice memo before sending";
+    return;
+  }
 
   el.stageDraftButton.disabled = true;
+  el.sendDraftButton.disabled = true;
   el.draftState.textContent = "Staging";
   try {
-    const attachments = await filesAsBrowserAttachments(state.draftAttachments);
-    const attachmentPaths = draftExistingAttachmentPaths();
     const result = await api("/penguin-connect/messages/draft", {
       method: "POST",
-      body: JSON.stringify({
-        participants,
-        message: el.draftMessage.value,
-        attachment_paths: attachmentPaths,
-        attachments,
-        copy_to_clipboard: el.draftCopyToggle.checked,
-        open_messages: false,
-        open_addressed: el.draftOpenToggle.checked,
-        open_attachments: el.draftOpenAttachmentsToggle.checked,
-      }),
+      body: JSON.stringify(await draftRequestPayload(participants)),
     });
-    state.draftAttachmentFolder = result.attachment_folder || "";
-    state.draftAttachmentPaths = result.attachment_paths || [];
-    const actions = [
-      result.copied ? "copied" : "",
-      result.opened_addressed ? "addressed chat opened" : result.opened_messages ? "opened" : "",
-      result.opened_attachments ? "files opened" : result.attachment_count ? "files staged" : "",
-    ].filter(Boolean).join(" + ");
-    renderDraftPreview(result.participants || participants, result.draft || "");
-    el.draftState.textContent = actions ? `Draft ${actions}` : "Draft ready";
+    applyDraftStageResult(result, participants);
   } catch (error) {
     el.draftState.textContent = error.message;
   } finally {
+    el.stageDraftButton.disabled = false;
+    el.sendDraftButton.disabled = false;
+  }
+}
+
+async function draftRequestPayload(participants) {
+  return {
+    participants,
+    message: el.draftMessage.value,
+    attachment_paths: draftExistingAttachmentPaths(),
+    attachments: await filesAsBrowserAttachments(state.draftAttachments),
+    copy_to_clipboard: el.draftCopyToggle.checked,
+    open_messages: false,
+    open_addressed: el.draftOpenToggle.checked,
+    open_attachments: el.draftOpenAttachmentsToggle.checked,
+  };
+}
+
+function draftStageActions(result) {
+  return [
+    result.copied ? "copied" : "",
+    result.opened_addressed ? "addressed chat opened" : result.opened_messages ? "opened" : "",
+    result.opened_attachments ? "files opened" : result.attachment_count ? "files staged" : "",
+  ].filter(Boolean).join(" + ");
+}
+
+function applyDraftStageResult(result, participants) {
+  state.draftAttachmentFolder = result.attachment_folder || "";
+  state.draftAttachmentPaths = result.attachment_paths || [];
+  renderDraftPreview(result.participants || participants, result.draft || "");
+  const actions = draftStageActions(result);
+  el.draftState.textContent = actions ? `Draft ${actions}` : "Draft ready";
+}
+
+async function sendDraftIfExisting() {
+  const participants = setDraftRecipients(draftRecipientValues());
+  if (!participants.length) {
+    el.draftState.textContent = "Add recipient";
+    return;
+  }
+  if (state.voiceMemoRecorder?.state === "recording" && state.voiceMemoTarget === "draft") {
+    el.draftState.textContent = "Stop voice memo before sending";
+    return;
+  }
+  if (!el.draftMessage.value.trim() && !state.draftAttachments.length && !draftExistingAttachmentPaths().length) {
+    el.draftState.textContent = "Nothing to send";
+    return;
+  }
+
+  el.sendDraftButton.disabled = true;
+  el.stageDraftButton.disabled = true;
+  el.draftState.textContent = "Checking thread";
+  try {
+    const result = await api("/penguin-connect/messages/send-draft", {
+      method: "POST",
+      body: JSON.stringify(await draftRequestPayload(participants)),
+    });
+    if (result.send_mode === "sent") {
+      const label = result.matched_conversation?.display_name || "existing thread";
+      const conversationId = result.conversation_id || result.matched_conversation?.conversation_id || "";
+      clearDraftForm();
+      el.draftState.textContent = `Sent to ${label}`;
+      await loadConversations({ autoSelect: false });
+      if (conversationId && state.selected?.conversation_id === conversationId) {
+        await loadMessages();
+      }
+      return;
+    }
+
+    applyDraftStageResult(result, participants);
+    const reason = result.send_error === "multiple_matching_conversations"
+      ? "multiple matching threads"
+      : "no exact thread";
+    const actions = draftStageActions(result);
+    el.draftState.textContent = actions
+      ? `${reason}; draft ${actions}`
+      : `${reason}; draft ready`;
+  } catch (error) {
+    el.draftState.textContent = error.message;
+  } finally {
+    el.sendDraftButton.disabled = false;
     el.stageDraftButton.disabled = false;
   }
 }
@@ -5400,6 +5468,7 @@ el.draftFileInput.addEventListener("change", (event) => {
 el.threadPeopleAddAllButton.addEventListener("click", addThreadParticipantsToDraft);
 el.threadPeopleSaveListButton.addEventListener("click", saveThreadParticipantsAsRecipientList);
 el.threadPeopleCreateAllButton.addEventListener("click", createUnknownThreadParticipants);
+el.sendDraftButton.addEventListener("click", sendDraftIfExisting);
 el.stageDraftButton.addEventListener("click", stageDraft);
 el.copyDraftRecipientsButton.addEventListener("click", copyDraftRecipients);
 el.copyDraftBodyButton.addEventListener("click", copyDraftBody);

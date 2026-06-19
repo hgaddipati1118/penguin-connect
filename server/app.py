@@ -107,6 +107,9 @@ class PenguinConnectDraftCreateRequest(BaseModel):
     open_addressed: bool = False
     open_attachments: bool = False
 
+class PenguinConnectDraftSendRequest(PenguinConnectDraftCreateRequest):
+    sender_email: str = ""
+
 class PenguinConnectRecipientListRequest(BaseModel):
     list_id: str = ""
     name: str = ""
@@ -840,6 +843,44 @@ def _conversation_participant_handles(row: sqlite3.Row) -> list[str]:
         seen.add(key)
         handles.append(handle)
     return handles
+
+def _recipient_key_set(values: list[str]) -> set[str]:
+    return {
+        key
+        for key in (_contact_compare_key(value) for value in values)
+        if key
+    }
+
+def _find_exact_recipient_conversation(conn: sqlite3.Connection, participants: list[str]) -> dict:
+    target_keys = _recipient_key_set(participants)
+    if not target_keys:
+        return {"error": "draft_requires_participant", "matches": []}
+
+    rows = conn.execute(
+        """SELECT conversation_id, display_name, source_chat_id, source_chat_identifier,
+                  source_provider, participants, status, exclude_from_sync
+           FROM penguin_connect_conversations
+           WHERE status = 'active'
+             AND COALESCE(exclude_from_sync, 0) = 0
+             AND lower(COALESCE(source_provider, '')) IN ('imessage', 'sms', 'rcs')"""
+    ).fetchall()
+    matches = [
+        row for row in rows
+        if _recipient_key_set(_conversation_participant_handles(row)) == target_keys
+    ]
+    if len(matches) == 1:
+        return {"conversation": matches[0], "matches": matches}
+    if matches:
+        return {"error": "multiple_matching_conversations", "matches": matches}
+    return {"error": "no_matching_conversation", "matches": []}
+
+def _conversation_match_dict(row: sqlite3.Row) -> dict:
+    return {
+        "conversation_id": row["conversation_id"],
+        "display_name": row["display_name"] or "Messages thread",
+        "source_provider": row["source_provider"] or "imessage",
+        "participants": _conversation_participant_handles(row),
+    }
 
 
 def _participant_handle_matches_query(handle: str, query: str) -> bool:
@@ -2351,7 +2392,9 @@ def create_penguinconnect_messages_draft(req: PenguinConnectDraftCreateRequest):
     participants = _clean_recipient_values(req.participants)
     if not participants:
         raise HTTPException(status_code=400, detail="draft_requires_participant")
+    return _create_messages_draft_response(req, participants)
 
+def _create_messages_draft_response(req: PenguinConnectDraftCreateRequest, participants: list[str]) -> dict:
     draft = _build_messages_draft(participants, req.message)
     body_text = _messages_body_text(req.message)
     recipient_line = _messages_recipient_line(participants)
@@ -2397,6 +2440,73 @@ def create_penguinconnect_messages_draft(req: PenguinConnectDraftCreateRequest):
     finally:
         if attachment_dir and not success:
             shutil.rmtree(attachment_dir, ignore_errors=True)
+
+@app.post("/api/penguin-connect/messages/send-draft")
+@app.post("/penguin-connect/messages/send-draft")
+def send_penguinconnect_messages_draft(req: PenguinConnectDraftSendRequest):
+    participants = _clean_recipient_values(req.participants)
+    if not participants:
+        raise HTTPException(status_code=400, detail="draft_requires_participant")
+
+    body_text = _messages_body_text(req.message)
+    requested_attachment_paths = [str(path).strip() for path in (req.attachment_paths or []) if str(path or "").strip()]
+    if not body_text and not requested_attachment_paths and not req.attachments:
+        raise HTTPException(status_code=400, detail="empty_message")
+
+    conn = get_connection()
+    staged_dir: Path | None = None
+    success = False
+    try:
+        match = _find_exact_recipient_conversation(conn, participants)
+        conversation = match.get("conversation")
+        if conversation is None:
+            draft_result = _create_messages_draft_response(req, participants)
+            draft_result.update(
+                {
+                    "send_mode": "draft",
+                    "send_error": match.get("error") or "no_matching_conversation",
+                    "match_count": len(match.get("matches") or []),
+                    "matched_conversation": None,
+                }
+            )
+            return draft_result
+
+        ui_attachment_paths, staged_dir = _stage_sent_message_attachments(req.attachments)
+        attachment_paths = [*requested_attachment_paths, *ui_attachment_paths]
+        result = penguinconnect_send_manual_message(
+            conn,
+            conversation_id=conversation["conversation_id"],
+            sender_email=req.sender_email,
+            body_text=body_text,
+            attachment_paths=attachment_paths or None,
+        )
+        log_action(
+            "api_new_chat_send_request",
+            conversation_id=conversation["conversation_id"],
+            sender_email=req.sender_email or None,
+            success=bool(result.get("success")),
+            error=result.get("error"),
+            attachment_count=len(attachment_paths),
+        )
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail=result.get("error", "penguin_connect_send_failed"))
+
+        conn.commit()
+        success = True
+        result.update(
+            {
+                "send_mode": "sent",
+                "participants_count": len(participants),
+                "participants": participants,
+                "matched_conversation": _conversation_match_dict(conversation),
+                "attachment_count": len(attachment_paths),
+            }
+        )
+        return result
+    finally:
+        if staged_dir and not success:
+            shutil.rmtree(staged_dir, ignore_errors=True)
+        conn.close()
 
 @app.post("/api/penguin-connect/codex/ask")
 @app.post("/penguin-connect/codex/ask")

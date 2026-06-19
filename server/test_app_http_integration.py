@@ -1425,6 +1425,59 @@ class AppHttpIntegrationTests(unittest.TestCase):
         mock_open.assert_not_called()
         mock_open_attachments.assert_called_once_with(attachment_path.parent)
 
+    def test_messages_send_draft_endpoint_sends_when_recipients_match_existing_thread(self):
+        with mock.patch("penguin_connect.send_imessage", return_value=(True, None)) as mock_send, mock.patch(
+            "app._copy_to_clipboard"
+        ) as mock_copy, mock.patch("app._open_messages_addressed") as mock_open_addressed, TestClient(app_module.app) as client:
+            response = client.post(
+                "/penguin-connect/messages/send-draft",
+                json={
+                    "participants": ["+1 (512) 743-6385", "+15127436385"],
+                    "message": "Known thread send",
+                    "copy_to_clipboard": True,
+                    "open_addressed": True,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["success"])
+        self.assertEqual(body["send_mode"], "sent")
+        self.assertEqual(body["conversation_id"], "amc_test")
+        self.assertEqual(body["participants"], ["+1 (512) 743-6385"])
+        self.assertEqual(body["matched_conversation"]["conversation_id"], "amc_test")
+        mock_send.assert_called_once_with("chat-123", "Known thread send", attachment_paths=None)
+        mock_copy.assert_not_called()
+        mock_open_addressed.assert_not_called()
+
+    def test_messages_send_draft_endpoint_falls_back_to_open_draft_without_match(self):
+        with mock.patch("app._copy_to_clipboard") as mock_copy, mock.patch(
+            "app._open_messages_addressed",
+            return_value="sms://open?addresses=%2B14155550100%2C%20friend%40example.test",
+        ) as mock_open_addressed, TestClient(app_module.app) as client:
+            response = client.post(
+                "/penguin-connect/messages/send-draft",
+                json={
+                    "participants": ["+14155550100", "friend@example.test"],
+                    "message": "New group draft",
+                    "copy_to_clipboard": True,
+                    "open_messages": False,
+                    "open_addressed": True,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["success"])
+        self.assertEqual(body["send_mode"], "draft")
+        self.assertEqual(body["send_error"], "no_matching_conversation")
+        self.assertEqual(body["participants"], ["+14155550100", "friend@example.test"])
+        self.assertEqual(body["draft"], "To: +14155550100, friend@example.test\n\nNew group draft\n")
+        self.assertTrue(body["copied"])
+        self.assertTrue(body["opened_addressed"])
+        mock_copy.assert_called_once_with(body["draft"])
+        mock_open_addressed.assert_called_once_with(["+14155550100", "friend@example.test"])
+
     def test_recipient_lists_can_be_saved_updated_listed_and_deleted(self):
         with TestClient(app_module.app) as client:
             create_response = client.post(
@@ -1547,6 +1600,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("loadedMessageCount", html_response.text)
         self.assertIn("loadMoreMessagesButton", html_response.text)
         self.assertIn("Load older", html_response.text)
+        self.assertIn("sendDraftButton", html_response.text)
+        self.assertIn("Send if existing", html_response.text)
         self.assertIn("stageDraftButton", html_response.text)
         self.assertIn("draftRecipientChips", html_response.text)
         self.assertIn("draftPreviewText", html_response.text)
@@ -1920,6 +1975,11 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("buildMessagesDraftText", js_response.text)
         self.assertIn("draftRecipientLine", js_response.text)
         self.assertIn("renderDraftPreview", js_response.text)
+        self.assertIn("sendDraftIfExisting", js_response.text)
+        self.assertIn("/penguin-connect/messages/send-draft", js_response.text)
+        self.assertIn("Sent to", js_response.text)
+        self.assertIn("no exact thread", js_response.text)
+        self.assertIn("multiple matching threads", js_response.text)
         self.assertIn("No recipients · message ready", js_response.text)
         self.assertIn("Message:\\n\\n", js_response.text)
         self.assertIn("filesAsBrowserAttachments", js_response.text)
