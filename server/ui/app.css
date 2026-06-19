@@ -858,6 +858,11 @@ input[type="date"]:focus {
   box-shadow: inset 3px 0 0 rgba(168, 83, 27, 0.38);
 }
 
+.contact-message-preview.starred {
+  border-color: rgba(191, 128, 35, 0.45);
+  box-shadow: inset 3px 0 0 rgba(191, 128, 35, 0.36);
+}
+
 .contact-message-preview-main {
   display: grid;
   min-width: 0;

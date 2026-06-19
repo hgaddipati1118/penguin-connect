@@ -2906,6 +2906,29 @@ async function toggleContactRecentMessageRead(result) {
   }
 }
 
+async function toggleContactRecentMessageStar(result) {
+  if (!result?.conversation_id || !result.provider_message_id) return;
+  const nextStarred = !isStarredMessage(result);
+  try {
+    const response = await api(`/penguin-connect/conversations/${encodeURIComponent(result.conversation_id)}/messages/management`, {
+      method: "POST",
+      body: JSON.stringify({
+        provider_message_id: result.provider_message_id,
+        starred: nextStarred,
+      }),
+    });
+    mergeMessageManagement(response);
+    removeMessageSearchResultIfFiltered(response);
+    el.contactStatus.textContent = response.is_starred ? "Recent message starred" : "Recent message unstarred";
+    renderContactInspector();
+    renderMessageSearchResults();
+    renderMessages();
+    buildCodexPrompt();
+  } catch (error) {
+    el.contactStatus.textContent = error.message;
+  }
+}
+
 function renderContactInspectorMessages(container, contact) {
   container.replaceChildren();
   const key = contactDetailKey(contact);
@@ -2936,7 +2959,8 @@ function renderContactInspectorMessages(container, contact) {
   for (const result of state.activeContactMessages) {
     const item = document.createElement("div");
     const unread = isUnreadMessage(result);
-    item.className = `contact-message-preview ${unread ? "unread" : ""}`;
+    const starred = isStarredMessage(result);
+    item.className = ["contact-message-preview", unread ? "unread" : "", starred ? "starred" : ""].filter(Boolean).join(" ");
     item.innerHTML = `
       <button class="contact-message-preview-main" type="button">
         <span class="contact-message-preview-top"></span>
@@ -2946,6 +2970,7 @@ function renderContactInspectorMessages(container, contact) {
         <button type="button" data-action="open">Open</button>
         <button type="button" data-action="reply">Reply</button>
         <button type="button" data-action="draft">Draft</button>
+        <button type="button" data-action="star">Star</button>
         <button type="button" data-action="read-state">Mark unread</button>
         <button type="button" data-action="copy">Copy</button>
       </span>
@@ -2969,6 +2994,11 @@ function renderContactInspectorMessages(container, contact) {
     replyButton.disabled = !result.conversation_id;
     replyButton.addEventListener("click", () => replyToMessageSearchResult(result));
     item.querySelector('[data-action="draft"]').addEventListener("click", () => useMessageAsNewChatDraft(result));
+    const starButton = item.querySelector('[data-action="star"]');
+    starButton.textContent = starred ? "Unstar" : "Star";
+    starButton.classList.toggle("active", starred);
+    starButton.disabled = !result.conversation_id || !result.provider_message_id;
+    starButton.addEventListener("click", () => toggleContactRecentMessageStar(result));
     const readButton = item.querySelector('[data-action="read-state"]');
     readButton.textContent = unread ? "Mark read" : "Mark unread";
     readButton.classList.toggle("active", unread);
