@@ -32,6 +32,7 @@ const state = {
   selectedConversationIds: new Set(),
   bulkBusy: false,
   bulkMessage: "",
+  localRefreshBusy: false,
   draftSaveTimer: null,
   codexMode: "reply",
   codexBusy: false,
@@ -3102,7 +3103,8 @@ function renderThreadControls() {
   el.markUnreadButton.disabled = !hasSelection;
   el.connectionButton.disabled = !hasSelection;
   el.copyThreadButton.disabled = !hasSelection;
-  el.syncButton.disabled = false;
+  el.syncButton.disabled = state.localRefreshBusy;
+  el.syncButton.textContent = state.localRefreshBusy ? "Refreshing" : "Refresh";
   if (!hasSelection) {
     el.threadStatus.textContent = "No conversation selected";
     el.managementState.textContent = "No thread";
@@ -3180,11 +3182,11 @@ async function loadStatus() {
     const status = await api("/penguin-connect/health");
     state.senderEmail = status.gmail?.gmail_email || "";
     el.statusLine.textContent = status.ok
-      ? "Bridge ready · local Messages send enabled"
-      : "Bridge warning";
+      ? "Messages ready · local send enabled"
+      : "Messages warning";
     el.senderBadge.textContent = "Messages";
   } catch (error) {
-    el.statusLine.textContent = `Bridge offline · ${error.message}`;
+    el.statusLine.textContent = `Messages offline · ${error.message}`;
     el.senderBadge.textContent = "Messages";
   }
 }
@@ -3382,6 +3384,37 @@ async function loadMessages() {
   } catch (error) {
     state.messagesLoading = false;
     el.messageList.innerHTML = `<div class="error-state">${error.message}</div>`;
+  }
+}
+
+async function refreshLocalMessages() {
+  if (state.localRefreshBusy) return;
+  const hadSelection = Boolean(state.selected);
+  const conversationId = state.selected?.conversation_id || "";
+  state.localRefreshBusy = true;
+  renderThreadControls();
+  el.sendState.textContent = hadSelection ? "Refreshing local Messages" : "Refreshing local conversations";
+  try {
+    await loadConversations({ autoSelect: !hadSelection });
+    if (hadSelection && state.selected?.conversation_id === conversationId) {
+      await loadMessages();
+      await loadThreadContactMatches();
+    }
+    if (
+      el.globalMessageSearch.value.trim()
+      || state.messageSearchView !== "all"
+      || el.messageDateFrom.value.trim()
+      || el.messageDateTo.value.trim()
+    ) {
+      await loadMessageSearch();
+    }
+    await loadContacts({ force: true });
+    el.sendState.textContent = state.selected ? "Local Messages refreshed" : "Local conversations refreshed";
+  } catch (error) {
+    el.sendState.textContent = error.message;
+  } finally {
+    state.localRefreshBusy = false;
+    renderThreadControls();
   }
 }
 
@@ -3849,7 +3882,7 @@ async function saveConversationManagement() {
 async function toggleConnection() {
   if (!state.selected) return;
   const active = (state.selected.status || "active") === "active";
-  if (active && !window.confirm("Disconnect this local bridge conversation? Cached messages for this bridge thread will be removed.")) {
+  if (active && !window.confirm("Disconnect this local Messages conversation? Cached messages for this thread will be removed.")) {
     return;
   }
   el.connectionButton.disabled = true;
@@ -4391,17 +4424,7 @@ el.clearButton.addEventListener("click", () => {
   buildCodexPrompt();
 });
 el.syncButton.addEventListener("click", async () => {
-  el.sendState.textContent = "Sync requested";
-  try {
-    await api("/penguin-connect/conversations/sync", {
-      method: "POST",
-      body: JSON.stringify({ mode: "incremental", days: 7 }),
-    });
-    await loadConversations();
-    await loadMessages();
-  } catch (error) {
-    el.sendState.textContent = error.message;
-  }
+  refreshLocalMessages();
 });
 el.copyThreadButton.addEventListener("click", async () => {
   await copyText(threadText(40));
