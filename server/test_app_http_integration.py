@@ -1796,6 +1796,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("renderImageAttachment", js_response.text)
         self.assertIn("threadMediaItems", js_response.text)
         self.assertIn("mediaMatchesView", js_response.text)
+        self.assertIn("copyMediaLink", js_response.text)
+        self.assertIn("Media link copied", js_response.text)
         self.assertIn("renderThreadMedia", js_response.text)
         self.assertIn("focusMediaMessage", js_response.text)
         self.assertIn("renderConversationFilters", js_response.text)

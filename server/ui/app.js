@@ -3096,6 +3096,19 @@ function focusMediaMessage(item) {
   });
 }
 
+async function copyMediaLink(item) {
+  if (!item?.url) {
+    el.threadMediaState.textContent = "No media link";
+    return;
+  }
+  try {
+    await copyText(new URL(item.url, window.location.origin).toString());
+    el.threadMediaState.textContent = "Media link copied";
+  } catch (error) {
+    el.threadMediaState.textContent = error.message;
+  }
+}
+
 function renderThreadMedia() {
   const items = threadMediaItems();
   renderMediaFilters(items);
@@ -3152,6 +3165,12 @@ function renderThreadMedia() {
       open.rel = "noopener";
       open.textContent = "Open";
       row.querySelector(".media-actions").append(open);
+      const copy = document.createElement("button");
+      copy.type = "button";
+      copy.dataset.action = "copy-link";
+      copy.textContent = "Copy";
+      copy.addEventListener("click", () => copyMediaLink(item));
+      row.querySelector(".media-actions").append(copy);
     }
     el.threadMedia.append(row);
   }
