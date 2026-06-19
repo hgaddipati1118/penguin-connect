@@ -1020,6 +1020,20 @@ function messageCopyText(message) {
   return parts.filter(Boolean).join("\n");
 }
 
+function messageDraftText(message) {
+  const body = String(message.body_text || message.text || "").trim();
+  return body || messageCopyText(message);
+}
+
+function useMessageAsNewChatDraft(message) {
+  const draft = messageDraftText(message);
+  if (!draft) return;
+  el.draftMessage.value = draft;
+  renderDraftPreview();
+  el.draftState.textContent = "Message moved to new chat draft";
+  el.draftMessage.focus();
+}
+
 function clearReplyContext() {
   state.replyContext = null;
   renderReplyContext();
@@ -2918,6 +2932,7 @@ function renderMessageSearchResults() {
         <button type="button" data-action="star">Star</button>
         <button type="button" data-action="note">Note</button>
         <button type="button" data-action="reply">Reply</button>
+        <button type="button" data-action="draft">New draft</button>
         <button type="button" data-action="copy">Copy</button>
         <button type="button" data-action="contact">Contact</button>
         <button type="button" data-action="open">Open</button>
@@ -2980,6 +2995,7 @@ function renderMessageSearchResults() {
       noteEditor.querySelector('[data-action="clear-search-note"]').addEventListener("click", () => saveMessageSearchResultNote(result, ""));
     }
     item.querySelector('[data-action="reply"]').addEventListener("click", () => replyToMessageSearchResult(result));
+    item.querySelector('[data-action="draft"]').addEventListener("click", () => useMessageAsNewChatDraft(result));
     item.querySelector('[data-action="copy"]').addEventListener("click", async () => {
       await copyText(messageCopyText(result));
       el.sendState.textContent = "Search result copied";
@@ -3240,6 +3256,7 @@ function renderMessages() {
         <button type="button" data-action="read-state">Mark unread</button>
         <button type="button" data-action="note">Note</button>
         <button type="button" data-action="reply">Reply</button>
+        <button type="button" data-action="draft">New draft</button>
         <button type="button" data-action="copy">Copy</button>
       </div>
     `;
@@ -3291,6 +3308,7 @@ function renderMessages() {
     noteButton.disabled = !message.provider_message_id;
     noteButton.addEventListener("click", () => editMessageNote(message));
     item.querySelector('[data-action="reply"]').addEventListener("click", () => setReplyContext(message));
+    item.querySelector('[data-action="draft"]').addEventListener("click", () => useMessageAsNewChatDraft(message));
     item.querySelector('[data-action="copy"]').addEventListener("click", async () => {
       await copyText(messageCopyText(message));
       el.sendState.textContent = "Message copied";
