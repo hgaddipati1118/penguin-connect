@@ -2439,6 +2439,28 @@ async function useMessageSearchResult(result) {
   await selectConversation(conversation);
 }
 
+async function openMessageSearchResultInMessages(result) {
+  const conversationId = result?.conversation_id || "";
+  if (!conversationId) {
+    el.messageSearchStatus.textContent = "No conversation on result";
+    return;
+  }
+
+  el.messageSearchStatus.textContent = "Opening Messages";
+  try {
+    const payload = await api(`/penguin-connect/conversations/${encodeURIComponent(conversationId)}/open-messages`, {
+      method: "POST",
+      body: "{}",
+    });
+    const count = Number(payload.participants_count || 0);
+    el.messageSearchStatus.textContent = payload.opened_addressed
+      ? `Opened Messages to ${count} recipient${count === 1 ? "" : "s"}`
+      : "Opened Messages";
+  } catch (error) {
+    el.messageSearchStatus.textContent = error.message;
+  }
+}
+
 async function replyToMessageSearchResult(result) {
   await useMessageSearchResult(result);
   setReplyContext(result);
@@ -2866,6 +2888,7 @@ function renderMessageSearchResults() {
         <button type="button" data-action="copy">Copy</button>
         <button type="button" data-action="contact">Contact</button>
         <button type="button" data-action="open">Open</button>
+        <button type="button" data-action="messages">Messages</button>
       </span>
       <div class="search-result-note" hidden><span></span></div>
       <div class="search-result-note-editor" hidden>
@@ -2932,6 +2955,9 @@ function renderMessageSearchResults() {
     contactButton.disabled = !contactHandle;
     contactButton.addEventListener("click", () => fillContactFormFromMessageSearchResult(result));
     item.querySelector('[data-action="open"]').addEventListener("click", () => useMessageSearchResult(result));
+    const messagesButton = item.querySelector('[data-action="messages"]');
+    messagesButton.disabled = !result.conversation_id;
+    messagesButton.addEventListener("click", () => openMessageSearchResultInMessages(result));
     el.messageSearchResults.append(item);
   }
 }

@@ -1763,6 +1763,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("participantValuesForConversation", js_response.text)
         self.assertIn("messageSearchContactHandle", js_response.text)
         self.assertIn("fillContactFormFromMessageSearchResult", js_response.text)
+        self.assertIn("openMessageSearchResultInMessages", js_response.text)
+        self.assertIn('data-action="messages"', js_response.text)
         self.assertIn("refreshConversationsForSearchResult", js_response.text)
         self.assertIn("Loading imported thread", js_response.text)
         self.assertIn("loadConversations({ autoSelect: false })", js_response.text)
