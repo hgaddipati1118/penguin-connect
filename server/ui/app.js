@@ -37,6 +37,9 @@ const state = {
   activeContactMessagesToken: 0,
   activeContactMessagesError: "",
   activeContactMessageNoteEditorId: "",
+  activeContactMessagesLimit: 3,
+  activeContactMessagesLimitStep: 5,
+  activeContactMessagesLimitMax: 25,
   contactNoteEditorKey: "",
   selectedContactKeys: new Set(),
   recipientLists: [],
@@ -2068,15 +2071,20 @@ function activeContact() {
   return state.contacts.find(isActiveContact) || state.activeContact || null;
 }
 
+function resetActiveContactMessages() {
+  state.activeContactMessageKey = "";
+  state.activeContactMessages = [];
+  state.activeContactMessagesLoading = false;
+  state.activeContactMessagesError = "";
+  state.activeContactMessageNoteEditorId = "";
+  state.activeContactMessagesLimit = 3;
+}
+
 function setActiveContact(contact, { rerenderList = true } = {}) {
   const key = contactDetailKey(contact);
   if (!key) return;
   if (state.activeContactKey !== key) {
-    state.activeContactMessageKey = "";
-    state.activeContactMessages = [];
-    state.activeContactMessagesLoading = false;
-    state.activeContactMessagesError = "";
-    state.activeContactMessageNoteEditorId = "";
+    resetActiveContactMessages();
   }
   state.activeContactKey = key;
   state.activeContact = contact;
@@ -2087,11 +2095,7 @@ function setActiveContact(contact, { rerenderList = true } = {}) {
 function clearActiveContact() {
   state.activeContactKey = "";
   state.activeContact = null;
-  state.activeContactMessageKey = "";
-  state.activeContactMessages = [];
-  state.activeContactMessagesLoading = false;
-  state.activeContactMessagesError = "";
-  state.activeContactMessageNoteEditorId = "";
+  resetActiveContactMessages();
   renderContactInspector();
   renderContacts();
 }
@@ -3084,15 +3088,44 @@ function renderContactInspectorMessages(container, contact) {
     item.querySelector('[data-action="copy"]').addEventListener("click", () => copyContactRecentMessage(result));
     container.append(item);
   }
+
+  const loaded = state.activeContactMessages.length;
+  const limit = state.activeContactMessagesLimit;
+  const canShowMore = loaded >= limit && limit < state.activeContactMessagesLimitMax;
+  const canCompact = limit > 3;
+  if (canShowMore || canCompact) {
+    const controls = document.createElement("div");
+    controls.className = "contact-message-preview-more";
+    controls.innerHTML = `
+      <span></span>
+      <button type="button" data-action="more">Show more</button>
+      <button type="button" data-action="compact">Compact</button>
+    `;
+    controls.querySelector("span").textContent = `${loaded} loaded · window ${limit}`;
+    const moreButton = controls.querySelector('[data-action="more"]');
+    moreButton.disabled = !canShowMore;
+    moreButton.textContent = limit >= state.activeContactMessagesLimitMax ? "Max shown" : "Show more";
+    moreButton.addEventListener("click", () => loadContactInspectorMessages(contact, {
+      limit: Math.min(limit + state.activeContactMessagesLimitStep, state.activeContactMessagesLimitMax),
+    }));
+    const compactButton = controls.querySelector('[data-action="compact"]');
+    compactButton.hidden = !canCompact;
+    compactButton.addEventListener("click", () => loadContactInspectorMessages(contact, { limit: 3 }));
+    container.append(controls);
+  }
 }
 
-async function loadContactInspectorMessages(contact) {
+async function loadContactInspectorMessages(contact, { limit = 3 } = {}) {
   const query = contactMessageSearchQuery(contact);
   const key = contactDetailKey(contact);
   if (!query) {
     el.contactStatus.textContent = "No contact search value";
     return;
   }
+  const targetLimit = Math.min(
+    Math.max(1, Number(limit) || 3),
+    state.activeContactMessagesLimitMax
+  );
   const token = state.activeContactMessagesToken + 1;
   state.activeContactMessagesToken = token;
   state.activeContactMessageKey = key;
@@ -3100,11 +3133,12 @@ async function loadContactInspectorMessages(contact) {
   state.activeContactMessagesLoading = true;
   state.activeContactMessagesError = "";
   state.activeContactMessageNoteEditorId = "";
+  state.activeContactMessagesLimit = targetLimit;
   renderContactInspector();
   try {
     const params = new URLSearchParams({
       query,
-      limit: "3",
+      limit: String(targetLimit),
       view: "recent",
     });
     const payload = await api(`/penguin-connect/messages/search?${params.toString()}`);

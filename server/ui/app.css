@@ -1004,6 +1004,47 @@ input[type="date"]:focus {
   color: var(--accent);
 }
 
+.contact-message-preview-more {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.contact-message-preview-more span {
+  overflow: hidden;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.contact-message-preview-more button {
+  min-height: 26px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+.contact-message-preview-more button:hover,
+.contact-message-preview-more button:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.contact-message-preview-more button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.contact-message-preview-more button[hidden] {
+  display: none;
+}
+
 .contact-inspector-note {
   padding: 7px 8px;
   border-left: 3px solid rgba(17, 100, 86, 0.52);
