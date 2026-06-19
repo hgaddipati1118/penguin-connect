@@ -31,6 +31,11 @@ const state = {
   draftRecipientContactCache: [],
   activeContactKey: "",
   activeContact: null,
+  activeContactMessageKey: "",
+  activeContactMessages: [],
+  activeContactMessagesLoading: false,
+  activeContactMessagesToken: 0,
+  activeContactMessagesError: "",
   contactNoteEditorKey: "",
   selectedContactKeys: new Set(),
   recipientLists: [],
@@ -1982,6 +1987,12 @@ function activeContact() {
 function setActiveContact(contact, { rerenderList = true } = {}) {
   const key = contactDetailKey(contact);
   if (!key) return;
+  if (state.activeContactKey !== key) {
+    state.activeContactMessageKey = "";
+    state.activeContactMessages = [];
+    state.activeContactMessagesLoading = false;
+    state.activeContactMessagesError = "";
+  }
   state.activeContactKey = key;
   state.activeContact = contact;
   renderContactInspector();
@@ -1991,6 +2002,10 @@ function setActiveContact(contact, { rerenderList = true } = {}) {
 function clearActiveContact() {
   state.activeContactKey = "";
   state.activeContact = null;
+  state.activeContactMessageKey = "";
+  state.activeContactMessages = [];
+  state.activeContactMessagesLoading = false;
+  state.activeContactMessagesError = "";
   renderContactInspector();
   renderContacts();
 }
@@ -2770,6 +2785,96 @@ function renderContactRelatedThreads(container, contact) {
   }
 }
 
+function contactMessageSearchQuery(contact) {
+  return contactRecipientHandle(contact) || contactDisplayName(contact);
+}
+
+function renderContactInspectorMessages(container, contact) {
+  container.replaceChildren();
+  const key = contactDetailKey(contact);
+  const visible = state.activeContactMessageKey === key
+    || state.activeContactMessagesLoading
+    || Boolean(state.activeContactMessagesError);
+  container.hidden = !visible;
+  if (!visible) return;
+
+  const header = document.createElement("div");
+  header.className = "contact-inspector-messages-head";
+  header.textContent = state.activeContactMessagesLoading
+    ? "Loading recent messages"
+    : state.activeContactMessagesError
+      ? state.activeContactMessagesError
+      : `${state.activeContactMessages.length} recent message${state.activeContactMessages.length === 1 ? "" : "s"}`;
+  container.append(header);
+
+  if (state.activeContactMessagesLoading) return;
+  if (!state.activeContactMessages.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state compact-state";
+    empty.textContent = state.activeContactMessagesError ? "Try again" : "No recent local messages";
+    container.append(empty);
+    return;
+  }
+
+  for (const result of state.activeContactMessages) {
+    const item = document.createElement("div");
+    item.className = "contact-message-preview";
+    item.innerHTML = `
+      <button class="contact-message-preview-main" type="button">
+        <span class="contact-message-preview-top"></span>
+        <span class="contact-message-preview-body"></span>
+      </button>
+      <button class="contact-message-preview-open" type="button">Open</button>
+    `;
+    item.querySelector(".contact-message-preview-top").textContent = [
+      searchResultConversationName(result),
+      messageSender(result),
+      messageTime(result),
+    ].filter(Boolean).join(" · ");
+    item.querySelector(".contact-message-preview-body").textContent = messageSnippet(result, 120);
+    item.querySelector(".contact-message-preview-main").addEventListener("click", () => useMessageSearchResult(result));
+    item.querySelector(".contact-message-preview-open").addEventListener("click", () => useMessageSearchResult(result));
+    container.append(item);
+  }
+}
+
+async function loadContactInspectorMessages(contact) {
+  const query = contactMessageSearchQuery(contact);
+  const key = contactDetailKey(contact);
+  if (!query) {
+    el.contactStatus.textContent = "No contact search value";
+    return;
+  }
+  const token = state.activeContactMessagesToken + 1;
+  state.activeContactMessagesToken = token;
+  state.activeContactMessageKey = key;
+  state.activeContactMessages = [];
+  state.activeContactMessagesLoading = true;
+  state.activeContactMessagesError = "";
+  renderContactInspector();
+  try {
+    const params = new URLSearchParams({
+      query,
+      limit: "3",
+      view: "recent",
+    });
+    const payload = await api(`/penguin-connect/messages/search?${params.toString()}`);
+    if (token !== state.activeContactMessagesToken || state.activeContactKey !== key) return;
+    state.activeContactMessages = payload.messages || [];
+    state.activeContactMessagesLoading = false;
+    state.activeContactMessagesError = "";
+    el.contactStatus.textContent = `${state.activeContactMessages.length} recent message${state.activeContactMessages.length === 1 ? "" : "s"}`;
+    renderContactInspector();
+  } catch (error) {
+    if (token !== state.activeContactMessagesToken || state.activeContactKey !== key) return;
+    state.activeContactMessages = [];
+    state.activeContactMessagesLoading = false;
+    state.activeContactMessagesError = error.message;
+    el.contactStatus.textContent = error.message;
+    renderContactInspector();
+  }
+}
+
 function renderContactInspector() {
   const contact = activeContact();
   el.contactInspector.replaceChildren();
@@ -2793,6 +2898,7 @@ function renderContactInspector() {
       <button type="button" data-action="add">Add</button>
       <button type="button" data-action="copy">Copy</button>
       <button type="button" data-action="find">Find</button>
+      <button type="button" data-action="recent">Recent</button>
       <button type="button" data-action="messages">Msg</button>
       <button type="button" data-action="favorite"></button>
       <button type="button" data-action="note">Note</button>
@@ -2800,6 +2906,7 @@ function renderContactInspector() {
     </div>
     <div class="contact-inspector-note" hidden></div>
     <div class="contact-inspector-related"></div>
+    <div class="contact-inspector-messages" hidden></div>
   `;
   el.contactInspector.querySelector(".contact-inspector-name").textContent = contactDisplayName(contact);
   el.contactInspector.querySelector(".contact-inspector-handle").textContent = contactHandleText(contact);
@@ -2822,6 +2929,9 @@ function renderContactInspector() {
   const findButton = el.contactInspector.querySelector('[data-action="find"]');
   findButton.disabled = !(handle || contactDisplayName(contact));
   findButton.addEventListener("click", () => searchMessagesForContact(contact));
+  const recentButton = el.contactInspector.querySelector('[data-action="recent"]');
+  recentButton.disabled = !contactMessageSearchQuery(contact);
+  recentButton.addEventListener("click", () => loadContactInspectorMessages(contact));
   const messagesButton = el.contactInspector.querySelector('[data-action="messages"]');
   messagesButton.disabled = !handle;
   messagesButton.addEventListener("click", () => openContactInMessages(contact));
@@ -2840,6 +2950,7 @@ function renderContactInspector() {
   createButton.addEventListener("click", () => fillContactFormFromContact(contact));
   el.contactInspector.querySelector(".contact-inspector-close").addEventListener("click", clearActiveContact);
   renderContactRelatedThreads(el.contactInspector.querySelector(".contact-inspector-related"), contact);
+  renderContactInspectorMessages(el.contactInspector.querySelector(".contact-inspector-messages"), contact);
 }
 
 function renderThreadPeople() {
