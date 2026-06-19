@@ -157,7 +157,7 @@ audio voice memos. The local UI supports replies, file/image attachments from pi
 shortcuts, message-level reply targets and copy actions, thread filtering,
 unread/pinned/archived and label-based conversation views, bulk
 mark-read/archive/label actions, latest-message previews in the conversation rail,
-global synced-message search with filters for current thread, unread, sent,
+global synced-message search with open/copy/reply actions and filters for current thread, unread, sent,
 files and audio, loaded-message filters for unread/sent/files/audio,
 starred/noted-message filtering, local message starring and private
 message notes, opening synced attachment files, a per-thread media browser for loaded

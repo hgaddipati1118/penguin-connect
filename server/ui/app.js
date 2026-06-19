@@ -1459,6 +1459,12 @@ async function useMessageSearchResult(result) {
   await selectConversation(conversationFromSearchResult(result));
 }
 
+async function replyToMessageSearchResult(result) {
+  await useMessageSearchResult(result);
+  setReplyContext(result);
+  el.sendState.textContent = "Reply target set from search";
+}
+
 function searchResultConversationName(result) {
   const conversation = state.conversations.find((conversation) => conversation.conversation_id === result.conversation_id);
   if (conversation) return conversationDisplayName(conversation);
@@ -1760,22 +1766,34 @@ function renderMessageSearchResults() {
   }
 
   for (const result of state.messageSearchResults) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "search-result";
-    button.innerHTML = `
-      <span class="search-result-top"></span>
-      <span class="search-result-body"></span>
+    const item = document.createElement("div");
+    item.className = "search-result";
+    item.innerHTML = `
+      <button class="search-result-main" type="button">
+        <span class="search-result-top"></span>
+        <span class="search-result-body"></span>
+      </button>
+      <span class="search-result-actions">
+        <button type="button" data-action="reply">Reply</button>
+        <button type="button" data-action="copy">Copy</button>
+        <button type="button" data-action="open">Open</button>
+      </span>
     `;
     const sender = result.sender_name || result.sender_email || result.direction || "unknown";
-    button.querySelector(".search-result-top").textContent = [
+    item.querySelector(".search-result-top").textContent = [
       searchResultConversationName(result),
       sender,
       formatTime(result.message_timestamp || result.timestamp),
     ].filter(Boolean).join(" · ");
-    button.querySelector(".search-result-body").textContent = messageSnippet(result);
-    button.addEventListener("click", () => useMessageSearchResult(result));
-    el.messageSearchResults.append(button);
+    item.querySelector(".search-result-body").textContent = messageSnippet(result);
+    item.querySelector(".search-result-main").addEventListener("click", () => useMessageSearchResult(result));
+    item.querySelector('[data-action="reply"]').addEventListener("click", () => replyToMessageSearchResult(result));
+    item.querySelector('[data-action="copy"]').addEventListener("click", async () => {
+      await copyText(messageCopyText(result));
+      el.sendState.textContent = "Search result copied";
+    });
+    item.querySelector('[data-action="open"]').addEventListener("click", () => useMessageSearchResult(result));
+    el.messageSearchResults.append(item);
   }
 }
 

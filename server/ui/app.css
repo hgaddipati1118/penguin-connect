@@ -1024,18 +1024,53 @@ input[type="email"]:focus {
 
 .search-result {
   display: grid;
-  width: 100%;
-  gap: 4px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
   padding: 9px 10px;
   border: 1px solid var(--line);
   background: var(--panel);
   color: var(--ink);
+}
+
+.search-result:hover,
+.search-result:focus-within {
+  border-color: var(--accent);
+}
+
+.search-result-main {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
   text-align: left;
   cursor: pointer;
 }
 
-.search-result:hover {
+.search-result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.search-result-actions button {
+  min-height: 26px;
+  border: 1px solid var(--line);
+  background: var(--panel-alt);
+  color: var(--muted);
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+.search-result-actions button:hover,
+.search-result-actions button:focus-visible {
   border-color: var(--accent);
+  color: var(--accent);
 }
 
 .search-result-top,
