@@ -1098,11 +1098,12 @@ function revokeAttachmentPreviews(files) {
   }
 }
 
-function attachmentUrl(message, index) {
-  if (!state.selected || !message.provider_message_id) return "";
-  const conversationId = encodeURIComponent(state.selected.conversation_id);
+function attachmentUrl(message, index, conversationId = "") {
+  const resolvedConversationId = conversationId || state.selected?.conversation_id || message?.conversation_id || "";
+  if (!resolvedConversationId || !message.provider_message_id) return "";
+  const encodedConversationId = encodeURIComponent(resolvedConversationId);
   const messageId = encodeURIComponent(message.provider_message_id);
-  return `/penguin-connect/conversations/${conversationId}/attachments/${index}?provider_message_id=${messageId}`;
+  return `/penguin-connect/conversations/${encodedConversationId}/attachments/${index}?provider_message_id=${messageId}`;
 }
 
 function renderAudioAttachment(attachment, url) {
@@ -1144,6 +1145,53 @@ function renderImageAttachment(attachment, url) {
   caption.textContent = attachmentLabel(attachment);
 
   wrapper.append(image, caption);
+  return wrapper;
+}
+
+function attachmentKindLabel(attachment) {
+  if (isAudioAttachment(attachment)) return "Audio";
+  if (isImageAttachment(attachment)) return "Image";
+  return "File";
+}
+
+function renderCompactAttachmentChips(message, { conversationId = "", limit = 4 } = {}) {
+  const attachments = attachmentRows(message);
+  if (!attachments.length) return null;
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "compact-attachments";
+  for (const [index, attachment] of attachments.slice(0, limit).entries()) {
+    const url = attachmentLocalPath(attachment) ? attachmentUrl(message, index, conversationId) : "";
+    const chip = document.createElement(url ? "a" : "span");
+    chip.className = [
+      "compact-attachment",
+      isAudioAttachment(attachment) ? "audio" : "",
+      isImageAttachment(attachment) ? "image" : "",
+    ].filter(Boolean).join(" ");
+    if (url) {
+      chip.href = url;
+      chip.target = "_blank";
+      chip.rel = "noopener";
+      chip.title = "Open attachment";
+    }
+
+    const kind = document.createElement("span");
+    kind.className = "compact-attachment-kind";
+    kind.textContent = attachmentKindLabel(attachment);
+    const label = document.createElement("span");
+    label.className = "compact-attachment-label";
+    label.textContent = attachmentLabel(attachment);
+    chip.append(kind, label);
+    wrapper.append(chip);
+  }
+
+  if (attachments.length > limit) {
+    const more = document.createElement("span");
+    more.className = "compact-attachment more";
+    more.textContent = `+${attachments.length - limit}`;
+    wrapper.append(more);
+  }
+
   return wrapper;
 }
 
@@ -2832,6 +2880,11 @@ function renderContactInspectorMessages(container, contact) {
       messageTime(result),
     ].filter(Boolean).join(" · ");
     item.querySelector(".contact-message-preview-body").textContent = messageSnippet(result, 120);
+    const attachmentChips = renderCompactAttachmentChips(result, {
+      conversationId: result.conversation_id,
+      limit: 3,
+    });
+    if (attachmentChips) item.append(attachmentChips);
     item.querySelector(".contact-message-preview-main").addEventListener("click", () => useMessageSearchResult(result));
     item.querySelector(".contact-message-preview-open").addEventListener("click", () => useMessageSearchResult(result));
     container.append(item);
@@ -3561,6 +3614,10 @@ function renderMessageSearchResults() {
     ].filter(Boolean).join(" · ");
     item.querySelector(".search-result-body").textContent = messageSnippet(result);
     item.querySelector(".search-result-main").addEventListener("click", () => useMessageSearchResult(result));
+    const attachmentChips = renderCompactAttachmentChips(result, {
+      conversationId: result.conversation_id,
+    });
+    if (attachmentChips) item.insertBefore(attachmentChips, item.querySelector(".search-result-note"));
     const starButton = item.querySelector('[data-action="star"]');
     starButton.textContent = starred ? "Unstar" : "Star";
     starButton.classList.toggle("active", starred);

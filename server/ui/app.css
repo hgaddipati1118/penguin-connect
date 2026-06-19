@@ -1563,6 +1563,60 @@ input[type="date"]:focus {
   gap: 6px;
 }
 
+.compact-attachments {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.compact-attachment {
+  display: inline-grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  max-width: 100%;
+  min-height: 24px;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  background: rgba(255, 253, 248, 0.78);
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  gap: 5px;
+  text-decoration: none;
+}
+
+.compact-attachment:hover,
+.compact-attachment:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.compact-attachment.audio {
+  border-color: rgba(17, 100, 86, 0.26);
+}
+
+.compact-attachment.image {
+  border-color: rgba(191, 128, 35, 0.28);
+}
+
+.compact-attachment-kind {
+  color: var(--accent);
+  text-transform: uppercase;
+}
+
+.compact-attachment-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compact-attachment.more {
+  display: inline-flex;
+  width: fit-content;
+}
+
 .message {
   max-width: 78%;
   margin-bottom: 12px;
