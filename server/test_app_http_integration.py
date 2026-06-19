@@ -341,23 +341,45 @@ class AppHttpIntegrationTests(unittest.TestCase):
                 "/penguin-connect/conversations/amc_test/messages/management",
                 json={"provider_message_id": "imsg-latest", "starred": True},
             )
+            note_response = client.post(
+                "/penguin-connect/conversations/amc_test/messages/management",
+                json={"provider_message_id": "imsg-latest", "note": "Ask about timing"},
+            )
             messages_response = client.get("/penguin-connect/conversations/amc_test/messages", params={"limit": 1})
             unstar_response = client.post(
                 "/penguin-connect/conversations/amc_test/messages/management",
                 json={"provider_message_id": "imsg-latest", "starred": False},
             )
+            clear_note_response = client.post(
+                "/penguin-connect/conversations/amc_test/messages/management",
+                json={"provider_message_id": "imsg-latest", "note": ""},
+            )
 
         self.assertEqual(star_response.status_code, 200)
         self.assertTrue(star_response.json()["is_starred"])
+
+        self.assertEqual(note_response.status_code, 200)
+        note_body = note_response.json()
+        self.assertTrue(note_body["is_starred"])
+        self.assertEqual(note_body["message_note"], "Ask about timing")
+        self.assertTrue(note_body["has_note"])
 
         self.assertEqual(messages_response.status_code, 200)
         message = messages_response.json()["messages"][0]
         self.assertEqual(message["provider_message_id"], "imsg-latest")
         self.assertTrue(message["is_starred"])
-        self.assertEqual(message["message_note"], "")
+        self.assertEqual(message["message_note"], "Ask about timing")
 
         self.assertEqual(unstar_response.status_code, 200)
-        self.assertFalse(unstar_response.json()["is_starred"])
+        unstar_body = unstar_response.json()
+        self.assertFalse(unstar_body["is_starred"])
+        self.assertEqual(unstar_body["message_note"], "Ask about timing")
+
+        self.assertEqual(clear_note_response.status_code, 200)
+        clear_note_body = clear_note_response.json()
+        self.assertFalse(clear_note_body["is_starred"])
+        self.assertEqual(clear_note_body["message_note"], "")
+        self.assertFalse(clear_note_body["has_note"])
 
     def test_message_management_endpoint_rejects_unknown_message(self):
         with TestClient(app_module.app) as client:
@@ -852,6 +874,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn(".conversation-select", css_response.text)
         self.assertIn(".conversation-preview", css_response.text)
         self.assertIn(".message.starred", css_response.text)
+        self.assertIn(".message.noted", css_response.text)
+        self.assertIn(".message-note-editor", css_response.text)
         self.assertIn(".message-actions", css_response.text)
         self.assertIn(".reply-context", css_response.text)
         self.assertIn(".thread-management", css_response.text)
@@ -919,6 +943,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("setReplyContext", js_response.text)
         self.assertIn("toggleMessageStar", js_response.text)
         self.assertIn("isStarredMessage", js_response.text)
+        self.assertIn("saveMessageNote", js_response.text)
+        self.assertIn("hasMessageNote", js_response.text)
         self.assertIn("messages/management", js_response.text)
         self.assertIn("messageCopyText", js_response.text)
         self.assertIn("renderManagementFields", js_response.text)

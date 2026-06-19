@@ -110,7 +110,8 @@ class PenguinConnectConversationManagementRequest(BaseModel):
 
 class PenguinConnectMessageManagementRequest(BaseModel):
     provider_message_id: str = ""
-    starred: bool = False
+    starred: bool | None = None
+    note: str | None = None
 
 def _map_sqlite_error(exc: sqlite3.OperationalError) -> HTTPException:
     msg = str(exc).lower()
@@ -1108,7 +1109,9 @@ def _set_message_management(
     conversation_id: str,
     provider_message_id: str,
     *,
-    starred: bool,
+    starred: bool | None,
+    note: str | None = None,
+    update_note: bool = False,
 ) -> dict:
     clean_provider_id = str(provider_message_id or "").strip()[:500]
     if not clean_provider_id:
@@ -1124,20 +1127,37 @@ def _set_message_management(
     if not row:
         raise HTTPException(status_code=404, detail="message_not_found")
 
+    managed = conn.execute(
+        """SELECT is_starred, note
+           FROM penguin_connect_message_management
+           WHERE conversation_id = ? AND provider_message_id = ?
+           LIMIT 1""",
+        (conversation_id, clean_provider_id),
+    ).fetchone()
+    current_starred = bool(managed["is_starred"]) if managed else False
+    current_note = managed["note"] if managed else ""
+    next_starred = current_starred if starred is None else bool(starred)
+    next_note = current_note
+    if update_note:
+        next_note = str(note or "").strip()[:2000]
+
     conn.execute(
         """INSERT INTO penguin_connect_message_management
-           (conversation_id, provider_message_id, is_starred, updated_at)
-           VALUES (?, ?, ?, datetime('now'))
+           (conversation_id, provider_message_id, is_starred, note, updated_at)
+           VALUES (?, ?, ?, ?, datetime('now'))
            ON CONFLICT(conversation_id, provider_message_id) DO UPDATE SET
              is_starred = excluded.is_starred,
+             note = excluded.note,
              updated_at = datetime('now')""",
-        (conversation_id, clean_provider_id, 1 if starred else 0),
+        (conversation_id, clean_provider_id, 1 if next_starred else 0, next_note),
     )
     return {
         "success": True,
         "conversation_id": conversation_id,
         "provider_message_id": clean_provider_id,
-        "is_starred": bool(starred),
+        "is_starred": bool(next_starred),
+        "message_note": next_note,
+        "has_note": bool(next_note),
     }
 
 
@@ -1575,17 +1595,25 @@ def set_penguinconnect_message_management(
 ):
     conn = get_connection()
     try:
+        field_set = getattr(req, "model_fields_set", None)
+        if field_set is None:
+            field_set = getattr(req, "__fields_set__", set())
+        field_set = set(field_set)
         result = _set_message_management(
             conn,
             conversation_id,
             req.provider_message_id,
-            starred=req.starred,
+            starred=req.starred if "starred" in field_set else None,
+            note=req.note,
+            update_note="note" in field_set,
         )
         log_action(
             "api_set_message_management",
             conversation_id=conversation_id,
             provider_message_id=result.get("provider_message_id"),
             is_starred=bool(result.get("is_starred")),
+            has_note=bool(result.get("has_note")),
+            note_length=len(result.get("message_note") or ""),
         )
         conn.commit()
         return result

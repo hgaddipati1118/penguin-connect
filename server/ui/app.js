@@ -16,6 +16,7 @@ const state = {
   messageSearchView: "all",
   focusMessageId: "",
   messageView: "all",
+  messageNoteEditorId: "",
   mediaView: "all",
   conversationView: "inbox",
   conversationLabel: "",
@@ -119,6 +120,7 @@ const emojiChoices = ["👍", "🙏", "🔥", "❤️", "😂", "👀", "✅", "
 const messageViews = [
   { key: "all", label: "All" },
   { key: "starred", label: "Starred" },
+  { key: "noted", label: "Noted" },
   { key: "unread", label: "Unread" },
   { key: "files", label: "Files" },
   { key: "audio", label: "Audio" },
@@ -572,6 +574,14 @@ function isStarredMessage(message) {
   return message.is_starred === true || message.is_starred === 1;
 }
 
+function messageNoteText(message) {
+  return String(message.message_note || "").trim();
+}
+
+function hasMessageNote(message) {
+  return messageNoteText(message).length > 0;
+}
+
 function attachmentRows(message) {
   const metadata = message.metadata && typeof message.metadata === "object" ? message.metadata : {};
   if (Array.isArray(message.attachments)) return message.attachments;
@@ -600,6 +610,7 @@ function isImageAttachment(attachment) {
 
 function messageMatchesView(message, view = state.messageView) {
   if (view === "starred") return isStarredMessage(message);
+  if (view === "noted") return hasMessageNote(message);
   if (view === "unread") return isUnreadMessage(message);
   if (view === "files") return attachmentRows(message).length > 0;
   if (view === "audio") return attachmentRows(message).some(isAudioAttachment);
@@ -611,6 +622,7 @@ function messageViewCounts() {
   return {
     all: state.messages.length,
     starred: state.messages.filter(isStarredMessage).length,
+    noted: state.messages.filter(hasMessageNote).length,
     unread: state.messages.filter(isUnreadMessage).length,
     files: state.messages.filter((message) => attachmentRows(message).length > 0).length,
     audio: state.messages.filter((message) => attachmentRows(message).some(isAudioAttachment)).length,
@@ -720,6 +732,20 @@ function setReplyContext(message) {
   buildCodexPrompt();
 }
 
+function mergeMessageManagement(result) {
+  const providerMessageId = result.provider_message_id || "";
+  if (!providerMessageId) return;
+  state.messages = state.messages.map((item) => (
+    item.provider_message_id === providerMessageId
+      ? {
+        ...item,
+        is_starred: Boolean(result.is_starred),
+        message_note: result.message_note || "",
+      }
+      : item
+  ));
+}
+
 async function toggleMessageStar(message) {
   if (!state.selected || !message.provider_message_id) return;
   const nextStarred = !isStarredMessage(message);
@@ -731,12 +757,34 @@ async function toggleMessageStar(message) {
         starred: nextStarred,
       }),
     });
-    state.messages = state.messages.map((item) => (
-      item.provider_message_id === message.provider_message_id
-        ? { ...item, is_starred: Boolean(result.is_starred) }
-        : item
-    ));
+    mergeMessageManagement(result);
     el.sendState.textContent = result.is_starred ? "Message starred" : "Message unstarred";
+    renderMessages();
+    buildCodexPrompt();
+  } catch (error) {
+    el.sendState.textContent = error.message;
+  }
+}
+
+function editMessageNote(message) {
+  if (!message.provider_message_id) return;
+  state.messageNoteEditorId = message.provider_message_id;
+  renderMessages();
+}
+
+async function saveMessageNote(message, noteValue) {
+  if (!state.selected || !message.provider_message_id) return;
+  try {
+    const result = await api(`/penguin-connect/conversations/${encodeURIComponent(state.selected.conversation_id)}/messages/management`, {
+      method: "POST",
+      body: JSON.stringify({
+        provider_message_id: message.provider_message_id,
+        note: noteValue,
+      }),
+    });
+    mergeMessageManagement(result);
+    state.messageNoteEditorId = "";
+    el.sendState.textContent = result.has_note ? "Message note saved" : "Message note cleared";
     renderMessages();
     buildCodexPrompt();
   } catch (error) {
@@ -1426,6 +1474,7 @@ function renderMessages() {
       message.sender_name,
       message.sender_email,
       message.body_text,
+      message.message_note,
       JSON.stringify(attachmentRows(message)),
     ].join(" ").toLowerCase();
     return messageMatchesView(message) && (!query || haystack.includes(query));
@@ -1454,7 +1503,8 @@ function renderMessages() {
     const focused = state.focusMessageId && message.provider_message_id === state.focusMessageId;
     const unread = isUnreadMessage(message);
     const starred = isStarredMessage(message);
-    item.className = `message ${isOwnMessage(message) ? "mine" : ""} ${unread ? "unread" : ""} ${starred ? "starred" : ""} ${focused ? "focused" : ""}`;
+    const noted = hasMessageNote(message);
+    item.className = `message ${isOwnMessage(message) ? "mine" : ""} ${unread ? "unread" : ""} ${starred ? "starred" : ""} ${noted ? "noted" : ""} ${focused ? "focused" : ""}`;
     item.dataset.messageId = message.provider_message_id || "";
     const attachments = attachmentRows(message);
     item.innerHTML = `
@@ -1463,9 +1513,19 @@ function renderMessages() {
         <time></time>
       </div>
       <div class="message-body"></div>
+      <div class="message-note" hidden><span></span></div>
+      <div class="message-note-editor" hidden>
+        <textarea rows="2" maxlength="2000" placeholder="Private note"></textarea>
+        <div class="message-note-actions">
+          <button type="button" data-action="save-note">Save</button>
+          <button type="button" data-action="cancel-note">Cancel</button>
+          <button type="button" data-action="clear-note">Clear</button>
+        </div>
+      </div>
       <div class="message-attachments"></div>
       <div class="message-actions">
         <button type="button" data-action="star">Star</button>
+        <button type="button" data-action="note">Note</button>
         <button type="button" data-action="reply">Reply</button>
         <button type="button" data-action="copy">Copy</button>
       </div>
@@ -1473,11 +1533,45 @@ function renderMessages() {
     item.querySelector(".message-head span").textContent = messageSender(message);
     item.querySelector("time").textContent = messageTime(message);
     item.querySelector(".message-body").textContent = message.body_text || message.text || "";
+    const noteText = messageNoteText(message);
+    const editingNote = state.messageNoteEditorId && message.provider_message_id === state.messageNoteEditorId;
+    const noteBox = item.querySelector(".message-note");
+    if (noteText) {
+      noteBox.hidden = false;
+      noteBox.querySelector("span").textContent = noteText;
+    }
+    const noteEditor = item.querySelector(".message-note-editor");
+    const noteInput = noteEditor.querySelector("textarea");
+    if (editingNote) {
+      noteEditor.hidden = false;
+      noteInput.value = noteText;
+      noteInput.addEventListener("keydown", (event) => {
+        if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+          event.preventDefault();
+          saveMessageNote(message, noteInput.value);
+        }
+        if (event.key === "Escape") {
+          state.messageNoteEditorId = "";
+          renderMessages();
+        }
+      });
+      noteEditor.querySelector('[data-action="save-note"]').addEventListener("click", () => saveMessageNote(message, noteInput.value));
+      noteEditor.querySelector('[data-action="cancel-note"]').addEventListener("click", () => {
+        state.messageNoteEditorId = "";
+        renderMessages();
+      });
+      noteEditor.querySelector('[data-action="clear-note"]').addEventListener("click", () => saveMessageNote(message, ""));
+    }
     const starButton = item.querySelector('[data-action="star"]');
     starButton.textContent = starred ? "Unstar" : "Star";
     starButton.classList.toggle("active", starred);
     starButton.disabled = !message.provider_message_id;
     starButton.addEventListener("click", () => toggleMessageStar(message));
+    const noteButton = item.querySelector('[data-action="note"]');
+    noteButton.textContent = noted ? "Edit note" : "Note";
+    noteButton.classList.toggle("active", noted || Boolean(editingNote));
+    noteButton.disabled = !message.provider_message_id;
+    noteButton.addEventListener("click", () => editMessageNote(message));
     item.querySelector('[data-action="reply"]').addEventListener("click", () => setReplyContext(message));
     item.querySelector('[data-action="copy"]').addEventListener("click", async () => {
       await copyText(messageCopyText(message));
@@ -2079,7 +2173,9 @@ function threadText(limit = 18) {
     const text = trim(message.body_text || message.text || "", 260);
     const attachments = attachmentRows(message).map((attachment) => basename(attachment.transfer_name || attachment.filename || "attachment"));
     const suffix = attachments.length ? ` [attachments: ${attachments.join(", ")}]` : "";
-    return `${formatTime(message.message_timestamp || message.timestamp)} | ${sender}: ${text}${suffix}`;
+    const note = messageNoteText(message);
+    const noteSuffix = note ? ` [private note: ${trim(note, 180)}]` : "";
+    return `${formatTime(message.message_timestamp || message.timestamp)} | ${sender}: ${text}${suffix}${noteSuffix}`;
   }).join("\n");
 }
 
