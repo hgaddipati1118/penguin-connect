@@ -155,6 +155,7 @@ const el = {
   globalMessageSearchFilters: document.querySelector("#globalMessageSearchFilters"),
   messageSearchMoreBar: document.querySelector("#messageSearchMoreBar"),
   messageSearchCount: document.querySelector("#messageSearchCount"),
+  addSearchSendersButton: document.querySelector("#addSearchSendersButton"),
   loadMoreSearchButton: document.querySelector("#loadMoreSearchButton"),
   messageDateFrom: document.querySelector("#messageDateFrom"),
   messageDateTo: document.querySelector("#messageDateTo"),
@@ -3177,6 +3178,39 @@ function addMessageSearchResultContactToDraft(result) {
   });
 }
 
+function messageSearchContactHandles({ onlyNew = false } = {}) {
+  const handles = uniqueRecipientValues(state.messageSearchResults.map(messageSearchContactHandle).filter(Boolean));
+  if (!onlyNew) return handles;
+  const existingKeys = new Set(uniqueRecipientValues(draftRecipientValues()).map(recipientCompareKey));
+  return handles.filter((handle) => !existingKeys.has(recipientCompareKey(handle)));
+}
+
+function addMessageSearchContactsToDraft() {
+  const allHandles = messageSearchContactHandles();
+  const handles = messageSearchContactHandles({ onlyNew: true });
+  if (!allHandles.length) {
+    el.messageSearchStatus.textContent = "No sender handles in loaded results";
+    return false;
+  }
+  if (!handles.length) {
+    const status = "All search senders already in new chat";
+    el.messageSearchStatus.textContent = status;
+    el.draftState.textContent = status;
+    renderMessageSearchMoreControls();
+    el.draftMessage.focus();
+    return false;
+  }
+
+  const recipients = uniqueRecipientValues([...draftRecipientValues(), ...handles]);
+  setDraftRecipients(recipients, { focus: true });
+  const status = `Added ${handles.length} search sender${handles.length === 1 ? "" : "s"} to new chat`;
+  el.messageSearchStatus.textContent = status;
+  el.draftState.textContent = status;
+  renderMessageSearchMoreControls();
+  el.draftMessage.focus();
+  return true;
+}
+
 function addLoadedMessageContactToDraft(message) {
   return addMessageContactHandleToDraft(messageContactHandle(message), {
     target: "message",
@@ -4237,10 +4271,18 @@ function renderMessageSearchMoreControls() {
   const limit = state.messageSearchLimit;
   const atMax = limit >= state.messageSearchLimitMax;
   const canLoadMore = runnable && !state.messageSearchLoading && loaded >= limit && !atMax;
+  const allSenderCount = messageSearchContactHandles().length;
+  const newSenderCount = messageSearchContactHandles({ onlyNew: true }).length;
   el.messageSearchMoreBar.hidden = !runnable;
   el.messageSearchCount.textContent = state.messageSearchLoading
     ? `Loading up to ${limit} results`
     : `${loaded} loaded · window ${limit}${atMax ? " max" : ""}`;
+  el.addSearchSendersButton.disabled = state.messageSearchLoading || allSenderCount === 0 || newSenderCount === 0;
+  el.addSearchSendersButton.textContent = state.messageSearchLoading
+    ? "Add senders"
+    : (newSenderCount
+      ? `Add ${newSenderCount} sender${newSenderCount === 1 ? "" : "s"}`
+      : (allSenderCount ? "All senders added" : "Add senders"));
   el.loadMoreSearchButton.disabled = !canLoadMore;
   el.loadMoreSearchButton.textContent = state.messageSearchLoading
     ? "Loading"
@@ -6511,6 +6553,7 @@ el.globalMessageSearchFilters.addEventListener("click", (event) => {
   loadMessageSearch();
 });
 el.loadMoreSearchButton.addEventListener("click", loadMoreMessageSearchResults);
+el.addSearchSendersButton.addEventListener("click", addMessageSearchContactsToDraft);
 el.contactRefreshButton.addEventListener("click", async () => {
   el.contactRefreshButton.disabled = true;
   el.contactStatus.textContent = "Refreshing Contacts";

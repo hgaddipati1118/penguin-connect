@@ -351,6 +351,14 @@ h3 {
   display: none;
 }
 
+.message-search-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 .message-search-more .quiet-button {
   min-height: 24px;
   padding: 3px 8px;
