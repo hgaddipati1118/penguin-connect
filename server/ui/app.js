@@ -14,6 +14,7 @@ const state = {
   contactSource: "all",
   contactSearchTimer: null,
   contactNoteEditorKey: "",
+  selectedContactKeys: new Set(),
   recipientLists: [],
   activeRecipientListId: "",
   threadContactMatches: {},
@@ -71,9 +72,11 @@ const el = {
   contactRefreshButton: document.querySelector("#contactRefreshButton"),
   contactSearch: document.querySelector("#contactSearch"),
   contactSourceFilters: document.querySelector("#contactSourceFilters"),
+  contactSelectVisibleButton: document.querySelector("#contactSelectVisibleButton"),
   contactAddVisibleButton: document.querySelector("#contactAddVisibleButton"),
   contactCopyVisibleButton: document.querySelector("#contactCopyVisibleButton"),
   contactSaveVisibleButton: document.querySelector("#contactSaveVisibleButton"),
+  contactClearSelectedButton: document.querySelector("#contactClearSelectedButton"),
   contactStatus: document.querySelector("#contactStatus"),
   contactList: document.querySelector("#contactList"),
   threadProvider: document.querySelector("#threadProvider"),
@@ -1514,23 +1517,108 @@ function visibleContactRecipientHandles() {
   return uniqueRecipientValues(state.contacts.map(contactRecipientHandle));
 }
 
+function contactSelectionKey(contact) {
+  const key = contact.contact_key || contact.favorite_contact_key || contact.note_contact_key || "";
+  if (key) return key;
+  const handle = contactRecipientHandle(contact);
+  const compareKey = recipientCompareKey(handle);
+  return compareKey ? `handle:${compareKey}` : "";
+}
+
+function visibleContactSelectionKeys() {
+  return new Set(state.contacts.map(contactSelectionKey).filter(Boolean));
+}
+
+function isContactSelected(contact) {
+  const key = contactSelectionKey(contact);
+  return Boolean(key && state.selectedContactKeys.has(key));
+}
+
+function selectedContactRecipientHandles() {
+  return uniqueRecipientValues(
+    state.contacts
+      .filter(isContactSelected)
+      .map(contactRecipientHandle)
+  );
+}
+
+function contactBulkRecipientHandles() {
+  const selected = selectedContactRecipientHandles();
+  return selected.length ? selected : visibleContactRecipientHandles();
+}
+
+function pruneSelectedContacts() {
+  const visibleKeys = visibleContactSelectionKeys();
+  state.selectedContactKeys = new Set(
+    [...state.selectedContactKeys].filter((key) => visibleKeys.has(key))
+  );
+}
+
 function contactBulkListName() {
   const query = el.contactSearch.value.trim();
   const source = contactSourceLabel();
-  return query ? `${source}: ${query}` : `${source} contacts`;
+  const selected = selectedContactRecipientHandles().length;
+  const label = selected ? "Selected" : source;
+  return query ? `${label}: ${query}` : `${label} contacts`;
 }
 
 function renderContactBulkActions() {
-  const hasRecipients = visibleContactRecipientHandles().length > 0;
+  const selectedCount = selectedContactRecipientHandles().length;
+  const visibleCount = visibleContactRecipientHandles().length;
+  const hasRecipients = selectedCount ? selectedCount > 0 : visibleCount > 0;
+  el.contactSelectVisibleButton.disabled = visibleCount === 0;
   el.contactAddVisibleButton.disabled = !hasRecipients;
   el.contactCopyVisibleButton.disabled = !hasRecipients;
   el.contactSaveVisibleButton.disabled = !hasRecipients;
+  el.contactClearSelectedButton.disabled = selectedCount === 0;
+  el.contactAddVisibleButton.textContent = selectedCount ? "Add selected" : "Add visible";
+  el.contactCopyVisibleButton.textContent = selectedCount ? "Copy selected" : "Copy visible";
+  el.contactSaveVisibleButton.textContent = selectedCount ? "Save selected" : "Save visible";
+  el.contactClearSelectedButton.textContent = selectedCount ? `Clear ${selectedCount}` : "Clear selected";
+}
+
+function toggleContactSelection(contact) {
+  const key = contactSelectionKey(contact);
+  if (!key || !contactRecipientHandle(contact)) {
+    el.contactStatus.textContent = "No phone or email on contact";
+    return;
+  }
+  if (state.selectedContactKeys.has(key)) {
+    state.selectedContactKeys.delete(key);
+  } else {
+    state.selectedContactKeys.add(key);
+  }
+  const selectedCount = selectedContactRecipientHandles().length;
+  el.contactStatus.textContent = selectedCount
+    ? `${selectedCount} contact${selectedCount === 1 ? "" : "s"} selected`
+    : "Contact selection cleared";
+  renderContacts();
+}
+
+function selectVisibleContacts() {
+  let selected = 0;
+  for (const contact of state.contacts) {
+    const key = contactSelectionKey(contact);
+    if (!key || !contactRecipientHandle(contact)) continue;
+    state.selectedContactKeys.add(key);
+    selected += 1;
+  }
+  el.contactStatus.textContent = selected
+    ? `${selected} visible contact${selected === 1 ? "" : "s"} selected`
+    : "No visible handles";
+  renderContacts();
+}
+
+function clearSelectedContacts() {
+  state.selectedContactKeys.clear();
+  el.contactStatus.textContent = "Contact selection cleared";
+  renderContacts();
 }
 
 function addVisibleContactsToDraft() {
-  const participants = visibleContactRecipientHandles();
+  const participants = contactBulkRecipientHandles();
   if (!participants.length) {
-    el.contactStatus.textContent = "No visible handles";
+    el.contactStatus.textContent = "No contact handles";
     return;
   }
 
@@ -1546,29 +1634,32 @@ function addVisibleContactsToDraft() {
 }
 
 async function copyVisibleContacts() {
-  const participants = visibleContactRecipientHandles();
+  const participants = contactBulkRecipientHandles();
   if (!participants.length) {
-    el.contactStatus.textContent = "No visible handles";
+    el.contactStatus.textContent = "No contact handles";
     return;
   }
 
   try {
     await copyText(participants.join("\n"));
-    el.contactStatus.textContent = `${participants.length} visible handle${participants.length === 1 ? "" : "s"} copied`;
+    const selectedCount = selectedContactRecipientHandles().length;
+    const label = selectedCount ? "selected" : "visible";
+    el.contactStatus.textContent = `${participants.length} ${label} handle${participants.length === 1 ? "" : "s"} copied`;
   } catch (error) {
     el.contactStatus.textContent = error.message;
   }
 }
 
 async function saveVisibleContactsAsRecipientList() {
-  const participants = visibleContactRecipientHandles();
+  const participants = contactBulkRecipientHandles();
   if (!participants.length) {
-    el.contactStatus.textContent = "No visible handles";
+    el.contactStatus.textContent = "No contact handles";
     return;
   }
 
   el.contactSaveVisibleButton.disabled = true;
-  el.contactStatus.textContent = "Saving visible contacts";
+  const selectedCount = selectedContactRecipientHandles().length;
+  el.contactStatus.textContent = selectedCount ? "Saving selected contacts" : "Saving visible contacts";
   try {
     const result = await api("/penguin-connect/recipient-lists", {
       method: "POST",
@@ -1583,7 +1674,7 @@ async function saveVisibleContactsAsRecipientList() {
     setDraftRecipients(participants);
     mergeRecipientList(saved);
     renderRecipientLists();
-    el.contactStatus.textContent = "Visible contacts saved";
+    el.contactStatus.textContent = selectedCount ? "Selected contacts saved" : "Visible contacts saved";
     el.draftState.textContent = `${recipientListLabel(saved)} saved`;
   } catch (error) {
     el.contactStatus.textContent = error.message;
@@ -2280,8 +2371,10 @@ function renderContacts() {
     const favorite = isFavoriteContact(contact);
     const noteText = contactNoteText(contact);
     const editingNote = state.contactNoteEditorKey === contactNoteManagementKey(contact);
-    item.className = `contact-item ${favorite ? "favorite-contact" : ""} ${noteText ? "noted-contact" : ""}`;
+    const selected = isContactSelected(contact);
+    item.className = `contact-item ${favorite ? "favorite-contact" : ""} ${noteText ? "noted-contact" : ""} ${selected ? "selected-contact" : ""}`;
     item.innerHTML = `
+      <button class="contact-select-toggle" type="button" title="Select contact" aria-label="Select contact"></button>
       <button class="contact-main" type="button">
         <span class="contact-name"></span>
         <span class="contact-handle"></span>
@@ -2310,6 +2403,12 @@ function renderContacts() {
     item.querySelector(".contact-meta").textContent = contact.organization && contact.organization !== contactDisplayName(contact)
       ? contact.organization
       : contact.handle_type || "contact";
+    const selectButton = item.querySelector(".contact-select-toggle");
+    selectButton.textContent = selected ? "x" : "";
+    selectButton.classList.toggle("active", selected);
+    selectButton.disabled = !contactSelectionKey(contact) || !contactRecipientHandle(contact);
+    selectButton.setAttribute("aria-pressed", selected ? "true" : "false");
+    selectButton.addEventListener("click", () => toggleContactSelection(contact));
     item.querySelector(".contact-main").addEventListener("click", () => useContact(contact));
     const favoriteButton = item.querySelector(".contact-favorite");
     favoriteButton.textContent = favorite ? "Unstar" : "Star";
@@ -3142,6 +3241,7 @@ async function loadContacts({ force = false } = {}) {
     const payload = await api(`/penguin-connect/contacts?${params.toString()}`);
     state.contacts = payload.contacts || [];
     state.contactSourceCounts = payload.source_counts || state.contactSourceCounts || {};
+    pruneSelectedContacts();
     renderContactSourceFilters();
     const total = payload.total_contacts ?? 0;
     const counts = payload.source_counts || {};
@@ -4175,13 +4275,17 @@ el.refreshButton.addEventListener("click", () => {
   loadContacts();
 });
 el.conversationSearch.addEventListener("input", renderConversations);
-el.contactSearch.addEventListener("input", scheduleContactSearch);
+el.contactSearch.addEventListener("input", () => {
+  state.selectedContactKeys.clear();
+  scheduleContactSearch();
+});
 el.contactSourceFilters.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-contact-source]");
   if (!button) return;
   state.contactSource = contactSources.some((source) => source.key === button.dataset.contactSource)
     ? button.dataset.contactSource
     : "all";
+  state.selectedContactKeys.clear();
   loadContacts({
     force: state.contactSource === "participants"
       || state.contactSource === "favorites"
@@ -4219,9 +4323,11 @@ el.contactRefreshButton.addEventListener("click", async () => {
     el.contactRefreshButton.disabled = false;
   }
 });
+el.contactSelectVisibleButton.addEventListener("click", selectVisibleContacts);
 el.contactAddVisibleButton.addEventListener("click", addVisibleContactsToDraft);
 el.contactCopyVisibleButton.addEventListener("click", copyVisibleContacts);
 el.contactSaveVisibleButton.addEventListener("click", saveVisibleContactsAsRecipientList);
+el.contactClearSelectedButton.addEventListener("click", clearSelectedContacts);
 el.messageFilter.addEventListener("input", renderMessages);
 el.messageViewFilters.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-message-view]");
