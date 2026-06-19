@@ -1220,7 +1220,8 @@ input[type="date"]:focus {
 }
 
 .contact-thread-title,
-.contact-thread-meta {
+.contact-thread-meta,
+.contact-thread-message {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1228,6 +1229,11 @@ input[type="date"]:focus {
 
 .contact-thread-meta {
   color: var(--muted);
+  font-size: 9px;
+}
+
+.contact-thread-message {
+  color: #116456;
   font-size: 9px;
 }
 

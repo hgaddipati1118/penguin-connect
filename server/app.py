@@ -978,13 +978,27 @@ def _conversation_contact_keys_matching_context(conn: sqlite3.Connection, query:
     return keys
 
 
-def _conversation_contact_keys_matching_messages(conn: sqlite3.Connection, query: str) -> set[str]:
+def _message_contact_context_from_row(row: sqlite3.Row) -> dict:
+    message_text = " ".join(str(row["body_text"] or row["message_note"] or row["subject"] or "").split())
+    return {
+        "conversation_id": row["conversation_id"] or "",
+        "provider_message_id": row["provider_message_id"] or "",
+        "message_sender": row["sender_name"] or row["sender_email"] or "",
+        "message_timestamp": row["message_timestamp"] or "",
+        "message_text": message_text[:240],
+    }
+
+
+def _conversation_contact_message_matches(conn: sqlite3.Connection, query: str) -> dict[str, list[dict]]:
     clean_query = str(query or "").strip().lower()
     if len(clean_query) < 3:
-        return set()
+        return {}
     rows = conn.execute(
         """
-        SELECT c.conversation_id, c.source_chat_identifier, c.participants, m.sender_email
+        SELECT c.conversation_id, c.source_chat_identifier, c.participants,
+               m.provider_message_id, m.sender_email, m.sender_name, m.subject,
+               m.body_text, m.message_timestamp,
+               COALESCE(mm.note, '') AS message_note
         FROM penguin_connect_messages m
         JOIN penguin_connect_conversations c
           ON c.conversation_id = m.conversation_id
@@ -1007,14 +1021,47 @@ def _conversation_contact_keys_matching_messages(conn: sqlite3.Connection, query
         """,
         (f"%{clean_query}%",),
     ).fetchall()
-    keys: set[str] = set()
+    matches: dict[str, list[dict]] = {}
+    seen_contexts: set[tuple[str, str, str]] = set()
     for row in rows:
         handles = _conversation_participant_handles(row)
         sender = str(row["sender_email"] or "").strip()
         if sender and _contact_handle_type(sender) != "handle":
             handles.append(sender)
-        keys.update(key for key in (_contact_compare_key(handle) for handle in handles) if key)
-    return keys
+        context = _message_contact_context_from_row(row)
+        context_id = context["provider_message_id"] or f"{context['conversation_id']}:{context['message_timestamp']}"
+        for key in (_contact_compare_key(handle) for handle in handles):
+            if not key:
+                continue
+            dedupe_key = (key, context["conversation_id"], context_id)
+            if dedupe_key in seen_contexts:
+                continue
+            seen_contexts.add(dedupe_key)
+            matches.setdefault(key, []).append(context)
+    return matches
+
+
+def _attach_contact_message_context(contacts: list[dict], contexts_by_key: dict[str, list[dict]]) -> list[dict]:
+    if not contexts_by_key:
+        return contacts
+    for contact in contacts:
+        contexts: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        for key in _contact_candidate_keys(contact):
+            for context in contexts_by_key.get(key, []):
+                context_key = (context.get("conversation_id") or "", context.get("provider_message_id") or "")
+                if context_key in seen:
+                    continue
+                seen.add(context_key)
+                contexts.append(context)
+        if contexts:
+            contact["message_context"] = contexts[:3]
+            contact["message_context_text"] = " ".join(
+                str(context.get("message_text") or "").strip()
+                for context in contexts[:3]
+                if str(context.get("message_text") or "").strip()
+            )
+    return contacts
 
 
 def _participant_matches_query(handle: str, conversation_name: str, query: str, context_text: str = "") -> bool:
@@ -1335,7 +1382,8 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
     noted_order = {key: index for index, key in enumerate(noted_keys)}
     note_match_keys = _managed_contact_note_keys_matching(conn, query)
     context_match_keys = _conversation_contact_keys_matching_context(conn, query)
-    message_match_keys = _conversation_contact_keys_matching_messages(conn, query)
+    message_context_by_key = _conversation_contact_message_matches(conn, query)
+    message_match_keys = set(message_context_by_key)
     thread_match_keys = context_match_keys | message_match_keys
     pattern = f"%{query.lower()}%"
     where = ""
@@ -1413,7 +1461,10 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
                         allowed_keys=extra_participant_keys,
                     )
                 )
-    contacts = _attach_contact_management(conn, _dedupe_contact_items([*contact_items, *participant_items]))
+    contacts = _attach_contact_message_context(
+        _attach_contact_management(conn, _dedupe_contact_items([*contact_items, *participant_items])),
+        message_context_by_key,
+    )
     if normalized_source == "favorites":
         contacts = [contact for contact in contacts if contact.get("is_favorite")]
         if query:

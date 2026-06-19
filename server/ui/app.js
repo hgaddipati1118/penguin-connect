@@ -4249,6 +4249,26 @@ function contactRelatedThreadMetaText(conversation) {
   ].filter(Boolean).join(" · ");
 }
 
+function contactMessageContextsForConversation(contact, conversation) {
+  const conversationId = String(conversation?.conversation_id || "").trim();
+  const contexts = Array.isArray(contact?.message_context) ? contact.message_context : [];
+  return contexts.filter((context) => String(context?.conversation_id || "").trim() === conversationId);
+}
+
+function contactThreadMessageContextText(contact, conversation) {
+  return contactMessageContextsForConversation(contact, conversation).slice(0, 2).map((context) => {
+    const sender = String(context.message_sender || "").replace(/\s+/g, " ").trim();
+    const text = String(context.message_text || "").replace(/\s+/g, " ").trim();
+    const when = formatTime(context.message_timestamp || "");
+    return [
+      "message",
+      sender ? `from ${trim(sender, 32)}` : "",
+      text ? trim(text, 96) : "",
+      when,
+    ].filter(Boolean).join(" · ");
+  }).filter(Boolean).join(" / ");
+}
+
 function renderContactRelatedThreads(container, contact, terms = []) {
   container.replaceChildren();
   const matches = findConversationsForContact(contact, 4);
@@ -4274,9 +4294,15 @@ function renderContactRelatedThreads(container, contact, terms = []) {
     meta.className = "contact-thread-meta";
     const metaText = contactRelatedThreadMetaText(conversation);
     appendHighlightedText(meta, metaText, terms);
+    const message = document.createElement("span");
+    message.className = "contact-thread-message";
+    const messageText = contactThreadMessageContextText(contact, conversation);
+    if (messageText) appendHighlightedText(message, messageText, terms);
     button.append(title, meta);
-    button.title = metaText
-      ? `Open ${conversationDisplayName(conversation)} · ${metaText}`
+    if (messageText) button.append(message);
+    const detailText = [metaText, messageText].filter(Boolean).join(" · ");
+    button.title = detailText
+      ? `Open ${conversationDisplayName(conversation)} · ${detailText}`
       : `Open ${conversationDisplayName(conversation)}`;
     button.addEventListener("click", (event) => {
       event.stopPropagation();

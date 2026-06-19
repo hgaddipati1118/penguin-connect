@@ -1076,6 +1076,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         message_context_body = message_context_response.json()
         self.assertEqual(message_context_body["count"], 1)
         self.assertEqual(message_context_body["contacts"][0]["contact_key"], "phone:15127436385")
+        self.assertEqual(message_context_body["contacts"][0]["message_context"][0]["conversation_id"], "amc_test")
+        self.assertEqual(message_context_body["contacts"][0]["message_context"][0]["message_text"], "Latest message")
 
         self.assertEqual(managed_label_response.status_code, 200)
         managed_label_body = managed_label_response.json()
@@ -1320,6 +1322,11 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(message_context_body["participant_count"], 1)
         self.assertEqual(message_context_body["contacts"][0]["source"], "conversation")
         self.assertEqual(message_context_body["contacts"][0]["contact_key"], "phone:14155550199")
+        self.assertEqual(message_context_body["contacts"][0]["message_context"][0]["conversation_id"], "amc_unsaved")
+        self.assertEqual(
+            message_context_body["contacts"][0]["message_context"][0]["message_text"],
+            "Please send rider setup notes.",
+        )
 
         self.assertEqual(management_label_response.status_code, 200)
         management_label_body = management_label_response.json()
@@ -1912,6 +1919,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn(".active-contact", css_response.text)
         self.assertIn(".contact-related", css_response.text)
         self.assertIn(".contact-thread-link", css_response.text)
+        self.assertIn(".contact-thread-message", css_response.text)
         self.assertIn(".contact-create-result", css_response.text)
         self.assertIn(".draft-recipient-chip", css_response.text)
         self.assertIn(".draft-recipient-chip.known-recipient", css_response.text)
@@ -2143,12 +2151,17 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("contacts/management", js_response.text)
         self.assertIn("findConversationsForContact", js_response.text)
         self.assertIn("contactRelatedThreadMetaText", js_response.text)
+        self.assertIn("contactThreadMessageContextText", js_response.text)
+        self.assertIn("contactMessageContextsForConversation", js_response.text)
         self.assertIn("renderContactRelatedThreads", js_response.text)
+        self.assertIn("message_context", js_response.text)
         self.assertIn("labelsForConversation(conversation).slice(0, 2)", js_response.text)
         self.assertIn('note ? `note: ${trim(note, 72)}` : ""', js_response.text)
         self.assertIn("appendHighlightedText(meta, metaText, terms)", js_response.text)
+        self.assertIn("appendHighlightedText(message, messageText, terms)", js_response.text)
         self.assertIn("contact-thread-title", js_response.text)
         self.assertIn("contact-thread-meta", js_response.text)
+        self.assertIn("contact-thread-message", js_response.text)
         self.assertIn("renderContactInspector", js_response.text)
         self.assertIn("setActiveContact", js_response.text)
         self.assertIn("clearActiveContact", js_response.text)
