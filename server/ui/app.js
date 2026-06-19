@@ -4223,15 +4223,17 @@ async function useContact(contact) {
   }
 }
 
-async function openContactConversation(contact, conversation) {
-  state.focusMessageId = "";
+async function openContactConversation(contact, conversation, { messageId = "" } = {}) {
+  state.focusMessageId = String(messageId || "").trim();
   state.conversationView = "all";
   state.conversationLabel = "";
   el.conversationSearch.value = "";
   renderConversations();
   el.contactStatus.textContent = `Opening ${conversationDisplayName(conversation)}`;
   await selectConversation(conversation);
-  el.contactStatus.textContent = `Opened ${conversationDisplayName(conversation)}`;
+  el.contactStatus.textContent = state.focusMessageId
+    ? `Opened ${conversationDisplayName(conversation)} at matching message`
+    : `Opened ${conversationDisplayName(conversation)}`;
   buildCodexPrompt();
 }
 
@@ -4253,6 +4255,11 @@ function contactMessageContextsForConversation(contact, conversation) {
   const conversationId = String(conversation?.conversation_id || "").trim();
   const contexts = Array.isArray(contact?.message_context) ? contact.message_context : [];
   return contexts.filter((context) => String(context?.conversation_id || "").trim() === conversationId);
+}
+
+function contactPrimaryMessageContext(contact, conversation) {
+  return contactMessageContextsForConversation(contact, conversation)
+    .find((context) => String(context?.provider_message_id || "").trim()) || null;
 }
 
 function contactThreadMessageContextText(contact, conversation) {
@@ -4284,6 +4291,7 @@ function renderContactRelatedThreads(container, contact, terms = []) {
   container.append(label);
 
   for (const conversation of matches) {
+    const messageContext = contactPrimaryMessageContext(contact, conversation);
     const button = document.createElement("button");
     button.type = "button";
     button.className = "contact-thread-link";
@@ -4306,7 +4314,9 @@ function renderContactRelatedThreads(container, contact, terms = []) {
       : `Open ${conversationDisplayName(conversation)}`;
     button.addEventListener("click", (event) => {
       event.stopPropagation();
-      openContactConversation(contact, conversation);
+      openContactConversation(contact, conversation, {
+        messageId: messageContext?.provider_message_id || "",
+      });
     });
     container.append(button);
   }
