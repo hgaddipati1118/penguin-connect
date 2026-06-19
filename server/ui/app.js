@@ -205,6 +205,7 @@ const el = {
   copyDraftRecipientsButton: document.querySelector("#copyDraftRecipientsButton"),
   copyDraftBodyButton: document.querySelector("#copyDraftBodyButton"),
   copyDraftPreviewButton: document.querySelector("#copyDraftPreviewButton"),
+  draftCreateUnknownButton: document.querySelector("#draftCreateUnknownButton"),
   openAddressedDraftButton: document.querySelector("#openAddressedDraftButton"),
   draftCopyToggle: document.querySelector("#draftCopyToggle"),
   draftOpenToggle: document.querySelector("#draftOpenToggle"),
@@ -1960,6 +1961,15 @@ function draftRecipientDisplay(recipient) {
   };
 }
 
+function draftUnknownRecipientHandles() {
+  return uniqueRecipientValues(draftRecipientValues()).filter((recipient) => {
+    const type = handleType(recipient);
+    if (type !== "phone" && type !== "email") return false;
+    const contact = draftRecipientContact(recipient);
+    return !contact || contact.is_saved === false;
+  });
+}
+
 function refreshDraftRecipientChips() {
   renderDraftRecipientChips(uniqueRecipientValues(draftRecipientValues()));
 }
@@ -2019,6 +2029,11 @@ function renderDraftPreview(values = uniqueRecipientValues(draftRecipientValues(
   el.copyDraftBodyButton.disabled = !body;
   el.copyDraftPreviewButton.disabled = !draft;
   el.openAddressedDraftButton.disabled = !recipients.length;
+  const unknownCount = draftUnknownRecipientHandles().length;
+  el.draftCreateUnknownButton.disabled = unknownCount === 0;
+  el.draftCreateUnknownButton.textContent = unknownCount
+    ? `Create ${unknownCount} unknown`
+    : "Create unknown";
 }
 
 async function copyDraftPreview() {
@@ -2069,6 +2084,50 @@ async function copyDraftBody() {
     el.draftState.textContent = "Message body copied";
   } catch (error) {
     el.draftState.textContent = error.message;
+  }
+}
+
+async function createUnknownDraftRecipients() {
+  const recipients = draftUnknownRecipientHandles();
+  if (!recipients.length) {
+    el.draftState.textContent = "No unknown phone/email recipients";
+    renderDraftPreview();
+    return;
+  }
+
+  el.draftCreateUnknownButton.disabled = true;
+  el.draftState.textContent = `Creating ${recipients.length} contact${recipients.length === 1 ? "" : "s"}`;
+  let created = 0;
+  const failures = [];
+  for (const recipient of recipients) {
+    try {
+      await api("/penguin-connect/contacts", {
+        method: "POST",
+        body: JSON.stringify(contactCreatePayloadFromHandle(recipient)),
+      });
+      cacheDraftRecipientContact(draftCreatedContactFromHandle(recipient));
+      created += 1;
+      el.draftState.textContent = `Created ${created}/${recipients.length}`;
+    } catch (error) {
+      failures.push(error.message);
+    }
+  }
+
+  try {
+    if (created) {
+      await api("/penguin-connect/contacts/refresh", { method: "POST", body: "{}" });
+    }
+    await loadContacts({ force: true });
+    await loadThreadContactMatches();
+    refreshDraftRecipientChips();
+  } catch (error) {
+    failures.push(error.message);
+  } finally {
+    const failedCount = failures.length;
+    el.draftState.textContent = failedCount
+      ? `Created ${created}; ${failedCount} failed`
+      : `Created ${created} contact${created === 1 ? "" : "s"}`;
+    renderDraftPreview();
   }
 }
 
@@ -2473,6 +2532,18 @@ function contactCreatePayloadFromHandle(handle) {
     phone: handleType(value) === "email" ? "" : value,
     email: handleType(value) === "email" ? value : "",
   });
+}
+
+function draftCreatedContactFromHandle(handle) {
+  const value = String(handle || "").trim();
+  return {
+    display_name: value,
+    primary_handle: value,
+    phone: handleType(value) === "email" ? "" : value,
+    email: handleType(value) === "email" ? value : "",
+    source: "contacts",
+    is_saved: true,
+  };
 }
 
 async function createVisibleUnknownContacts() {
@@ -6323,6 +6394,7 @@ el.stageDraftButton.addEventListener("click", stageDraft);
 el.copyDraftRecipientsButton.addEventListener("click", copyDraftRecipients);
 el.copyDraftBodyButton.addEventListener("click", copyDraftBody);
 el.copyDraftPreviewButton.addEventListener("click", copyDraftPreview);
+el.draftCreateUnknownButton.addEventListener("click", createUnknownDraftRecipients);
 el.openAddressedDraftButton.addEventListener("click", openAddressedDraft);
 el.saveRecipientListButton.addEventListener("click", saveRecipientList);
 el.clearDraftButton.addEventListener("click", clearDraftForm);
