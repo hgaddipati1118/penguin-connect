@@ -21,6 +21,7 @@ const state = {
   messageSearchResults: [],
   messageSearchTimer: null,
   messageSearchView: "all",
+  messageSearchNoteEditorId: "",
   focusMessageId: "",
   messageView: "all",
   messageNoteEditorId: "",
@@ -806,6 +807,21 @@ function hasMessageNote(message) {
   return messageNoteText(message).length > 0;
 }
 
+function messageSearchResultKey(result) {
+  return `${result?.conversation_id || ""}::${result?.provider_message_id || ""}`;
+}
+
+function removeMessageSearchResultIfFiltered(result) {
+  const key = messageSearchResultKey(result);
+  if (key === "::") return;
+  const shouldRemove = (
+    (state.messageSearchView === "starred" && !isStarredMessage(result))
+    || (state.messageSearchView === "noted" && !hasMessageNote(result))
+  );
+  if (!shouldRemove) return;
+  state.messageSearchResults = state.messageSearchResults.filter((item) => messageSearchResultKey(item) !== key);
+}
+
 function attachmentRows(message) {
   const metadata = message.metadata && typeof message.metadata === "object" ? message.metadata : {};
   if (Array.isArray(message.attachments)) return message.attachments;
@@ -1023,6 +1039,7 @@ async function toggleMessageSearchResultStar(result) {
       }),
     });
     mergeMessageManagement(response);
+    removeMessageSearchResultIfFiltered(response);
     el.messageSearchStatus.textContent = response.is_starred ? "Search result starred" : "Search result unstarred";
     renderMessageSearchResults();
     renderMessages();
@@ -1061,6 +1078,12 @@ function editMessageNote(message) {
   renderMessages();
 }
 
+function editMessageSearchResultNote(result) {
+  if (!result?.conversation_id || !result.provider_message_id) return;
+  state.messageSearchNoteEditorId = messageSearchResultKey(result);
+  renderMessageSearchResults();
+}
+
 async function saveMessageNote(message, noteValue) {
   if (!state.selected || !message.provider_message_id) return;
   try {
@@ -1078,6 +1101,28 @@ async function saveMessageNote(message, noteValue) {
     buildCodexPrompt();
   } catch (error) {
     el.sendState.textContent = error.message;
+  }
+}
+
+async function saveMessageSearchResultNote(result, noteValue) {
+  if (!result?.conversation_id || !result.provider_message_id) return;
+  try {
+    const response = await api(`/penguin-connect/conversations/${encodeURIComponent(result.conversation_id)}/messages/management`, {
+      method: "POST",
+      body: JSON.stringify({
+        provider_message_id: result.provider_message_id,
+        note: noteValue,
+      }),
+    });
+    mergeMessageManagement(response);
+    removeMessageSearchResultIfFiltered(response);
+    state.messageSearchNoteEditorId = "";
+    el.messageSearchStatus.textContent = response.has_note ? "Search result note saved" : "Search result note cleared";
+    renderMessageSearchResults();
+    renderMessages();
+    buildCodexPrompt();
+  } catch (error) {
+    el.messageSearchStatus.textContent = error.message;
   }
 }
 
@@ -2354,7 +2399,11 @@ function renderMessageSearchResults() {
   for (const result of state.messageSearchResults) {
     const item = document.createElement("div");
     const starred = isStarredMessage(result);
-    item.className = `search-result ${starred ? "starred" : ""}`;
+    const noted = hasMessageNote(result);
+    const noteText = messageNoteText(result);
+    const resultKey = messageSearchResultKey(result);
+    const editingNote = state.messageSearchNoteEditorId && resultKey === state.messageSearchNoteEditorId;
+    item.className = ["search-result", starred ? "starred" : "", noted ? "noted" : ""].filter(Boolean).join(" ");
     item.innerHTML = `
       <button class="search-result-main" type="button">
         <span class="search-result-top"></span>
@@ -2362,11 +2411,21 @@ function renderMessageSearchResults() {
       </button>
       <span class="search-result-actions">
         <button type="button" data-action="star">Star</button>
+        <button type="button" data-action="note">Note</button>
         <button type="button" data-action="reply">Reply</button>
         <button type="button" data-action="copy">Copy</button>
         <button type="button" data-action="contact">Contact</button>
         <button type="button" data-action="open">Open</button>
       </span>
+      <div class="search-result-note" hidden><span></span></div>
+      <div class="search-result-note-editor" hidden>
+        <textarea rows="2" maxlength="2000" placeholder="Private note"></textarea>
+        <div class="search-result-note-actions">
+          <button type="button" data-action="save-search-note">Save</button>
+          <button type="button" data-action="cancel-search-note">Cancel</button>
+          <button type="button" data-action="clear-search-note">Clear</button>
+        </div>
+      </div>
     `;
     const sender = result.sender_name || result.sender_email || result.direction || "unknown";
     const contactHandle = messageSearchContactHandle(result);
@@ -2382,6 +2441,38 @@ function renderMessageSearchResults() {
     starButton.classList.toggle("active", starred);
     starButton.disabled = !result.conversation_id || !result.provider_message_id;
     starButton.addEventListener("click", () => toggleMessageSearchResultStar(result));
+    const noteButton = item.querySelector('[data-action="note"]');
+    noteButton.textContent = noted ? "Edit note" : "Note";
+    noteButton.classList.toggle("active", noted || Boolean(editingNote));
+    noteButton.disabled = !result.conversation_id || !result.provider_message_id;
+    noteButton.addEventListener("click", () => editMessageSearchResultNote(result));
+    const noteBox = item.querySelector(".search-result-note");
+    if (noteText) {
+      noteBox.hidden = false;
+      noteBox.querySelector("span").textContent = noteText;
+    }
+    const noteEditor = item.querySelector(".search-result-note-editor");
+    const noteInput = noteEditor.querySelector("textarea");
+    if (editingNote) {
+      noteEditor.hidden = false;
+      noteInput.value = noteText;
+      noteInput.addEventListener("keydown", (event) => {
+        if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+          event.preventDefault();
+          saveMessageSearchResultNote(result, noteInput.value);
+        }
+        if (event.key === "Escape") {
+          state.messageSearchNoteEditorId = "";
+          renderMessageSearchResults();
+        }
+      });
+      noteEditor.querySelector('[data-action="save-search-note"]').addEventListener("click", () => saveMessageSearchResultNote(result, noteInput.value));
+      noteEditor.querySelector('[data-action="cancel-search-note"]').addEventListener("click", () => {
+        state.messageSearchNoteEditorId = "";
+        renderMessageSearchResults();
+      });
+      noteEditor.querySelector('[data-action="clear-search-note"]').addEventListener("click", () => saveMessageSearchResultNote(result, ""));
+    }
     item.querySelector('[data-action="reply"]').addEventListener("click", () => replyToMessageSearchResult(result));
     item.querySelector('[data-action="copy"]').addEventListener("click", async () => {
       await copyText(messageCopyText(result));
@@ -3094,6 +3185,7 @@ async function loadMessageSearch() {
   const dateTo = el.messageDateTo.value.trim();
   const hasDateFilter = Boolean(dateFrom || dateTo);
   const scoped = state.messageSearchView !== "all";
+  state.messageSearchNoteEditorId = "";
   renderMessageSearchFilters();
   if (query.length < 2 && !scoped && !hasDateFilter) {
     state.messageSearchResults = [];
@@ -3745,7 +3837,8 @@ function messageSearchContext(limit = 8) {
   const view = messageSearchViews.find((item) => item.key === state.messageSearchView) || messageSearchViews[0];
   const rows = state.messageSearchResults.slice(0, limit).map((result) => {
     const sender = result.sender_name || result.sender_email || result.direction || "unknown";
-    return `${formatTime(result.message_timestamp || result.timestamp)} | ${searchResultConversationName(result)} | ${sender}: ${messageSnippet(result, 180)}`;
+    const note = messageNoteText(result) ? ` | private note: ${trim(messageNoteText(result), 180)}` : "";
+    return `${formatTime(result.message_timestamp || result.timestamp)} | ${searchResultConversationName(result)} | ${sender}: ${messageSnippet(result, 180)}${note}`;
   });
   return [
     `View: ${view.label}`,

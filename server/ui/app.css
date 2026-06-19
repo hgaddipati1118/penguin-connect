@@ -1131,6 +1131,11 @@ input[type="date"]:focus {
   box-shadow: inset 3px 0 0 rgba(191, 128, 35, 0.36);
 }
 
+.search-result.noted:not(.starred) {
+  border-color: rgba(17, 100, 86, 0.32);
+  box-shadow: inset 3px 0 0 rgba(17, 100, 86, 0.26);
+}
+
 .search-result-main {
   display: grid;
   min-width: 0;
@@ -1191,6 +1196,43 @@ input[type="date"]:focus {
 
 .search-result-body {
   font-size: 13px;
+}
+
+.search-result-note {
+  grid-column: 1 / -1;
+  padding: 7px 9px;
+  border-left: 3px solid rgba(17, 100, 86, 0.52);
+  background: rgba(239, 248, 243, 0.72);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.search-result-note[hidden] {
+  display: none;
+}
+
+.search-result-note-editor {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 6px;
+}
+
+.search-result-note-editor[hidden] {
+  display: none;
+}
+
+.search-result-note-editor textarea {
+  min-height: 58px;
+  resize: vertical;
+}
+
+.search-result-note-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
 .message {
@@ -1341,6 +1383,7 @@ input[type="date"]:focus {
 
 .message-actions button,
 .message-note-actions button,
+.search-result-note-actions button,
 .contact-note-actions button,
 .reply-context button {
   min-height: 24px;
@@ -1354,6 +1397,7 @@ input[type="date"]:focus {
 
 .message-actions button:hover,
 .message-note-actions button:hover,
+.search-result-note-actions button:hover,
 .contact-note-actions button:hover,
 .reply-context button:hover {
   border-color: var(--accent);
