@@ -46,6 +46,9 @@ const el = {
   bulkLabelsInput: document.querySelector("#bulkLabelsInput"),
   bulkLabelButton: document.querySelector("#bulkLabelButton"),
   bulkRemoveLabelButton: document.querySelector("#bulkRemoveLabelButton"),
+  bulkFollowUpAt: document.querySelector("#bulkFollowUpAt"),
+  bulkSetFollowUpButton: document.querySelector("#bulkSetFollowUpButton"),
+  bulkClearFollowUpButton: document.querySelector("#bulkClearFollowUpButton"),
   conversationList: document.querySelector("#conversationList"),
   contactRefreshButton: document.querySelector("#contactRefreshButton"),
   contactSearch: document.querySelector("#contactSearch"),
@@ -632,13 +635,17 @@ function renderBulkActions(rows) {
   const visibleCount = rows.length;
   const allVisibleSelected = visibleCount > 0 && rows.every((conversation) => state.selectedConversationIds.has(conversation.conversation_id));
   const labelCount = cleanBulkLabels(el.bulkLabelsInput.value).length;
+  const bulkFollowUpValue = el.bulkFollowUpAt.value.trim();
   el.bulkState.textContent = state.bulkBusy ? "Updating selected" : (state.bulkMessage || `${selectedCount} selected`);
   el.selectVisibleButton.disabled = state.bulkBusy || !visibleCount || allVisibleSelected;
   el.bulkMarkReadButton.disabled = state.bulkBusy || selectedCount === 0;
   el.bulkArchiveButton.disabled = state.bulkBusy || selectedCount === 0;
   el.bulkLabelButton.disabled = state.bulkBusy || selectedCount === 0 || labelCount === 0;
   el.bulkRemoveLabelButton.disabled = state.bulkBusy || selectedCount === 0 || labelCount === 0;
+  el.bulkSetFollowUpButton.disabled = state.bulkBusy || selectedCount === 0 || !bulkFollowUpValue;
+  el.bulkClearFollowUpButton.disabled = state.bulkBusy || selectedCount === 0;
   el.bulkLabelsInput.disabled = state.bulkBusy;
+  el.bulkFollowUpAt.disabled = state.bulkBusy;
   el.clearSelectionButton.disabled = state.bulkBusy || selectedCount === 0;
 }
 
@@ -2739,6 +2746,70 @@ async function bulkRemoveLabels() {
   }
 }
 
+async function bulkSetFollowUp() {
+  const targets = selectedConversationSnapshot();
+  const followUpAt = el.bulkFollowUpAt.value.trim();
+  if (!targets.length || !followUpAt) {
+    state.bulkMessage = targets.length ? "Pick follow-up time" : "Select conversations";
+    renderConversations();
+    return;
+  }
+
+  state.bulkBusy = true;
+  state.bulkMessage = "";
+  renderConversations();
+  try {
+    for (const conversation of targets) {
+      await updateConversationManagement(conversation.conversation_id, {
+        follow_up_at: followUpAt,
+      });
+    }
+    state.selectedConversationIds.clear();
+    el.bulkFollowUpAt.value = "";
+    state.bulkMessage = `Scheduled follow-up for ${targets.length}`;
+  } catch (error) {
+    state.bulkMessage = error.message;
+  } finally {
+    state.bulkBusy = false;
+    renderConversations();
+    renderManagementFields();
+    buildCodexPrompt();
+  }
+}
+
+async function bulkClearFollowUps() {
+  const targets = selectedConversationSnapshot();
+  if (!targets.length) {
+    state.bulkMessage = "Select conversations";
+    renderConversations();
+    return;
+  }
+
+  state.bulkBusy = true;
+  state.bulkMessage = "";
+  renderConversations();
+  try {
+    let changedCount = 0;
+    for (const conversation of targets) {
+      if (hasFollowUp(conversation)) changedCount += 1;
+      await updateConversationManagement(conversation.conversation_id, {
+        follow_up_at: "",
+      });
+    }
+    state.selectedConversationIds.clear();
+    state.bulkMessage = changedCount
+      ? `Cleared ${changedCount} follow-up${changedCount === 1 ? "" : "s"}`
+      : "No follow-ups to clear";
+  } catch (error) {
+    state.bulkMessage = error.message;
+  } finally {
+    state.bulkBusy = false;
+    renderConversations();
+    renderManagementFields();
+    buildCodexPrompt();
+  }
+}
+
 async function saveLocalDraft(conversationId, draftText, { silent = false } = {}) {
   if (!conversationId) return;
   try {
@@ -3320,6 +3391,9 @@ el.clearSelectionButton.addEventListener("click", () => {
 el.bulkLabelsInput.addEventListener("input", renderConversations);
 el.bulkLabelButton.addEventListener("click", bulkApplyLabels);
 el.bulkRemoveLabelButton.addEventListener("click", bulkRemoveLabels);
+el.bulkFollowUpAt.addEventListener("input", renderConversations);
+el.bulkSetFollowUpButton.addEventListener("click", bulkSetFollowUp);
+el.bulkClearFollowUpButton.addEventListener("click", bulkClearFollowUps);
 el.bulkMarkReadButton.addEventListener("click", bulkMarkSelectedRead);
 el.bulkArchiveButton.addEventListener("click", bulkArchiveSelected);
 

@@ -168,7 +168,7 @@ private contact notes with note-aware search, contact creation, contact-to-threa
 selected-thread participants, contact-to-new-chat recipient picking with visible-result bulk add/save actions,
 removable recipient chips, reusable saved recipient lists, selected-thread participant actions for contact
 search/new-chat/contact creation, participant favoriting, bulk add-all-to-draft, and save-as-list actions, local thread titles, notes and tags,
-follow-up scheduling and filtering, read/unread management, bridge
+follow-up scheduling/filtering plus bulk follow-up set/clear, read/unread management, bridge
 disconnect/reconnect controls, persistent per-thread reply drafts, new chat
 draft staging, and a Codex prompt helper with
 reply, summary, follow-up, contact-cleanup, and custom-question modes that can
