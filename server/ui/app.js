@@ -1496,15 +1496,23 @@ function renderDraftPreview(values = uniqueRecipientValues(draftRecipientValues(
   const mode = count > 1 ? "Group chat" : "Direct chat";
   el.draftPreviewTitle.textContent = count
     ? `${mode} · ${count} recipient${count === 1 ? "" : "s"}${attachments.length ? ` · ${attachments.length} file${attachments.length === 1 ? "" : "s"}` : ""}`
-    : "No recipients";
-  const attachmentLines = attachments.length
+    : body && attachments.length
+      ? "No recipients · message + files ready"
+      : body
+        ? "No recipients · message ready"
+        : attachments.length
+          ? "No recipients · files ready"
+          : "No recipients";
+  const attachmentSummary = attachments.length
     ? [
-      "",
       `Attachments staged separately: ${attachments.map((file) => file.name || "attachment").join(", ")}`,
       state.draftAttachmentFolder ? `Folder: ${state.draftAttachmentFolder}` : "",
     ].filter(Boolean).join("\n")
     : "";
-  el.draftPreviewText.textContent = (draft ? `${draft}${attachmentLines}` : "") || "Add recipients to preview the Messages draft.";
+  const previewText = draft
+    ? [draft.trimEnd(), attachmentSummary].filter(Boolean).join("\n")
+    : [body ? `Message:\n\n${body}` : "", attachmentSummary].filter(Boolean).join("\n\n");
+  el.draftPreviewText.textContent = previewText || "Add recipients to preview the Messages draft.";
   el.copyDraftRecipientsButton.disabled = !recipients.length;
   el.copyDraftBodyButton.disabled = !body;
   el.copyDraftPreviewButton.disabled = !draft;

@@ -1852,6 +1852,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("buildMessagesDraftText", js_response.text)
         self.assertIn("draftRecipientLine", js_response.text)
         self.assertIn("renderDraftPreview", js_response.text)
+        self.assertIn("No recipients · message ready", js_response.text)
+        self.assertIn("Message:\\n\\n", js_response.text)
         self.assertIn("filesAsBrowserAttachments", js_response.text)
         self.assertIn("renderAllEmojiButtons", js_response.text)
         self.assertIn("renderAllVoiceMemoControls", js_response.text)
