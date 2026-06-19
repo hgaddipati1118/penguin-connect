@@ -358,6 +358,27 @@ def send_imessage(
     return _IMESSAGE_CHANNEL.send_message(chat_identifier, message_text, attachment_paths=attachment_paths)
 
 
+def _manual_attachment_metadata(attachment_paths: list[str]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for raw_path in attachment_paths or []:
+        path = Path(str(raw_path or "").strip()).expanduser()
+        if not str(path):
+            continue
+        transfer_name = path.name or "attachment"
+        mime_type = mimetypes.guess_type(transfer_name)[0] or "application/octet-stream"
+        item: dict[str, Any] = {
+            "filename": str(path),
+            "transfer_name": transfer_name,
+            "mime_type": mime_type,
+        }
+        try:
+            item["size"] = path.stat().st_size
+        except OSError:
+            pass
+        items.append(item)
+    return items
+
+
 def _get_imessage_unread_count(chat_identifier: str) -> Optional[int]:
     return _IMESSAGE_CHANNEL.get_unread_count(chat_identifier)
 
@@ -8927,6 +8948,7 @@ def send_manual_message(
         return {"success": False, "error": "conversation_excluded"}
 
     source_provider = _conversation_source_provider(conv)
+    attachment_metadata = _manual_attachment_metadata(attachment_paths)
     resolved_sender_email = _normalize_email(sender_email)
     sender_identity = resolved_sender_email or "local"
     provider_id = f"manual:{hashlib.sha1(f'{sender_identity}:{_now_iso()}:{body_text}'.encode('utf-8')).hexdigest()}"
@@ -8955,6 +8977,14 @@ def send_manual_message(
         )
         return {"success": False, "error": err or f"failed_to_send_{source_provider}"}
 
+    metadata = {
+        "security_gate": "passed",
+        "dispatch": source_provider,
+    }
+    if attachment_paths:
+        metadata["manual_attachment_count"] = len(attachment_paths)
+        metadata["attachments"] = attachment_metadata
+
     conn.execute(
         """INSERT OR IGNORE INTO penguin_connect_messages
            (conversation_id, provider, provider_message_id, direction,
@@ -8969,16 +8999,15 @@ def send_manual_message(
             _provider_subject(source_provider, conv["display_name"] or "Conversation"),
             body_text[:20000],
             _now_iso(),
-            json.dumps(
-                {
-                    "security_gate": "passed",
-                    "dispatch": source_provider,
-                    "manual_attachment_count": len(attachment_paths),
-                }
-            ),
+            json.dumps(metadata),
         ),
     )
-    result = {"success": True, "conversation_id": conversation_id}
+    result = {
+        "success": True,
+        "conversation_id": conversation_id,
+        "provider_message_id": provider_id,
+        "attachment_count": len(attachment_paths),
+    }
     log_action(
         "manual_send_result",
         success=True,

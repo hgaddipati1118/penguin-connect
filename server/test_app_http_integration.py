@@ -839,6 +839,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         file_ids = {message["provider_message_id"] for message in files_response.json()["messages"]}
         self.assertIn("imsg-audio", file_ids)
         self.assertIn("imsg-file", file_ids)
+        self.assertNotIn("manual-sent", file_ids)
 
         self.assertEqual(unread_response.status_code, 200)
         unread_ids = {message["provider_message_id"] for message in unread_response.json()["messages"]}
@@ -2065,11 +2066,31 @@ class AppHttpIntegrationTests(unittest.TestCase):
                     ],
                 },
             )
+            body = response.json()
+            messages_response = client.get("/penguin-connect/conversations/amc_test/messages", params={"limit": 1})
+            attachment_response = client.get(
+                "/penguin-connect/conversations/amc_test/attachments/0",
+                params={"provider_message_id": body["provider_message_id"]},
+            )
 
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.json()["success"])
+        self.assertTrue(body["success"])
+        self.assertEqual(body["attachment_count"], 1)
         self.assertEqual(len(captured_paths), 1)
-        self.assertFalse(Path(captured_paths[0]).exists())
+        attachment_path = Path(captured_paths[0])
+        self.assertTrue(attachment_path.exists())
+        self.assertTrue(str(attachment_path).startswith(str(self.db_path.parent / "sent-message-attachments")))
+
+        self.assertEqual(messages_response.status_code, 200)
+        message = messages_response.json()["messages"][0]
+        self.assertEqual(message["provider_message_id"], body["provider_message_id"])
+        self.assertEqual(message["attachments"][0]["transfer_name"], "photo.png")
+        self.assertEqual(message["attachments"][0]["mime_type"], "image/png")
+        self.assertEqual(message["attachments"][0]["filename"], str(attachment_path))
+
+        self.assertEqual(attachment_response.status_code, 200)
+        self.assertEqual(attachment_response.content, b"fake-image")
+        self.assertEqual(attachment_response.headers["content-type"], "image/png")
 
 
 if __name__ == "__main__":

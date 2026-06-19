@@ -221,27 +221,29 @@ def _write_ui_attachments_to_dir(
     return staged_paths
 
 
-def _stage_ui_attachments(attachments: list[PenguinConnectBrowserAttachment] | None) -> tuple[list[str], Path | None]:
-    if not attachments:
-        return [], None
-    staged_dir = Path(tempfile.mkdtemp(prefix="penguinconnect-ui-attachments-"))
-    try:
-        staged_paths = _write_ui_attachments_to_dir(attachments, staged_dir)
-    except Exception:
-        shutil.rmtree(staged_dir, ignore_errors=True)
-        raise
-    if not staged_paths:
-        shutil.rmtree(staged_dir, ignore_errors=True)
-        return [], None
-    return staged_paths, staged_dir
-
-
 def _draft_attachment_root() -> Path:
     return DB_PATH.parent / "message-draft-attachments"
 
 
+def _sent_attachment_root() -> Path:
+    return DB_PATH.parent / "sent-message-attachments"
+
+
 def _cleanup_old_draft_attachment_dirs(max_age_seconds: int = 24 * 60 * 60) -> None:
     root = _draft_attachment_root()
+    if not root.exists():
+        return
+    cutoff = time.time() - max_age_seconds
+    for child in root.iterdir():
+        try:
+            if child.is_dir() and child.stat().st_mtime < cutoff:
+                shutil.rmtree(child, ignore_errors=True)
+        except OSError:
+            continue
+
+
+def _cleanup_old_sent_attachment_dirs(max_age_seconds: int = 30 * 24 * 60 * 60) -> None:
+    root = _sent_attachment_root()
     if not root.exists():
         return
     cutoff = time.time() - max_age_seconds
@@ -260,6 +262,26 @@ def _stage_messages_draft_attachments(
         return [], None
     _cleanup_old_draft_attachment_dirs()
     root = _draft_attachment_root()
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    staged_dir = root / f"{stamp}-{uuid.uuid4().hex[:8]}"
+    try:
+        staged_paths = _write_ui_attachments_to_dir(attachments, staged_dir)
+    except Exception:
+        shutil.rmtree(staged_dir, ignore_errors=True)
+        raise
+    if not staged_paths:
+        shutil.rmtree(staged_dir, ignore_errors=True)
+        return [], None
+    return staged_paths, staged_dir
+
+
+def _stage_sent_message_attachments(
+    attachments: list[PenguinConnectBrowserAttachment] | None,
+) -> tuple[list[str], Path | None]:
+    if not attachments:
+        return [], None
+    _cleanup_old_sent_attachment_dirs()
+    root = _sent_attachment_root()
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     staged_dir = root / f"{stamp}-{uuid.uuid4().hex[:8]}"
     try:
@@ -2551,9 +2573,10 @@ def reconnect_penguinconnect_conversation(conversation_id: str):
 def send_penguinconnect_conversation_message(conversation_id: str, req: PenguinConnectSendRequest):
     ui_attachment_paths: list[str] = []
     staged_dir: Path | None = None
+    success = False
     conn = get_connection()
     try:
-        ui_attachment_paths, staged_dir = _stage_ui_attachments(req.attachments)
+        ui_attachment_paths, staged_dir = _stage_sent_message_attachments(req.attachments)
         attachment_paths = [str(path) for path in (req.attachment_paths or []) if str(path or "").strip()]
         attachment_paths.extend(ui_attachment_paths)
         result = penguinconnect_send_manual_message(
@@ -2574,9 +2597,10 @@ def send_penguinconnect_conversation_message(conversation_id: str, req: PenguinC
         if not result.get("success"):
             raise HTTPException(status_code=400, detail=result.get("error", "penguin_connect_send_failed"))
         conn.commit()
+        success = True
         return result
     finally:
-        if staged_dir:
+        if staged_dir and not success:
             shutil.rmtree(staged_dir, ignore_errors=True)
         conn.close()
 
