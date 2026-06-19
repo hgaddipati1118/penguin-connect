@@ -863,6 +863,11 @@ input[type="date"]:focus {
   box-shadow: inset 3px 0 0 rgba(191, 128, 35, 0.36);
 }
 
+.contact-message-preview.noted:not(.starred):not(.unread) {
+  border-color: rgba(17, 100, 86, 0.32);
+  box-shadow: inset 3px 0 0 rgba(17, 100, 86, 0.26);
+}
+
 .contact-message-preview-main {
   display: grid;
   min-width: 0;
@@ -946,6 +951,57 @@ input[type="date"]:focus {
 .contact-message-preview-actions button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
+}
+
+.contact-message-preview-note {
+  padding: 7px 9px;
+  border-left: 3px solid rgba(17, 100, 86, 0.52);
+  background: rgba(239, 248, 243, 0.72);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.contact-message-preview-note[hidden] {
+  display: none;
+}
+
+.contact-message-preview-note-editor {
+  display: grid;
+  gap: 6px;
+}
+
+.contact-message-preview-note-editor[hidden] {
+  display: none;
+}
+
+.contact-message-preview-note-editor textarea {
+  min-height: 58px;
+  resize: vertical;
+}
+
+.contact-message-preview-note-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.contact-message-preview-note-actions button {
+  min-height: 24px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+.contact-message-preview-note-actions button:hover,
+.contact-message-preview-note-actions button:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .contact-inspector-note {

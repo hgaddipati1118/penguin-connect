@@ -36,6 +36,7 @@ const state = {
   activeContactMessagesLoading: false,
   activeContactMessagesToken: 0,
   activeContactMessagesError: "",
+  activeContactMessageNoteEditorId: "",
   contactNoteEditorKey: "",
   selectedContactKeys: new Set(),
   recipientLists: [],
@@ -2075,6 +2076,7 @@ function setActiveContact(contact, { rerenderList = true } = {}) {
     state.activeContactMessages = [];
     state.activeContactMessagesLoading = false;
     state.activeContactMessagesError = "";
+    state.activeContactMessageNoteEditorId = "";
   }
   state.activeContactKey = key;
   state.activeContact = contact;
@@ -2089,6 +2091,7 @@ function clearActiveContact() {
   state.activeContactMessages = [];
   state.activeContactMessagesLoading = false;
   state.activeContactMessagesError = "";
+  state.activeContactMessageNoteEditorId = "";
   renderContactInspector();
   renderContacts();
 }
@@ -2881,6 +2884,35 @@ async function copyContactRecentMessage(result) {
   }
 }
 
+function editContactRecentMessageNote(result) {
+  if (!result?.conversation_id || !result.provider_message_id) return;
+  state.activeContactMessageNoteEditorId = messageSearchResultKey(result);
+  renderContactInspector();
+}
+
+async function saveContactRecentMessageNote(result, noteValue) {
+  if (!result?.conversation_id || !result.provider_message_id) return;
+  try {
+    const response = await api(`/penguin-connect/conversations/${encodeURIComponent(result.conversation_id)}/messages/management`, {
+      method: "POST",
+      body: JSON.stringify({
+        provider_message_id: result.provider_message_id,
+        note: noteValue,
+      }),
+    });
+    mergeMessageManagement(response);
+    removeMessageSearchResultIfFiltered(response);
+    state.activeContactMessageNoteEditorId = "";
+    el.contactStatus.textContent = response.has_note ? "Recent message note saved" : "Recent message note cleared";
+    renderContactInspector();
+    renderMessageSearchResults();
+    renderMessages();
+    buildCodexPrompt();
+  } catch (error) {
+    el.contactStatus.textContent = error.message;
+  }
+}
+
 async function toggleContactRecentMessageRead(result) {
   if (!result?.conversation_id || !result.provider_message_id) return;
   const nextUnread = !isUnreadMessage(result);
@@ -2960,7 +2992,10 @@ function renderContactInspectorMessages(container, contact) {
     const item = document.createElement("div");
     const unread = isUnreadMessage(result);
     const starred = isStarredMessage(result);
-    item.className = ["contact-message-preview", unread ? "unread" : "", starred ? "starred" : ""].filter(Boolean).join(" ");
+    const noteText = messageNoteText(result);
+    const resultKey = messageSearchResultKey(result);
+    const editingNote = state.activeContactMessageNoteEditorId && resultKey === state.activeContactMessageNoteEditorId;
+    item.className = ["contact-message-preview", unread ? "unread" : "", starred ? "starred" : "", noteText ? "noted" : ""].filter(Boolean).join(" ");
     item.innerHTML = `
       <button class="contact-message-preview-main" type="button">
         <span class="contact-message-preview-top"></span>
@@ -2971,9 +3006,19 @@ function renderContactInspectorMessages(container, contact) {
         <button type="button" data-action="reply">Reply</button>
         <button type="button" data-action="draft">Draft</button>
         <button type="button" data-action="star">Star</button>
+        <button type="button" data-action="note">Note</button>
         <button type="button" data-action="read-state">Mark unread</button>
         <button type="button" data-action="copy">Copy</button>
       </span>
+      <div class="contact-message-preview-note" hidden><span></span></div>
+      <div class="contact-message-preview-note-editor" hidden>
+        <textarea rows="2" maxlength="2000" placeholder="Private message note"></textarea>
+        <div class="contact-message-preview-note-actions">
+          <button type="button" data-action="save-recent-note">Save</button>
+          <button type="button" data-action="cancel-recent-note">Cancel</button>
+          <button type="button" data-action="clear-recent-note">Clear</button>
+        </div>
+      </div>
     `;
     item.querySelector(".contact-message-preview-top").textContent = [
       searchResultConversationName(result),
@@ -2999,11 +3044,43 @@ function renderContactInspectorMessages(container, contact) {
     starButton.classList.toggle("active", starred);
     starButton.disabled = !result.conversation_id || !result.provider_message_id;
     starButton.addEventListener("click", () => toggleContactRecentMessageStar(result));
+    const noteButton = item.querySelector('[data-action="note"]');
+    noteButton.textContent = noteText ? "Edit note" : "Note";
+    noteButton.classList.toggle("active", Boolean(noteText) || Boolean(editingNote));
+    noteButton.disabled = !result.conversation_id || !result.provider_message_id;
+    noteButton.addEventListener("click", () => editContactRecentMessageNote(result));
     const readButton = item.querySelector('[data-action="read-state"]');
     readButton.textContent = unread ? "Mark read" : "Mark unread";
     readButton.classList.toggle("active", unread);
     readButton.disabled = !result.conversation_id || !result.provider_message_id;
     readButton.addEventListener("click", () => toggleContactRecentMessageRead(result));
+    const noteBox = item.querySelector(".contact-message-preview-note");
+    if (noteText) {
+      noteBox.hidden = false;
+      noteBox.querySelector("span").textContent = noteText;
+    }
+    const noteEditor = item.querySelector(".contact-message-preview-note-editor");
+    const noteInput = noteEditor.querySelector("textarea");
+    if (editingNote) {
+      noteEditor.hidden = false;
+      noteInput.value = noteText;
+      noteInput.addEventListener("keydown", (event) => {
+        if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+          event.preventDefault();
+          saveContactRecentMessageNote(result, noteInput.value);
+        }
+        if (event.key === "Escape") {
+          state.activeContactMessageNoteEditorId = "";
+          renderContactInspector();
+        }
+      });
+      noteEditor.querySelector('[data-action="save-recent-note"]').addEventListener("click", () => saveContactRecentMessageNote(result, noteInput.value));
+      noteEditor.querySelector('[data-action="cancel-recent-note"]').addEventListener("click", () => {
+        state.activeContactMessageNoteEditorId = "";
+        renderContactInspector();
+      });
+      noteEditor.querySelector('[data-action="clear-recent-note"]').addEventListener("click", () => saveContactRecentMessageNote(result, ""));
+    }
     item.querySelector('[data-action="copy"]').addEventListener("click", () => copyContactRecentMessage(result));
     container.append(item);
   }
@@ -3022,6 +3099,7 @@ async function loadContactInspectorMessages(contact) {
   state.activeContactMessages = [];
   state.activeContactMessagesLoading = true;
   state.activeContactMessagesError = "";
+  state.activeContactMessageNoteEditorId = "";
   renderContactInspector();
   try {
     const params = new URLSearchParams({
