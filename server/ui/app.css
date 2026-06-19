@@ -1459,6 +1459,11 @@ input[type="date"]:focus {
   box-shadow: inset 3px 0 0 rgba(191, 128, 35, 0.36);
 }
 
+.search-result.unread {
+  border-color: rgba(168, 83, 27, 0.36);
+  box-shadow: inset 3px 0 0 rgba(168, 83, 27, 0.38);
+}
+
 .search-result.noted:not(.starred) {
   border-color: rgba(17, 100, 86, 0.32);
   box-shadow: inset 3px 0 0 rgba(17, 100, 86, 0.26);

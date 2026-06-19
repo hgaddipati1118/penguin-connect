@@ -1331,6 +1331,30 @@ async function toggleMessageSearchResultStar(result) {
   }
 }
 
+async function toggleMessageSearchResultRead(result) {
+  if (!result?.conversation_id || !result.provider_message_id) return;
+  const nextUnread = !isUnreadMessage(result);
+  try {
+    const response = await api(`/penguin-connect/conversations/${encodeURIComponent(result.conversation_id)}/messages/management`, {
+      method: "POST",
+      body: JSON.stringify({
+        provider_message_id: result.provider_message_id,
+        unread: nextUnread,
+      }),
+    });
+    mergeMessageManagement(response);
+    el.messageSearchStatus.textContent = nextUnread ? "Search result marked unread" : "Search result marked read";
+    renderMessageSearchResults();
+    renderConversations();
+    renderThreadHeader();
+    renderThreadControls();
+    renderMessages();
+    buildCodexPrompt();
+  } catch (error) {
+    el.messageSearchStatus.textContent = error.message;
+  }
+}
+
 async function toggleMessageRead(message) {
   if (!state.selected || !message.provider_message_id) return;
   const nextUnread = !isUnreadMessage(message);
@@ -3576,10 +3600,11 @@ function renderMessageSearchResults() {
     const item = document.createElement("div");
     const starred = isStarredMessage(result);
     const noted = hasMessageNote(result);
+    const unread = isUnreadMessage(result);
     const noteText = messageNoteText(result);
     const resultKey = messageSearchResultKey(result);
     const editingNote = state.messageSearchNoteEditorId && resultKey === state.messageSearchNoteEditorId;
-    item.className = ["search-result", starred ? "starred" : "", noted ? "noted" : ""].filter(Boolean).join(" ");
+    item.className = ["search-result", unread ? "unread" : "", starred ? "starred" : "", noted ? "noted" : ""].filter(Boolean).join(" ");
     item.innerHTML = `
       <button class="search-result-main" type="button">
         <span class="search-result-top"></span>
@@ -3587,6 +3612,7 @@ function renderMessageSearchResults() {
       </button>
       <span class="search-result-actions">
         <button type="button" data-action="star">Star</button>
+        <button type="button" data-action="read-state">Mark unread</button>
         <button type="button" data-action="note">Note</button>
         <button type="button" data-action="reply">Reply</button>
         <button type="button" data-action="draft">New draft</button>
@@ -3623,6 +3649,11 @@ function renderMessageSearchResults() {
     starButton.classList.toggle("active", starred);
     starButton.disabled = !result.conversation_id || !result.provider_message_id;
     starButton.addEventListener("click", () => toggleMessageSearchResultStar(result));
+    const readButton = item.querySelector('[data-action="read-state"]');
+    readButton.textContent = unread ? "Mark read" : "Mark unread";
+    readButton.classList.toggle("active", unread);
+    readButton.disabled = !result.conversation_id || !result.provider_message_id;
+    readButton.addEventListener("click", () => toggleMessageSearchResultRead(result));
     const noteButton = item.querySelector('[data-action="note"]');
     noteButton.textContent = noted ? "Edit note" : "Note";
     noteButton.classList.toggle("active", noted || Boolean(editingNote));
