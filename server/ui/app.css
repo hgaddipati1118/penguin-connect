@@ -493,6 +493,37 @@ input[type="email"]:focus {
   color: var(--accent-ink);
 }
 
+.contact-bulk-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.contact-bulk-actions button {
+  min-width: 0;
+  min-height: 26px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--panel-alt);
+  color: var(--muted);
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.contact-bulk-actions button:hover,
+.contact-bulk-actions button:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.contact-bulk-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .contact-list {
   display: grid;
   gap: 6px;

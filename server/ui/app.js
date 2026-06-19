@@ -49,6 +49,8 @@ const el = {
   contactRefreshButton: document.querySelector("#contactRefreshButton"),
   contactSearch: document.querySelector("#contactSearch"),
   contactSourceFilters: document.querySelector("#contactSourceFilters"),
+  contactAddVisibleButton: document.querySelector("#contactAddVisibleButton"),
+  contactSaveVisibleButton: document.querySelector("#contactSaveVisibleButton"),
   contactStatus: document.querySelector("#contactStatus"),
   contactList: document.querySelector("#contactList"),
   threadProvider: document.querySelector("#threadProvider"),
@@ -1099,6 +1101,72 @@ function addDraftRecipient(value) {
   return true;
 }
 
+function visibleContactRecipientHandles() {
+  return uniqueRecipientValues(state.contacts.map(contactRecipientHandle));
+}
+
+function contactBulkListName() {
+  const query = el.contactSearch.value.trim();
+  const source = contactSourceLabel();
+  return query ? `${source}: ${query}` : `${source} contacts`;
+}
+
+function renderContactBulkActions() {
+  const hasRecipients = visibleContactRecipientHandles().length > 0;
+  el.contactAddVisibleButton.disabled = !hasRecipients;
+  el.contactSaveVisibleButton.disabled = !hasRecipients;
+}
+
+function addVisibleContactsToDraft() {
+  const participants = visibleContactRecipientHandles();
+  if (!participants.length) {
+    el.contactStatus.textContent = "No visible handles";
+    return;
+  }
+
+  const before = uniqueRecipientValues(draftRecipientValues());
+  const beforeKeys = new Set(before.map(recipientCompareKey));
+  const recipients = setDraftRecipients([...before, ...participants], { focus: true });
+  const addedCount = recipients.filter((recipient) => !beforeKeys.has(recipientCompareKey(recipient))).length;
+  const status = addedCount
+    ? `${addedCount} contact${addedCount === 1 ? "" : "s"} added`
+    : "Contacts already added";
+  el.contactStatus.textContent = status;
+  el.draftState.textContent = status;
+}
+
+async function saveVisibleContactsAsRecipientList() {
+  const participants = visibleContactRecipientHandles();
+  if (!participants.length) {
+    el.contactStatus.textContent = "No visible handles";
+    return;
+  }
+
+  el.contactSaveVisibleButton.disabled = true;
+  el.contactStatus.textContent = "Saving visible contacts";
+  try {
+    const result = await api("/penguin-connect/recipient-lists", {
+      method: "POST",
+      body: JSON.stringify({
+        name: contactBulkListName(),
+        participants,
+      }),
+    });
+    const saved = result.recipient_list || {};
+    state.activeRecipientListId = saved.list_id || "";
+    el.recipientListName.value = recipientListLabel(saved);
+    setDraftRecipients(participants);
+    mergeRecipientList(saved);
+    renderRecipientLists();
+    el.contactStatus.textContent = "Visible contacts saved";
+    el.draftState.textContent = `${recipientListLabel(saved)} saved`;
+  } catch (error) {
+    el.contactStatus.textContent = error.message;
+  } finally {
+    renderContactBulkActions();
+  }
+}
+
 function currentThreadParticipantHandles() {
   return conversationParticipants().map((participant) => participant.handle);
 }
@@ -1635,6 +1703,7 @@ function renderContactSourceFilters() {
 
 function renderContacts() {
   el.contactList.replaceChildren();
+  renderContactBulkActions();
   if (!state.contacts.length) {
     const empty = document.createElement("div");
     empty.className = "empty-state compact-state";
@@ -3012,6 +3081,8 @@ el.contactRefreshButton.addEventListener("click", async () => {
     el.contactRefreshButton.disabled = false;
   }
 });
+el.contactAddVisibleButton.addEventListener("click", addVisibleContactsToDraft);
+el.contactSaveVisibleButton.addEventListener("click", saveVisibleContactsAsRecipientList);
 el.messageFilter.addEventListener("input", renderMessages);
 el.messageViewFilters.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-message-view]");
