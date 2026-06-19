@@ -1,3 +1,5 @@
+const newChatDraftStorageKey = "penguin-connect:new-chat-draft:v1";
+
 const state = {
   conversations: [],
   selected: null,
@@ -201,6 +203,61 @@ const el = {
   useCodexDraftButton: document.querySelector("#useCodexDraftButton"),
   useCodexNewChatButton: document.querySelector("#useCodexNewChatButton"),
 };
+
+function savedNewChatDraft() {
+  try {
+    const raw = window.localStorage?.getItem(newChatDraftStorageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function saveNewChatDraft() {
+  try {
+    const snapshot = {
+      recipients: el.draftRecipients.value,
+      recipientListName: el.recipientListName.value,
+      message: el.draftMessage.value,
+      copyToClipboard: Boolean(el.draftCopyToggle.checked),
+      openAddressed: Boolean(el.draftOpenToggle.checked),
+      openAttachments: Boolean(el.draftOpenAttachmentsToggle.checked),
+      activeRecipientListId: state.activeRecipientListId || "",
+      updatedAt: new Date().toISOString(),
+    };
+    window.localStorage?.setItem(newChatDraftStorageKey, JSON.stringify(snapshot));
+  } catch (_error) {
+    // Local storage can be unavailable in private or restricted browser contexts.
+  }
+}
+
+function clearSavedNewChatDraft() {
+  try {
+    window.localStorage?.removeItem(newChatDraftStorageKey);
+  } catch (_error) {
+    // Ignore storage cleanup failures; the form itself still clears.
+  }
+}
+
+function restoreNewChatDraft() {
+  const snapshot = savedNewChatDraft();
+  if (!snapshot) return false;
+  el.draftRecipients.value = typeof snapshot.recipients === "string" ? snapshot.recipients : "";
+  el.recipientListName.value = typeof snapshot.recipientListName === "string" ? snapshot.recipientListName : "";
+  el.draftMessage.value = typeof snapshot.message === "string" ? snapshot.message : "";
+  el.draftCopyToggle.checked = typeof snapshot.copyToClipboard === "boolean" ? snapshot.copyToClipboard : el.draftCopyToggle.checked;
+  el.draftOpenToggle.checked = typeof snapshot.openAddressed === "boolean" ? snapshot.openAddressed : el.draftOpenToggle.checked;
+  el.draftOpenAttachmentsToggle.checked = typeof snapshot.openAttachments === "boolean" ? snapshot.openAttachments : el.draftOpenAttachmentsToggle.checked;
+  state.activeRecipientListId = typeof snapshot.activeRecipientListId === "string" ? snapshot.activeRecipientListId : "";
+  return Boolean(
+    el.draftRecipients.value.trim()
+      || el.recipientListName.value.trim()
+      || el.draftMessage.value.trim()
+      || state.activeRecipientListId
+  );
+}
 
 const emojiChoices = ["👍", "🙏", "🔥", "❤️", "😂", "👀", "✅", "🤔", "😭", "🚀"];
 
@@ -1030,6 +1087,7 @@ function useMessageAsNewChatDraft(message) {
   if (!draft) return;
   el.draftMessage.value = draft;
   renderDraftPreview();
+  saveNewChatDraft();
   el.draftState.textContent = "Message moved to new chat draft";
   el.draftMessage.focus();
 }
@@ -1643,6 +1701,7 @@ function setDraftRecipients(values, { focus = false } = {}) {
   el.draftRecipients.value = recipients.join(", ");
   renderDraftRecipientChips(recipients);
   renderDraftPreview(recipients);
+  saveNewChatDraft();
   if (focus) el.draftRecipients.focus();
   return recipients;
 }
@@ -2038,6 +2097,7 @@ function addRecipientListToDraft(list) {
   const addedCount = recipients.filter((recipient) => !beforeKeys.has(recipientCompareKey(recipient))).length;
   state.activeRecipientListId = list.list_id || state.activeRecipientListId;
   el.recipientListName.value = recipientListLabel(list);
+  saveNewChatDraft();
   el.draftState.textContent = addedCount
     ? `${addedCount} from ${recipientListLabel(list)} added`
     : `${recipientListLabel(list)} already added`;
@@ -2079,6 +2139,7 @@ async function saveRecipientList() {
     el.recipientListName.value = recipientListLabel(saved);
     mergeRecipientList(saved);
     renderRecipientLists();
+    saveNewChatDraft();
     el.draftState.textContent = "List saved";
   } catch (error) {
     el.draftState.textContent = error.message;
@@ -2170,6 +2231,7 @@ async function deleteRecipientList(list) {
     if (state.activeRecipientListId === list.list_id) {
       state.activeRecipientListId = "";
       el.recipientListName.value = "";
+      saveNewChatDraft();
     }
     renderRecipientLists();
     el.draftState.textContent = "List deleted";
@@ -4661,6 +4723,7 @@ function useCodexAnswerAsNewChatDraft() {
   el.draftMessage.value = answer;
   renderDraftPreview();
   buildCodexPrompt();
+  saveNewChatDraft();
   el.draftState.textContent = "Codex answer moved to new chat";
   el.draftMessage.focus();
 }
@@ -4791,6 +4854,7 @@ function clearDraftForm() {
   renderAttachments("draft");
   renderDraftPreview([]);
   renderRecipientLists();
+  clearSavedNewChatDraft();
 }
 
 async function stageDraft() {
@@ -4967,12 +5031,20 @@ el.draftRecipients.addEventListener("input", () => {
   const recipients = uniqueRecipientValues(draftRecipientValues());
   renderDraftRecipientChips(recipients);
   renderDraftPreview(recipients);
+  saveNewChatDraft();
 });
 el.draftRecipients.addEventListener("blur", (event) => {
   if (event.relatedTarget && el.draftRecipientChips.contains(event.relatedTarget)) return;
   setDraftRecipients(draftRecipientValues());
 });
-el.draftMessage.addEventListener("input", () => renderDraftPreview());
+el.recipientListName.addEventListener("input", saveNewChatDraft);
+el.draftMessage.addEventListener("input", () => {
+  renderDraftPreview();
+  saveNewChatDraft();
+});
+el.draftCopyToggle.addEventListener("change", saveNewChatDraft);
+el.draftOpenToggle.addEventListener("change", saveNewChatDraft);
+el.draftOpenAttachmentsToggle.addEventListener("change", saveNewChatDraft);
 el.sendButton.addEventListener("click", sendMessage);
 el.voiceMemoButton.addEventListener("click", () => toggleVoiceMemoRecording("reply"));
 el.draftVoiceMemoButton.addEventListener("click", () => toggleVoiceMemoRecording("draft"));
@@ -5121,6 +5193,11 @@ el.bulkMarkReadButton.addEventListener("click", bulkMarkSelectedRead);
 el.bulkPinButton.addEventListener("click", bulkPinSelected);
 el.bulkMuteButton.addEventListener("click", bulkMuteSelected);
 el.bulkArchiveButton.addEventListener("click", bulkArchiveSelected);
+
+const restoredNewChatDraft = restoreNewChatDraft();
+if (restoredNewChatDraft) {
+  el.draftState.textContent = "Local draft restored";
+}
 
 renderAllEmojiButtons();
 renderAllVoiceMemoControls();
