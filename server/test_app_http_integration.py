@@ -846,6 +846,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
             unread_response = client.get("/penguin-connect/messages/search", params={"view": "unread", "limit": 10})
             starred_response = client.get("/penguin-connect/messages/search", params={"view": "starred", "limit": 10})
             noted_response = client.get("/penguin-connect/messages/search", params={"view": "noted", "limit": 10})
+            note_query_response = client.get("/penguin-connect/messages/search", params={"query": "sent plan", "limit": 10})
             mine_response = client.get("/penguin-connect/messages/search", params={"view": "mine", "limit": 10})
             date_response = client.get(
                 "/penguin-connect/messages/search",
@@ -900,6 +901,12 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(noted_body["view"], "noted")
         self.assertEqual([message["provider_message_id"] for message in noted_body["messages"]], ["manual-sent"])
         self.assertEqual(noted_body["messages"][0]["message_note"], "Follow up on sent plan")
+
+        self.assertEqual(note_query_response.status_code, 200)
+        note_query_body = note_query_response.json()
+        self.assertEqual(note_query_body["query"], "sent plan")
+        self.assertEqual([message["provider_message_id"] for message in note_query_body["messages"]], ["manual-sent"])
+        self.assertEqual(note_query_body["messages"][0]["message_note"], "Follow up on sent plan")
 
         self.assertEqual(mine_response.status_code, 200)
         self.assertEqual([message["provider_message_id"] for message in mine_response.json()["messages"]], ["manual-sent"])
@@ -1855,6 +1862,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("appendHighlightedText(preview, previewText, terms)", js_response.text)
         self.assertIn('appendHighlightedText(noteBox.querySelector("span"), noteText, terms)', js_response.text)
         self.assertIn("appendHighlightedText(pill, attachmentLabel(attachment), terms)", js_response.text)
+        self.assertIn("renderCompactAttachmentChips(message, { conversationId = \"\", limit = 4, terms = [] }", js_response.text)
+        self.assertIn("appendHighlightedText(label, attachmentLabel(attachment), terms)", js_response.text)
         self.assertIn("contactRecentContext", js_response.text)
         self.assertIn("Loaded contact recent messages:", js_response.text)
         self.assertIn("contactContext", js_response.text)

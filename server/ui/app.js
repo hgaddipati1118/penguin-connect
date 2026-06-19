@@ -1507,7 +1507,7 @@ function attachmentKindLabel(attachment) {
   return "File";
 }
 
-function renderCompactAttachmentChips(message, { conversationId = "", limit = 4 } = {}) {
+function renderCompactAttachmentChips(message, { conversationId = "", limit = 4, terms = [] } = {}) {
   const attachments = attachmentRows(message);
   if (!attachments.length) return null;
 
@@ -1533,7 +1533,7 @@ function renderCompactAttachmentChips(message, { conversationId = "", limit = 4 
     kind.textContent = attachmentKindLabel(attachment);
     const label = document.createElement("span");
     label.className = "compact-attachment-label";
-    label.textContent = attachmentLabel(attachment);
+    appendHighlightedText(label, attachmentLabel(attachment), terms);
     chip.append(kind, label);
     wrapper.append(chip);
   }
@@ -5250,6 +5250,7 @@ function renderMessageSearchResults() {
     item.querySelector(".search-result-main").addEventListener("click", () => useMessageSearchResult(result));
     const attachmentChips = renderCompactAttachmentChips(result, {
       conversationId: result.conversation_id,
+      terms,
     });
     if (attachmentChips) item.insertBefore(attachmentChips, item.querySelector(".search-result-note"));
     const starButton = item.querySelector('[data-action="star"]');
@@ -5270,7 +5271,7 @@ function renderMessageSearchResults() {
     const noteBox = item.querySelector(".search-result-note");
     if (noteText) {
       noteBox.hidden = false;
-      noteBox.querySelector("span").textContent = noteText;
+      appendHighlightedText(noteBox.querySelector("span"), noteText, terms);
     }
     const noteEditor = item.querySelector(".search-result-note-editor");
     const noteInput = noteEditor.querySelector("textarea");

@@ -1470,6 +1470,7 @@ def _search_messages(
                 COALESCE(m.sender_name, '') || ' ' ||
                 COALESCE(m.subject, '') || ' ' ||
                 COALESCE(m.body_text, '') || ' ' ||
+                COALESCE(mm.note, '') || ' ' ||
                 COALESCE(m.metadata, '')
             ) LIKE ?"""
         )
