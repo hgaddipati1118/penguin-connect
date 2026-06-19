@@ -4229,6 +4229,21 @@ function filterConversationsForContact(contact) {
   el.conversationSearch.focus();
 }
 
+function filterConversationsForParticipant(participant, contact) {
+  const handle = String(participant?.handle || "").trim();
+  if (!handle) {
+    el.threadPeopleState.textContent = "No participant thread search value";
+    return;
+  }
+
+  const managedContact = participantManagedContact(
+    { ...participant, handle },
+    contact || threadContactMatch(handle)
+  );
+  filterConversationsForContact(managedContact);
+  el.threadPeopleState.textContent = el.contactStatus.textContent;
+}
+
 async function copyParticipantHandle(participant) {
   const handle = String(participant?.handle || "").trim();
   if (!handle) {
@@ -4921,6 +4936,7 @@ function renderThreadPeople() {
         <button type="button" data-action="favorite">Star</button>
         <button type="button" data-action="search">Search</button>
         <button type="button" data-action="messages">Messages</button>
+        <button type="button" data-action="threads">Threads</button>
         <button type="button" data-action="copy">Copy</button>
         <button type="button" data-action="draft">New chat</button>
         <button type="button" data-action="contact">Create</button>
@@ -4938,6 +4954,7 @@ function renderThreadPeople() {
     favoriteButton.addEventListener("click", () => toggleThreadParticipantFavorite(participant, contact));
     item.querySelector('[data-action="search"]').addEventListener("click", () => searchContactHandle(participant.handle));
     item.querySelector('[data-action="messages"]').addEventListener("click", () => searchMessagesForParticipant(participant, contact));
+    item.querySelector('[data-action="threads"]').addEventListener("click", () => filterConversationsForParticipant(participant, contact));
     item.querySelector('[data-action="copy"]').addEventListener("click", () => copyParticipantHandle(participant));
     item.querySelector('[data-action="draft"]').addEventListener("click", () => addParticipantToDraft(participant.handle));
     const contactButton = item.querySelector('[data-action="contact"]');
