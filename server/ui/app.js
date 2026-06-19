@@ -1280,6 +1280,17 @@ function mergeMessageManagement(result) {
       }
       : item
   ));
+  state.activeContactMessages = state.activeContactMessages.map((item) => (
+    item.provider_message_id === providerMessageId
+      && (!conversationId || !item.conversation_id || item.conversation_id === conversationId)
+      ? {
+        ...item,
+        is_starred: Boolean(result.is_starred),
+        message_note: result.message_note || "",
+        is_read: hasReadState ? Boolean(result.is_read) : item.is_read,
+      }
+      : item
+  ));
   const unreadCount = Number(result.unread_count);
   if (conversationId && Number.isFinite(unreadCount)) {
     updateConversationFields(conversationId, {
@@ -2870,6 +2881,31 @@ async function copyContactRecentMessage(result) {
   }
 }
 
+async function toggleContactRecentMessageRead(result) {
+  if (!result?.conversation_id || !result.provider_message_id) return;
+  const nextUnread = !isUnreadMessage(result);
+  try {
+    const response = await api(`/penguin-connect/conversations/${encodeURIComponent(result.conversation_id)}/messages/management`, {
+      method: "POST",
+      body: JSON.stringify({
+        provider_message_id: result.provider_message_id,
+        unread: nextUnread,
+      }),
+    });
+    mergeMessageManagement(response);
+    el.contactStatus.textContent = nextUnread ? "Recent message marked unread" : "Recent message marked read";
+    renderContactInspector();
+    renderMessageSearchResults();
+    renderConversations();
+    renderThreadHeader();
+    renderThreadControls();
+    renderMessages();
+    buildCodexPrompt();
+  } catch (error) {
+    el.contactStatus.textContent = error.message;
+  }
+}
+
 function renderContactInspectorMessages(container, contact) {
   container.replaceChildren();
   const key = contactDetailKey(contact);
@@ -2899,7 +2935,8 @@ function renderContactInspectorMessages(container, contact) {
 
   for (const result of state.activeContactMessages) {
     const item = document.createElement("div");
-    item.className = "contact-message-preview";
+    const unread = isUnreadMessage(result);
+    item.className = `contact-message-preview ${unread ? "unread" : ""}`;
     item.innerHTML = `
       <button class="contact-message-preview-main" type="button">
         <span class="contact-message-preview-top"></span>
@@ -2909,6 +2946,7 @@ function renderContactInspectorMessages(container, contact) {
         <button type="button" data-action="open">Open</button>
         <button type="button" data-action="reply">Reply</button>
         <button type="button" data-action="draft">Draft</button>
+        <button type="button" data-action="read-state">Mark unread</button>
         <button type="button" data-action="copy">Copy</button>
       </span>
     `;
@@ -2931,6 +2969,11 @@ function renderContactInspectorMessages(container, contact) {
     replyButton.disabled = !result.conversation_id;
     replyButton.addEventListener("click", () => replyToMessageSearchResult(result));
     item.querySelector('[data-action="draft"]').addEventListener("click", () => useMessageAsNewChatDraft(result));
+    const readButton = item.querySelector('[data-action="read-state"]');
+    readButton.textContent = unread ? "Mark read" : "Mark unread";
+    readButton.classList.toggle("active", unread);
+    readButton.disabled = !result.conversation_id || !result.provider_message_id;
+    readButton.addEventListener("click", () => toggleContactRecentMessageRead(result));
     item.querySelector('[data-action="copy"]').addEventListener("click", () => copyContactRecentMessage(result));
     container.append(item);
   }

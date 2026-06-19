@@ -853,6 +853,11 @@ input[type="date"]:focus {
   background: var(--panel);
 }
 
+.contact-message-preview.unread {
+  border-color: rgba(168, 83, 27, 0.36);
+  box-shadow: inset 3px 0 0 rgba(168, 83, 27, 0.38);
+}
+
 .contact-message-preview-main {
   display: grid;
   min-width: 0;
@@ -921,6 +926,11 @@ input[type="date"]:focus {
 .contact-inspector-actions button.active {
   border-color: rgba(191, 128, 35, 0.65);
   color: #7a4d10;
+}
+
+.contact-message-preview-actions button.active {
+  border-color: rgba(168, 83, 27, 0.42);
+  color: var(--warn);
 }
 
 .contact-inspector-actions button:disabled {
