@@ -4406,6 +4406,21 @@ async function markLoadedContactRecentMessagesUnread() {
   });
 }
 
+async function copyLoadedContactRecentMessages() {
+  const rows = state.activeContactMessages;
+  if (!rows.length) {
+    el.contactStatus.textContent = "No recent messages to copy";
+    return;
+  }
+
+  try {
+    await copyText(rows.map(messageCopyText).filter(Boolean).join("\n\n"));
+    el.contactStatus.textContent = `Copied ${rows.length} recent message${rows.length === 1 ? "" : "s"}`;
+  } catch (error) {
+    el.contactStatus.textContent = error.message;
+  }
+}
+
 function renderContactInspectorMessages(container, contact) {
   container.replaceChildren();
   const key = contactDetailKey(contact);
@@ -4433,10 +4448,15 @@ function renderContactInspectorMessages(container, contact) {
     const actions = document.createElement("span");
     actions.className = "contact-inspector-message-bulk";
     actions.innerHTML = `
+      <button type="button" data-action="copy-recent">Copy loaded</button>
       <button type="button" data-action="star-recent">Star loaded</button>
       <button type="button" data-action="read-recent">Mark read</button>
       <button type="button" data-action="unread-recent">Mark unread</button>
     `;
+    const copyButton = actions.querySelector('[data-action="copy-recent"]');
+    copyButton.disabled = bulkBusy || state.activeContactMessages.length === 0;
+    copyButton.textContent = `Copy ${state.activeContactMessages.length}`;
+    copyButton.addEventListener("click", copyLoadedContactRecentMessages);
     const starButton = actions.querySelector('[data-action="star-recent"]');
     starButton.disabled = bulkBusy || unstarredCount === 0;
     starButton.textContent = bulkBusy
