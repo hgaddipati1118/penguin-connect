@@ -91,6 +91,7 @@ class PenguinConnectContactCreateRequest(BaseModel):
 class PenguinConnectContactManagementRequest(BaseModel):
     contact_key: str = ""
     favorite: bool = False
+    note: str | None = None
 
 class PenguinConnectDraftCreateRequest(BaseModel):
     participants: list[str] | None = None
@@ -606,6 +607,78 @@ def _favorite_contact_keys(conn: sqlite3.Connection) -> list[str]:
     return [str(row["contact_key"] or "").strip() for row in rows if row["contact_key"]]
 
 
+def _contact_matches_query(contact: dict, query: str) -> bool:
+    clean_query = str(query or "").strip().lower()
+    if not clean_query:
+        return True
+    text = " ".join(
+        str(contact.get(key) or "")
+        for key in (
+            "display_name",
+            "first_name",
+            "last_name",
+            "organization",
+            "phone",
+            "phone_normalized",
+            "email",
+            "primary_handle",
+            "handle_type",
+            "contact_note",
+        )
+    ).lower()
+    if clean_query in text:
+        return True
+    query_digits = _contact_phone_search_key(clean_query)
+    handle_digits = _contact_phone_search_key(text)
+    return len(query_digits) >= 3 and query_digits in handle_digits
+
+
+def _contact_rows_for_keys(conn: sqlite3.Connection, keys: set[str]) -> list[sqlite3.Row]:
+    if not keys:
+        return []
+    rows = conn.execute(
+        """
+        SELECT id, first_name, last_name, organization, phone, phone_normalized, email, imported_at
+        FROM contacts
+        ORDER BY
+            last_name COLLATE NOCASE,
+            first_name COLLATE NOCASE,
+            organization COLLATE NOCASE,
+            email COLLATE NOCASE,
+            phone COLLATE NOCASE
+        """
+    ).fetchall()
+    return [row for row in rows if _contact_row_keys(row) & keys]
+
+
+def _managed_contact_note_keys_matching(conn: sqlite3.Connection, query: str) -> set[str]:
+    search = str(query or "").strip().lower()
+    if not search:
+        return set()
+    rows = conn.execute(
+        """SELECT contact_key
+           FROM penguin_connect_contact_management
+           WHERE note <> '' AND lower(note) LIKE ?
+           ORDER BY updated_at DESC, contact_key""",
+        (f"%{search}%",),
+    ).fetchall()
+    return {str(row["contact_key"] or "").strip() for row in rows if row["contact_key"]}
+
+
+def _dedupe_contact_items(contacts: list[dict]) -> list[dict]:
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for contact in contacts:
+        key = str(contact.get("contact_key") or "").strip()
+        if not key:
+            key = f"{contact.get('source') or 'contact'}:{contact.get('id') or len(deduped)}"
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(contact)
+    return deduped
+
+
 def _attach_contact_management(conn: sqlite3.Connection, contacts: list[dict]) -> list[dict]:
     keys = sorted({str(contact.get("contact_key") or "").strip() for contact in contacts if contact.get("contact_key")})
     rows = {}
@@ -628,23 +701,49 @@ def _attach_contact_management(conn: sqlite3.Connection, contacts: list[dict]) -
     return contacts
 
 
-def _set_contact_management(conn: sqlite3.Connection, contact_key: str, *, favorite: bool) -> dict:
+def _clean_contact_note(value: str | None) -> str:
+    note = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    return note[:2000]
+
+
+def _set_contact_management(
+    conn: sqlite3.Connection,
+    contact_key: str,
+    *,
+    favorite: bool | None = None,
+    note: str | None = None,
+    update_note: bool = False,
+) -> dict:
     clean_key = str(contact_key or "").strip().lower()[:300]
     if not clean_key:
         raise HTTPException(status_code=400, detail="contact_key_required")
+    managed = conn.execute(
+        """SELECT is_favorite, note
+           FROM penguin_connect_contact_management
+           WHERE contact_key = ?
+           LIMIT 1""",
+        (clean_key,),
+    ).fetchone()
+    current_favorite = bool(managed["is_favorite"]) if managed else False
+    current_note = managed["note"] if managed else ""
+    next_favorite = current_favorite if favorite is None else bool(favorite)
+    next_note = _clean_contact_note(note) if update_note else current_note
     conn.execute(
         """INSERT INTO penguin_connect_contact_management
-           (contact_key, is_favorite, updated_at)
-           VALUES (?, ?, datetime('now'))
+           (contact_key, is_favorite, note, updated_at)
+           VALUES (?, ?, ?, datetime('now'))
            ON CONFLICT(contact_key) DO UPDATE SET
              is_favorite = excluded.is_favorite,
+             note = excluded.note,
              updated_at = datetime('now')""",
-        (clean_key, 1 if favorite else 0),
+        (clean_key, 1 if next_favorite else 0, next_note),
     )
     return {
         "success": True,
         "contact_key": clean_key,
-        "is_favorite": bool(favorite),
+        "is_favorite": bool(next_favorite),
+        "contact_note": next_note,
+        "has_note": bool(next_note),
     }
 
 
@@ -656,10 +755,12 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
     favorite_keys = _favorite_contact_keys(conn) if normalized_source == "favorites" else []
     favorite_key_set = set(favorite_keys)
     favorite_order = {key: index for index, key in enumerate(favorite_keys)}
+    note_match_keys = _managed_contact_note_keys_matching(conn, query)
     pattern = f"%{query.lower()}%"
     where = ""
     params: list[object] = []
-    if query:
+    sql_query = "" if normalized_source == "favorites" else query
+    if sql_query:
         phone_query = _contact_phone_search_key(query)
         conditions = [
             """lower(
@@ -702,26 +803,44 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
             contact_params,
         ).fetchall()
     contact_items = [_contact_to_dict(row) for row in rows]
+    if query and normalized_source in {"all", "contacts"} and note_match_keys:
+        contact_items.extend(_contact_to_dict(row) for row in _contact_rows_for_keys(conn, note_match_keys))
     participant_items: list[dict] = []
     if normalized_source in {"all", "participants", "favorites"}:
         existing_keys = _all_contact_keys(conn)
         participant_items = _conversation_participant_contact_results(
             conn,
-            query,
+            "" if normalized_source == "favorites" else query,
             limit=limit_value if normalized_source == "favorites" else max(0, limit_value - len(contact_items)),
             existing_keys=existing_keys,
             include_all=normalized_source in {"participants", "favorites"},
             allowed_keys=favorite_key_set if normalized_source == "favorites" else None,
         )
-    contacts = _attach_contact_management(conn, [*contact_items, *participant_items])
+        if query and normalized_source in {"all", "participants"} and note_match_keys:
+            participant_items.extend(
+                _conversation_participant_contact_results(
+                    conn,
+                    "",
+                    limit=limit_value,
+                    existing_keys=existing_keys,
+                    include_all=True,
+                    allowed_keys=note_match_keys,
+                )
+            )
+    contacts = _attach_contact_management(conn, _dedupe_contact_items([*contact_items, *participant_items]))
     if normalized_source == "favorites":
         contacts = [contact for contact in contacts if contact.get("is_favorite")]
+        if query:
+            contacts = [contact for contact in contacts if _contact_matches_query(contact, query)]
         contacts.sort(
             key=lambda contact: (
                 favorite_order.get(str(contact.get("contact_key") or ""), len(favorite_order)),
                 str(contact.get("display_name") or "").lower(),
             )
         )
+        contacts = contacts[:limit_value]
+        participant_items = [contact for contact in contacts if contact.get("source") == "conversation"]
+    else:
         contacts = contacts[:limit_value]
         participant_items = [contact for contact in contacts if contact.get("source") == "conversation"]
     total_contacts = conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
@@ -1515,11 +1634,23 @@ def create_penguinconnect_contact(req: PenguinConnectContactCreateRequest):
 def set_penguinconnect_contact_management(req: PenguinConnectContactManagementRequest):
     conn = get_connection()
     try:
-        result = _set_contact_management(conn, req.contact_key, favorite=req.favorite)
+        field_set = getattr(req, "model_fields_set", None)
+        if field_set is None:
+            field_set = getattr(req, "__fields_set__", set())
+        field_set = set(field_set)
+        result = _set_contact_management(
+            conn,
+            req.contact_key,
+            favorite=req.favorite if "favorite" in field_set else None,
+            note=req.note,
+            update_note="note" in field_set,
+        )
         log_action(
             "api_set_contact_management",
             contact_key=result.get("contact_key"),
             is_favorite=bool(result.get("is_favorite")),
+            has_note=bool(result.get("has_note")),
+            note_length=len(result.get("contact_note") or ""),
         )
         conn.commit()
         return result

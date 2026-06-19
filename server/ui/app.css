@@ -523,6 +523,10 @@ input[type="email"]:focus {
   background-image: linear-gradient(90deg, rgba(191, 128, 35, 0.08), transparent 46%);
 }
 
+.contact-item.noted-contact {
+  box-shadow: inset 3px 0 0 rgba(17, 100, 86, 0.34);
+}
+
 .contact-main {
   display: grid;
   min-width: 0;
@@ -551,6 +555,41 @@ input[type="email"]:focus {
 
 .contact-related[hidden] {
   display: none;
+}
+
+.contact-note {
+  grid-column: 1 / -1;
+  margin: -1px 8px 0 10px;
+  padding: 7px 9px;
+  border-left: 3px solid rgba(17, 100, 86, 0.52);
+  background: rgba(239, 248, 243, 0.72);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.contact-note-editor {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 6px;
+  padding: 0 8px 8px 10px;
+}
+
+.contact-note-editor[hidden] {
+  display: none;
+}
+
+.contact-note-editor textarea {
+  min-height: 58px;
+  resize: vertical;
+}
+
+.contact-note-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
 .contact-related-label,
@@ -589,6 +628,7 @@ input[type="email"]:focus {
 
 .contact-add,
 .contact-favorite,
+.contact-note-button,
 .contact-create-result {
   display: inline-grid;
   min-width: 30px;
@@ -612,10 +652,16 @@ input[type="email"]:focus {
   font-size: 10px;
 }
 
+.contact-note-button {
+  font-size: 10px;
+}
+
 .contact-add:hover,
 .contact-add:focus-visible,
 .contact-favorite:hover,
 .contact-favorite:focus-visible,
+.contact-note-button:hover,
+.contact-note-button:focus-visible,
 .contact-create-result:hover,
 .contact-create-result:focus-visible {
   border-color: var(--accent);
@@ -627,8 +673,14 @@ input[type="email"]:focus {
   color: #7a4d10;
 }
 
+.contact-note-button.active {
+  border-color: rgba(17, 100, 86, 0.55);
+  color: var(--accent);
+}
+
 .contact-add:disabled,
 .contact-favorite:disabled,
+.contact-note-button:disabled,
 .contact-create-result:disabled {
   cursor: not-allowed;
   opacity: 0.45;
@@ -1110,6 +1162,7 @@ input[type="email"]:focus {
 
 .message-actions button,
 .message-note-actions button,
+.contact-note-actions button,
 .reply-context button {
   min-height: 24px;
   border: 1px solid var(--line);
@@ -1122,6 +1175,7 @@ input[type="email"]:focus {
 
 .message-actions button:hover,
 .message-note-actions button:hover,
+.contact-note-actions button:hover,
 .reply-context button:hover {
   border-color: var(--accent);
   color: var(--accent);

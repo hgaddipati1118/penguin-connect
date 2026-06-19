@@ -9,6 +9,7 @@ const state = {
   contacts: [],
   contactSource: "all",
   contactSearchTimer: null,
+  contactNoteEditorKey: "",
   threadContactMatches: {},
   threadContactToken: 0,
   messageSearchResults: [],
@@ -1268,12 +1269,20 @@ function isFavoriteContact(contact) {
   return contact.is_favorite === true || contact.is_favorite === 1;
 }
 
+function contactNoteText(contact) {
+  return String(contact.contact_note || "").trim();
+}
+
 function mergeContactManagement(result) {
   const contactKey = result.contact_key || "";
   if (!contactKey) return;
   state.contacts = state.contacts.map((contact) => (
     contact.contact_key === contactKey
-      ? { ...contact, is_favorite: Boolean(result.is_favorite) }
+      ? {
+        ...contact,
+        is_favorite: Boolean(result.is_favorite),
+        contact_note: result.contact_note || "",
+      }
       : contact
   ));
   if (state.contactSource === "favorites" && !result.is_favorite) {
@@ -1298,6 +1307,36 @@ async function toggleContactFavorite(contact) {
     });
     mergeContactManagement(result);
     el.contactStatus.textContent = result.is_favorite ? "Contact favorited" : "Contact unfavorited";
+    renderContacts();
+    buildCodexPrompt();
+  } catch (error) {
+    el.contactStatus.textContent = error.message;
+  }
+}
+
+function editContactNote(contact) {
+  if (!contact.contact_key) return;
+  state.contactNoteEditorKey = contact.contact_key;
+  renderContacts();
+}
+
+async function saveContactNote(contact, noteValue) {
+  const contactKey = contact.contact_key || "";
+  if (!contactKey) {
+    el.contactStatus.textContent = "No contact key";
+    return;
+  }
+  try {
+    const result = await api("/penguin-connect/contacts/management", {
+      method: "POST",
+      body: JSON.stringify({
+        contact_key: contactKey,
+        note: noteValue,
+      }),
+    });
+    mergeContactManagement(result);
+    state.contactNoteEditorKey = "";
+    el.contactStatus.textContent = result.has_note ? "Contact note saved" : "Contact note cleared";
     renderContacts();
     buildCodexPrompt();
   } catch (error) {
@@ -1338,7 +1377,9 @@ function renderContacts() {
   for (const contact of state.contacts) {
     const item = document.createElement("div");
     const favorite = isFavoriteContact(contact);
-    item.className = `contact-item ${favorite ? "favorite-contact" : ""}`;
+    const noteText = contactNoteText(contact);
+    const editingNote = state.contactNoteEditorKey === contact.contact_key;
+    item.className = `contact-item ${favorite ? "favorite-contact" : ""} ${noteText ? "noted-contact" : ""}`;
     item.innerHTML = `
       <button class="contact-main" type="button">
         <span class="contact-name"></span>
@@ -1347,9 +1388,19 @@ function renderContacts() {
       </button>
       <span class="contact-actions">
         <button class="contact-favorite" type="button" title="Favorite contact" aria-label="Favorite contact">Star</button>
+        <button class="contact-note-button" type="button" title="Private contact note" aria-label="Private contact note">Note</button>
         <button class="contact-add" type="button" title="Add to new chat" aria-label="Add contact to new chat">+</button>
         <button class="contact-create-result" type="button" title="Create contact" aria-label="Create contact from search result">Create</button>
       </span>
+      <div class="contact-note" hidden><span></span></div>
+      <div class="contact-note-editor" hidden>
+        <textarea rows="2" maxlength="2000" placeholder="Private contact note"></textarea>
+        <div class="contact-note-actions">
+          <button type="button" data-action="save-contact-note">Save</button>
+          <button type="button" data-action="cancel-contact-note">Cancel</button>
+          <button type="button" data-action="clear-contact-note">Clear</button>
+        </div>
+      </div>
       <div class="contact-related" hidden></div>
     `;
     item.querySelector(".contact-name").textContent = contactDisplayName(contact);
@@ -1363,6 +1414,11 @@ function renderContacts() {
     favoriteButton.classList.toggle("active", favorite);
     favoriteButton.disabled = !contact.contact_key;
     favoriteButton.addEventListener("click", () => toggleContactFavorite(contact));
+    const noteButton = item.querySelector(".contact-note-button");
+    noteButton.textContent = noteText ? "Edit" : "Note";
+    noteButton.classList.toggle("active", Boolean(noteText) || Boolean(editingNote));
+    noteButton.disabled = !contact.contact_key;
+    noteButton.addEventListener("click", () => editContactNote(contact));
     const addButton = item.querySelector(".contact-add");
     addButton.disabled = !contactRecipientHandle(contact);
     addButton.addEventListener("click", () => addContactToDraft(contact));
@@ -1370,6 +1426,32 @@ function renderContacts() {
     createButton.hidden = contact.is_saved !== false;
     createButton.disabled = !contactRecipientHandle(contact);
     createButton.addEventListener("click", () => fillContactFormFromContact(contact));
+    const noteBox = item.querySelector(".contact-note");
+    if (noteText) {
+      noteBox.hidden = false;
+      noteBox.querySelector("span").textContent = noteText;
+    }
+    const noteEditor = item.querySelector(".contact-note-editor");
+    const noteInput = noteEditor.querySelector("textarea");
+    if (editingNote) {
+      noteEditor.hidden = false;
+      noteInput.value = noteText;
+      noteInput.addEventListener("keydown", (event) => {
+        if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+          event.preventDefault();
+          saveContactNote(contact, noteInput.value);
+        } else if (event.key === "Escape") {
+          state.contactNoteEditorKey = "";
+          renderContacts();
+        }
+      });
+      noteEditor.querySelector('[data-action="save-contact-note"]').addEventListener("click", () => saveContactNote(contact, noteInput.value));
+      noteEditor.querySelector('[data-action="cancel-contact-note"]').addEventListener("click", () => {
+        state.contactNoteEditorKey = "";
+        renderContacts();
+      });
+      noteEditor.querySelector('[data-action="clear-contact-note"]').addEventListener("click", () => saveContactNote(contact, ""));
+    }
     renderContactRelatedThreads(item.querySelector(".contact-related"), contact);
     el.contactList.append(item);
   }
@@ -2352,8 +2434,10 @@ function contactContext(limit = 8) {
   if (!state.contacts.length) return "none";
   return state.contacts.slice(0, limit).map((contact) => {
     const organization = contact.organization ? ` | ${contact.organization}` : "";
+    const favorite = isFavoriteContact(contact) ? " | favorite" : "";
+    const note = contactNoteText(contact) ? ` | private note: ${trim(contactNoteText(contact), 180)}` : "";
     const source = contact.is_saved === false ? " | unsaved participant" : "";
-    return `${contactDisplayName(contact)} | ${contactHandleText(contact)}${organization}${source}`;
+    return `${contactDisplayName(contact)} | ${contactHandleText(contact)}${organization}${favorite}${source}${note}`;
   }).join("\n");
 }
 

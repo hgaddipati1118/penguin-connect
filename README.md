@@ -164,7 +164,7 @@ message notes, opening synced attachment files, a per-thread media browser for l
 images/audio/files, inline previews for local image attachments, inline playback
 for local audio attachments, cached Contacts search/refresh with saved/unsaved
 source filters, favorite-contact filtering, conversation-participant fallback and related-thread shortcuts,
-contact creation, contact-to-thread matching, saved-contact resolution for
+private contact notes with note-aware search, contact creation, contact-to-thread matching, saved-contact resolution for
 selected-thread participants, contact-to-new-chat recipient picking with
 removable recipient chips, selected-thread participant actions for contact
 search/new-chat/contact creation, local thread titles, notes and tags,
