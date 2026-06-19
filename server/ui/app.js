@@ -1847,11 +1847,23 @@ function conversationFromSearchResult(result) {
   };
 }
 
+async function refreshConversationsForSearchResult(result) {
+  const conversationId = result?.conversation_id || "";
+  if (!conversationId || state.conversations.some((conversation) => conversation.conversation_id === conversationId)) {
+    return conversationFromSearchResult(result);
+  }
+
+  el.messageSearchStatus.textContent = "Loading imported thread";
+  await loadConversations({ autoSelect: false });
+  return conversationFromSearchResult(result);
+}
+
 async function useMessageSearchResult(result) {
   state.focusMessageId = result.provider_message_id || "";
   el.conversationSearch.value = "";
   renderConversations();
-  await selectConversation(conversationFromSearchResult(result));
+  const conversation = await refreshConversationsForSearchResult(result);
+  await selectConversation(conversation);
 }
 
 async function replyToMessageSearchResult(result) {
@@ -2801,7 +2813,7 @@ async function loadStatus() {
   }
 }
 
-async function loadConversations() {
+async function loadConversations({ autoSelect = true } = {}) {
   try {
     const payload = await api("/penguin-connect/conversations");
     state.senderEmail = payload.gmail_email || state.senderEmail;
@@ -2815,7 +2827,7 @@ async function loadConversations() {
     el.senderBadge.textContent = "Messages";
     renderConversations();
     renderContacts();
-    if (!state.selected && state.conversations.length) {
+    if (autoSelect && !state.selected && state.conversations.length) {
       await selectConversation(state.conversations.find((conversation) => !conversation.is_archived) || state.conversations[0]);
     }
   } catch (error) {
