@@ -2546,6 +2546,41 @@ function draftCreatedContactFromHandle(handle) {
   };
 }
 
+function quickCreateStatus(target, message) {
+  if (target === "thread") {
+    el.threadPeopleState.textContent = message;
+  } else {
+    el.contactStatus.textContent = message;
+  }
+  el.createContactState.textContent = message;
+}
+
+async function quickCreateContact(contact, target = "contact") {
+  const handle = contactRecipientHandle(contact);
+  if (!handle) {
+    quickCreateStatus(target, "No phone or email on contact");
+    return;
+  }
+
+  quickCreateStatus(target, "Creating contact");
+  try {
+    await api("/penguin-connect/contacts", {
+      method: "POST",
+      body: JSON.stringify(contactCreatePayload(contact)),
+    });
+    cacheDraftRecipientContact(draftCreatedContactFromHandle(handle));
+    await api("/penguin-connect/contacts/refresh", { method: "POST", body: "{}" });
+    await loadContacts({ force: true });
+    await loadThreadContactMatches();
+    refreshDraftRecipientChips();
+    renderContactInspector();
+    renderThreadPeople();
+    quickCreateStatus(target, "Contact created");
+  } catch (error) {
+    quickCreateStatus(target, error.message);
+  }
+}
+
 async function createVisibleUnknownContacts() {
   const contacts = contactBulkCreatableContacts();
   if (!contacts.length) {
@@ -3457,7 +3492,7 @@ function renderContactInspector() {
   const createButton = el.contactInspector.querySelector('[data-action="create"]');
   createButton.hidden = contact.is_saved !== false;
   createButton.disabled = !handle;
-  createButton.addEventListener("click", () => fillContactFormFromContact(contact));
+  createButton.addEventListener("click", () => quickCreateContact(contact, "contact"));
   el.contactInspector.querySelector(".contact-inspector-close").addEventListener("click", clearActiveContact);
   renderContactRelatedThreads(el.contactInspector.querySelector(".contact-inspector-related"), contact);
   renderContactInspectorMessages(el.contactInspector.querySelector(".contact-inspector-messages"), contact);
@@ -3532,7 +3567,7 @@ function renderThreadPeople() {
     const contactButton = item.querySelector('[data-action="contact"]');
     contactButton.textContent = savedContact ? "Saved" : "Create";
     contactButton.disabled = Boolean(savedContact);
-    contactButton.addEventListener("click", () => fillContactFormFromHandle(participant.handle));
+    contactButton.addEventListener("click", () => quickCreateContact(participantManagedContact(participant, contact), "thread"));
     el.threadPeople.append(item);
   }
 }
@@ -3939,7 +3974,7 @@ function renderContacts() {
     const createButton = item.querySelector(".contact-create-result");
     createButton.hidden = contact.is_saved !== false;
     createButton.disabled = !contactRecipientHandle(contact);
-    createButton.addEventListener("click", () => fillContactFormFromContact(contact));
+    createButton.addEventListener("click", () => quickCreateContact(contact, "contact"));
     const noteBox = item.querySelector(".contact-note");
     if (noteText) {
       noteBox.hidden = false;
