@@ -711,6 +711,37 @@ input[type="email"]:focus {
   gap: 6px;
 }
 
+.thread-people-bulk {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.thread-people-bulk button {
+  min-width: 0;
+  min-height: 28px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--panel-alt);
+  color: var(--muted);
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-people-bulk button:hover,
+.thread-people-bulk button:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.thread-people-bulk button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .thread-person {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

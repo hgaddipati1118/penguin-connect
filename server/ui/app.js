@@ -62,6 +62,8 @@ const el = {
   copyThreadButton: document.querySelector("#copyThreadButton"),
   threadStatus: document.querySelector("#threadStatus"),
   threadPeopleState: document.querySelector("#threadPeopleState"),
+  threadPeopleAddAllButton: document.querySelector("#threadPeopleAddAllButton"),
+  threadPeopleSaveListButton: document.querySelector("#threadPeopleSaveListButton"),
   threadPeople: document.querySelector("#threadPeople"),
   threadMediaState: document.querySelector("#threadMediaState"),
   mediaFilters: document.querySelector("#mediaFilters"),
@@ -1097,6 +1099,28 @@ function addDraftRecipient(value) {
   return true;
 }
 
+function currentThreadParticipantHandles() {
+  return conversationParticipants().map((participant) => participant.handle);
+}
+
+function addThreadParticipantsToDraft() {
+  const participants = currentThreadParticipantHandles();
+  if (!participants.length) {
+    el.threadPeopleState.textContent = "No participants";
+    return;
+  }
+
+  const before = uniqueRecipientValues(draftRecipientValues());
+  const beforeKeys = new Set(before.map(recipientCompareKey));
+  const recipients = setDraftRecipients([...before, ...participants], { focus: true });
+  const addedCount = recipients.filter((recipient) => !beforeKeys.has(recipientCompareKey(recipient))).length;
+  const status = addedCount
+    ? `${addedCount} recipient${addedCount === 1 ? "" : "s"} added`
+    : "Recipients already added";
+  el.threadPeopleState.textContent = status;
+  el.draftState.textContent = status;
+}
+
 function recipientListLabel(list) {
   return String(list.name || "").trim() || "Recipient list";
 }
@@ -1194,6 +1218,38 @@ async function saveRecipientList() {
     el.draftState.textContent = error.message;
   } finally {
     el.saveRecipientListButton.disabled = false;
+  }
+}
+
+async function saveThreadParticipantsAsRecipientList() {
+  const participants = currentThreadParticipantHandles();
+  if (!state.selected || !participants.length) {
+    el.threadPeopleState.textContent = "No participants";
+    return;
+  }
+
+  el.threadPeopleSaveListButton.disabled = true;
+  el.threadPeopleState.textContent = "Saving list";
+  try {
+    const result = await api("/penguin-connect/recipient-lists", {
+      method: "POST",
+      body: JSON.stringify({
+        name: conversationDisplayName(state.selected),
+        participants,
+      }),
+    });
+    const saved = result.recipient_list || {};
+    state.activeRecipientListId = saved.list_id || "";
+    el.recipientListName.value = recipientListLabel(saved);
+    setDraftRecipients(participants);
+    mergeRecipientList(saved);
+    renderRecipientLists();
+    el.threadPeopleState.textContent = "List saved";
+    el.draftState.textContent = `${recipientListLabel(saved)} saved`;
+  } catch (error) {
+    el.threadPeopleState.textContent = error.message;
+  } finally {
+    el.threadPeopleSaveListButton.disabled = !currentThreadParticipantHandles().length;
   }
 }
 
@@ -1319,6 +1375,9 @@ function renderContactRelatedThreads(container, contact) {
 function renderThreadPeople() {
   el.threadPeople.replaceChildren();
   const participants = conversationParticipants();
+  const hasParticipants = Boolean(state.selected && participants.length);
+  el.threadPeopleAddAllButton.disabled = !hasParticipants;
+  el.threadPeopleSaveListButton.disabled = !hasParticipants;
   const matchedCount = participants.filter((participant) => {
     const contact = threadContactMatch(participant.handle);
     return contact && contact.is_saved !== false;
@@ -2960,6 +3019,8 @@ el.copyThreadButton.addEventListener("click", async () => {
   el.sendState.textContent = "Thread copied";
 });
 el.fileInput.addEventListener("change", (event) => addFiles(event.target.files));
+el.threadPeopleAddAllButton.addEventListener("click", addThreadParticipantsToDraft);
+el.threadPeopleSaveListButton.addEventListener("click", saveThreadParticipantsAsRecipientList);
 el.stageDraftButton.addEventListener("click", stageDraft);
 el.saveRecipientListButton.addEventListener("click", saveRecipientList);
 el.clearDraftButton.addEventListener("click", clearDraftForm);
