@@ -58,6 +58,7 @@ const state = {
   messageSearchLimitStep: 30,
   messageSearchLimitMax: 100,
   messageSearchLoading: false,
+  messageSearchBulkBusy: false,
   messageSearchToken: 0,
   messageSearchNoteEditorId: "",
   focusMessageId: "",
@@ -155,6 +156,9 @@ const el = {
   globalMessageSearchFilters: document.querySelector("#globalMessageSearchFilters"),
   messageSearchMoreBar: document.querySelector("#messageSearchMoreBar"),
   messageSearchCount: document.querySelector("#messageSearchCount"),
+  starSearchLoadedButton: document.querySelector("#starSearchLoadedButton"),
+  markSearchReadButton: document.querySelector("#markSearchReadButton"),
+  markSearchUnreadButton: document.querySelector("#markSearchUnreadButton"),
   addSearchSendersButton: document.querySelector("#addSearchSendersButton"),
   addSearchParticipantsButton: document.querySelector("#addSearchParticipantsButton"),
   saveSearchSendersButton: document.querySelector("#saveSearchSendersButton"),
@@ -988,6 +992,7 @@ function removeMessageSearchResultIfFiltered(result) {
   const shouldRemove = (
     (state.messageSearchView === "starred" && !isStarredMessage(result))
     || (state.messageSearchView === "noted" && !hasMessageNote(result))
+    || (state.messageSearchView === "unread" && !isUnreadMessage(result))
   );
   if (!shouldRemove) return;
   state.messageSearchResults = state.messageSearchResults.filter((item) => messageSearchResultKey(item) !== key);
@@ -1380,6 +1385,92 @@ async function toggleMessageSearchResultRead(result) {
   } catch (error) {
     el.messageSearchStatus.textContent = error.message;
   }
+}
+
+function messageSearchManageableResults() {
+  const seen = new Set();
+  const results = [];
+  for (const result of state.messageSearchResults) {
+    if (!result?.conversation_id || !result.provider_message_id) continue;
+    const key = messageSearchResultKey(result);
+    if (!key || key === "::" || seen.has(key)) continue;
+    seen.add(key);
+    results.push(result);
+  }
+  return results;
+}
+
+async function bulkUpdateMessageSearchResults(results, payloadForResult, { starting, empty, complete }) {
+  const targets = results.filter((result) => result?.conversation_id && result.provider_message_id);
+  if (!targets.length) {
+    el.messageSearchStatus.textContent = empty;
+    renderMessageSearchMoreControls();
+    return;
+  }
+
+  state.messageSearchBulkBusy = true;
+  renderMessageSearchMoreControls();
+  el.messageSearchStatus.textContent = starting;
+  let updated = 0;
+  const failures = [];
+  for (const result of targets) {
+    try {
+      const response = await api(`/penguin-connect/conversations/${encodeURIComponent(result.conversation_id)}/messages/management`, {
+        method: "POST",
+        body: JSON.stringify({
+          provider_message_id: result.provider_message_id,
+          ...payloadForResult(result),
+        }),
+      });
+      mergeMessageManagement(response);
+      removeMessageSearchResultIfFiltered(response);
+      updated += 1;
+      el.messageSearchStatus.textContent = `Updated ${updated}/${targets.length}`;
+    } catch (error) {
+      failures.push(error.message);
+    }
+  }
+
+  state.messageSearchBulkBusy = false;
+  if (failures.length) {
+    el.messageSearchStatus.textContent = `Updated ${updated}; ${failures.length} failed`;
+  } else {
+    el.messageSearchStatus.textContent = complete(updated);
+  }
+  renderMessageSearchResults();
+  renderConversations();
+  renderThreadHeader();
+  renderThreadControls();
+  renderMessages();
+  renderContactInspector();
+  buildCodexPrompt();
+}
+
+async function starLoadedMessageSearchResults() {
+  const targets = messageSearchManageableResults().filter((result) => !isStarredMessage(result));
+  await bulkUpdateMessageSearchResults(targets, () => ({ starred: true }), {
+    starting: `Starring ${targets.length} loaded result${targets.length === 1 ? "" : "s"}`,
+    empty: "Loaded search results already starred",
+    complete: (updated) => `Starred ${updated} loaded result${updated === 1 ? "" : "s"}`,
+  });
+}
+
+async function markLoadedMessageSearchResultsRead() {
+  const targets = messageSearchManageableResults().filter(isUnreadMessage);
+  await bulkUpdateMessageSearchResults(targets, () => ({ unread: false }), {
+    starting: `Marking ${targets.length} loaded result${targets.length === 1 ? "" : "s"} read`,
+    empty: "Loaded search results already read",
+    complete: (updated) => `Marked ${updated} loaded result${updated === 1 ? "" : "s"} read`,
+  });
+}
+
+async function markLoadedMessageSearchResultsUnread() {
+  const targets = messageSearchManageableResults().filter((result) => !isUnreadMessage(result));
+  await bulkUpdateMessageSearchResults(targets, () => ({ unread: true }), {
+    starting: `Marking ${targets.length} loaded result${targets.length === 1 ? "" : "s"} unread`,
+    empty: "Loaded search results already unread",
+    complete: (updated) => `Marked ${updated} loaded result${updated === 1 ? "" : "s"} unread`,
+  });
 }
 
 async function toggleMessageRead(message) {
@@ -4490,6 +4581,11 @@ function renderMessageSearchMoreControls() {
   const limit = state.messageSearchLimit;
   const atMax = limit >= state.messageSearchLimitMax;
   const canLoadMore = runnable && !state.messageSearchLoading && loaded >= limit && !atMax;
+  const bulkBusy = state.messageSearchLoading || state.messageSearchBulkBusy;
+  const manageableResults = messageSearchManageableResults();
+  const unstarredLoadedCount = manageableResults.filter((result) => !isStarredMessage(result)).length;
+  const unreadLoadedCount = manageableResults.filter(isUnreadMessage).length;
+  const readLoadedCount = manageableResults.length - unreadLoadedCount;
   const allSenderCount = messageSearchContactHandles().length;
   const newSenderCount = messageSearchContactHandles({ onlyNew: true }).length;
   const allParticipantCount = messageSearchParticipantHandles().length;
@@ -4499,37 +4595,55 @@ function renderMessageSearchMoreControls() {
   el.messageSearchCount.textContent = state.messageSearchLoading
     ? `Loading up to ${limit} results`
     : `${loaded} loaded · window ${limit}${atMax ? " max" : ""}`;
-  el.addSearchSendersButton.disabled = state.messageSearchLoading || allSenderCount === 0 || newSenderCount === 0;
+  el.starSearchLoadedButton.disabled = bulkBusy || unstarredLoadedCount === 0;
+  el.starSearchLoadedButton.textContent = state.messageSearchBulkBusy
+    ? "Updating"
+    : (unstarredLoadedCount
+      ? `Star ${unstarredLoadedCount}`
+      : (manageableResults.length ? "All starred" : "Star loaded"));
+  el.markSearchReadButton.disabled = bulkBusy || unreadLoadedCount === 0;
+  el.markSearchReadButton.textContent = state.messageSearchBulkBusy
+    ? "Updating"
+    : (unreadLoadedCount
+      ? `Mark ${unreadLoadedCount} read`
+      : (manageableResults.length ? "All read" : "Mark read"));
+  el.markSearchUnreadButton.disabled = bulkBusy || readLoadedCount === 0;
+  el.markSearchUnreadButton.textContent = state.messageSearchBulkBusy
+    ? "Updating"
+    : (readLoadedCount
+      ? `Mark ${readLoadedCount} unread`
+      : (manageableResults.length ? "All unread" : "Mark unread"));
+  el.addSearchSendersButton.disabled = bulkBusy || allSenderCount === 0 || newSenderCount === 0;
   el.addSearchSendersButton.textContent = state.messageSearchLoading
     ? "Add senders"
     : (newSenderCount
       ? `Add ${newSenderCount} sender${newSenderCount === 1 ? "" : "s"}`
       : (allSenderCount ? "All senders added" : "Add senders"));
-  el.addSearchParticipantsButton.disabled = state.messageSearchLoading || allParticipantCount === 0 || newParticipantCount === 0;
+  el.addSearchParticipantsButton.disabled = bulkBusy || allParticipantCount === 0 || newParticipantCount === 0;
   el.addSearchParticipantsButton.textContent = state.messageSearchLoading
     ? "Add participants"
     : (newParticipantCount
       ? `Add ${newParticipantCount} participant${newParticipantCount === 1 ? "" : "s"}`
       : (allParticipantCount ? "All participants added" : "Add participants"));
-  el.saveSearchSendersButton.disabled = state.messageSearchLoading || allSenderCount === 0;
+  el.saveSearchSendersButton.disabled = bulkBusy || allSenderCount === 0;
   el.saveSearchSendersButton.textContent = state.messageSearchLoading
     ? "Save senders"
     : (allSenderCount
       ? `Save ${allSenderCount} sender${allSenderCount === 1 ? "" : "s"}`
       : "Save senders");
-  el.saveSearchParticipantsButton.disabled = state.messageSearchLoading || allParticipantCount === 0;
+  el.saveSearchParticipantsButton.disabled = bulkBusy || allParticipantCount === 0;
   el.saveSearchParticipantsButton.textContent = state.messageSearchLoading
     ? "Save participants"
     : (allParticipantCount
       ? `Save ${allParticipantCount} participant${allParticipantCount === 1 ? "" : "s"}`
       : "Save participants");
-  el.createSearchSendersButton.disabled = state.messageSearchLoading || creatableSenderCount === 0;
+  el.createSearchSendersButton.disabled = bulkBusy || creatableSenderCount === 0;
   el.createSearchSendersButton.textContent = state.messageSearchLoading
     ? "Create contacts"
     : (creatableSenderCount
       ? `Create ${creatableSenderCount} contact${creatableSenderCount === 1 ? "" : "s"}`
       : (allSenderCount ? "Contacts saved" : "Create contacts"));
-  el.loadMoreSearchButton.disabled = !canLoadMore;
+  el.loadMoreSearchButton.disabled = state.messageSearchBulkBusy || !canLoadMore;
   el.loadMoreSearchButton.textContent = state.messageSearchLoading
     ? "Loading"
     : (atMax ? "Max shown" : "Show more");
@@ -6799,6 +6913,9 @@ el.globalMessageSearchFilters.addEventListener("click", (event) => {
   loadMessageSearch();
 });
 el.loadMoreSearchButton.addEventListener("click", loadMoreMessageSearchResults);
+el.starSearchLoadedButton.addEventListener("click", starLoadedMessageSearchResults);
+el.markSearchReadButton.addEventListener("click", markLoadedMessageSearchResultsRead);
+el.markSearchUnreadButton.addEventListener("click", markLoadedMessageSearchResultsUnread);
 el.addSearchSendersButton.addEventListener("click", addMessageSearchContactsToDraft);
 el.addSearchParticipantsButton.addEventListener("click", addMessageSearchParticipantsToDraft);
 el.saveSearchSendersButton.addEventListener("click", saveMessageSearchContactsAsRecipientList);
