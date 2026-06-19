@@ -2090,6 +2090,7 @@ function setActiveContact(contact, { rerenderList = true } = {}) {
   state.activeContact = contact;
   renderContactInspector();
   if (rerenderList) renderContacts();
+  buildCodexPrompt();
 }
 
 function clearActiveContact() {
@@ -2098,6 +2099,7 @@ function clearActiveContact() {
   resetActiveContactMessages();
   renderContactInspector();
   renderContacts();
+  buildCodexPrompt();
 }
 
 function visibleContactSelectionKeys() {
@@ -3148,6 +3150,7 @@ async function loadContactInspectorMessages(contact, { limit = 3 } = {}) {
     state.activeContactMessagesError = "";
     el.contactStatus.textContent = `${state.activeContactMessages.length} recent message${state.activeContactMessages.length === 1 ? "" : "s"}`;
     renderContactInspector();
+    buildCodexPrompt();
   } catch (error) {
     if (token !== state.activeContactMessagesToken || state.activeContactKey !== key) return;
     state.activeContactMessages = [];
@@ -3155,6 +3158,7 @@ async function loadContactInspectorMessages(contact, { limit = 3 } = {}) {
     state.activeContactMessagesError = error.message;
     el.contactStatus.textContent = error.message;
     renderContactInspector();
+    buildCodexPrompt();
   }
 }
 
@@ -5563,6 +5567,25 @@ function messageSearchContext(limit = 8) {
   ].join("\n");
 }
 
+function contactRecentContext(limit = 8) {
+  const contact = activeContact();
+  if (!contact || !state.activeContactMessages.length) return "none";
+  const rows = state.activeContactMessages.slice(0, limit).map((message) => {
+    const flags = [
+      isUnreadMessage(message) ? "unread" : "",
+      isStarredMessage(message) ? "starred" : "",
+    ].filter(Boolean).join(", ");
+    const flagText = flags ? ` | ${flags}` : "";
+    const note = messageNoteText(message) ? ` | private note: ${trim(messageNoteText(message), 180)}` : "";
+    return `${formatTime(message.message_timestamp || message.timestamp)} | ${searchResultConversationName(message)} | ${messageSender(message)}: ${messageSnippet(message, 180)}${flagText}${note}`;
+  });
+  return [
+    `Contact: ${contactDisplayName(contact)} | ${contactHandleText(contact)}`,
+    `Loaded: ${state.activeContactMessages.length} recent message${state.activeContactMessages.length === 1 ? "" : "s"} · window ${state.activeContactMessagesLimit}`,
+    rows.join("\n"),
+  ].join("\n");
+}
+
 function contactContext(limit = 8) {
   if (!state.contacts.length) return "none";
   return state.contacts.slice(0, limit).map((contact) => {
@@ -5617,6 +5640,9 @@ function buildCodexPrompt() {
     "",
     "Loaded contact context:",
     contactContext(),
+    "",
+    "Loaded contact recent messages:",
+    contactRecentContext(),
     "",
     "Current message search context:",
     messageSearchContext(),

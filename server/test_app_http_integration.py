@@ -1776,6 +1776,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("buildCodexPrompt", js_response.text)
         self.assertIn("selectedConversationContext", js_response.text)
         self.assertIn("messageSearchContext", js_response.text)
+        self.assertIn("contactRecentContext", js_response.text)
+        self.assertIn("Loaded contact recent messages:", js_response.text)
         self.assertIn("contactContext", js_response.text)
         self.assertIn("contactSources", js_response.text)
         self.assertIn("contactSourceCounts", js_response.text)
