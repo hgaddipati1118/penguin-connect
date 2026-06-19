@@ -141,6 +141,7 @@ const messageViews = [
 const contactSources = [
   { key: "all", label: "All" },
   { key: "favorites", label: "Favorites" },
+  { key: "noted", label: "Noted" },
   { key: "contacts", label: "Saved" },
   { key: "participants", label: "Unsaved" },
 ];
@@ -1551,33 +1552,66 @@ function contactNoteText(contact) {
   return String(contact.contact_note || "").trim();
 }
 
-function mergeContactManagement(result) {
+function contactManagementKeyMatches(contact, contactKey) {
+  const key = String(contactKey || "").trim();
+  if (!key) return false;
+  if (contact.contact_key === key || contact.favorite_contact_key === key || contact.note_contact_key === key) return true;
+  return Array.isArray(contact.contact_keys) && contact.contact_keys.includes(key);
+}
+
+function contactFavoriteManagementKey(contact) {
+  return (isFavoriteContact(contact) && contact.favorite_contact_key) || contact.contact_key || "";
+}
+
+function contactNoteManagementKey(contact) {
+  return contact.note_contact_key || contact.contact_key || "";
+}
+
+function mergeContactManagement(result, { updatedFavorite = true, updatedNote = true } = {}) {
   const contactKey = result.contact_key || "";
   if (!contactKey) return;
   state.contacts = state.contacts.map((contact) => (
-    contact.contact_key === contactKey
+    contactManagementKeyMatches(contact, contactKey)
       ? {
         ...contact,
-        is_favorite: Boolean(result.is_favorite),
-        contact_note: result.contact_note || "",
+        contact_key: updatedNote && String(result.contact_note || "").trim()
+          ? contactKey
+          : (contact.contact_key || contactKey),
+        is_favorite: updatedFavorite ? Boolean(result.is_favorite) : contact.is_favorite,
+        favorite_contact_key: updatedFavorite
+          ? (result.is_favorite ? contactKey : (contact.favorite_contact_key === contactKey ? "" : contact.favorite_contact_key || ""))
+          : contact.favorite_contact_key || "",
+        contact_note: updatedNote ? result.contact_note || "" : contact.contact_note || "",
+        note_contact_key: updatedNote
+          ? (String(result.contact_note || "").trim() ? contactKey : "")
+          : contact.note_contact_key || "",
       }
       : contact
   ));
-  if (state.contactSource === "favorites" && !result.is_favorite) {
-    state.contacts = state.contacts.filter((contact) => contact.contact_key !== contactKey);
+  if (updatedFavorite && state.contactSource === "favorites" && !result.is_favorite) {
+    state.contacts = state.contacts.filter((contact) => !contactManagementKeyMatches(contact, contactKey));
+  }
+  if (updatedNote && state.contactSource === "noted" && !String(result.contact_note || "").trim()) {
+    state.contacts = state.contacts.filter((contact) => !contactManagementKeyMatches(contact, contactKey));
   }
   for (const [key, contact] of Object.entries(state.threadContactMatches)) {
-    if (contact?.contact_key !== contactKey) continue;
+    if (!contactManagementKeyMatches(contact || {}, contactKey)) continue;
     state.threadContactMatches[key] = {
       ...contact,
-      is_favorite: Boolean(result.is_favorite),
-      contact_note: result.contact_note || "",
+      is_favorite: updatedFavorite ? Boolean(result.is_favorite) : contact.is_favorite,
+      favorite_contact_key: updatedFavorite
+        ? (result.is_favorite ? contactKey : (contact.favorite_contact_key === contactKey ? "" : contact.favorite_contact_key || ""))
+        : contact.favorite_contact_key || "",
+      contact_note: updatedNote ? result.contact_note || "" : contact.contact_note || "",
+      note_contact_key: updatedNote
+        ? (String(result.contact_note || "").trim() ? contactKey : "")
+        : contact.note_contact_key || "",
     };
   }
 }
 
 async function refreshContactPanelAfterExternalManagement() {
-  if (state.contactSource === "favorites") {
+  if (state.contactSource === "favorites" || state.contactSource === "noted") {
     await loadContacts({ force: true });
     return;
   }
@@ -1585,7 +1619,7 @@ async function refreshContactPanelAfterExternalManagement() {
 }
 
 async function toggleContactFavorite(contact) {
-  const contactKey = contact.contact_key || "";
+  const contactKey = contactFavoriteManagementKey(contact);
   if (!contactKey) {
     el.contactStatus.textContent = "No contact key";
     return;
@@ -1599,7 +1633,7 @@ async function toggleContactFavorite(contact) {
         favorite: nextFavorite,
       }),
     });
-    mergeContactManagement(result);
+    mergeContactManagement(result, { updatedNote: false });
     el.contactStatus.textContent = result.is_favorite ? "Contact favorited" : "Contact unfavorited";
     renderContacts();
     buildCodexPrompt();
@@ -1614,13 +1648,16 @@ function participantManagedContact(participant, contact) {
   return {
     id: `participant:${contactKey}`,
     contact_key: contactKey,
+    contact_keys: contactKey ? [contactKey] : [],
     display_name: participant.handle,
     primary_handle: participant.handle,
     handle_type: participant.type,
     source: "conversation",
     is_saved: false,
     is_favorite: false,
+    favorite_contact_key: "",
     contact_note: "",
+    note_contact_key: "",
   };
 }
 
@@ -1645,9 +1682,11 @@ async function toggleThreadParticipantFavorite(participant, contact) {
       ...managedContact,
       contact_key: result.contact_key || contactKey,
       is_favorite: Boolean(result.is_favorite),
+      favorite_contact_key: result.is_favorite ? result.contact_key || contactKey : "",
       contact_note: result.contact_note || managedContact.contact_note || "",
+      note_contact_key: managedContact.note_contact_key || "",
     };
-    mergeContactManagement(result);
+    mergeContactManagement(result, { updatedNote: false });
     el.threadPeopleState.textContent = result.is_favorite ? "Participant favorited" : "Participant unfavorited";
     renderThreadPeople();
     await refreshContactPanelAfterExternalManagement();
@@ -1658,13 +1697,14 @@ async function toggleThreadParticipantFavorite(participant, contact) {
 }
 
 function editContactNote(contact) {
-  if (!contact.contact_key) return;
-  state.contactNoteEditorKey = contact.contact_key;
+  const contactKey = contactNoteManagementKey(contact);
+  if (!contactKey) return;
+  state.contactNoteEditorKey = contactKey;
   renderContacts();
 }
 
 async function saveContactNote(contact, noteValue) {
-  const contactKey = contact.contact_key || "";
+  const contactKey = contactNoteManagementKey(contact);
   if (!contactKey) {
     el.contactStatus.textContent = "No contact key";
     return;
@@ -1677,7 +1717,7 @@ async function saveContactNote(contact, noteValue) {
         note: noteValue,
       }),
     });
-    mergeContactManagement(result);
+    mergeContactManagement(result, { updatedFavorite: false });
     state.contactNoteEditorKey = "";
     el.contactStatus.textContent = result.has_note ? "Contact note saved" : "Contact note cleared";
     renderContacts();
@@ -1709,6 +1749,8 @@ function renderContacts() {
     empty.className = "empty-state compact-state";
     if (state.contactSource === "favorites") {
       empty.textContent = el.contactSearch.value.trim() ? "No favorite matches" : "No favorite contacts";
+    } else if (state.contactSource === "noted") {
+      empty.textContent = el.contactSearch.value.trim() ? "No noted matches" : "No noted contacts";
     } else if (state.contactSource === "participants") {
       empty.textContent = el.contactSearch.value.trim() ? "No unsaved participants" : "No unsaved participants";
     } else {
@@ -1722,7 +1764,7 @@ function renderContacts() {
     const item = document.createElement("div");
     const favorite = isFavoriteContact(contact);
     const noteText = contactNoteText(contact);
-    const editingNote = state.contactNoteEditorKey === contact.contact_key;
+    const editingNote = state.contactNoteEditorKey === contactNoteManagementKey(contact);
     item.className = `contact-item ${favorite ? "favorite-contact" : ""} ${noteText ? "noted-contact" : ""}`;
     item.innerHTML = `
       <button class="contact-main" type="button">
@@ -1761,7 +1803,7 @@ function renderContacts() {
     const noteButton = item.querySelector(".contact-note-button");
     noteButton.textContent = noteText ? "Edit" : "Note";
     noteButton.classList.toggle("active", Boolean(noteText) || Boolean(editingNote));
-    noteButton.disabled = !contact.contact_key;
+    noteButton.disabled = !contactNoteManagementKey(contact);
     noteButton.addEventListener("click", () => editContactNote(contact));
     const addButton = item.querySelector(".contact-add");
     addButton.disabled = !contactRecipientHandle(contact);
@@ -2287,8 +2329,9 @@ async function loadContacts({ force = false } = {}) {
   const query = el.contactSearch.value.trim();
   const browsesUnsaved = state.contactSource === "participants";
   const browsesFavorites = state.contactSource === "favorites";
+  const browsesNoted = state.contactSource === "noted";
   renderContactSourceFilters();
-  if (!force && query.length < 2 && !browsesUnsaved && !browsesFavorites) {
+  if (!force && query.length < 2 && !browsesUnsaved && !browsesFavorites && !browsesNoted) {
     state.contacts = [];
     el.contactStatus.textContent = "Type 2+ chars to search contacts";
     renderContacts();
@@ -2296,9 +2339,15 @@ async function loadContacts({ force = false } = {}) {
     return;
   }
 
-  el.contactStatus.textContent = browsesUnsaved && !query
-    ? "Loading unsaved participants"
-    : (browsesFavorites && !query ? "Loading favorite contacts" : "Searching");
+  if (browsesUnsaved && !query) {
+    el.contactStatus.textContent = "Loading unsaved participants";
+  } else if (browsesFavorites && !query) {
+    el.contactStatus.textContent = "Loading favorite contacts";
+  } else if (browsesNoted && !query) {
+    el.contactStatus.textContent = "Loading noted contacts";
+  } else {
+    el.contactStatus.textContent = "Searching";
+  }
   try {
     const params = new URLSearchParams({
       search: query,
@@ -2312,6 +2361,8 @@ async function loadContacts({ force = false } = {}) {
       el.contactStatus.textContent = `${state.contacts.length} unsaved participant${state.contacts.length === 1 ? "" : "s"}`;
     } else if (state.contactSource === "favorites") {
       el.contactStatus.textContent = `${state.contacts.length} favorite contact${state.contacts.length === 1 ? "" : "s"}`;
+    } else if (state.contactSource === "noted") {
+      el.contactStatus.textContent = `${state.contacts.length} noted contact${state.contacts.length === 1 ? "" : "s"}`;
     } else if (query) {
       const participantCount = payload.participant_count || 0;
       const suffix = participantCount ? ` · ${participantCount} unsaved` : "";
@@ -3057,7 +3108,7 @@ el.contactSourceFilters.addEventListener("click", (event) => {
   state.contactSource = contactSources.some((source) => source.key === button.dataset.contactSource)
     ? button.dataset.contactSource
     : "all";
-  loadContacts({ force: state.contactSource === "participants" || state.contactSource === "favorites" || el.contactSearch.value.trim().length >= 2 });
+  loadContacts({ force: state.contactSource === "participants" || state.contactSource === "favorites" || state.contactSource === "noted" || el.contactSearch.value.trim().length >= 2 });
 });
 el.globalMessageSearch.addEventListener("input", scheduleMessageSearch);
 el.globalMessageSearchFilters.addEventListener("click", (event) => {

@@ -592,9 +592,11 @@ def _contact_to_dict(row: sqlite3.Row) -> dict:
     display_name = _contact_display_name(row)
     primary_handle = _contact_primary_handle(row)
     contact_key = _contact_compare_key(primary_handle)
+    contact_keys = sorted(_contact_row_keys(row))
     return {
         "id": row["id"],
         "contact_key": contact_key,
+        "contact_keys": contact_keys,
         "display_name": display_name,
         "first_name": row["first_name"] or "",
         "last_name": row["last_name"] or "",
@@ -692,6 +694,7 @@ def _conversation_participant_contact_results(
                     "email": handle if handle_type == "email" else "",
                     "primary_handle": handle,
                     "contact_key": key,
+                    "contact_keys": [key],
                     "handle_type": handle_type,
                     "imported_at": "",
                     "source": "conversation",
@@ -710,6 +713,16 @@ def _favorite_contact_keys(conn: sqlite3.Connection) -> list[str]:
         """SELECT contact_key
            FROM penguin_connect_contact_management
            WHERE is_favorite = 1
+           ORDER BY updated_at DESC, contact_key"""
+    ).fetchall()
+    return [str(row["contact_key"] or "").strip() for row in rows if row["contact_key"]]
+
+
+def _noted_contact_keys(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute(
+        """SELECT contact_key
+           FROM penguin_connect_contact_management
+           WHERE note <> ''
            ORDER BY updated_at DESC, contact_key"""
     ).fetchall()
     return [str(row["contact_key"] or "").strip() for row in rows if row["contact_key"]]
@@ -787,25 +800,55 @@ def _dedupe_contact_items(contacts: list[dict]) -> list[dict]:
     return deduped
 
 
+def _contact_candidate_keys(contact: dict) -> list[str]:
+    raw_keys = [contact.get("contact_key")]
+    extra_keys = contact.get("contact_keys")
+    if isinstance(extra_keys, list):
+        raw_keys.extend(extra_keys)
+    keys: list[str] = []
+    seen: set[str] = set()
+    for value in raw_keys:
+        key = str(value or "").strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        keys.append(key)
+    return keys
+
+
 def _attach_contact_management(conn: sqlite3.Connection, contacts: list[dict]) -> list[dict]:
-    keys = sorted({str(contact.get("contact_key") or "").strip() for contact in contacts if contact.get("contact_key")})
+    candidate_keys = [_contact_candidate_keys(contact) for contact in contacts]
+    keys = sorted({key for contact_keys in candidate_keys for key in contact_keys})
     rows = {}
     if keys:
         placeholders = ",".join("?" for _ in keys)
         rows = {
             row["contact_key"]: row
             for row in conn.execute(
-                f"""SELECT contact_key, is_favorite, note
+                f"""SELECT contact_key, is_favorite, note, updated_at
                     FROM penguin_connect_contact_management
                     WHERE contact_key IN ({placeholders})""",
                 keys,
             ).fetchall()
         }
-    for contact in contacts:
-        key = str(contact.get("contact_key") or "").strip()
-        managed = rows.get(key)
-        contact["is_favorite"] = bool(managed["is_favorite"]) if managed else False
-        contact["contact_note"] = managed["note"] if managed else ""
+    for contact, contact_keys in zip(contacts, candidate_keys):
+        managed_rows = [rows[key] for key in contact_keys if key in rows]
+        note_rows = [row for row in managed_rows if str(row["note"] or "").strip()]
+        favorite_rows = [row for row in managed_rows if bool(row["is_favorite"])]
+        note_row = max(note_rows, key=lambda row: str(row["updated_at"] or "")) if note_rows else None
+        favorite_row = max(favorite_rows, key=lambda row: str(row["updated_at"] or "")) if favorite_rows else None
+        managed = note_row or favorite_row or (managed_rows[0] if managed_rows else None)
+        if managed:
+            contact["contact_key"] = managed["contact_key"]
+            contact["is_favorite"] = bool(favorite_row)
+            contact["favorite_contact_key"] = favorite_row["contact_key"] if favorite_row else ""
+            contact["contact_note"] = note_row["note"] if note_row else ""
+            contact["note_contact_key"] = note_row["contact_key"] if note_row else ""
+        else:
+            contact["is_favorite"] = False
+            contact["favorite_contact_key"] = ""
+            contact["contact_note"] = ""
+            contact["note_contact_key"] = ""
     return contacts
 
 
@@ -858,16 +901,19 @@ def _set_contact_management(
 def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, source: str = "all") -> dict:
     query = (search or "").strip()
     normalized_source = (source or "all").strip().lower()
-    if normalized_source not in {"all", "contacts", "participants", "favorites"}:
+    if normalized_source not in {"all", "contacts", "participants", "favorites", "noted"}:
         normalized_source = "all"
     favorite_keys = _favorite_contact_keys(conn) if normalized_source == "favorites" else []
     favorite_key_set = set(favorite_keys)
     favorite_order = {key: index for index, key in enumerate(favorite_keys)}
+    noted_keys = _noted_contact_keys(conn) if normalized_source == "noted" else []
+    noted_key_set = set(noted_keys)
+    noted_order = {key: index for index, key in enumerate(noted_keys)}
     note_match_keys = _managed_contact_note_keys_matching(conn, query)
     pattern = f"%{query.lower()}%"
     where = ""
     params: list[object] = []
-    sql_query = "" if normalized_source == "favorites" else query
+    sql_query = "" if normalized_source in {"favorites", "noted"} else query
     if sql_query:
         phone_query = _contact_phone_search_key(query)
         conditions = [
@@ -889,10 +935,10 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
         """.format(conditions=" OR ".join(conditions))
     limit_value = max(1, min(limit, 100))
     rows = []
-    if normalized_source in {"all", "contacts", "favorites"}:
+    if normalized_source in {"all", "contacts", "favorites", "noted"}:
         contact_params = [*params]
         contact_limit = ""
-        if normalized_source != "favorites":
+        if normalized_source not in {"favorites", "noted"}:
             contact_params.append(limit_value)
             contact_limit = "LIMIT ?"
         rows = conn.execute(
@@ -914,15 +960,15 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
     if query and normalized_source in {"all", "contacts"} and note_match_keys:
         contact_items.extend(_contact_to_dict(row) for row in _contact_rows_for_keys(conn, note_match_keys))
     participant_items: list[dict] = []
-    if normalized_source in {"all", "participants", "favorites"}:
+    if normalized_source in {"all", "participants", "favorites", "noted"}:
         existing_keys = _all_contact_keys(conn)
         participant_items = _conversation_participant_contact_results(
             conn,
-            "" if normalized_source == "favorites" else query,
-            limit=limit_value if normalized_source == "favorites" else max(0, limit_value - len(contact_items)),
+            "" if normalized_source in {"favorites", "noted"} else query,
+            limit=limit_value if normalized_source in {"favorites", "noted"} else max(0, limit_value - len(contact_items)),
             existing_keys=existing_keys,
-            include_all=normalized_source in {"participants", "favorites"},
-            allowed_keys=favorite_key_set if normalized_source == "favorites" else None,
+            include_all=normalized_source in {"participants", "favorites", "noted"},
+            allowed_keys=favorite_key_set if normalized_source == "favorites" else (noted_key_set if normalized_source == "noted" else None),
         )
         if query and normalized_source in {"all", "participants"} and note_match_keys:
             participant_items.extend(
@@ -942,7 +988,19 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
             contacts = [contact for contact in contacts if _contact_matches_query(contact, query)]
         contacts.sort(
             key=lambda contact: (
-                favorite_order.get(str(contact.get("contact_key") or ""), len(favorite_order)),
+                favorite_order.get(str(contact.get("favorite_contact_key") or contact.get("contact_key") or ""), len(favorite_order)),
+                str(contact.get("display_name") or "").lower(),
+            )
+        )
+        contacts = contacts[:limit_value]
+        participant_items = [contact for contact in contacts if contact.get("source") == "conversation"]
+    elif normalized_source == "noted":
+        contacts = [contact for contact in contacts if str(contact.get("contact_note") or "").strip()]
+        if query:
+            contacts = [contact for contact in contacts if _contact_matches_query(contact, query)]
+        contacts.sort(
+            key=lambda contact: (
+                noted_order.get(str(contact.get("note_contact_key") or contact.get("contact_key") or ""), len(noted_order)),
                 str(contact.get("display_name") or "").lower(),
             )
         )
