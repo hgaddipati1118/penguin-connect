@@ -532,6 +532,108 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(body["messages"][0]["display_name"], "Taylor")
         self.assertEqual(body["messages"][0]["provider_message_id"], "imsg-latest")
 
+    def test_message_search_endpoint_imports_raw_local_imessage_hits_without_gmail_account(self):
+        conn = self._get_connection()
+        try:
+            conn.execute("DELETE FROM penguin_connect_messages")
+            conn.execute("DELETE FROM penguin_connect_aliases")
+            conn.execute("DELETE FROM penguin_connect_conversations")
+            conn.execute("DELETE FROM penguin_connect_accounts")
+            conn.commit()
+        finally:
+            conn.close()
+
+        with mock.patch(
+            "penguin_connect.search_imessage_messages",
+            return_value={
+                "available": True,
+                "messages": [
+                    {
+                        "chat_id": "iMessage;-;+15551234567",
+                        "chat_identifier": "+15551234567",
+                        "chat_name": "Raw Taylor",
+                        "source_provider": "imessage",
+                        "service": "iMessage",
+                        "native_message_id": "raw-1",
+                        "timestamp": "2026-03-11T13:00:00+00:00",
+                        "is_from_me": False,
+                        "handle": "+15551234567",
+                        "text": "raw local needle",
+                        "attachments": [{"transfer_name": "raw-note.m4a", "mime_type": "audio/mp4"}],
+                    }
+                ],
+            },
+        ), TestClient(app_module.app) as client:
+            response = client.get("/penguin-connect/messages/search", params={"query": "needle", "limit": 10})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["count"], 1)
+        message = body["messages"][0]
+        self.assertEqual(message["display_name"], "Raw Taylor")
+        self.assertEqual(message["provider_message_id"], "imessage:raw-1")
+        self.assertEqual(message["direction"], "imessage_local")
+        self.assertEqual(message["attachments"][0]["transfer_name"], "raw-note.m4a")
+
+        verify_conn = self._get_connection()
+        try:
+            row = verify_conn.execute(
+                """SELECT c.gmail_email, m.direction, m.body_text
+                   FROM penguin_connect_messages m
+                   JOIN penguin_connect_conversations c ON c.conversation_id = m.conversation_id
+                   WHERE m.provider_message_id = ?""",
+                ("imessage:raw-1",),
+            ).fetchone()
+        finally:
+            verify_conn.close()
+        self.assertEqual(row["gmail_email"], penguin_connect.LOCAL_MESSAGES_ACCOUNT_EMAIL)
+        self.assertEqual(row["direction"], "imessage_local")
+        self.assertEqual(row["body_text"], "raw local needle")
+
+    def test_message_search_endpoint_includes_self_authored_local_hits_in_mine_view(self):
+        conn = self._get_connection()
+        try:
+            conn.execute("DELETE FROM penguin_connect_messages")
+            conn.execute("DELETE FROM penguin_connect_aliases")
+            conn.execute("DELETE FROM penguin_connect_conversations")
+            conn.execute("DELETE FROM penguin_connect_accounts")
+            conn.commit()
+        finally:
+            conn.close()
+
+        with mock.patch(
+            "penguin_connect.search_imessage_messages",
+            return_value={
+                "available": True,
+                "messages": [
+                    {
+                        "chat_id": "iMessage;-;+15557654321",
+                        "chat_identifier": "+15557654321",
+                        "chat_name": "Raw Morgan",
+                        "source_provider": "imessage",
+                        "service": "iMessage",
+                        "native_message_id": "raw-me-1",
+                        "timestamp": "2026-03-11T13:05:00+00:00",
+                        "is_from_me": True,
+                        "handle": "",
+                        "text": "mine raw local",
+                        "attachments": [],
+                    }
+                ],
+            },
+        ), TestClient(app_module.app) as client:
+            response = client.get(
+                "/penguin-connect/messages/search",
+                params={"query": "mine raw", "view": "mine", "limit": 10},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["messages"][0]["provider_message_id"], "imessage:raw-me-1")
+        self.assertEqual(body["messages"][0]["direction"], "imessage_local")
+        self.assertEqual(body["messages"][0]["sender_name"], "Me")
+
     def test_message_search_endpoint_searches_attachment_metadata(self):
         conn = self._get_connection()
         try:

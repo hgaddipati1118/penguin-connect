@@ -31,6 +31,7 @@ from action_log import log_action, message_fingerprint
 from browse_sources import (
     list_apple_messages_chat_routes as _list_apple_messages_chat_routes,
     resolve_apple_messages_chat as _resolve_apple_messages_chat_route,
+    search_imessage_messages,
 )
 from channels import get_channel_adapter
 from conversation_exclusions import (
@@ -4114,6 +4115,182 @@ def _cache_local_source_messages_for_view(
     if stored or last_ts:
         conn.commit()
     return stored
+
+
+def _local_search_message_chat_type(msg: dict[str, Any]) -> str:
+    chat_id = (msg.get("chat_id") or "").strip()
+    chat_identifier = (msg.get("chat_identifier") or "").strip().lower()
+    if ";+;" in chat_id or chat_identifier.startswith("chat"):
+        return "group"
+    return "dm"
+
+
+def _ensure_local_conversation_for_search_message(
+    conn: sqlite3.Connection,
+    msg: dict[str, Any],
+) -> Optional[sqlite3.Row]:
+    chat_id = (msg.get("chat_id") or "").strip()
+    if not chat_id:
+        return None
+    chat_identifier = (msg.get("chat_identifier") or chat_id).strip()
+    chat_type = _local_search_message_chat_type(msg)
+    participants: list[str] = []
+    if chat_type == "dm":
+        participant = (msg.get("handle") or chat_identifier).strip()
+        if participant:
+            participants = [participant]
+    source_provider = _normalize_source_provider(msg.get("source_provider") or msg.get("service"))
+    chat = {
+        "chat_id": chat_id,
+        "chat_identifier": chat_identifier,
+        "chat_type": chat_type,
+        "participants": participants,
+        "source_provider": source_provider,
+        "service": msg.get("service") or source_provider,
+    }
+    conversation_provider = _apple_messages_conversation_provider(chat)
+    conversation_source_key = _apple_messages_thread_key(chat) if conversation_provider == "apple_messages" else chat_id
+    conversation_id = deterministic_conversation_id(
+        LOCAL_MESSAGES_ACCOUNT_EMAIL,
+        conversation_source_key,
+        conversation_provider,
+    )
+
+    row = conn.execute(
+        """SELECT *
+           FROM penguin_connect_conversations
+           WHERE conversation_id = ?
+              OR (
+                   gmail_email = ?
+                   AND (source_chat_id = ? OR source_chat_identifier = ?)
+                 )
+           ORDER BY CASE WHEN conversation_id = ? THEN 0 ELSE 1 END
+           LIMIT 1""",
+        (conversation_id, LOCAL_MESSAGES_ACCOUNT_EMAIL, chat_id, chat_identifier, conversation_id),
+    ).fetchone()
+    if row:
+        _record_conversation_activity_hint(conn, row["conversation_id"], msg.get("timestamp"))
+        return row
+
+    display_name = _resolve_display_name(
+        conn,
+        msg.get("chat_name") or chat_identifier,
+        participants,
+        chat_type=chat_type,
+        existing_display_name="",
+        chat_identifier=chat_identifier,
+        chat_id=chat_id,
+    )
+    conn.execute(
+        """INSERT INTO penguin_connect_conversations
+           (gmail_email, source_provider, conversation_id, source_chat_id, source_chat_identifier,
+            source_service_name, display_name, chat_type, participants, status, exclude_from_sync,
+            created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, datetime('now'), datetime('now'))
+           ON CONFLICT(conversation_id) DO UPDATE SET
+             source_chat_id = excluded.source_chat_id,
+             source_chat_identifier = excluded.source_chat_identifier,
+             source_service_name = excluded.source_service_name,
+             display_name = excluded.display_name,
+             chat_type = excluded.chat_type,
+             participants = excluded.participants,
+             updated_at = datetime('now')""",
+        (
+            LOCAL_MESSAGES_ACCOUNT_EMAIL,
+            conversation_provider,
+            conversation_id,
+            chat_id,
+            chat_identifier,
+            msg.get("service") or "",
+            display_name,
+            chat_type,
+            json.dumps(participants),
+        ),
+    )
+    _record_conversation_activity_hint(conn, conversation_id, msg.get("timestamp"))
+    return conn.execute(
+        "SELECT * FROM penguin_connect_conversations WHERE conversation_id = ?",
+        (conversation_id,),
+    ).fetchone()
+
+
+def _cache_local_search_message(conn: sqlite3.Connection, conv: sqlite3.Row, msg: dict[str, Any]) -> bool:
+    source_provider = _conversation_source_provider(conv)
+    ts = msg.get("timestamp")
+    text = msg.get("text") or ""
+    attachments = msg.get("attachments") or []
+    if not ts or (not text and not attachments):
+        return False
+
+    provider_id = _provider_message_id(source_provider, msg)
+    existing = conn.execute(
+        """SELECT 1
+           FROM penguin_connect_messages
+           WHERE conversation_id = ? AND provider_message_id = ?
+           LIMIT 1""",
+        (conv["conversation_id"], provider_id),
+    ).fetchone()
+    if existing:
+        return False
+
+    is_from_me = 1 if msg.get("is_from_me") else 0
+    sender_name, subject_name = _resolve_sender_and_subject(conn, conv, msg)
+    metadata = {
+        "source_chat_id": msg.get("chat_id") or conv["source_chat_id"],
+        "native_message_id": msg.get("native_message_id"),
+        "is_from_me": bool(is_from_me),
+        "attachments": attachments,
+        "local_cache_only": True,
+        "local_search_imported": True,
+    }
+    cursor = conn.execute(
+        """INSERT OR IGNORE INTO penguin_connect_messages
+           (conversation_id, provider, provider_message_id, direction,
+            sender_email, sender_name, subject, body_text, message_timestamp,
+            is_read, metadata)
+           VALUES (?, 'imessage', ?, 'imessage_local', NULL, ?, ?, ?, ?, 1, ?)""",
+        (
+            conv["conversation_id"],
+            provider_id,
+            sender_name,
+            _provider_subject(source_provider, subject_name),
+            text[:20000],
+            ts,
+            json.dumps(metadata),
+        ),
+    )
+    _record_conversation_activity_hint(conn, conv["conversation_id"], ts)
+    return cursor.rowcount > 0
+
+
+def import_local_imessage_search_results(
+    conn: sqlite3.Connection,
+    query: str,
+    *,
+    limit: int = 25,
+) -> dict[str, Any]:
+    search = (query or "").strip()
+    if not search or get_connected_account(conn):
+        return {"available": True, "imported": 0, "messages": []}
+
+    result = search_imessage_messages(search, limit=limit)
+    if not result.get("available"):
+        return {"available": False, "imported": 0, "reason": result.get("reason") or "not_available"}
+
+    imported = 0
+    before_changes = conn.total_changes
+    for msg in result.get("messages") or []:
+        if not isinstance(msg, dict):
+            continue
+        conv = _ensure_local_conversation_for_search_message(conn, msg)
+        if not conv:
+            continue
+        if _cache_local_search_message(conn, conv, msg):
+            imported += 1
+
+    if conn.total_changes != before_changes:
+        conn.commit()
+    return {"available": True, "imported": imported, "messages": result.get("messages") or []}
 
 
 def get_conversation_messages(conn: sqlite3.Connection, conversation_id: str, limit: int = 200) -> dict[str, Any]:

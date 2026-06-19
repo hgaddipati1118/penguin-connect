@@ -34,6 +34,7 @@ from penguin_connect import (
     get_conversation_messages as penguinconnect_get_conversation_messages,
     get_gmail_connection_status as penguinconnect_get_gmail_connection_status,
     get_runtime_sync_status as penguinconnect_get_runtime_sync_status,
+    import_local_imessage_search_results as penguinconnect_import_local_imessage_search_results,
     list_conversations as penguinconnect_list_conversations,
     reconnect_conversation as penguinconnect_reconnect_conversation,
     run_startup_catchup as penguinconnect_run_startup_catchup,
@@ -1205,6 +1206,9 @@ def _search_messages(
             "messages": [],
         }
 
+    if search:
+        penguinconnect_import_local_imessage_search_results(conn, search, limit=limit)
+
     conditions: list[str] = []
     params: list[object] = []
     if search:
@@ -1260,7 +1264,15 @@ def _search_messages(
             )"""
         )
     elif normalized_view == "mine":
-        conditions.append("m.direction IN ('manual_to_imessage', 'email_to_imessage')")
+        conditions.append(
+            """(
+                m.direction IN ('manual_to_imessage', 'email_to_imessage')
+                OR (
+                    m.direction = 'imessage_local'
+                    AND lower(COALESCE(m.metadata, '')) LIKE '%"is_from_me": true%'
+                )
+            )"""
+        )
 
     where_clause = " AND ".join(f"({condition})" for condition in conditions) or "1 = 1"
     params.append(max(1, min(limit, 100)))
@@ -1308,6 +1320,8 @@ def _search_messages(
         item["metadata"] = metadata
         item["labels"] = _parse_management_labels(row["labels"])
         item["is_read"] = bool(row["is_read"])
+        if metadata.get("is_from_me"):
+            item["sender_name"] = "Me"
         if isinstance(metadata.get("attachments"), list):
             item["attachments"] = metadata["attachments"]
         messages.append(item)
