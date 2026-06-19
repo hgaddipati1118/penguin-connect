@@ -50,6 +50,7 @@ const el = {
   bulkFollowUpAt: document.querySelector("#bulkFollowUpAt"),
   bulkSetFollowUpButton: document.querySelector("#bulkSetFollowUpButton"),
   bulkClearFollowUpButton: document.querySelector("#bulkClearFollowUpButton"),
+  bulkClearDraftsButton: document.querySelector("#bulkClearDraftsButton"),
   conversationList: document.querySelector("#conversationList"),
   contactRefreshButton: document.querySelector("#contactRefreshButton"),
   contactSearch: document.querySelector("#contactSearch"),
@@ -481,6 +482,10 @@ function draftTextForConversation(conversation) {
   return String(conversation?.draft_text || "");
 }
 
+function conversationHasDraft(conversation) {
+  return Boolean(draftTextForConversation(conversation).trim());
+}
+
 function followUpValue(conversation) {
   return String(conversation?.follow_up_at || "").trim();
 }
@@ -523,7 +528,7 @@ function conversationSortValue(conversation) {
 function conversationMatchesView(conversation, view = state.conversationView) {
   if (view === "unread") return Number(conversation.unread_count || 0) > 0 && !conversation.is_archived;
   if (view === "followup") return hasFollowUp(conversation) && !conversation.is_archived;
-  if (view === "drafts") return Boolean(draftTextForConversation(conversation).trim()) && !conversation.is_archived;
+  if (view === "drafts") return conversationHasDraft(conversation) && !conversation.is_archived;
   if (view === "pinned") return Boolean(conversation.is_pinned) && !conversation.is_archived;
   if (view === "archived") return Boolean(conversation.is_archived);
   if (view === "all") return true;
@@ -663,6 +668,7 @@ function renderBulkActions(rows) {
   const allVisibleSelected = visibleCount > 0 && rows.every((conversation) => state.selectedConversationIds.has(conversation.conversation_id));
   const labelCount = cleanBulkLabels(el.bulkLabelsInput.value).length;
   const bulkFollowUpValue = el.bulkFollowUpAt.value.trim();
+  const selectedDraftCount = selectedRows.filter(conversationHasDraft).length;
   const markUnreadIntent = shouldBulkMarkUnread(selectedRows);
   const pinIntent = shouldBulkPin();
   const archiveIntent = shouldBulkArchive();
@@ -684,6 +690,11 @@ function renderBulkActions(rows) {
   el.bulkRemoveLabelButton.disabled = state.bulkBusy || selectedCount === 0 || labelCount === 0;
   el.bulkSetFollowUpButton.disabled = state.bulkBusy || selectedCount === 0 || !bulkFollowUpValue;
   el.bulkClearFollowUpButton.disabled = state.bulkBusy || selectedCount === 0;
+  el.bulkClearDraftsButton.disabled = state.bulkBusy || selectedDraftCount === 0;
+  el.bulkClearDraftsButton.title = selectedDraftCount
+    ? `Clear ${selectedDraftCount} selected reply draft${selectedDraftCount === 1 ? "" : "s"}`
+    : "Select conversations with reply drafts";
+  el.bulkClearDraftsButton.setAttribute("aria-label", el.bulkClearDraftsButton.title);
   el.bulkLabelsInput.disabled = state.bulkBusy;
   el.bulkFollowUpAt.disabled = state.bulkBusy;
   el.clearSelectionButton.disabled = state.bulkBusy || selectedCount === 0;
@@ -2879,6 +2890,37 @@ async function bulkClearFollowUps() {
   }
 }
 
+async function bulkClearDrafts() {
+  const draftTargets = selectedConversationSnapshot().filter(conversationHasDraft);
+  if (!draftTargets.length) {
+    state.bulkMessage = "No drafts to clear";
+    renderConversations();
+    return;
+  }
+
+  if (!window.confirm(`Clear ${draftTargets.length} selected reply draft${draftTargets.length === 1 ? "" : "s"}?`)) return;
+  state.bulkBusy = true;
+  state.bulkMessage = "";
+  renderConversations();
+  try {
+    for (const conversation of draftTargets) {
+      await updateConversationManagement(conversation.conversation_id, { draft_text: "" });
+      if (state.selected?.conversation_id === conversation.conversation_id) {
+        el.composer.value = "";
+      }
+    }
+    state.selectedConversationIds.clear();
+    state.bulkMessage = `Cleared ${draftTargets.length} draft${draftTargets.length === 1 ? "" : "s"}`;
+  } catch (error) {
+    state.bulkMessage = error.message;
+  } finally {
+    state.bulkBusy = false;
+    renderConversations();
+    renderManagementFields();
+    buildCodexPrompt();
+  }
+}
+
 async function saveLocalDraft(conversationId, draftText, { silent = false } = {}) {
   if (!conversationId) return;
   try {
@@ -3463,6 +3505,7 @@ el.bulkRemoveLabelButton.addEventListener("click", bulkRemoveLabels);
 el.bulkFollowUpAt.addEventListener("input", renderConversations);
 el.bulkSetFollowUpButton.addEventListener("click", bulkSetFollowUp);
 el.bulkClearFollowUpButton.addEventListener("click", bulkClearFollowUps);
+el.bulkClearDraftsButton.addEventListener("click", bulkClearDrafts);
 el.bulkMarkReadButton.addEventListener("click", bulkMarkSelectedRead);
 el.bulkPinButton.addEventListener("click", bulkPinSelected);
 el.bulkArchiveButton.addEventListener("click", bulkArchiveSelected);

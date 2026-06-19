@@ -156,7 +156,7 @@ keeps the normal route-safety checks. It can also attach local files, including
 audio voice memos. The local UI supports replies, file/image attachments from picker, drag/drop, or paste, emoji
 shortcuts, message-level reply targets and copy actions, thread filtering,
 unread/drafts/pinned/archived and label-based conversation views, bulk
-mark-read/mark-unread/pin-unpin/archive-restore/label add-remove actions, latest-message previews in the conversation rail,
+mark-read/mark-unread/pin-unpin/archive-restore/label add-remove/draft cleanup actions, latest-message previews in the conversation rail,
 global synced-message search with open/copy/reply actions and filters for current thread, unread, sent,
 files and audio, loaded-message filters for unread/sent/files/audio,
 starred/noted-message filtering, local message starring and private

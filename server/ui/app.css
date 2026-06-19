@@ -188,6 +188,12 @@ h3 {
   gap: 4px;
 }
 
+.bulk-draft-row {
+  display: flex;
+  grid-column: 1 / -1;
+  justify-content: flex-end;
+}
+
 .bulk-label-input,
 .bulk-followup-input {
   min-width: 0;
