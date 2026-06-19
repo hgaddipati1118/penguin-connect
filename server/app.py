@@ -455,6 +455,47 @@ def _open_messages_addressed(participants: list[str]) -> str:
     return url
 
 
+def _open_conversation_in_messages(conn: sqlite3.Connection, conversation_id: str) -> dict:
+    row = conn.execute(
+        """SELECT conversation_id, source_provider, display_name, source_chat_identifier, participants
+           FROM penguin_connect_conversations
+           WHERE conversation_id = ?""",
+        (conversation_id,),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="conversation_not_found")
+
+    source_provider = str(row["source_provider"] or "imessage").strip().lower() or "imessage"
+    if source_provider != "imessage":
+        raise HTTPException(status_code=400, detail="open_messages_unavailable_for_provider")
+
+    participants = _conversation_participant_handles(row)
+    if participants:
+        url = _open_messages_addressed(participants)
+        return {
+            "success": True,
+            "conversation_id": conversation_id,
+            "display_name": row["display_name"] or "",
+            "opened_addressed": True,
+            "opened_messages": False,
+            "messages_url": url,
+            "participants": participants,
+            "participants_count": len(participants),
+        }
+
+    _open_messages_app()
+    return {
+        "success": True,
+        "conversation_id": conversation_id,
+        "display_name": row["display_name"] or "",
+        "opened_addressed": False,
+        "opened_messages": True,
+        "messages_url": "",
+        "participants": [],
+        "participants_count": 0,
+    }
+
+
 def _open_attachment_folder(path: Path) -> None:
     try:
         subprocess.run(["open", str(path)], check=True, timeout=10.0)
@@ -2377,6 +2418,23 @@ def get_penguinconnect_conversation_attachment(
             attachment_index,
         )
         return FileResponse(path, media_type=media_type, filename=display_name)
+    finally:
+        conn.close()
+
+
+@app.post("/api/penguin-connect/conversations/{conversation_id}/open-messages")
+@app.post("/penguin-connect/conversations/{conversation_id}/open-messages")
+def open_penguinconnect_conversation_messages(conversation_id: str):
+    conn = get_connection()
+    try:
+        result = _open_conversation_in_messages(conn, conversation_id)
+        log_action(
+            "api_open_conversation_messages",
+            conversation_id=conversation_id,
+            opened_addressed=bool(result.get("opened_addressed")),
+            participants_count=int(result.get("participants_count") or 0),
+        )
+        return result
     finally:
         conn.close()
 

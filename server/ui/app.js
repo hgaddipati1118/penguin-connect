@@ -4,6 +4,7 @@ const state = {
   messages: [],
   messagesLoading: false,
   replyContext: null,
+  threadActionMessage: "",
   attachments: [],
   draftAttachments: [],
   draftAttachmentFolder: "",
@@ -82,6 +83,7 @@ const el = {
   threadProvider: document.querySelector("#threadProvider"),
   threadTitle: document.querySelector("#threadTitle"),
   syncButton: document.querySelector("#syncButton"),
+  openMessagesButton: document.querySelector("#openMessagesButton"),
   pinButton: document.querySelector("#pinButton"),
   muteButton: document.querySelector("#muteButton"),
   archiveButton: document.querySelector("#archiveButton"),
@@ -3229,6 +3231,7 @@ function toggleVoiceMemoRecording(target = "reply") {
 function renderThreadControls() {
   const selected = state.selected;
   const hasSelection = Boolean(selected);
+  el.openMessagesButton.disabled = !hasSelection;
   el.pinButton.disabled = !hasSelection;
   el.muteButton.disabled = !hasSelection;
   el.archiveButton.disabled = !hasSelection;
@@ -3246,6 +3249,7 @@ function renderThreadControls() {
   if (!hasSelection) {
     el.threadStatus.textContent = "No conversation selected";
     el.managementState.textContent = "No thread";
+    el.openMessagesButton.textContent = "Open Messages";
     el.pinButton.textContent = "Pin";
     el.muteButton.textContent = "Mute";
     el.archiveButton.textContent = "Archive";
@@ -3264,11 +3268,12 @@ function renderThreadControls() {
   const source = [selected.source_service_name || selected.source_provider || "Messages", selected.chat_type || ""]
     .filter(Boolean)
     .join(" · ");
-  el.threadStatus.textContent = `${status}${excluded}${managed ? ` · ${managed}` : ""} · ${unread} unread · ${source}`;
+  el.threadStatus.textContent = state.threadActionMessage || `${status}${excluded}${managed ? ` · ${managed}` : ""} · ${unread} unread · ${source}`;
   el.pinButton.textContent = selected.is_pinned ? "Unpin" : "Pin";
   el.muteButton.textContent = selected.is_muted ? "Unmute" : "Mute";
   el.archiveButton.textContent = selected.is_archived ? "Unarchive" : "Archive";
   el.connectionButton.textContent = status === "active" ? "Disconnect" : "Reconnect";
+  el.openMessagesButton.textContent = "Open Messages";
 }
 
 function renderManagementFields() {
@@ -3483,6 +3488,7 @@ async function selectConversation(conversation) {
   state.selected = conversation;
   state.messages = [];
   state.messagesLoading = true;
+  state.threadActionMessage = "";
   resetThreadContactMatches();
   clearReplyContext();
   el.composer.value = draftTextForConversation(conversation);
@@ -3531,6 +3537,7 @@ async function refreshLocalMessages() {
   const hadSelection = Boolean(state.selected);
   const conversationId = state.selected?.conversation_id || "";
   state.localRefreshBusy = true;
+  state.threadActionMessage = "";
   renderThreadControls();
   el.sendState.textContent = hadSelection ? "Refreshing local Messages" : "Refreshing local conversations";
   try {
@@ -3624,6 +3631,7 @@ async function sendMessage() {
 async function setReadState(unread) {
   if (!state.selected) return;
   const label = unread ? "Marking unread" : "Marking read";
+  state.threadActionMessage = "";
   el.threadStatus.textContent = label;
   el.markReadButton.disabled = true;
   el.markUnreadButton.disabled = true;
@@ -3646,8 +3654,34 @@ async function setReadState(unread) {
   }
 }
 
+async function openSelectedConversationInMessages() {
+  if (!state.selected) return;
+  const conversationId = state.selected.conversation_id;
+  el.openMessagesButton.disabled = true;
+  state.threadActionMessage = "Opening Messages";
+  el.threadStatus.textContent = state.threadActionMessage;
+  try {
+    const result = await api(`/penguin-connect/conversations/${encodeURIComponent(conversationId)}/open-messages`, {
+      method: "POST",
+      body: "{}",
+    });
+    const count = Number(result.participants_count || 0);
+    state.threadActionMessage = result.opened_addressed
+      ? `Opened Messages to ${count} recipient${count === 1 ? "" : "s"}`
+      : "Opened Messages";
+    el.threadStatus.textContent = state.threadActionMessage;
+  } catch (error) {
+    state.threadActionMessage = error.message;
+    el.threadStatus.textContent = state.threadActionMessage;
+  } finally {
+    el.openMessagesButton.disabled = !state.selected;
+    el.openMessagesButton.textContent = "Open Messages";
+  }
+}
+
 async function setConversationManagement(fields) {
   if (!state.selected) return;
+  state.threadActionMessage = "";
   el.pinButton.disabled = true;
   el.muteButton.disabled = true;
   el.archiveButton.disabled = true;
@@ -4025,6 +4059,7 @@ async function toggleConnection() {
   if (active && !window.confirm("Disconnect this local Messages conversation? Cached messages for this thread will be removed.")) {
     return;
   }
+  state.threadActionMessage = "";
   el.connectionButton.disabled = true;
   el.threadStatus.textContent = active ? "Disconnecting" : "Reconnecting";
   const path = active ? "disconnect" : "reconnect";
@@ -4554,6 +4589,7 @@ el.threadNote.addEventListener("input", () => {
 });
 el.markReadButton.addEventListener("click", () => setReadState(false));
 el.markUnreadButton.addEventListener("click", () => setReadState(true));
+el.openMessagesButton.addEventListener("click", openSelectedConversationInMessages);
 el.connectionButton.addEventListener("click", toggleConnection);
 el.clearReplyContextButton.addEventListener("click", clearReplyContext);
 el.clearButton.addEventListener("click", () => {

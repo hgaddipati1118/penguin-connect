@@ -432,6 +432,50 @@ class AppHttpIntegrationTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 404)
 
+    def test_open_messages_endpoint_opens_addressed_conversation(self):
+        with mock.patch("app._open_messages_addressed", return_value="sms://open?addresses=%2B15127436385") as mock_open, TestClient(
+            app_module.app
+        ) as client:
+            response = client.post("/penguin-connect/conversations/amc_test/open-messages")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["success"])
+        self.assertTrue(body["opened_addressed"])
+        self.assertFalse(body["opened_messages"])
+        self.assertEqual(body["participants"], ["+15127436385"])
+        self.assertEqual(body["participants_count"], 1)
+        self.assertEqual(body["messages_url"], "sms://open?addresses=%2B15127436385")
+        mock_open.assert_called_once_with(["+15127436385"])
+
+    def test_open_messages_endpoint_falls_back_to_messages_app_without_handles(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """UPDATE penguin_connect_conversations
+                   SET participants = '[]', source_chat_identifier = 'chat-project-thread'
+                   WHERE conversation_id = ?""",
+                ("amc_test",),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with mock.patch("app._open_messages_app") as mock_open_app, mock.patch("app._open_messages_addressed") as mock_open_addressed, TestClient(
+            app_module.app
+        ) as client:
+            response = client.post("/penguin-connect/conversations/amc_test/open-messages")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["success"])
+        self.assertFalse(body["opened_addressed"])
+        self.assertTrue(body["opened_messages"])
+        self.assertEqual(body["participants"], [])
+        self.assertEqual(body["participants_count"], 0)
+        mock_open_app.assert_called_once_with()
+        mock_open_addressed.assert_not_called()
+
     def test_read_state_endpoint_marks_conversation_read_and_unread(self):
         with TestClient(app_module.app) as client:
             unread_response = client.post("/penguin-connect/conversations/amc_test/read-state", json={"unread": True})
@@ -1478,6 +1522,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("voiceMemoButton", html_response.text)
         self.assertIn("voiceMemoTimer", html_response.text)
         self.assertIn("markReadButton", html_response.text)
+        self.assertIn("openMessagesButton", html_response.text)
+        self.assertIn("Open Messages", html_response.text)
         self.assertIn("connectionButton", html_response.text)
         self.assertIn("conversationFilters", html_response.text)
         self.assertIn('data-view="needsReply"', html_response.text)
@@ -1771,6 +1817,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("attachment_folder", js_response.text)
         self.assertIn("createContact", js_response.text)
         self.assertIn("setReadState", js_response.text)
+        self.assertIn("openSelectedConversationInMessages", js_response.text)
+        self.assertIn("/open-messages", js_response.text)
+        self.assertIn("Opened Messages to", js_response.text)
         self.assertIn("setConversationManagement", js_response.text)
         self.assertIn("is_muted", js_response.text)
         self.assertIn("saveConversationManagement", js_response.text)
