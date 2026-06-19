@@ -112,6 +112,7 @@ const el = {
   threadPeopleState: document.querySelector("#threadPeopleState"),
   threadPeopleAddAllButton: document.querySelector("#threadPeopleAddAllButton"),
   threadPeopleSaveListButton: document.querySelector("#threadPeopleSaveListButton"),
+  threadPeopleCreateAllButton: document.querySelector("#threadPeopleCreateAllButton"),
   threadPeople: document.querySelector("#threadPeople"),
   threadMediaState: document.querySelector("#threadMediaState"),
   mediaFilters: document.querySelector("#mediaFilters"),
@@ -1861,6 +1862,16 @@ function contactCreatePayload(contact) {
   };
 }
 
+function contactCreatePayloadFromHandle(handle) {
+  const value = String(handle || "").trim();
+  return contactCreatePayload({
+    display_name: value,
+    primary_handle: value,
+    phone: handleType(value) === "email" ? "" : value,
+    email: handleType(value) === "email" ? value : "",
+  });
+}
+
 async function createVisibleUnknownContacts() {
   const contacts = contactBulkCreatableContacts();
   if (!contacts.length) {
@@ -1905,6 +1916,13 @@ async function createVisibleUnknownContacts() {
 
 function currentThreadParticipantHandles() {
   return conversationParticipants().map((participant) => participant.handle);
+}
+
+function unknownThreadParticipants() {
+  return conversationParticipants().filter((participant) => {
+    const contact = threadContactMatch(participant.handle);
+    return !contact || contact.is_saved === false;
+  });
 }
 
 function addThreadParticipantsToDraft() {
@@ -2075,6 +2093,47 @@ async function saveThreadParticipantsAsRecipientList() {
     el.threadPeopleState.textContent = error.message;
   } finally {
     el.threadPeopleSaveListButton.disabled = !currentThreadParticipantHandles().length;
+  }
+}
+
+async function createUnknownThreadParticipants() {
+  const participants = unknownThreadParticipants();
+  if (!participants.length) {
+    el.threadPeopleState.textContent = state.selected ? "No unknown participants" : "No thread";
+    return;
+  }
+
+  el.threadPeopleCreateAllButton.disabled = true;
+  el.threadPeopleState.textContent = `Creating ${participants.length} contact${participants.length === 1 ? "" : "s"}`;
+  let created = 0;
+  const failures = [];
+  for (const participant of participants) {
+    try {
+      await api("/penguin-connect/contacts", {
+        method: "POST",
+        body: JSON.stringify(contactCreatePayloadFromHandle(participant.handle)),
+      });
+      created += 1;
+      el.threadPeopleState.textContent = `Created ${created}/${participants.length}`;
+    } catch (error) {
+      failures.push(error.message);
+    }
+  }
+
+  try {
+    if (created) {
+      await api("/penguin-connect/contacts/refresh", { method: "POST", body: "{}" });
+    }
+    await loadContacts({ force: true });
+    await loadThreadContactMatches();
+  } catch (error) {
+    failures.push(error.message);
+  } finally {
+    const failedCount = failures.length;
+    renderThreadPeople();
+    el.threadPeopleState.textContent = failedCount
+      ? `Created ${created}; ${failedCount} failed`
+      : `Created ${created} contact${created === 1 ? "" : "s"}`;
   }
 }
 
@@ -2281,12 +2340,16 @@ function renderThreadPeople() {
   const hasParticipants = Boolean(state.selected && participants.length);
   el.threadPeopleAddAllButton.disabled = !hasParticipants;
   el.threadPeopleSaveListButton.disabled = !hasParticipants;
+  el.threadPeopleCreateAllButton.disabled = !hasParticipants;
   const matchedCount = participants.filter((participant) => {
     const contact = threadContactMatch(participant.handle);
     return contact && contact.is_saved !== false;
   }).length;
+  const unknownCount = participants.length - matchedCount;
+  el.threadPeopleCreateAllButton.disabled = !hasParticipants || unknownCount <= 0;
+  el.threadPeopleCreateAllButton.textContent = unknownCount > 0 ? `Create ${unknownCount}` : "Create unknown";
   el.threadPeopleState.textContent = state.selected
-    ? `${participants.length} participant${participants.length === 1 ? "" : "s"}${matchedCount ? ` · ${matchedCount} saved` : ""}`
+    ? `${participants.length} participant${participants.length === 1 ? "" : "s"}${matchedCount ? ` · ${matchedCount} saved` : ""}${unknownCount ? ` · ${unknownCount} unknown` : ""}`
     : "No thread";
   if (!state.selected) {
     const empty = document.createElement("div");
@@ -4849,6 +4912,7 @@ el.draftFileInput.addEventListener("change", (event) => {
 });
 el.threadPeopleAddAllButton.addEventListener("click", addThreadParticipantsToDraft);
 el.threadPeopleSaveListButton.addEventListener("click", saveThreadParticipantsAsRecipientList);
+el.threadPeopleCreateAllButton.addEventListener("click", createUnknownThreadParticipants);
 el.stageDraftButton.addEventListener("click", stageDraft);
 el.copyDraftRecipientsButton.addEventListener("click", copyDraftRecipients);
 el.copyDraftBodyButton.addEventListener("click", copyDraftBody);
