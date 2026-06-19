@@ -1731,6 +1731,7 @@ function renderRecipientLists() {
       </button>
       <span class="recipient-list-actions">
         <button type="button" data-action="use-list">Use</button>
+        <button type="button" data-action="add-list">Add</button>
         <button type="button" data-action="delete-list">Delete</button>
       </span>
     `;
@@ -1741,6 +1742,7 @@ function renderRecipientLists() {
     ].filter(Boolean).join(" · ");
     item.querySelector(".recipient-list-main").addEventListener("click", () => useRecipientList(list));
     item.querySelector('[data-action="use-list"]').addEventListener("click", () => useRecipientList(list));
+    item.querySelector('[data-action="add-list"]').addEventListener("click", () => addRecipientListToDraft(list));
     item.querySelector('[data-action="delete-list"]').addEventListener("click", () => deleteRecipientList(list));
     el.recipientLists.append(item);
   }
@@ -1760,6 +1762,25 @@ function useRecipientList(list) {
   el.recipientListName.value = recipientListLabel(list);
   setDraftRecipients(participants, { focus: true });
   el.draftState.textContent = `${recipientListLabel(list)} loaded`;
+  renderRecipientLists();
+}
+
+function addRecipientListToDraft(list) {
+  const participants = Array.isArray(list.participants) ? list.participants : [];
+  if (!participants.length) {
+    el.draftState.textContent = "List has no recipients";
+    return;
+  }
+
+  const before = uniqueRecipientValues(draftRecipientValues());
+  const beforeKeys = new Set(before.map(recipientCompareKey));
+  const recipients = setDraftRecipients([...before, ...participants], { focus: true });
+  const addedCount = recipients.filter((recipient) => !beforeKeys.has(recipientCompareKey(recipient))).length;
+  state.activeRecipientListId = list.list_id || state.activeRecipientListId;
+  el.recipientListName.value = recipientListLabel(list);
+  el.draftState.textContent = addedCount
+    ? `${addedCount} from ${recipientListLabel(list)} added`
+    : `${recipientListLabel(list)} already added`;
   renderRecipientLists();
 }
 

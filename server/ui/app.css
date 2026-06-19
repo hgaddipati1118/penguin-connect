@@ -1734,11 +1734,14 @@ textarea:focus,
 
 .recipient-list-actions {
   display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 4px;
   padding-right: 8px;
 }
 
 .recipient-list-actions button {
+  min-width: 36px;
   min-height: 26px;
   border: 1px solid var(--line);
   background: var(--panel-alt);
