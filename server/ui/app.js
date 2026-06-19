@@ -12,6 +12,7 @@ const state = {
   threadActionMessage: "",
   attachments: [],
   draftAttachments: [],
+  draftMediaAttachments: [],
   draftAttachmentFolder: "",
   draftAttachmentPaths: [],
   contacts: [],
@@ -225,6 +226,11 @@ function saveNewChatDraft() {
       copyToClipboard: Boolean(el.draftCopyToggle.checked),
       openAddressed: Boolean(el.draftOpenToggle.checked),
       openAttachments: Boolean(el.draftOpenAttachmentsToggle.checked),
+      draftMediaAttachments: state.draftMediaAttachments.map((item) => ({
+        path: item.path,
+        label: item.label,
+        type: item.type,
+      })),
       activeRecipientListId: state.activeRecipientListId || "",
       updatedAt: new Date().toISOString(),
     };
@@ -251,11 +257,19 @@ function restoreNewChatDraft() {
   el.draftCopyToggle.checked = typeof snapshot.copyToClipboard === "boolean" ? snapshot.copyToClipboard : el.draftCopyToggle.checked;
   el.draftOpenToggle.checked = typeof snapshot.openAddressed === "boolean" ? snapshot.openAddressed : el.draftOpenToggle.checked;
   el.draftOpenAttachmentsToggle.checked = typeof snapshot.openAttachments === "boolean" ? snapshot.openAttachments : el.draftOpenAttachmentsToggle.checked;
+  state.draftMediaAttachments = Array.isArray(snapshot.draftMediaAttachments)
+    ? snapshot.draftMediaAttachments.map((item) => ({
+      path: typeof item?.path === "string" ? item.path : "",
+      label: typeof item?.label === "string" ? item.label : "",
+      type: typeof item?.type === "string" ? item.type : "file",
+    })).filter((item) => item.path)
+    : [];
   state.activeRecipientListId = typeof snapshot.activeRecipientListId === "string" ? snapshot.activeRecipientListId : "";
   return Boolean(
     el.draftRecipients.value.trim()
       || el.recipientListName.value.trim()
       || el.draftMessage.value.trim()
+      || state.draftMediaAttachments.length
       || state.activeRecipientListId
   );
 }
@@ -1546,11 +1560,22 @@ function draftBodyText() {
   return String(el.draftMessage.value || "").trim().slice(0, 50000);
 }
 
+function draftAttachmentLabels() {
+  return [
+    ...state.draftAttachments.map((file) => file.name || "attachment"),
+    ...state.draftMediaAttachments.map((item) => item.label || basename(item.path) || "media"),
+  ];
+}
+
+function draftExistingAttachmentPaths() {
+  return state.draftMediaAttachments.map((item) => item.path).filter(Boolean);
+}
+
 function renderDraftPreview(values = uniqueRecipientValues(draftRecipientValues()), draftText = "") {
   const recipients = uniqueRecipientValues(values);
   const body = draftBodyText();
   const draft = draftText || buildMessagesDraftText(recipients);
-  const attachments = state.draftAttachments || [];
+  const attachments = draftAttachmentLabels();
   const count = recipients.length;
   const mode = count > 1 ? "Group chat" : "Direct chat";
   el.draftPreviewTitle.textContent = count
@@ -1564,7 +1589,7 @@ function renderDraftPreview(values = uniqueRecipientValues(draftRecipientValues(
           : "No recipients";
   const attachmentSummary = attachments.length
     ? [
-      `Attachments staged separately: ${attachments.map((file) => file.name || "attachment").join(", ")}`,
+      `Attachments staged separately: ${attachments.join(", ")}`,
       state.draftAttachmentFolder ? `Folder: ${state.draftAttachmentFolder}` : "",
     ].filter(Boolean).join("\n")
     : "";
@@ -1641,11 +1666,13 @@ async function openAddressedDraft() {
   el.draftState.textContent = "Opening addressed chat";
   try {
     const attachments = await filesAsBrowserAttachments(state.draftAttachments);
+    const attachmentPaths = draftExistingAttachmentPaths();
     const result = await api("/penguin-connect/messages/draft", {
       method: "POST",
       body: JSON.stringify({
         participants,
         message: el.draftMessage.value,
+        attachment_paths: attachmentPaths,
         attachments,
         copy_to_clipboard: false,
         open_messages: false,
@@ -3270,6 +3297,32 @@ function attachMediaToReply(item) {
   el.composer.focus();
 }
 
+function attachMediaToDraft(item) {
+  const path = mediaAttachmentPath(item);
+  if (!path) {
+    el.threadMediaState.textContent = "No local media path";
+    return;
+  }
+  if (state.draftMediaAttachments.some((entry) => entry.path === path)) {
+    el.threadMediaState.textContent = "Media already in new chat";
+    el.draftMessage.focus();
+    return;
+  }
+  state.draftMediaAttachments.push({
+    path,
+    label: item.label || basename(path) || "media",
+    type: item.type || "file",
+  });
+  state.draftAttachmentFolder = "";
+  state.draftAttachmentPaths = [];
+  renderAttachments("draft");
+  renderDraftPreview();
+  saveNewChatDraft();
+  el.threadMediaState.textContent = "Media attached to new chat";
+  el.draftState.textContent = "Media attached to new chat";
+  el.draftMessage.focus();
+}
+
 function renderThreadMedia() {
   const items = threadMediaItems();
   renderMediaFilters(items);
@@ -3338,6 +3391,13 @@ function renderThreadMedia() {
       attach.textContent = "Attach";
       attach.addEventListener("click", () => attachMediaToReply(item));
       row.querySelector(".media-actions").append(attach);
+      const attachDraft = document.createElement("button");
+      attachDraft.type = "button";
+      attachDraft.dataset.action = "attach-draft";
+      attachDraft.textContent = "New";
+      attachDraft.title = "Attach to new chat";
+      attachDraft.addEventListener("click", () => attachMediaToDraft(item));
+      row.querySelector(".media-actions").append(attachDraft);
     }
     el.threadMedia.append(row);
   }
@@ -3520,17 +3580,26 @@ function renderAttachments(target = "reply") {
     });
     list.append(chip);
   }
-  if (target === "reply") {
-    for (const [index, item] of state.replyMediaAttachments.entries()) {
+  const mediaAttachments = target === "draft" ? state.draftMediaAttachments : state.replyMediaAttachments;
+  if (target === "reply" || target === "draft") {
+    for (const [index, item] of mediaAttachments.entries()) {
       const chip = document.createElement("div");
       chip.className = "attachment-chip";
       chip.innerHTML = `<span></span><button class="remove-button" type="button" title="Remove">×</button>`;
       chip.querySelector("span").textContent = `${item.label} · existing ${item.type || "media"}`;
       chip.querySelector("button").addEventListener("click", () => {
-        state.replyMediaAttachments.splice(index, 1);
-        renderAttachments();
-        buildCodexPrompt();
-        el.sendState.textContent = "Media attachment removed";
+        mediaAttachments.splice(index, 1);
+        renderAttachments(target);
+        if (target === "draft") {
+          state.draftAttachmentFolder = "";
+          state.draftAttachmentPaths = [];
+          renderDraftPreview();
+          saveNewChatDraft();
+          el.draftState.textContent = "Media attachment removed";
+        } else {
+          buildCodexPrompt();
+          el.sendState.textContent = "Media attachment removed";
+        }
       });
       list.append(chip);
     }
@@ -4952,6 +5021,7 @@ function clearDraftForm() {
   el.draftState.textContent = "Idle";
   state.activeRecipientListId = "";
   state.draftAttachments = [];
+  state.draftMediaAttachments = [];
   state.draftAttachmentFolder = "";
   state.draftAttachmentPaths = [];
   renderDraftRecipientChips();
@@ -4972,11 +5042,13 @@ async function stageDraft() {
   el.draftState.textContent = "Staging";
   try {
     const attachments = await filesAsBrowserAttachments(state.draftAttachments);
+    const attachmentPaths = draftExistingAttachmentPaths();
     const result = await api("/penguin-connect/messages/draft", {
       method: "POST",
       body: JSON.stringify({
         participants,
         message: el.draftMessage.value,
+        attachment_paths: attachmentPaths,
         attachments,
         copy_to_clipboard: el.draftCopyToggle.checked,
         open_messages: false,
@@ -5310,6 +5382,8 @@ renderMessages();
 renderContacts();
 renderContactSourceFilters();
 renderDraftRecipientChips();
+renderAttachments();
+renderAttachments("draft");
 renderDraftPreview();
 renderRecipientLists();
 renderMessageSearchFilters();

@@ -1391,6 +1391,40 @@ class AppHttpIntegrationTests(unittest.TestCase):
         mock_open.assert_not_called()
         mock_open_attachments.assert_called_once_with(attachment_path.parent)
 
+    def test_messages_draft_endpoint_stages_existing_attachment_paths(self):
+        existing_path = self.db_path.parent / "existing-photo.png"
+        existing_path.write_bytes(b"existing image bytes")
+        with mock.patch("app._copy_to_clipboard") as mock_copy, mock.patch("app._open_messages_app") as mock_open, mock.patch(
+            "app._open_attachment_folder"
+        ) as mock_open_attachments, TestClient(app_module.app) as client:
+            response = client.post(
+                "/penguin-connect/messages/draft",
+                json={
+                    "participants": ["+14155550100"],
+                    "message": "Forwarding existing media",
+                    "attachment_paths": [str(existing_path)],
+                    "copy_to_clipboard": False,
+                    "open_messages": False,
+                    "open_attachments": True,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["success"])
+        self.assertEqual(body["attachment_count"], 1)
+        attachment_path = Path(body["attachment_paths"][0])
+        self.assertEqual(attachment_path.parent, Path(body["attachment_folder"]))
+        self.assertEqual(attachment_path.name, "existing-photo.png")
+        self.assertEqual(attachment_path.read_bytes(), b"existing image bytes")
+        self.assertNotEqual(attachment_path, existing_path)
+        self.assertFalse(body["opened_messages"])
+        self.assertFalse(body["opened_addressed"])
+        self.assertTrue(body["opened_attachments"])
+        mock_copy.assert_not_called()
+        mock_open.assert_not_called()
+        mock_open_attachments.assert_called_once_with(attachment_path.parent)
+
     def test_recipient_lists_can_be_saved_updated_listed_and_deleted(self):
         with TestClient(app_module.app) as client:
             create_response = client.post(
@@ -1816,10 +1850,14 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("copyMediaLink", js_response.text)
         self.assertIn("Media link copied", js_response.text)
         self.assertIn("attachMediaToReply", js_response.text)
+        self.assertIn("attachMediaToDraft", js_response.text)
         self.assertIn("replyMediaAttachments", js_response.text)
+        self.assertIn("draftMediaAttachments", js_response.text)
         self.assertIn("Media attached to reply", js_response.text)
+        self.assertIn("Media attached to new chat", js_response.text)
         self.assertIn("Media attachment removed", js_response.text)
         self.assertIn('attach.dataset.action = "attach-reply"', js_response.text)
+        self.assertIn('attachDraft.dataset.action = "attach-draft"', js_response.text)
         self.assertIn("renderThreadMedia", js_response.text)
         self.assertIn("focusMediaMessage", js_response.text)
         self.assertIn("renderConversationFilters", js_response.text)
@@ -1873,6 +1911,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("No recipients · message ready", js_response.text)
         self.assertIn("Message:\\n\\n", js_response.text)
         self.assertIn("filesAsBrowserAttachments", js_response.text)
+        self.assertIn("draftExistingAttachmentPaths", js_response.text)
         self.assertIn("attachment_paths: attachmentPaths", js_response.text)
         self.assertIn("existing local media", js_response.text)
         self.assertIn("renderAllEmojiButtons", js_response.text)

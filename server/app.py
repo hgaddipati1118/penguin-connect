@@ -100,6 +100,7 @@ class PenguinConnectContactManagementRequest(BaseModel):
 class PenguinConnectDraftCreateRequest(BaseModel):
     participants: list[str] | None = None
     message: str = ""
+    attachment_paths: list[str] | None = None
     attachments: list[PenguinConnectBrowserAttachment] | None = None
     copy_to_clipboard: bool = True
     open_messages: bool = True
@@ -195,13 +196,16 @@ def _decode_ui_attachment_data(raw_value: str) -> bytes:
 def _write_ui_attachments_to_dir(
     attachments: list[PenguinConnectBrowserAttachment],
     staged_dir: Path,
+    *,
+    start_index: int = 1,
+    initial_total_bytes: int = 0,
 ) -> list[str]:
     max_bytes = _ui_attachment_max_bytes()
     total_max_bytes = _ui_attachment_total_max_bytes()
-    total_bytes = 0
+    total_bytes = initial_total_bytes
     staged_paths: list[str] = []
     staged_dir.mkdir(parents=True, exist_ok=True)
-    for idx, attachment in enumerate(attachments, 1):
+    for idx, attachment in enumerate(attachments, start_index):
         data = _decode_ui_attachment_data(attachment.data_base64)
         if not data:
             raise HTTPException(status_code=400, detail="empty_attachment")
@@ -217,6 +221,41 @@ def _write_ui_attachments_to_dir(
         if out_path.exists():
             out_path = staged_dir / f"{out_path.stem or 'attachment'}-{idx}{out_path.suffix}"
         out_path.write_bytes(data)
+        staged_paths.append(str(out_path))
+    return staged_paths
+
+
+def _copy_ui_attachment_paths_to_dir(
+    attachment_paths: list[str],
+    staged_dir: Path,
+    *,
+    start_index: int = 1,
+    initial_total_bytes: int = 0,
+) -> list[str]:
+    max_bytes = _ui_attachment_max_bytes()
+    total_max_bytes = _ui_attachment_total_max_bytes()
+    total_bytes = initial_total_bytes
+    staged_paths: list[str] = []
+    staged_dir.mkdir(parents=True, exist_ok=True)
+    for idx, raw_path in enumerate(attachment_paths, start_index):
+        source = _message_attachment_path(raw_path)
+        size = source.stat().st_size
+        if size <= 0:
+            raise HTTPException(status_code=400, detail="empty_attachment")
+        if size > max_bytes:
+            raise HTTPException(status_code=413, detail="attachment_too_large")
+        total_bytes += size
+        if total_bytes > total_max_bytes:
+            raise HTTPException(status_code=413, detail="attachments_too_large")
+
+        filename = _safe_ui_attachment_filename(source.name, idx)
+        out_path = staged_dir / filename
+        if out_path.exists():
+            out_path = staged_dir / f"{out_path.stem or 'attachment'}-{idx}{out_path.suffix}"
+        if source.resolve() == out_path.resolve():
+            staged_paths.append(str(out_path))
+            continue
+        shutil.copy2(source, out_path)
         staged_paths.append(str(out_path))
     return staged_paths
 
@@ -257,15 +296,26 @@ def _cleanup_old_sent_attachment_dirs(max_age_seconds: int = 30 * 24 * 60 * 60) 
 
 def _stage_messages_draft_attachments(
     attachments: list[PenguinConnectBrowserAttachment] | None,
+    attachment_paths: list[str] | None = None,
 ) -> tuple[list[str], Path | None]:
-    if not attachments:
+    clean_paths = [str(path).strip() for path in (attachment_paths or []) if str(path or "").strip()]
+    if not attachments and not clean_paths:
         return [], None
     _cleanup_old_draft_attachment_dirs()
     root = _draft_attachment_root()
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     staged_dir = root / f"{stamp}-{uuid.uuid4().hex[:8]}"
     try:
-        staged_paths = _write_ui_attachments_to_dir(attachments, staged_dir)
+        staged_paths = _write_ui_attachments_to_dir(attachments or [], staged_dir)
+        existing_total = sum(Path(path).stat().st_size for path in staged_paths)
+        staged_paths.extend(
+            _copy_ui_attachment_paths_to_dir(
+                clean_paths,
+                staged_dir,
+                start_index=len(staged_paths) + 1,
+                initial_total_bytes=existing_total,
+            )
+        )
     except Exception:
         shutil.rmtree(staged_dir, ignore_errors=True)
         raise
@@ -2314,7 +2364,7 @@ def create_penguinconnect_messages_draft(req: PenguinConnectDraftCreateRequest):
     opened_attachments = False
     success = False
     try:
-        attachment_paths, attachment_dir = _stage_messages_draft_attachments(req.attachments)
+        attachment_paths, attachment_dir = _stage_messages_draft_attachments(req.attachments, req.attachment_paths)
         if req.copy_to_clipboard:
             _copy_to_clipboard(draft)
             copied = True
