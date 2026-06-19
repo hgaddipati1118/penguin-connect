@@ -2269,6 +2269,25 @@ function fillContactFormFromContact(contact) {
   fillContactFormFromHandle(handle, "Prefilled from search");
 }
 
+async function searchMessagesForContact(contact) {
+  const query = contactRecipientHandle(contact) || contactDisplayName(contact);
+  if (!query) {
+    el.contactStatus.textContent = "No contact search value";
+    return;
+  }
+
+  el.globalMessageSearch.value = query;
+  el.messageDateFrom.value = "";
+  el.messageDateTo.value = "";
+  state.messageSearchView = "all";
+  resetMessageSearchLimit();
+  renderMessageSearchFilters();
+  el.contactStatus.textContent = `Searching Messages for ${contactDisplayName(contact)}`;
+  el.messageSearchStatus.textContent = `Searching Messages for ${contactDisplayName(contact)}`;
+  el.globalMessageSearch.focus();
+  await loadMessageSearch();
+}
+
 function contactHandleCandidate(value) {
   const handle = String(value || "").trim();
   const type = handleType(handle);
@@ -2869,6 +2888,7 @@ function renderContacts() {
         <button class="contact-favorite" type="button" title="Favorite contact" aria-label="Favorite contact">Star</button>
         <button class="contact-note-button" type="button" title="Private contact note" aria-label="Private contact note">Note</button>
         <button class="contact-copy" type="button" title="Copy contact handle" aria-label="Copy contact handle">Copy</button>
+        <button class="contact-search-messages" type="button" title="Search local Messages" aria-label="Search local Messages for contact">Find</button>
         <button class="contact-message" type="button" title="Open in Messages" aria-label="Open contact in Messages">Msg</button>
         <button class="contact-add" type="button" title="Add to new chat" aria-label="Add contact to new chat">+</button>
         <button class="contact-create-result" type="button" title="Create contact" aria-label="Create contact from search result">Create</button>
@@ -2912,6 +2932,9 @@ function renderContacts() {
     const copyButton = item.querySelector(".contact-copy");
     copyButton.disabled = !contactRecipientHandle(contact);
     copyButton.addEventListener("click", () => copyContactHandle(contact));
+    const searchMessagesButton = item.querySelector(".contact-search-messages");
+    searchMessagesButton.disabled = !(contactRecipientHandle(contact) || contactDisplayName(contact));
+    searchMessagesButton.addEventListener("click", () => searchMessagesForContact(contact));
     const messageButton = item.querySelector(".contact-message");
     messageButton.disabled = !contactRecipientHandle(contact);
     messageButton.addEventListener("click", () => openContactInMessages(contact));

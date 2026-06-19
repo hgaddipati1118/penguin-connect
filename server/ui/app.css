@@ -751,6 +751,9 @@ input[type="date"]:focus {
 
 .contact-actions {
   display: inline-flex;
+  max-width: 150px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 4px;
   padding-right: 8px;
 }
@@ -840,6 +843,7 @@ input[type="date"]:focus {
 .contact-favorite,
 .contact-note-button,
 .contact-copy,
+.contact-search-messages,
 .contact-message,
 .contact-create-result {
   display: inline-grid;
@@ -864,6 +868,10 @@ input[type="date"]:focus {
   font-size: 10px;
 }
 
+.contact-search-messages {
+  font-size: 10px;
+}
+
 .contact-message {
   font-size: 10px;
 }
@@ -884,6 +892,8 @@ input[type="date"]:focus {
 .contact-note-button:focus-visible,
 .contact-copy:hover,
 .contact-copy:focus-visible,
+.contact-search-messages:hover,
+.contact-search-messages:focus-visible,
 .contact-message:hover,
 .contact-message:focus-visible,
 .contact-create-result:hover,
@@ -906,6 +916,7 @@ input[type="date"]:focus {
 .contact-favorite:disabled,
 .contact-note-button:disabled,
 .contact-copy:disabled,
+.contact-search-messages:disabled,
 .contact-message:disabled,
 .contact-create-result:disabled {
   cursor: not-allowed;
