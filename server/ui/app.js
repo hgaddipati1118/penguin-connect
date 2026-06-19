@@ -1959,6 +1959,16 @@ function contactNamePartsForCreate(contact) {
   };
 }
 
+function contactNamePartsFromDisplay(displayName, handle) {
+  const value = String(handle || "").trim();
+  return contactNamePartsForCreate({
+    display_name: String(displayName || "").trim(),
+    primary_handle: value,
+    phone: handleType(value) === "email" ? "" : value,
+    email: handleType(value) === "email" ? value : "",
+  });
+}
+
 function contactCreatePayload(contact) {
   const handle = contactRecipientHandle(contact);
   const name = contactNamePartsForCreate(contact);
@@ -2268,7 +2278,13 @@ async function deleteRecipientList(list) {
   }
 }
 
-function fillContactFormFromHandle(value, stateText = "Prefilled from thread") {
+function fillContactNameFromDisplay(displayName, handle) {
+  const name = contactNamePartsFromDisplay(displayName, handle);
+  el.newContactFirst.value = name.firstName;
+  el.newContactLast.value = name.lastName;
+}
+
+function fillContactFormFromHandle(value, stateText = "Prefilled from thread", displayName = "") {
   const handle = String(value || "").trim();
   if (!handle) return;
   clearContactForm();
@@ -2277,6 +2293,7 @@ function fillContactFormFromHandle(value, stateText = "Prefilled from thread") {
   } else {
     el.newContactPhones.value = handle;
   }
+  fillContactNameFromDisplay(displayName, handle);
   el.createContactState.textContent = stateText;
   el.newContactFirst.focus();
 }
@@ -2294,7 +2311,7 @@ function fillContactFormFromContact(contact) {
     el.contactStatus.textContent = "No phone or email on result";
     return;
   }
-  fillContactFormFromHandle(handle, "Prefilled from search");
+  fillContactFormFromHandle(handle, "Prefilled from search", contactDisplayName(contact));
 }
 
 async function searchMessagesForContact(contact) {
@@ -2351,13 +2368,25 @@ function messageContactHandle(message) {
   return "";
 }
 
+function messageSearchContactDisplayName(result) {
+  const isMine = result.sender_name === "Me"
+    || result.direction === "manual_to_imessage"
+    || result.direction === "email_to_imessage"
+    || Boolean(result.metadata?.is_from_me);
+  return isMine ? "" : String(result.sender_name || "").trim();
+}
+
+function messageContactDisplayName(message) {
+  return isOwnMessage(message) ? "" : String(message.sender_name || "").trim();
+}
+
 function fillContactFormFromMessageSearchResult(result) {
   const handle = messageSearchContactHandle(result);
   if (!handle) {
     el.messageSearchStatus.textContent = "No contact handle on result";
     return;
   }
-  fillContactFormFromHandle(handle, "Prefilled from message search");
+  fillContactFormFromHandle(handle, "Prefilled from message search", messageSearchContactDisplayName(result));
   el.messageSearchStatus.textContent = "Contact form prefilled";
 }
 
@@ -2367,7 +2396,7 @@ function fillContactFormFromMessage(message) {
     el.sendState.textContent = "No contact handle on message";
     return;
   }
-  fillContactFormFromHandle(handle, "Prefilled from message");
+  fillContactFormFromHandle(handle, "Prefilled from message", messageContactDisplayName(message));
   el.sendState.textContent = "Contact form prefilled";
 }
 

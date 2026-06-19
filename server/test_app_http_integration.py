@@ -1812,9 +1812,21 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("Search result note saved", js_response.text)
         self.assertIn("participantValuesForConversation", js_response.text)
         self.assertIn("messageSearchContactHandle", js_response.text)
+        self.assertIn("messageSearchContactDisplayName", js_response.text)
         self.assertIn("fillContactFormFromMessageSearchResult", js_response.text)
         self.assertIn("messageContactHandle", js_response.text)
+        self.assertIn("messageContactDisplayName", js_response.text)
+        self.assertIn("fillContactNameFromDisplay", js_response.text)
+        self.assertIn("contactNamePartsFromDisplay", js_response.text)
         self.assertIn("fillContactFormFromMessage", js_response.text)
+        self.assertIn(
+            'fillContactFormFromHandle(handle, "Prefilled from message search", messageSearchContactDisplayName(result));',
+            js_response.text,
+        )
+        self.assertIn(
+            'fillContactFormFromHandle(handle, "Prefilled from message", messageContactDisplayName(message));',
+            js_response.text,
+        )
         self.assertIn("Prefilled from message", js_response.text)
         self.assertIn("No contact handle on message", js_response.text)
         self.assertIn("openMessageSearchResultInMessages", js_response.text)
