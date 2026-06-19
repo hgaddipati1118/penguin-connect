@@ -884,6 +884,89 @@ function visibleConversationRows() {
   });
 }
 
+function selectedVisibleConversationIndex(rows = visibleConversationRows()) {
+  if (!state.selected) return -1;
+  return rows.findIndex((conversation) => conversation.conversation_id === state.selected.conversation_id);
+}
+
+function scrollSelectedConversationIntoView() {
+  if (!state.selected) return;
+  requestAnimationFrame(() => {
+    const row = [...el.conversationList.querySelectorAll("[data-conversation-id]")]
+      .find((item) => item.dataset.conversationId === state.selected.conversation_id);
+    row?.scrollIntoView({ block: "nearest" });
+  });
+}
+
+async function navigateVisibleConversation(direction) {
+  const rows = visibleConversationRows();
+  if (!rows.length) return false;
+  const currentIndex = selectedVisibleConversationIndex(rows);
+  let nextIndex = 0;
+  if (currentIndex < 0) {
+    nextIndex = direction < 0 ? rows.length - 1 : 0;
+  } else {
+    nextIndex = (currentIndex + direction + rows.length) % rows.length;
+  }
+  state.focusMessageId = "";
+  await selectConversation(rows[nextIndex]);
+  return true;
+}
+
+function isShortcutEditableTarget(target) {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  return ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+}
+
+function focusControl(control) {
+  if (!control) return;
+  control.focus();
+  if (typeof control.select === "function") {
+    control.select();
+  }
+}
+
+function handleGlobalShortcuts(event) {
+  if (event.defaultPrevented || event.isComposing || isShortcutEditableTarget(event.target)) return;
+  if (event.altKey || event.ctrlKey || event.metaKey) return;
+  const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+  if (key === "ArrowDown" || key === "j") {
+    event.preventDefault();
+    navigateVisibleConversation(1);
+    return;
+  }
+  if (key === "ArrowUp" || key === "k") {
+    event.preventDefault();
+    navigateVisibleConversation(-1);
+    return;
+  }
+  if (key === "/") {
+    event.preventDefault();
+    focusControl(el.conversationSearch);
+    return;
+  }
+  if (key === "f") {
+    event.preventDefault();
+    focusControl(el.globalMessageSearch);
+    return;
+  }
+  if (key === "c") {
+    event.preventDefault();
+    focusControl(el.contactSearch);
+    return;
+  }
+  if (key === "n") {
+    event.preventDefault();
+    focusControl(el.draftRecipients);
+    return;
+  }
+  if (key === "r" && state.selected) {
+    event.preventDefault();
+    focusControl(el.composer);
+  }
+}
+
 function selectedConversations() {
   return state.conversations.filter((conversation) => state.selectedConversationIds.has(conversation.conversation_id));
 }
@@ -1639,6 +1722,7 @@ function renderConversations() {
   for (const conversation of rows) {
     const row = document.createElement("div");
     row.className = `conversation-row ${state.selected?.conversation_id === conversation.conversation_id ? "active" : ""}`;
+    row.dataset.conversationId = conversation.conversation_id;
     row.innerHTML = `
       <button class="conversation-select" type="button" title="Select conversation" aria-label="Select conversation"></button>
       <button class="conversation-item" type="button">
@@ -5768,7 +5852,10 @@ async function loadConversations({ autoSelect = true } = {}) {
     renderContacts();
     refreshDraftRecipientChips();
     if (autoSelect && !state.selected && state.conversations.length) {
-      await selectConversation(state.conversations.find((conversation) => !conversation.is_archived) || state.conversations[0]);
+      const initialConversation = visibleConversationRows()[0]
+        || state.conversations.find((conversation) => !conversation.is_archived)
+        || state.conversations[0];
+      await selectConversation(initialConversation);
     }
   } catch (error) {
     el.conversationList.innerHTML = `<div class="error-state">${error.message}</div>`;
@@ -5962,6 +6049,7 @@ async function selectConversation(conversation) {
   renderThreadPeople();
   renderThreadMedia();
   renderConversations();
+  scrollSelectedConversationIntoView();
   renderMessageSearchFilters();
   renderMessages();
   loadThreadContactMatches(conversation);
@@ -7508,6 +7596,7 @@ el.bulkMarkReadButton.addEventListener("click", bulkMarkSelectedRead);
 el.bulkPinButton.addEventListener("click", bulkPinSelected);
 el.bulkMuteButton.addEventListener("click", bulkMuteSelected);
 el.bulkArchiveButton.addEventListener("click", bulkArchiveSelected);
+document.addEventListener("keydown", handleGlobalShortcuts);
 
 const restoredNewChatDraft = restoreNewChatDraft();
 if (restoredNewChatDraft) {
