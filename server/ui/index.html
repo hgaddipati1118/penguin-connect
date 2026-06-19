@@ -23,6 +23,7 @@
         </label>
         <div class="conversation-filters" id="conversationFilters" aria-label="Conversation views">
           <button type="button" data-view="inbox">Inbox</button>
+          <button type="button" data-view="followup">Follow-up</button>
           <button type="button" data-view="unread">Unread</button>
           <button type="button" data-view="pinned">Pinned</button>
           <button type="button" data-view="archived">Archived</button>
@@ -75,6 +76,7 @@
         <div class="thread-status" id="threadStatus">No conversation selected</div>
         <div class="thread-management" id="threadManagement">
           <input id="threadLocalTitle" type="text" placeholder="Local title" autocomplete="off" />
+          <input id="threadFollowUpAt" type="datetime-local" title="Follow up at" aria-label="Follow up at" />
           <input id="threadTags" type="text" placeholder="Tags" autocomplete="off" />
           <textarea id="threadNote" rows="2" placeholder="Private note"></textarea>
           <div class="management-actions">

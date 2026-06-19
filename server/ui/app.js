@@ -64,6 +64,7 @@ const el = {
   mediaFilters: document.querySelector("#mediaFilters"),
   threadMedia: document.querySelector("#threadMedia"),
   threadLocalTitle: document.querySelector("#threadLocalTitle"),
+  threadFollowUpAt: document.querySelector("#threadFollowUpAt"),
   threadTags: document.querySelector("#threadTags"),
   threadNote: document.querySelector("#threadNote"),
   saveManagementButton: document.querySelector("#saveManagementButton"),
@@ -132,6 +133,15 @@ const contactSources = [
   { key: "contacts", label: "Saved" },
   { key: "participants", label: "Unsaved" },
 ];
+
+const conversationViewLabels = {
+  inbox: "Inbox",
+  followup: "Follow-up",
+  unread: "Unread",
+  pinned: "Pinned",
+  archived: "Archived",
+  all: "All",
+};
 
 const messageSearchViews = [
   { key: "all", label: "All" },
@@ -361,6 +371,7 @@ function conversationHaystack(conversation) {
     conversation.last_message_preview,
     conversation.note,
     conversation.draft_text,
+    conversation.follow_up_at,
     ...(conversation.labels || []),
     ...(conversation.participants || []),
   ].join(" ").toLowerCase();
@@ -436,6 +447,39 @@ function draftTextForConversation(conversation) {
   return String(conversation?.draft_text || "");
 }
 
+function followUpValue(conversation) {
+  return String(conversation?.follow_up_at || "").trim();
+}
+
+function hasFollowUp(conversation) {
+  return Boolean(followUpValue(conversation));
+}
+
+function followUpInputValue(conversation) {
+  const value = followUpValue(conversation);
+  return value.length >= 16 ? value.slice(0, 16) : value;
+}
+
+function followUpSortValue(conversation) {
+  const raw = followUpValue(conversation);
+  if (!raw) return Number.MAX_SAFE_INTEGER;
+  const value = Date.parse(raw);
+  return Number.isNaN(value) ? Number.MAX_SAFE_INTEGER : value;
+}
+
+function followUpLabel(conversation) {
+  const raw = followUpValue(conversation);
+  return raw ? formatTime(raw) : "";
+}
+
+function followUpStatus(conversation) {
+  const raw = followUpValue(conversation);
+  if (!raw) return "";
+  const value = Date.parse(raw);
+  if (Number.isNaN(value)) return "scheduled";
+  return value <= Date.now() ? "due" : "scheduled";
+}
+
 function conversationSortValue(conversation) {
   const raw = conversation.last_message_ts || conversation.updated_at || conversation.management_updated_at || "";
   const value = Date.parse(raw);
@@ -444,6 +488,7 @@ function conversationSortValue(conversation) {
 
 function conversationMatchesView(conversation, view = state.conversationView) {
   if (view === "unread") return Number(conversation.unread_count || 0) > 0 && !conversation.is_archived;
+  if (view === "followup") return hasFollowUp(conversation) && !conversation.is_archived;
   if (view === "pinned") return Boolean(conversation.is_pinned) && !conversation.is_archived;
   if (view === "archived") return Boolean(conversation.is_archived);
   if (view === "all") return true;
@@ -459,6 +504,7 @@ function conversationMatchesLabel(conversation, label = state.conversationLabel)
 function conversationViewCounts() {
   return {
     inbox: state.conversations.filter((conversation) => conversationMatchesView(conversation, "inbox")).length,
+    followup: state.conversations.filter((conversation) => conversationMatchesView(conversation, "followup")).length,
     unread: state.conversations.filter((conversation) => conversationMatchesView(conversation, "unread")).length,
     pinned: state.conversations.filter((conversation) => conversationMatchesView(conversation, "pinned")).length,
     archived: state.conversations.filter((conversation) => conversationMatchesView(conversation, "archived")).length,
@@ -485,7 +531,7 @@ function renderConversationFilters() {
   const counts = conversationViewCounts();
   for (const button of el.conversationFilters.querySelectorAll("button")) {
     const view = button.dataset.view;
-    const label = view ? view.charAt(0).toUpperCase() + view.slice(1) : "View";
+    const label = conversationViewLabels[view] || (view ? view.charAt(0).toUpperCase() + view.slice(1) : "View");
     button.textContent = `${label} ${counts[view] ?? 0}`;
     button.classList.toggle("active", view === state.conversationView);
     button.setAttribute("aria-pressed", view === state.conversationView ? "true" : "false");
@@ -531,6 +577,10 @@ function visibleConversationRows() {
     const haystack = conversationHaystack(conversation);
     return !query || haystack.includes(query) || (digitQuery.length >= 3 && haystack.includes(digitQuery));
   }).sort((a, b) => {
+    if (state.conversationView === "followup") {
+      const followUpDiff = followUpSortValue(a) - followUpSortValue(b);
+      if (followUpDiff) return followUpDiff;
+    }
     const pinnedDiff = Number(b.is_pinned) - Number(a.is_pinned);
     if (pinnedDiff) return pinnedDiff;
     return conversationSortValue(b) - conversationSortValue(a);
@@ -893,6 +943,13 @@ function renderConversations() {
       const badge = document.createElement("span");
       badge.className = "badge draft-badge";
       badge.textContent = "draft";
+      badges.append(badge);
+    }
+    if (hasFollowUp(conversation)) {
+      const badge = document.createElement("span");
+      const status = followUpStatus(conversation);
+      badge.className = `badge followup-badge ${status}`;
+      badge.textContent = `follow-up ${followUpLabel(conversation)}`;
       badges.append(badge);
     }
     for (const label of labelsForConversation(conversation).slice(0, 2)) {
@@ -1627,6 +1684,7 @@ function renderThreadControls() {
   el.archiveButton.disabled = !hasSelection;
   el.saveManagementButton.disabled = !hasSelection;
   el.threadLocalTitle.disabled = !hasSelection;
+  el.threadFollowUpAt.disabled = !hasSelection;
   el.threadTags.disabled = !hasSelection;
   el.threadNote.disabled = !hasSelection;
   el.markReadButton.disabled = !hasSelection;
@@ -1648,6 +1706,7 @@ function renderThreadControls() {
   const managed = [
     selected.is_pinned ? "pinned" : "",
     selected.is_archived ? "archived" : "",
+    hasFollowUp(selected) ? `follow-up ${followUpLabel(selected)}` : "",
   ].filter(Boolean).join(" · ");
   el.threadStatus.textContent = `${status}${excluded}${managed ? ` · ${managed}` : ""} · ${unread} unread · ${selected.alias_email || "no alias"}`;
   el.pinButton.textContent = selected.is_pinned ? "Unpin" : "Pin";
@@ -1658,12 +1717,14 @@ function renderThreadControls() {
 function renderManagementFields() {
   if (!state.selected) {
     el.threadLocalTitle.value = "";
+    el.threadFollowUpAt.value = "";
     el.threadTags.value = "";
     el.threadNote.value = "";
     el.managementState.textContent = "No thread";
     return;
   }
   el.threadLocalTitle.value = state.selected.title || "";
+  el.threadFollowUpAt.value = followUpInputValue(state.selected);
   el.threadTags.value = labelsForConversation(state.selected).join(", ");
   el.threadNote.value = state.selected.note || "";
   el.managementState.textContent = "Saved";
@@ -1979,6 +2040,7 @@ function conversationManagementUpdates(result, fields = {}) {
     title: result.title || "",
     note: result.note || "",
     labels: result.labels || [],
+    follow_up_at: result.follow_up_at || "",
     management_updated_at: result.management_updated_at || "",
   };
   if (Object.prototype.hasOwnProperty.call(fields, "draft_text")) {
@@ -2131,6 +2193,7 @@ function scheduleDraftSave() {
 async function saveConversationManagement() {
   await setConversationManagement({
     title: el.threadLocalTitle.value,
+    follow_up_at: el.threadFollowUpAt.value,
     note: el.threadNote.value,
     labels: splitValues(el.threadTags.value),
   });
@@ -2197,6 +2260,7 @@ function selectedConversationContext() {
     `Unread count: ${Number(state.selected.unread_count || 0)}`,
     `Pinned: ${Boolean(state.selected.is_pinned)}`,
     `Archived: ${Boolean(state.selected.is_archived)}`,
+    `Follow-up: ${hasFollowUp(state.selected) ? followUpLabel(state.selected) : "none"}`,
     `Thread tags: ${labels}`,
     `Private note: ${note}`,
     `Latest preview: ${conversationPreviewText(state.selected) || "none"}`,
@@ -2495,6 +2559,10 @@ el.pinButton.addEventListener("click", () => setConversationManagement({ pinned:
 el.archiveButton.addEventListener("click", () => setConversationManagement({ archived: !Boolean(state.selected?.is_archived) }));
 el.saveManagementButton.addEventListener("click", saveConversationManagement);
 el.threadLocalTitle.addEventListener("input", () => {
+  el.managementState.textContent = state.selected ? "Unsaved" : "No thread";
+  buildCodexPrompt();
+});
+el.threadFollowUpAt.addEventListener("input", () => {
   el.managementState.textContent = state.selected ? "Unsaved" : "No thread";
   buildCodexPrompt();
 });
