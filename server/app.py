@@ -1095,7 +1095,7 @@ def _search_messages(
 ) -> dict:
     search = (query or "").strip()
     normalized_view = (view or "all").strip().lower()
-    if normalized_view not in {"all", "current", "unread", "files", "audio", "mine"}:
+    if normalized_view not in {"all", "recent", "current", "unread", "files", "audio", "mine"}:
         normalized_view = "all"
     target_conversation_id = (conversation_id or "").strip()
     if not search and normalized_view == "all":

@@ -167,6 +167,7 @@ const conversationViewLabels = {
 
 const messageSearchViews = [
   { key: "all", label: "All" },
+  { key: "recent", label: "Recent" },
   { key: "current", label: "This thread" },
   { key: "unread", label: "Unread" },
   { key: "files", label: "Files" },

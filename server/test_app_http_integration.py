@@ -530,6 +530,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
             conn.close()
 
         with TestClient(app_module.app) as client:
+            recent_response = client.get("/penguin-connect/messages/search", params={"view": "recent", "limit": 2})
             title_response = client.get("/penguin-connect/messages/search", params={"query": "launch", "limit": 10})
             audio_response = client.get("/penguin-connect/messages/search", params={"view": "audio", "limit": 10})
             files_response = client.get("/penguin-connect/messages/search", params={"view": "files", "limit": 10})
@@ -539,6 +540,14 @@ class AppHttpIntegrationTests(unittest.TestCase):
                 "/penguin-connect/messages/search",
                 params={"view": "current", "conversation_id": "amc_test", "limit": 10},
             )
+
+        self.assertEqual(recent_response.status_code, 200)
+        recent_body = recent_response.json()
+        self.assertEqual(recent_body["view"], "recent")
+        self.assertEqual(
+            [message["provider_message_id"] for message in recent_body["messages"]],
+            ["imsg-audio", "manual-sent"],
+        )
 
         self.assertEqual(title_response.status_code, 200)
         title_body = title_response.json()
@@ -1195,6 +1204,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("replyToMessageSearchResult", js_response.text)
         self.assertIn("renderMessageSearchFilters", js_response.text)
         self.assertIn("messageSearchViews", js_response.text)
+        self.assertIn('{ key: "recent", label: "Recent" }', js_response.text)
         self.assertIn("renderMessageViewFilters", js_response.text)
         self.assertIn("messageMatchesView", js_response.text)
         self.assertIn("messagesLoading", js_response.text)
