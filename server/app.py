@@ -978,6 +978,45 @@ def _conversation_contact_keys_matching_context(conn: sqlite3.Connection, query:
     return keys
 
 
+def _conversation_contact_keys_matching_messages(conn: sqlite3.Connection, query: str) -> set[str]:
+    clean_query = str(query or "").strip().lower()
+    if len(clean_query) < 3:
+        return set()
+    rows = conn.execute(
+        """
+        SELECT c.conversation_id, c.source_chat_identifier, c.participants, m.sender_email
+        FROM penguin_connect_messages m
+        JOIN penguin_connect_conversations c
+          ON c.conversation_id = m.conversation_id
+        LEFT JOIN penguin_connect_message_management mm
+          ON mm.conversation_id = m.conversation_id
+         AND mm.provider_message_id = m.provider_message_id
+        WHERE lower(
+            COALESCE(c.display_name, '') || ' ' ||
+            COALESCE(c.source_chat_identifier, '') || ' ' ||
+            COALESCE(c.participants, '') || ' ' ||
+            COALESCE(m.sender_email, '') || ' ' ||
+            COALESCE(m.sender_name, '') || ' ' ||
+            COALESCE(m.subject, '') || ' ' ||
+            COALESCE(m.body_text, '') || ' ' ||
+            COALESCE(mm.note, '') || ' ' ||
+            COALESCE(m.metadata, '')
+        ) LIKE ?
+        ORDER BY m.message_timestamp DESC, m.id DESC
+        LIMIT 300
+        """,
+        (f"%{clean_query}%",),
+    ).fetchall()
+    keys: set[str] = set()
+    for row in rows:
+        handles = _conversation_participant_handles(row)
+        sender = str(row["sender_email"] or "").strip()
+        if sender and _contact_handle_type(sender) != "handle":
+            handles.append(sender)
+        keys.update(key for key in (_contact_compare_key(handle) for handle in handles) if key)
+    return keys
+
+
 def _participant_matches_query(handle: str, conversation_name: str, query: str, context_text: str = "") -> bool:
     if _participant_handle_matches_query(handle, query):
         return True
@@ -1296,6 +1335,8 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
     noted_order = {key: index for index, key in enumerate(noted_keys)}
     note_match_keys = _managed_contact_note_keys_matching(conn, query)
     context_match_keys = _conversation_contact_keys_matching_context(conn, query)
+    message_match_keys = _conversation_contact_keys_matching_messages(conn, query)
+    thread_match_keys = context_match_keys | message_match_keys
     pattern = f"%{query.lower()}%"
     where = ""
     params: list[object] = []
@@ -1345,7 +1386,7 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
         ).fetchall()
     contact_items = [_contact_to_dict(row) for row in rows]
     if query and normalized_source in {"all", "contacts"}:
-        extra_contact_keys = note_match_keys | context_match_keys
+        extra_contact_keys = note_match_keys | thread_match_keys
         if extra_contact_keys:
             contact_items.extend(_contact_to_dict(row) for row in _contact_rows_for_keys(conn, extra_contact_keys))
     participant_items: list[dict] = []
@@ -1360,7 +1401,7 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
             allowed_keys=favorite_key_set if normalized_source == "favorites" else (noted_key_set if normalized_source == "noted" else None),
         )
         if query and normalized_source in {"all", "participants"}:
-            extra_participant_keys = note_match_keys | context_match_keys
+            extra_participant_keys = note_match_keys | thread_match_keys
             if extra_participant_keys:
                 participant_items.extend(
                     _conversation_participant_contact_results(
@@ -1378,7 +1419,7 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
         if query:
             contacts = [
                 contact for contact in contacts
-                if _contact_matches_query(contact, query) or _contact_has_any_key(contact, context_match_keys)
+                if _contact_matches_query(contact, query) or _contact_has_any_key(contact, thread_match_keys)
             ]
         contacts.sort(
             key=lambda contact: (
@@ -1393,7 +1434,7 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
         if query:
             contacts = [
                 contact for contact in contacts
-                if _contact_matches_query(contact, query) or _contact_has_any_key(contact, context_match_keys)
+                if _contact_matches_query(contact, query) or _contact_has_any_key(contact, thread_match_keys)
             ]
         contacts.sort(
             key=lambda contact: (

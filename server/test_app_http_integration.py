@@ -1007,6 +1007,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
             phone_response = client.get("/penguin-connect/contacts", params={"search": "+15127436385", "limit": 10})
             note_search_response = client.get("/penguin-connect/contacts", params={"search": "pilots", "limit": 10})
             managed_note_response = client.get("/penguin-connect/contacts", params={"search": "green room", "limit": 10})
+            message_context_response = client.get("/penguin-connect/contacts", params={"search": "latest message", "limit": 10})
             managed_label_response = client.get(
                 "/penguin-connect/contacts",
                 params={"source": "contacts", "search": "sponsor", "limit": 10},
@@ -1070,6 +1071,11 @@ class AppHttpIntegrationTests(unittest.TestCase):
         managed_note_body = managed_note_response.json()
         self.assertEqual(managed_note_body["count"], 1)
         self.assertEqual(managed_note_body["contacts"][0]["contact_key"], "phone:15127436385")
+
+        self.assertEqual(message_context_response.status_code, 200)
+        message_context_body = message_context_response.json()
+        self.assertEqual(message_context_body["count"], 1)
+        self.assertEqual(message_context_body["contacts"][0]["contact_key"], "phone:15127436385")
 
         self.assertEqual(managed_label_response.status_code, 200)
         managed_label_body = managed_label_response.json()
@@ -1204,6 +1210,24 @@ class AppHttpIntegrationTests(unittest.TestCase):
                     json.dumps(["Green room"]),
                 ),
             )
+            conn.execute(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction, sender_email, subject,
+                    body_text, message_timestamp, is_read, metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "amc_unsaved",
+                    "imessage",
+                    "imsg-unsaved-rider",
+                    "imessage_to_gmail",
+                    None,
+                    "[Apple Messages] Unsaved Thread",
+                    "Please send rider setup notes.",
+                    "2026-03-11T10:00:00+00:00",
+                    1,
+                    "{}",
+                ),
+            )
             conn.commit()
         finally:
             conn.close()
@@ -1213,6 +1237,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
             response = client.get("/penguin-connect/contacts", params={"search": "5550199", "limit": 10})
             thread_name_response = client.get("/penguin-connect/contacts", params={"search": "unsaved thread", "limit": 10})
             management_note_response = client.get("/penguin-connect/contacts", params={"search": "soundcheck", "limit": 10})
+            message_context_response = client.get("/penguin-connect/contacts", params={"search": "rider setup", "limit": 10})
             management_label_response = client.get(
                 "/penguin-connect/contacts",
                 params={"source": "participants", "search": "green room", "limit": 10},
@@ -1288,6 +1313,13 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(management_note_body["count"], 1)
         self.assertEqual(management_note_body["participant_count"], 1)
         self.assertEqual(management_note_body["contacts"][0]["conversation_note"], "Ask about soundcheck")
+
+        self.assertEqual(message_context_response.status_code, 200)
+        message_context_body = message_context_response.json()
+        self.assertEqual(message_context_body["count"], 1)
+        self.assertEqual(message_context_body["participant_count"], 1)
+        self.assertEqual(message_context_body["contacts"][0]["source"], "conversation")
+        self.assertEqual(message_context_body["contacts"][0]["contact_key"], "phone:14155550199")
 
         self.assertEqual(management_label_response.status_code, 200)
         management_label_body = management_label_response.json()
