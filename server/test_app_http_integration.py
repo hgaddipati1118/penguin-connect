@@ -1961,6 +1961,12 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("Message moved to new chat draft", js_response.text)
         self.assertIn('data-action="draft"', js_response.text)
         self.assertIn("New draft", js_response.text)
+        self.assertIn('data-action="add-contact"', js_response.text)
+        self.assertIn("addMessageContactHandleToDraft", js_response.text)
+        self.assertIn("addMessageSearchResultContactToDraft", js_response.text)
+        self.assertIn("addLoadedMessageContactToDraft", js_response.text)
+        self.assertIn("Added sender to new chat", js_response.text)
+        self.assertIn("Sender already in new chat", js_response.text)
         self.assertIn("toggleMessageSearchResultStar", js_response.text)
         self.assertIn("Search result starred", js_response.text)
         self.assertIn("toggleMessageSearchResultRead", js_response.text)
@@ -1990,7 +1996,15 @@ class AppHttpIntegrationTests(unittest.TestCase):
             js_response.text,
         )
         self.assertIn(
+            'addContactButton.addEventListener("click", () => addMessageSearchResultContactToDraft(result));',
+            js_response.text,
+        )
+        self.assertIn(
             'contactButton.addEventListener("click", () => useLoadedMessageContact(message));',
+            js_response.text,
+        )
+        self.assertIn(
+            'addContactButton.addEventListener("click", () => addLoadedMessageContactToDraft(message));',
             js_response.text,
         )
         self.assertNotIn(

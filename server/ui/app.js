@@ -3153,6 +3153,37 @@ async function useLoadedMessageContact(message) {
   });
 }
 
+function addMessageContactHandleToDraft(handle, { target = "message", missing = "No contact handle on message" } = {}) {
+  const statusEl = messageContactStatusTarget(target);
+  const value = String(handle || "").trim();
+  if (!value) {
+    statusEl.textContent = missing;
+    return false;
+  }
+
+  const added = addDraftRecipient(value);
+  const status = added ? "Added sender to new chat" : "Sender already in new chat";
+  statusEl.textContent = status;
+  el.draftState.textContent = status;
+  el.draftMessage.focus();
+  return added;
+}
+
+function addMessageSearchResultContactToDraft(result) {
+  const handle = messageSearchContactHandle(result);
+  return addMessageContactHandleToDraft(handle, {
+    target: "message-search",
+    missing: "No contact handle on result",
+  });
+}
+
+function addLoadedMessageContactToDraft(message) {
+  return addMessageContactHandleToDraft(messageContactHandle(message), {
+    target: "message",
+    missing: "No contact handle on message",
+  });
+}
+
 function searchContactHandle(value) {
   const handle = String(value || "").trim();
   if (!handle) return;
@@ -4255,6 +4286,7 @@ function renderMessageSearchResults() {
         <button type="button" data-action="reply">Reply</button>
         <button type="button" data-action="draft">New draft</button>
         <button type="button" data-action="copy">Copy</button>
+        <button type="button" data-action="add-contact">Add</button>
         <button type="button" data-action="contact">Contact</button>
         <button type="button" data-action="open">Open</button>
         <button type="button" data-action="messages">Messages</button>
@@ -4330,6 +4362,9 @@ function renderMessageSearchResults() {
       await copyText(messageCopyText(result));
       el.sendState.textContent = "Search result copied";
     });
+    const addContactButton = item.querySelector('[data-action="add-contact"]');
+    addContactButton.disabled = !contactHandle;
+    addContactButton.addEventListener("click", () => addMessageSearchResultContactToDraft(result));
     const contactButton = item.querySelector('[data-action="contact"]');
     contactButton.disabled = !contactHandle;
     contactButton.addEventListener("click", () => useMessageSearchResultContact(result));
@@ -4654,6 +4689,7 @@ function renderMessages() {
         <button type="button" data-action="reply">Reply</button>
         <button type="button" data-action="draft">New draft</button>
         <button type="button" data-action="copy">Copy</button>
+        <button type="button" data-action="add-contact">Add</button>
         <button type="button" data-action="contact">Contact</button>
       </div>
     `;
@@ -4706,6 +4742,9 @@ function renderMessages() {
     noteButton.addEventListener("click", () => editMessageNote(message));
     item.querySelector('[data-action="reply"]').addEventListener("click", () => setReplyContext(message));
     item.querySelector('[data-action="draft"]').addEventListener("click", () => useMessageAsNewChatDraft(message));
+    const addContactButton = item.querySelector('[data-action="add-contact"]');
+    addContactButton.disabled = !messageContactHandle(message);
+    addContactButton.addEventListener("click", () => addLoadedMessageContactToDraft(message));
     const contactButton = item.querySelector('[data-action="contact"]');
     contactButton.disabled = !messageContactHandle(message);
     contactButton.addEventListener("click", () => useLoadedMessageContact(message));
