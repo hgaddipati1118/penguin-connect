@@ -29,6 +29,11 @@ const state = {
   draftRecipientSuggestionQuery: "",
   draftRecipientSuggestions: [],
   draftRecipientContactCache: [],
+  draftThreadResolveTimer: null,
+  draftThreadResolveToken: 0,
+  draftThreadResolveKey: "",
+  draftThreadResolving: false,
+  draftThreadMatch: null,
   activeContactKey: "",
   activeContact: null,
   activeContactMessageKey: "",
@@ -186,6 +191,7 @@ const el = {
   recipientLists: document.querySelector("#recipientLists"),
   draftMessage: document.querySelector("#draftMessage"),
   draftEmojiRow: document.querySelector("#draftEmojiRow"),
+  draftThreadMatch: document.querySelector("#draftThreadMatch"),
   draftVoiceMemoRow: document.querySelector("#draftVoiceMemoRow"),
   draftVoiceMemoButton: document.querySelector("#draftVoiceMemoButton"),
   draftVoiceMemoTimer: document.querySelector("#draftVoiceMemoTimer"),
@@ -1672,6 +1678,151 @@ function uniqueRecipientValues(values) {
   return recipients;
 }
 
+function draftRecipientMatchKey(values = uniqueRecipientValues(draftRecipientValues())) {
+  return uniqueRecipientValues(values).map(recipientCompareKey).filter(Boolean).join("|");
+}
+
+function draftThreadMatchRows() {
+  const match = state.draftThreadMatch || {};
+  if (match.matched_conversation) return [match.matched_conversation];
+  return Array.isArray(match.matches) ? match.matches : [];
+}
+
+function draftThreadMatchLabel(match) {
+  const participants = Array.isArray(match.participants) ? match.participants : [];
+  return [
+    match.display_name || "Messages thread",
+    participants.length ? `${participants.length} recipient${participants.length === 1 ? "" : "s"}` : "",
+  ].filter(Boolean).join(" · ");
+}
+
+function renderDraftThreadMatch() {
+  el.draftThreadMatch.replaceChildren();
+  const recipients = uniqueRecipientValues(draftRecipientValues());
+  if (!recipients.length && !state.draftThreadResolving && !state.draftThreadMatch) {
+    el.draftThreadMatch.hidden = true;
+    return;
+  }
+
+  el.draftThreadMatch.hidden = false;
+  el.draftThreadMatch.className = "draft-thread-match";
+  const status = document.createElement("span");
+  status.className = "draft-thread-match-status";
+  const actions = document.createElement("span");
+  actions.className = "draft-thread-match-actions";
+
+  if (state.draftThreadResolving) {
+    el.draftThreadMatch.classList.add("resolving");
+    status.textContent = "Checking existing thread";
+  } else if (state.draftThreadMatch?.match_state === "exact") {
+    const match = state.draftThreadMatch.matched_conversation;
+    el.draftThreadMatch.classList.add("exact");
+    status.textContent = `Existing thread: ${draftThreadMatchLabel(match)}`;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "Open thread";
+    button.addEventListener("click", () => openDraftMatchedThread(match));
+    actions.append(button);
+  } else if (state.draftThreadMatch?.match_state === "multiple") {
+    el.draftThreadMatch.classList.add("multiple");
+    status.textContent = "Multiple matching threads";
+    draftThreadMatchRows().slice(0, 3).forEach((match, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = index === 0 ? "Open first" : `Open ${index + 1}`;
+      button.title = draftThreadMatchLabel(match);
+      button.addEventListener("click", () => openDraftMatchedThread(match));
+      actions.append(button);
+    });
+  } else if (state.draftThreadMatch?.match_state === "error") {
+    el.draftThreadMatch.classList.add("error");
+    status.textContent = state.draftThreadMatch.error || "Thread check failed";
+  } else {
+    el.draftThreadMatch.classList.add("none");
+    status.textContent = "No exact local thread";
+  }
+
+  el.draftThreadMatch.append(status);
+  if (actions.childElementCount) el.draftThreadMatch.append(actions);
+}
+
+function clearDraftThreadMatch() {
+  clearTimeout(state.draftThreadResolveTimer);
+  state.draftThreadResolveTimer = null;
+  state.draftThreadResolveToken += 1;
+  state.draftThreadResolveKey = "";
+  state.draftThreadResolving = false;
+  state.draftThreadMatch = null;
+  renderDraftThreadMatch();
+}
+
+function scheduleDraftThreadResolve(values = uniqueRecipientValues(draftRecipientValues())) {
+  const recipients = uniqueRecipientValues(values);
+  clearTimeout(state.draftThreadResolveTimer);
+  state.draftThreadResolveTimer = null;
+  if (!recipients.length) {
+    clearDraftThreadMatch();
+    return;
+  }
+
+  const key = draftRecipientMatchKey(recipients);
+  if (key && key === state.draftThreadResolveKey && state.draftThreadMatch && !state.draftThreadResolving) {
+    renderDraftThreadMatch();
+    return;
+  }
+
+  state.draftThreadResolveKey = key;
+  state.draftThreadResolving = true;
+  state.draftThreadMatch = null;
+  const token = state.draftThreadResolveToken + 1;
+  state.draftThreadResolveToken = token;
+  renderDraftThreadMatch();
+  state.draftThreadResolveTimer = setTimeout(() => resolveDraftThread(recipients, key, token), 220);
+}
+
+async function resolveDraftThread(recipients, key, token) {
+  try {
+    const result = await api("/penguin-connect/messages/resolve-draft", {
+      method: "POST",
+      body: JSON.stringify({ participants: recipients }),
+    });
+    if (token !== state.draftThreadResolveToken || key !== draftRecipientMatchKey()) return;
+    state.draftThreadResolving = false;
+    state.draftThreadMatch = result;
+    renderDraftThreadMatch();
+  } catch (error) {
+    if (token !== state.draftThreadResolveToken || key !== draftRecipientMatchKey()) return;
+    state.draftThreadResolving = false;
+    state.draftThreadMatch = {
+      match_state: "error",
+      error: error.message,
+      participants: recipients,
+    };
+    renderDraftThreadMatch();
+  }
+}
+
+async function openDraftMatchedThread(match) {
+  const conversationId = match?.conversation_id || "";
+  if (!conversationId) {
+    el.draftState.textContent = "No matched thread";
+    return;
+  }
+
+  el.draftState.textContent = "Opening existing thread";
+  let conversation = state.conversations.find((item) => item.conversation_id === conversationId);
+  if (!conversation) {
+    await loadConversations({ autoSelect: false });
+    conversation = state.conversations.find((item) => item.conversation_id === conversationId);
+  }
+  if (!conversation) {
+    el.draftState.textContent = "Matched thread not loaded";
+    return;
+  }
+  await selectConversation(conversation);
+  el.draftState.textContent = `Opened ${conversationDisplayName(conversation)}`;
+}
+
 function draftRecipientContactCandidates() {
   return [
     ...state.draftRecipientContactCache,
@@ -1996,6 +2147,7 @@ function setDraftRecipients(values, { focus = false } = {}) {
   el.draftRecipients.value = recipients.join(", ");
   renderDraftRecipientChips(recipients);
   renderDraftPreview(recipients);
+  scheduleDraftThreadResolve(recipients);
   saveNewChatDraft();
   if (focus) el.draftRecipients.focus();
   return recipients;
@@ -5835,6 +5987,7 @@ function clearDraftForm() {
   renderDraftRecipientChips();
   renderAttachments("draft");
   renderDraftPreview([]);
+  clearDraftThreadMatch();
   renderRecipientLists();
   clearDraftRecipientSuggestions();
   clearSavedNewChatDraft();
@@ -6083,6 +6236,7 @@ el.draftRecipients.addEventListener("input", () => {
   const recipients = uniqueRecipientValues(draftRecipientValues());
   renderDraftRecipientChips(recipients);
   renderDraftPreview(recipients);
+  scheduleDraftThreadResolve(recipients);
   scheduleDraftRecipientSuggestions();
   saveNewChatDraft();
 });
@@ -6273,6 +6427,7 @@ renderDraftRecipientChips();
 renderAttachments();
 renderAttachments("draft");
 renderDraftPreview();
+scheduleDraftThreadResolve();
 renderRecipientLists();
 renderMessageSearchFilters();
 renderMessageSearchResults();

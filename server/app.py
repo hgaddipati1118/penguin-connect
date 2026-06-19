@@ -110,6 +110,9 @@ class PenguinConnectDraftCreateRequest(BaseModel):
 class PenguinConnectDraftSendRequest(PenguinConnectDraftCreateRequest):
     sender_email: str = ""
 
+class PenguinConnectDraftResolveRequest(BaseModel):
+    participants: list[str] | None = None
+
 class PenguinConnectRecipientListRequest(BaseModel):
     list_id: str = ""
     name: str = ""
@@ -880,6 +883,34 @@ def _conversation_match_dict(row: sqlite3.Row) -> dict:
         "display_name": row["display_name"] or "Messages thread",
         "source_provider": row["source_provider"] or "imessage",
         "participants": _conversation_participant_handles(row),
+    }
+
+def _resolve_recipient_conversation(conn: sqlite3.Connection, participants: list[str] | None) -> dict:
+    clean_participants = _clean_recipient_values(participants)
+    if not clean_participants:
+        raise HTTPException(status_code=400, detail="draft_requires_participant")
+
+    match = _find_exact_recipient_conversation(conn, clean_participants)
+    matched_row = match.get("conversation")
+    matched_conversation = _conversation_match_dict(matched_row) if matched_row is not None else None
+    matches = [_conversation_match_dict(row) for row in match.get("matches") or []]
+    match_error = match.get("error", "")
+    if matched_conversation:
+        match_state = "exact"
+        match_error = ""
+    elif match_error == "multiple_matching_conversations":
+        match_state = "multiple"
+    else:
+        match_state = "none"
+
+    return {
+        "success": True,
+        "participants": clean_participants,
+        "participants_count": len(clean_participants),
+        "match_state": match_state,
+        "match_error": match_error,
+        "matched_conversation": matched_conversation,
+        "matches": matches,
     }
 
 
@@ -2383,6 +2414,15 @@ def delete_penguinconnect_recipient_list(list_id: str):
         log_action("api_delete_recipient_list", list_id=result.get("list_id"))
         conn.commit()
         return result
+    finally:
+        conn.close()
+
+@app.post("/api/penguin-connect/messages/resolve-draft")
+@app.post("/penguin-connect/messages/resolve-draft")
+def resolve_penguinconnect_messages_draft(req: PenguinConnectDraftResolveRequest):
+    conn = get_connection()
+    try:
+        return _resolve_recipient_conversation(conn, req.participants)
     finally:
         conn.close()
 

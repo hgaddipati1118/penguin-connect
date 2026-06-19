@@ -1352,6 +1352,34 @@ class AppHttpIntegrationTests(unittest.TestCase):
         mock_open.assert_not_called()
         mock_open_addressed.assert_called_once_with(["+14155550100", "friend@example.test"])
 
+    def test_messages_resolve_draft_endpoint_matches_existing_thread(self):
+        with TestClient(app_module.app) as client:
+            response = client.post(
+                "/penguin-connect/messages/resolve-draft",
+                json={"participants": ["+1 (512) 743-6385", "+15127436385"]},
+            )
+            no_match_response = client.post(
+                "/penguin-connect/messages/resolve-draft",
+                json={"participants": ["+14155550100", "friend@example.test"]},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["success"])
+        self.assertEqual(body["participants"], ["+1 (512) 743-6385"])
+        self.assertEqual(body["participants_count"], 1)
+        self.assertEqual(body["match_state"], "exact")
+        self.assertEqual(body["match_error"], "")
+        self.assertEqual(body["matched_conversation"]["conversation_id"], "amc_test")
+        self.assertEqual(body["matches"][0]["conversation_id"], "amc_test")
+
+        self.assertEqual(no_match_response.status_code, 200)
+        no_match_body = no_match_response.json()
+        self.assertEqual(no_match_body["match_state"], "none")
+        self.assertEqual(no_match_body["match_error"], "no_matching_conversation")
+        self.assertIsNone(no_match_body["matched_conversation"])
+        self.assertEqual(no_match_body["matches"], [])
+
     def test_messages_draft_endpoint_stages_browser_attachments(self):
         data = base64.b64encode(b"fake image bytes").decode("ascii")
         with mock.patch("app._copy_to_clipboard") as mock_copy, mock.patch("app._open_messages_app") as mock_open, mock.patch(
@@ -1606,6 +1634,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("stageDraftButton", html_response.text)
         self.assertIn("draftRecipientSuggestions", html_response.text)
         self.assertIn("draftRecipientChips", html_response.text)
+        self.assertIn("draftThreadMatch", html_response.text)
         self.assertIn("draftPreviewText", html_response.text)
         self.assertIn("copyDraftRecipientsButton", html_response.text)
         self.assertIn("copyDraftBodyButton", html_response.text)
@@ -1712,6 +1741,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn(".draft-recipient-contact-button", css_response.text)
         self.assertIn(".draft-recipient-suggestions", css_response.text)
         self.assertIn(".draft-recipient-suggestion", css_response.text)
+        self.assertIn(".draft-thread-match", css_response.text)
+        self.assertIn(".draft-thread-match.exact", css_response.text)
         self.assertIn(".recipient-list-tools", css_response.text)
         self.assertIn(".recipient-list-item", css_response.text)
         self.assertIn(".recipient-list-actions", css_response.text)
@@ -2041,6 +2072,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("draftRecipientLine", js_response.text)
         self.assertIn("renderDraftPreview", js_response.text)
         self.assertIn("sendDraftIfExisting", js_response.text)
+        self.assertIn("scheduleDraftThreadResolve", js_response.text)
+        self.assertIn("/penguin-connect/messages/resolve-draft", js_response.text)
+        self.assertIn("Existing thread:", js_response.text)
+        self.assertIn("Open thread", js_response.text)
         self.assertIn("/penguin-connect/messages/send-draft", js_response.text)
         self.assertIn("Sent to", js_response.text)
         self.assertIn("no exact thread", js_response.text)

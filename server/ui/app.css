@@ -8,6 +8,7 @@
   --accent: #116456;
   --accent-ink: #f7fffb;
   --warn: #a8531b;
+  --danger: #8f2f24;
   --shadow: 0 18px 50px rgba(38, 31, 22, 0.12);
   color-scheme: light;
 }
@@ -2213,6 +2214,69 @@ textarea:focus,
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 10px;
+}
+
+.draft-thread-match {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  background: var(--panel-alt);
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.draft-thread-match[hidden] {
+  display: none;
+}
+
+.draft-thread-match.exact {
+  border-color: rgba(17, 100, 86, 0.38);
+  background: rgba(239, 248, 243, 0.76);
+  color: var(--accent);
+}
+
+.draft-thread-match.multiple {
+  border-color: rgba(191, 128, 35, 0.42);
+  color: var(--warn);
+}
+
+.draft-thread-match.error {
+  border-color: rgba(168, 83, 27, 0.42);
+  color: var(--danger);
+}
+
+.draft-thread-match-status {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.draft-thread-match-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.draft-thread-match-actions button {
+  min-height: 24px;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: inherit;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 10px;
+}
+
+.draft-thread-match-actions button:hover,
+.draft-thread-match-actions button:focus-visible {
+  border-color: currentColor;
 }
 
 .draft-preview {
