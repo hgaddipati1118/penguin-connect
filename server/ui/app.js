@@ -1942,6 +1942,7 @@ function renderAllEmojiButtons() {
 function renderConversations() {
   pruneSelectedConversations();
   const rows = visibleConversationRows();
+  const terms = highlightTerms(el.conversationSearch.value.trim());
 
   renderConversationFilters();
   renderLabelFilters();
@@ -1987,7 +1988,7 @@ function renderConversations() {
     });
 
     const mainButton = row.querySelector(".conversation-item");
-    mainButton.querySelector(".conversation-name").textContent = conversationDisplayName(conversation);
+    appendHighlightedText(mainButton.querySelector(".conversation-name"), conversationDisplayName(conversation), terms);
     const badges = mainButton.querySelector(".conversation-badges");
     if (conversation.unread_count) {
       const badge = document.createElement("span");
@@ -2050,18 +2051,19 @@ function renderConversations() {
       badge.textContent = "excluded";
       badges.append(badge);
     }
-    mainButton.querySelector(".conversation-meta").textContent = [
+    const metaText = [
       conversation.chat_type || "chat",
       conversation.source_service_name || conversation.source_provider || "source",
       conversation.last_message_ts ? formatTime(conversation.last_message_ts) : conversation.status || "",
     ].filter(Boolean).join(" · ");
+    appendHighlightedText(mainButton.querySelector(".conversation-meta"), metaText, terms);
     const contactContext = mainButton.querySelector(".conversation-contact-context");
     const contactContextText = conversationContactContextText(conversation);
-    contactContext.textContent = contactContextText;
+    appendHighlightedText(contactContext, contactContextText, terms);
     contactContext.hidden = !contactContextText;
     const preview = mainButton.querySelector(".conversation-preview");
     const previewText = conversationPreviewText(conversation);
-    preview.textContent = previewText;
+    appendHighlightedText(preview, previewText, terms);
     preview.hidden = !previewText;
     mainButton.addEventListener("click", () => {
       state.focusMessageId = "";
