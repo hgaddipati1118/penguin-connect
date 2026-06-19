@@ -1936,7 +1936,15 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("renderDraftRecipientSuggestions", js_response.text)
         self.assertIn("addDraftRecipientFromSuggestion", js_response.text)
         self.assertIn("/penguin-connect/contacts?", js_response.text)
-        self.assertIn("prefillContactFromDraftRecipient", js_response.text)
+        self.assertIn("draftRecipientCanCreateContact", js_response.text)
+        self.assertIn("createDraftRecipientContactRecord", js_response.text)
+        self.assertIn("createDraftRecipientContact", js_response.text)
+        self.assertIn("Use a phone or email to create contact", js_response.text)
+        self.assertIn(
+            'contactButton.addEventListener("click", () => createDraftRecipientContact(recipient, contactButton));',
+            js_response.text,
+        )
+        self.assertNotIn("prefillContactFromDraftRecipient", js_response.text)
         self.assertIn("refreshDraftRecipientChips", js_response.text)
         self.assertIn("Create contact from recipient", js_response.text)
         self.assertIn("known-recipient", js_response.text)

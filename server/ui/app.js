@@ -1963,11 +1963,15 @@ function draftRecipientDisplay(recipient) {
 
 function draftUnknownRecipientHandles() {
   return uniqueRecipientValues(draftRecipientValues()).filter((recipient) => {
-    const type = handleType(recipient);
-    if (type !== "phone" && type !== "email") return false;
+    if (!draftRecipientCanCreateContact(recipient)) return false;
     const contact = draftRecipientContact(recipient);
     return !contact || contact.is_saved === false;
   });
+}
+
+function draftRecipientCanCreateContact(recipient) {
+  const type = handleType(recipient);
+  return type === "phone" || type === "email";
 }
 
 function refreshDraftRecipientChips() {
@@ -2101,11 +2105,7 @@ async function createUnknownDraftRecipients() {
   const failures = [];
   for (const recipient of recipients) {
     try {
-      await api("/penguin-connect/contacts", {
-        method: "POST",
-        body: JSON.stringify(contactCreatePayloadFromHandle(recipient)),
-      });
-      cacheDraftRecipientContact(draftCreatedContactFromHandle(recipient));
+      await createDraftRecipientContactRecord(recipient);
       created += 1;
       el.draftState.textContent = `Created ${created}/${recipients.length}`;
     } catch (error) {
@@ -2128,6 +2128,57 @@ async function createUnknownDraftRecipients() {
       ? `Created ${created}; ${failedCount} failed`
       : `Created ${created} contact${created === 1 ? "" : "s"}`;
     renderDraftPreview();
+  }
+}
+
+async function createDraftRecipientContactRecord(recipient) {
+  const value = String(recipient || "").trim();
+  if (!draftRecipientCanCreateContact(value)) {
+    throw new Error("Recipient needs phone or email");
+  }
+  await api("/penguin-connect/contacts", {
+    method: "POST",
+    body: JSON.stringify(contactCreatePayloadFromHandle(value)),
+  });
+  cacheDraftRecipientContact(draftCreatedContactFromHandle(value));
+}
+
+async function refreshAfterDraftRecipientContactCreate({ created = false } = {}) {
+  if (created) {
+    await api("/penguin-connect/contacts/refresh", { method: "POST", body: "{}" });
+  }
+  await loadContacts({ force: true });
+  await loadThreadContactMatches();
+  refreshDraftRecipientChips();
+  renderDraftPreview();
+}
+
+async function createDraftRecipientContact(recipient, button = null) {
+  const value = String(recipient || "").trim();
+  if (!draftRecipientCanCreateContact(value)) {
+    el.draftState.textContent = "Use a phone or email to create contact";
+    return false;
+  }
+  const contact = draftRecipientContact(value);
+  if (contact && contact.is_saved !== false) {
+    el.draftState.textContent = "Recipient already saved";
+    refreshDraftRecipientChips();
+    renderDraftPreview();
+    return false;
+  }
+
+  if (button) button.disabled = true;
+  el.draftState.textContent = "Creating contact";
+  try {
+    await createDraftRecipientContactRecord(value);
+    await refreshAfterDraftRecipientContactCreate({ created: true });
+    el.draftState.textContent = "Contact created";
+    return true;
+  } catch (error) {
+    el.draftState.textContent = error.message;
+    refreshDraftRecipientChips();
+    renderDraftPreview();
+    return false;
   }
 }
 
@@ -2194,8 +2245,10 @@ function renderDraftRecipientChips(values = uniqueRecipientValues(draftRecipient
     detail.textContent = display.detail;
     detail.hidden = !display.detail;
     const contactButton = chip.querySelector(".draft-recipient-contact-button");
-    contactButton.hidden = display.known;
-    contactButton.addEventListener("click", () => prefillContactFromDraftRecipient(recipient));
+    const canCreate = draftRecipientCanCreateContact(recipient);
+    contactButton.hidden = display.known || !canCreate;
+    contactButton.disabled = !canCreate;
+    contactButton.addEventListener("click", () => createDraftRecipientContact(recipient, contactButton));
     chip.querySelector('button[aria-label="Remove recipient"]').addEventListener("click", () => removeDraftRecipient(index));
     el.draftRecipientChips.append(chip);
   });
@@ -2905,13 +2958,6 @@ function fillContactFormFromHandle(value, stateText = "Prefilled from thread", d
   fillContactNameFromDisplay(displayName, handle);
   el.createContactState.textContent = stateText;
   el.newContactFirst.focus();
-}
-
-function prefillContactFromDraftRecipient(value) {
-  const handle = String(value || "").trim();
-  if (!handle) return;
-  fillContactFormFromHandle(handle, "Prefilled from new chat");
-  el.draftState.textContent = "Contact form prefilled";
 }
 
 function fillContactFormFromContact(contact) {
