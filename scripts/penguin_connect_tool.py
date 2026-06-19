@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Iterable
@@ -520,6 +521,14 @@ def _build_group_draft(participants: Iterable[str], message: str = "") -> str:
     return f"To: {', '.join(cleaned)}\n"
 
 
+def _messages_address_url(participants: Iterable[str]) -> str:
+    recipient_line = ", ".join(participant.strip() for participant in participants if participant.strip())
+    return "sms://open?" + urllib.parse.urlencode(
+        {"addresses": recipient_line},
+        quote_via=urllib.parse.quote,
+    )
+
+
 def _copy_to_clipboard(text: str) -> None:
     try:
         subprocess.run(["pbcopy"], input=text, text=True, check=True)
@@ -536,9 +545,16 @@ def command_group_compose(args: argparse.Namespace) -> int:
         message = Path(args.message_file).expanduser().read_text(encoding="utf-8")
 
     draft = _build_group_draft(participants, message)
+    messages_url = _messages_address_url(participants)
     if args.copy:
         _copy_to_clipboard(draft)
         print("copied_group_draft: true")
+    if args.open_addressed:
+        try:
+            subprocess.run(["open", messages_url], check=True)
+        except subprocess.CalledProcessError as exc:
+            raise ToolError("Failed to open addressed Messages compose.") from exc
+        print("opened_addressed_messages: true")
     if args.open_messages:
         try:
             subprocess.run(["open", "-a", "Messages"], check=True)
@@ -547,9 +563,11 @@ def command_group_compose(args: argparse.Namespace) -> int:
         print("opened_messages: true")
 
     if args.json:
-        _print_json({"participants": participants, "message": message, "draft": draft})
+        _print_json({"participants": participants, "message": message, "draft": draft, "messages_url": messages_url})
     else:
         print(draft.rstrip())
+        print("")
+        print(f"Addressed URL: {messages_url}")
         print("")
         print(
             "Note: Messages scripting can send to existing chats, but does not expose a reliable "
@@ -641,6 +659,7 @@ def build_parser() -> argparse.ArgumentParser:
     group_compose.add_argument("-m", "--message", default="", help="Draft message text")
     group_compose.add_argument("--message-file", help="Read draft text from a UTF-8 file")
     group_compose.add_argument("--copy", action="store_true", help="Copy the draft to the clipboard")
+    group_compose.add_argument("--open-addressed", action="store_true", help="Open a Messages compose URL with recipients")
     group_compose.add_argument("--open-messages", action="store_true", help="Open Messages.app")
     group_compose.add_argument("--json", action="store_true", help="Print raw JSON")
     group_compose.set_defaults(func=command_group_compose)

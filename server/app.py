@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.parse
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -100,6 +101,7 @@ class PenguinConnectDraftCreateRequest(BaseModel):
     message: str = ""
     copy_to_clipboard: bool = True
     open_messages: bool = True
+    open_addressed: bool = False
 
 class PenguinConnectRecipientListRequest(BaseModel):
     list_id: str = ""
@@ -332,6 +334,21 @@ def _build_messages_draft(participants: list[str], message: str = "") -> str:
     return f"To: {', '.join(participants)}\n"
 
 
+def _messages_recipient_line(participants: list[str]) -> str:
+    return ", ".join(participants)
+
+
+def _messages_body_text(message: str = "") -> str:
+    return _clean_text(message, max_chars=50000)
+
+
+def _messages_address_url(participants: list[str]) -> str:
+    return "sms://open?" + urllib.parse.urlencode(
+        {"addresses": _messages_recipient_line(participants)},
+        quote_via=urllib.parse.quote,
+    )
+
+
 def _copy_to_clipboard(text: str) -> None:
     try:
         subprocess.run(["pbcopy"], input=text, text=True, check=True, timeout=10.0)
@@ -352,6 +369,19 @@ def _open_messages_app() -> None:
         raise HTTPException(status_code=504, detail="open_messages_timeout") from exc
     except subprocess.CalledProcessError as exc:
         raise HTTPException(status_code=400, detail="open_messages_failed") from exc
+
+
+def _open_messages_addressed(participants: list[str]) -> str:
+    url = _messages_address_url(participants)
+    try:
+        subprocess.run(["open", url], check=True, timeout=10.0)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=501, detail="open_unavailable") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="open_messages_addressed_timeout") from exc
+    except subprocess.CalledProcessError as exc:
+        raise HTTPException(status_code=400, detail="open_messages_addressed_failed") from exc
+    return url
 
 
 def _codex_prompt_max_chars() -> int:
@@ -2016,21 +2046,32 @@ def create_penguinconnect_messages_draft(req: PenguinConnectDraftCreateRequest):
         raise HTTPException(status_code=400, detail="draft_requires_participant")
 
     draft = _build_messages_draft(participants, req.message)
+    body_text = _messages_body_text(req.message)
+    recipient_line = _messages_recipient_line(participants)
+    messages_url = _messages_address_url(participants)
     copied = False
     opened_messages = False
+    opened_addressed = False
     if req.copy_to_clipboard:
         _copy_to_clipboard(draft)
         copied = True
-    if req.open_messages:
+    if req.open_addressed:
+        messages_url = _open_messages_addressed(participants)
+        opened_addressed = True
+    elif req.open_messages:
         _open_messages_app()
         opened_messages = True
     return {
         "success": True,
         "participants_count": len(participants),
         "participants": participants,
+        "recipient_line": recipient_line,
+        "body": body_text,
         "draft": draft,
+        "messages_url": messages_url,
         "copied": copied,
         "opened_messages": opened_messages,
+        "opened_addressed": opened_addressed,
     }
 
 @app.post("/api/penguin-connect/codex/ask")

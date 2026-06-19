@@ -351,6 +351,11 @@ class ScriptTests(unittest.TestCase):
 
         self.assertEqual(draft, "To: +14155550101, ava@example.com\n\nDinner at 7?\n")
 
+    def test_tool_group_draft_builds_addressed_messages_url(self):
+        url = penguin_connect_tool._messages_address_url(["+14155550101", "ava@example.com"])
+
+        self.assertEqual(url, "sms://open?addresses=%2B14155550101%2C%20ava%40example.com")
+
     def test_tool_resolve_attachment_paths_requires_existing_file(self):
         with tempfile.NamedTemporaryFile(suffix=".m4a") as audio_file:
             resolved = penguin_connect_tool._resolve_attachment_paths([audio_file.name])

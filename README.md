@@ -148,7 +148,7 @@ open http://127.0.0.1:9000/penguin-connect/ui
 ./scripts/penguin_connect_tool.py contacts search "Taylor"
 ./scripts/penguin_connect_tool.py contacts create --first Taylor --phone +14155550101
 ./scripts/penguin_connect_tool.py contacts refresh
-./scripts/penguin_connect_tool.py group compose --participant +14155550101 --participant friend@example.com --message "Starting this thread" --copy --open-messages
+./scripts/penguin_connect_tool.py group compose --participant +14155550101 --participant friend@example.com --message "Starting this thread" --copy --open-addressed
 ```
 
 The `send` command routes directly through an existing PenguinConnect conversation
@@ -172,7 +172,8 @@ removable recipient chips, reusable saved recipient lists, selected-thread parti
 search/new-chat/contact creation, participant favoriting, bulk add-all-to-draft, and save-as-list actions, local thread titles, notes, tags and muted state,
 follow-up scheduling/filtering plus bulk follow-up set/clear, read/unread management, bridge
 disconnect/reconnect controls, persistent per-thread reply drafts, new chat
-draft staging with live Messages-ready draft preview/copy, and a Codex prompt helper with
+draft staging with live Messages-ready draft preview, copy-recipients/copy-body/copy-draft actions,
+addressed Messages compose links, and a Codex prompt helper with
 reply, summary, follow-up, contact-cleanup, and custom-question modes that can
 copy or run a local `codex exec` prompt over recent thread context, search
 results, contact results, local notes, tags, and your draft, then place the

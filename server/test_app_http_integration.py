@@ -1043,11 +1043,42 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertTrue(body["success"])
         self.assertEqual(body["participants_count"], 2)
         self.assertEqual(body["participants"], ["+14155550100", "friend@example.test"])
+        self.assertEqual(body["recipient_line"], "+14155550100, friend@example.test")
+        self.assertEqual(body["body"], "Starting this thread")
         self.assertEqual(body["draft"], "To: +14155550100, friend@example.test\n\nStarting this thread\n")
+        self.assertEqual(body["messages_url"], "sms://open?addresses=%2B14155550100%2C%20friend%40example.test")
         self.assertTrue(body["copied"])
         self.assertTrue(body["opened_messages"])
+        self.assertFalse(body["opened_addressed"])
         mock_copy.assert_called_once_with(body["draft"])
         mock_open.assert_called_once_with()
+
+    def test_messages_draft_endpoint_opens_addressed_compose(self):
+        with mock.patch("app._copy_to_clipboard") as mock_copy, mock.patch("app._open_messages_app") as mock_open, mock.patch(
+            "app._open_messages_addressed",
+            return_value="sms://open?addresses=%2B14155550100%2C%20friend%40example.test",
+        ) as mock_open_addressed, TestClient(app_module.app) as client:
+            response = client.post(
+                "/penguin-connect/messages/draft",
+                json={
+                    "participants": ["+14155550100", "friend@example.test"],
+                    "message": "Starting this thread",
+                    "copy_to_clipboard": False,
+                    "open_messages": True,
+                    "open_addressed": True,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["success"])
+        self.assertFalse(body["copied"])
+        self.assertFalse(body["opened_messages"])
+        self.assertTrue(body["opened_addressed"])
+        self.assertEqual(body["messages_url"], "sms://open?addresses=%2B14155550100%2C%20friend%40example.test")
+        mock_copy.assert_not_called()
+        mock_open.assert_not_called()
+        mock_open_addressed.assert_called_once_with(["+14155550100", "friend@example.test"])
 
     def test_recipient_lists_can_be_saved_updated_listed_and_deleted(self):
         with TestClient(app_module.app) as client:
@@ -1154,7 +1185,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("stageDraftButton", html_response.text)
         self.assertIn("draftRecipientChips", html_response.text)
         self.assertIn("draftPreviewText", html_response.text)
+        self.assertIn("copyDraftRecipientsButton", html_response.text)
+        self.assertIn("copyDraftBodyButton", html_response.text)
         self.assertIn("copyDraftPreviewButton", html_response.text)
+        self.assertIn("openAddressedDraftButton", html_response.text)
         self.assertIn("recipientListName", html_response.text)
         self.assertIn("saveRecipientListButton", html_response.text)
         self.assertIn("recipientLists", html_response.text)
@@ -1379,8 +1413,13 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("renderManagementFields", js_response.text)
         self.assertIn("stageDraft", js_response.text)
         self.assertIn("buildMessagesDraftText", js_response.text)
+        self.assertIn("draftRecipientLine", js_response.text)
         self.assertIn("renderDraftPreview", js_response.text)
+        self.assertIn("copyDraftRecipients", js_response.text)
+        self.assertIn("copyDraftBody", js_response.text)
         self.assertIn("copyDraftPreview", js_response.text)
+        self.assertIn("openAddressedDraft", js_response.text)
+        self.assertIn("open_addressed", js_response.text)
         self.assertIn("createContact", js_response.text)
         self.assertIn("setReadState", js_response.text)
         self.assertIn("setConversationManagement", js_response.text)
@@ -1398,6 +1437,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("Voice memo attached", js_response.text)
         self.assertIn("Stop voice memo before sending", js_response.text)
         self.assertIn(".draft-preview", css_response.text)
+        self.assertIn(".draft-preview-actions", css_response.text)
 
     def test_messages_endpoint_uses_header_display_name_for_own_gmail_messages(self):
         conn = self._get_connection()

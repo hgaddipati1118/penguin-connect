@@ -172,7 +172,12 @@
           <div class="draft-preview" id="draftPreview" aria-live="polite">
             <div class="draft-preview-head">
               <span id="draftPreviewTitle">No recipients</span>
-              <button class="quiet-button" id="copyDraftPreviewButton" type="button" disabled>Copy draft</button>
+              <div class="draft-preview-actions">
+                <button class="quiet-button" id="copyDraftRecipientsButton" type="button" disabled>Copy recipients</button>
+                <button class="quiet-button" id="copyDraftBodyButton" type="button" disabled>Copy body</button>
+                <button class="quiet-button" id="copyDraftPreviewButton" type="button" disabled>Copy draft</button>
+                <button class="quiet-button" id="openAddressedDraftButton" type="button" disabled>Open addressed</button>
+              </div>
             </div>
             <pre id="draftPreviewText">Add recipients to preview the Messages draft.</pre>
           </div>

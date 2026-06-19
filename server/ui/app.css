@@ -1543,7 +1543,7 @@ textarea:focus,
 
 .draft-preview-head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(120px, 1fr) minmax(0, auto);
   align-items: center;
   gap: 8px;
   min-height: 34px;
@@ -1557,6 +1557,21 @@ textarea:focus,
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11px;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.draft-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+
+.draft-preview-actions .quiet-button {
+  min-height: 26px;
+  padding: 4px 7px;
+  font-size: 11px;
   white-space: nowrap;
 }
 

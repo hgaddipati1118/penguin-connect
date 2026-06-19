@@ -127,7 +127,10 @@ const el = {
   draftPreview: document.querySelector("#draftPreview"),
   draftPreviewTitle: document.querySelector("#draftPreviewTitle"),
   draftPreviewText: document.querySelector("#draftPreviewText"),
+  copyDraftRecipientsButton: document.querySelector("#copyDraftRecipientsButton"),
+  copyDraftBodyButton: document.querySelector("#copyDraftBodyButton"),
   copyDraftPreviewButton: document.querySelector("#copyDraftPreviewButton"),
+  openAddressedDraftButton: document.querySelector("#openAddressedDraftButton"),
   draftCopyToggle: document.querySelector("#draftCopyToggle"),
   draftOpenToggle: document.querySelector("#draftOpenToggle"),
   stageDraftButton: document.querySelector("#stageDraftButton"),
@@ -1212,8 +1215,17 @@ function buildMessagesDraftText(participants = uniqueRecipientValues(draftRecipi
   return body ? `To: ${participants.join(", ")}\n\n${body}\n` : `To: ${participants.join(", ")}\n`;
 }
 
+function draftRecipientLine(values = uniqueRecipientValues(draftRecipientValues())) {
+  return uniqueRecipientValues(values).join(", ");
+}
+
+function draftBodyText() {
+  return String(el.draftMessage.value || "").trim().slice(0, 50000);
+}
+
 function renderDraftPreview(values = uniqueRecipientValues(draftRecipientValues()), draftText = "") {
   const recipients = uniqueRecipientValues(values);
+  const body = draftBodyText();
   const draft = draftText || buildMessagesDraftText(recipients);
   const count = recipients.length;
   const mode = count > 1 ? "Group chat" : "Direct chat";
@@ -1221,7 +1233,10 @@ function renderDraftPreview(values = uniqueRecipientValues(draftRecipientValues(
     ? `${mode} · ${count} recipient${count === 1 ? "" : "s"}`
     : "No recipients";
   el.draftPreviewText.textContent = draft || "Add recipients to preview the Messages draft.";
+  el.copyDraftRecipientsButton.disabled = !recipients.length;
+  el.copyDraftBodyButton.disabled = !body;
   el.copyDraftPreviewButton.disabled = !draft;
+  el.openAddressedDraftButton.disabled = !recipients.length;
 }
 
 async function copyDraftPreview() {
@@ -1239,6 +1254,69 @@ async function copyDraftPreview() {
     el.draftState.textContent = "Draft copied";
   } catch (error) {
     el.draftState.textContent = error.message;
+  }
+}
+
+async function copyDraftRecipients() {
+  const participants = setDraftRecipients(draftRecipientValues());
+  const line = draftRecipientLine(participants);
+  if (!line) {
+    el.draftState.textContent = "Add recipient";
+    el.draftRecipients.focus();
+    return;
+  }
+
+  try {
+    await copyText(line);
+    el.draftState.textContent = `${participants.length} recipient${participants.length === 1 ? "" : "s"} copied`;
+  } catch (error) {
+    el.draftState.textContent = error.message;
+  }
+}
+
+async function copyDraftBody() {
+  const body = draftBodyText();
+  if (!body) {
+    el.draftState.textContent = "Add message";
+    el.draftMessage.focus();
+    return;
+  }
+
+  try {
+    await copyText(body);
+    el.draftState.textContent = "Message body copied";
+  } catch (error) {
+    el.draftState.textContent = error.message;
+  }
+}
+
+async function openAddressedDraft() {
+  const participants = setDraftRecipients(draftRecipientValues());
+  if (!participants.length) {
+    el.draftState.textContent = "Add recipient";
+    el.draftRecipients.focus();
+    return;
+  }
+
+  el.openAddressedDraftButton.disabled = true;
+  el.draftState.textContent = "Opening addressed chat";
+  try {
+    const result = await api("/penguin-connect/messages/draft", {
+      method: "POST",
+      body: JSON.stringify({
+        participants,
+        message: el.draftMessage.value,
+        copy_to_clipboard: false,
+        open_messages: false,
+        open_addressed: true,
+      }),
+    });
+    renderDraftPreview(result.participants || participants, result.draft || "");
+    el.draftState.textContent = result.opened_addressed ? "Addressed chat opened" : "Address ready";
+  } catch (error) {
+    el.draftState.textContent = error.message;
+  } finally {
+    renderDraftPreview(participants);
   }
 }
 
@@ -3892,7 +3970,10 @@ el.fileInput.addEventListener("change", (event) => addFiles(event.target.files))
 el.threadPeopleAddAllButton.addEventListener("click", addThreadParticipantsToDraft);
 el.threadPeopleSaveListButton.addEventListener("click", saveThreadParticipantsAsRecipientList);
 el.stageDraftButton.addEventListener("click", stageDraft);
+el.copyDraftRecipientsButton.addEventListener("click", copyDraftRecipients);
+el.copyDraftBodyButton.addEventListener("click", copyDraftBody);
 el.copyDraftPreviewButton.addEventListener("click", copyDraftPreview);
+el.openAddressedDraftButton.addEventListener("click", openAddressedDraft);
 el.saveRecipientListButton.addEventListener("click", saveRecipientList);
 el.clearDraftButton.addEventListener("click", clearDraftForm);
 el.createContactButton.addEventListener("click", createContact);
