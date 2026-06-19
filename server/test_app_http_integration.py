@@ -1865,6 +1865,16 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("shouldAutoRefreshLocalState", js_response.text)
         self.assertIn("autoRefreshLocalState", js_response.text)
         self.assertIn("startAutoRefresh", js_response.text)
+        self.assertIn("conversationActivitySnapshot", js_response.text)
+        self.assertIn("conversationActivitySignature", js_response.text)
+        self.assertIn("updateConversationActivitySnapshot", js_response.text)
+        self.assertIn("newConversationActivity", js_response.text)
+        self.assertIn("announceNewConversationActivity", js_response.text)
+        self.assertIn("activityStatusHoldMs = 45000", js_response.text)
+        self.assertIn("activityStatusUntil", js_response.text)
+        self.assertIn("Date.now() + activityStatusHoldMs", js_response.text)
+        self.assertIn("New message ·", js_response.text)
+        self.assertIn("announceActivity: true", js_response.text)
         self.assertIn("preserveManagementEditing", js_response.text)
         self.assertIn("quiet = false", js_response.text)
         self.assertIn("document.addEventListener(\"visibilitychange\"", js_response.text)
@@ -2114,7 +2124,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("Loading imported thread", js_response.text)
         self.assertIn("loadConversations({ autoSelect: false })", js_response.text)
         self.assertIn(
-            "async function loadConversations({ autoSelect = true, preserveManagementEditing = false } = {})",
+            "async function loadConversations({ autoSelect = true, preserveManagementEditing = false, announceActivity = false } = {})",
             js_response.text,
         )
         self.assertIn("renderMessageSearchFilters", js_response.text)

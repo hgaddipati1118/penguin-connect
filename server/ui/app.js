@@ -6,6 +6,7 @@ function autoRefreshIntervalFromUrl() {
 }
 
 const autoRefreshIntervalMs = autoRefreshIntervalFromUrl();
+const activityStatusHoldMs = 45000;
 
 const state = {
   conversations: [],
@@ -75,6 +76,8 @@ const state = {
   mediaView: "all",
   conversationView: "inbox",
   conversationLabel: "",
+  conversationActivitySnapshot: new Map(),
+  activityStatusUntil: 0,
   selectedConversationIds: new Set(),
   bulkBusy: false,
   bulkMessage: "",
@@ -782,6 +785,42 @@ function conversationSortValue(conversation) {
   const raw = conversation.last_message_ts || conversation.updated_at || conversation.management_updated_at || "";
   const value = Date.parse(raw);
   return Number.isNaN(value) ? 0 : value;
+}
+
+function conversationActivitySignature(conversation) {
+  return [
+    conversation.last_message_provider_id || "",
+    conversation.last_message_ts || "",
+    Number(conversation.unread_count || 0),
+  ].join("|");
+}
+
+function updateConversationActivitySnapshot(conversations = state.conversations) {
+  state.conversationActivitySnapshot = new Map(
+    conversations
+      .filter((conversation) => conversation?.conversation_id)
+      .map((conversation) => [conversation.conversation_id, conversationActivitySignature(conversation)])
+  );
+}
+
+function newConversationActivity(conversations) {
+  if (!state.conversationActivitySnapshot.size) return [];
+  return conversations.filter((conversation) => {
+    if (!conversation?.conversation_id || !conversationNeedsReply(conversation)) return false;
+    const current = conversationActivitySignature(conversation);
+    const previous = state.conversationActivitySnapshot.get(conversation.conversation_id);
+    return !previous || previous !== current;
+  });
+}
+
+function announceNewConversationActivity(conversations) {
+  if (!conversations.length) return;
+  const first = conversations[0];
+  const label = conversationDisplayName(first);
+  state.activityStatusUntil = Date.now() + activityStatusHoldMs;
+  el.statusLine.textContent = conversations.length === 1
+    ? `New message · ${label}`
+    : `${conversations.length} conversations updated · ${label}`;
 }
 
 function conversationMatchesView(conversation, view = state.conversationView) {
@@ -5845,20 +5884,28 @@ function updateConversationFields(conversationId, fields) {
 async function loadStatus() {
   try {
     const status = await api("/penguin-connect/health");
-    el.statusLine.textContent = status.ok
-      ? "Messages ready · local send enabled"
-      : "Messages warning";
     el.senderBadge.textContent = "Messages";
+    if (status.ok) {
+      if (Date.now() < state.activityStatusUntil) return;
+      el.statusLine.textContent = "Messages ready · local send enabled";
+    } else {
+      state.activityStatusUntil = 0;
+      el.statusLine.textContent = "Messages warning";
+    }
   } catch (error) {
+    state.activityStatusUntil = 0;
     el.statusLine.textContent = `Messages offline · ${error.message}`;
     el.senderBadge.textContent = "Messages";
   }
 }
 
-async function loadConversations({ autoSelect = true, preserveManagementEditing = false } = {}) {
+async function loadConversations({ autoSelect = true, preserveManagementEditing = false, announceActivity = false } = {}) {
   try {
     const payload = await api("/penguin-connect/conversations");
-    state.conversations = payload.conversations || [];
+    const conversations = payload.conversations || [];
+    const activity = announceActivity ? newConversationActivity(conversations) : [];
+    state.conversations = conversations;
+    updateConversationActivitySnapshot(conversations);
     if (state.selected) {
       state.selected = state.conversations.find((conversation) => conversation.conversation_id === state.selected.conversation_id) || state.selected;
       renderThreadHeader();
@@ -5869,6 +5916,7 @@ async function loadConversations({ autoSelect = true, preserveManagementEditing 
     }
     el.senderBadge.textContent = "Messages";
     renderConversations();
+    announceNewConversationActivity(activity);
     renderContacts();
     refreshDraftRecipientChips();
     if (autoSelect && !state.selected && state.conversations.length) {
@@ -6176,6 +6224,7 @@ async function autoRefreshLocalState() {
     await loadConversations({
       autoSelect: false,
       preserveManagementEditing: true,
+      announceActivity: true,
     });
     if (conversationId && state.selected?.conversation_id === conversationId && !state.messagesLoading) {
       await loadMessages({ preserveScroll: true, quiet: true });
