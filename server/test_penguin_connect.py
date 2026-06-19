@@ -81,6 +81,34 @@ class PenguinConnectTests(unittest.TestCase):
             ("amc_test",),
         ).fetchone()
 
+    def test_get_connection_tolerates_locked_wal_pragma(self):
+        class FakeConnection:
+            row_factory = None
+
+            def __init__(self):
+                self.closed = False
+                self.statements = []
+
+            def execute(self, statement):
+                self.statements.append(statement)
+                if statement == "PRAGMA journal_mode=WAL":
+                    raise sqlite3.OperationalError("database is locked")
+                return []
+
+            def close(self):
+                self.closed = True
+
+        fake_conn = FakeConnection()
+        with mock.patch("db.ensure_data_dir"), mock.patch("db.sqlite3.connect", return_value=fake_conn):
+            conn = db.get_connection()
+
+        self.assertIs(conn, fake_conn)
+        self.assertFalse(fake_conn.closed)
+        self.assertEqual(fake_conn.row_factory, sqlite3.Row)
+        self.assertIn("PRAGMA busy_timeout=30000", fake_conn.statements)
+        self.assertIn("PRAGMA journal_mode=WAL", fake_conn.statements)
+        self.assertIn("PRAGMA foreign_keys=ON", fake_conn.statements)
+
     def test_conversation_id_is_deterministic(self):
         one = penguin_connect.deterministic_conversation_id("Owner@Gmail.com", "chat-A")
         two = penguin_connect.deterministic_conversation_id("owner@gmail.com", "chat-A")

@@ -1099,6 +1099,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("saveLocalDraft", js_response.text)
         self.assertIn("toggleConnection", js_response.text)
         self.assertIn("attachmentUrl", js_response.text)
+        self.assertIn("handleAttachmentPaste", js_response.text)
+        self.assertIn("clipboardAttachmentFiles", js_response.text)
+        self.assertIn("normalizeAttachmentFile", js_response.text)
 
     def test_messages_endpoint_uses_header_display_name_for_own_gmail_messages(self):
         conn = self._get_connection()

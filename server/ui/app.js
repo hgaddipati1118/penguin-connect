@@ -2814,11 +2814,58 @@ async function copyText(value) {
 }
 
 function addFiles(fileList) {
-  for (const file of Array.from(fileList || [])) {
-    state.attachments.push(file);
+  const files = Array.from(fileList || []).filter(Boolean);
+  for (const file of files) {
+    state.attachments.push(normalizeAttachmentFile(file));
+  }
+  if (files.length) {
+    el.sendState.textContent = `${files.length} attachment${files.length === 1 ? "" : "s"} added`;
   }
   renderAttachments();
   buildCodexPrompt();
+}
+
+function attachmentExtensionForType(type) {
+  const normalized = String(type || "").toLowerCase();
+  if (normalized === "image/png") return ".png";
+  if (normalized === "image/jpeg") return ".jpg";
+  if (normalized === "image/gif") return ".gif";
+  if (normalized === "image/webp") return ".webp";
+  if (normalized === "image/heic") return ".heic";
+  if (normalized === "audio/mp4" || normalized === "audio/aac") return ".m4a";
+  if (normalized === "audio/mpeg") return ".mp3";
+  if (normalized === "audio/wav") return ".wav";
+  return "";
+}
+
+function normalizeAttachmentFile(file) {
+  if (!file || file.name) return file;
+  const suffix = attachmentExtensionForType(file.type);
+  const name = `pasted-attachment-${Date.now()}${suffix}`;
+  try {
+    return new File([file], name, { type: file.type || "application/octet-stream", lastModified: file.lastModified || Date.now() });
+  } catch (_error) {
+    return file;
+  }
+}
+
+function clipboardAttachmentFiles(event) {
+  const clipboard = event.clipboardData;
+  if (!clipboard) return [];
+  const directFiles = Array.from(clipboard.files || []).filter((file) => file && file.size > 0);
+  if (directFiles.length) return directFiles;
+
+  return Array.from(clipboard.items || [])
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter((file) => file && file.size > 0);
+}
+
+function handleAttachmentPaste(event) {
+  const files = clipboardAttachmentFiles(event);
+  if (!files.length) return;
+  event.preventDefault();
+  addFiles(files);
 }
 
 function clearDraftForm() {
@@ -3036,6 +3083,8 @@ el.attachmentDrop.addEventListener("drop", (event) => {
   el.attachmentDrop.classList.remove("dragging");
   addFiles(event.dataTransfer.files);
 });
+el.composer.addEventListener("paste", handleAttachmentPaste);
+el.attachmentDrop.addEventListener("paste", handleAttachmentPaste);
 el.composer.addEventListener("input", () => {
   scheduleDraftSave();
   buildCodexPrompt();

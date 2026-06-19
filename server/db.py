@@ -1368,7 +1368,13 @@ def get_connection() -> sqlite3.Connection:
     ensure_data_dir()
     conn = sqlite3.connect(str(DB_PATH), timeout=30)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError as exc:
+        if "database is locked" not in str(exc).lower():
+            conn.close()
+            raise
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
