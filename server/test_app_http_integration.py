@@ -1848,6 +1848,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("loadThreadContactMatches", js_response.text)
         self.assertIn("source=all", js_response.text)
         self.assertIn("toggleThreadParticipantFavorite", js_response.text)
+        self.assertIn("showThreadParticipantContact", js_response.text)
+        self.assertIn("Contact detail opened", js_response.text)
         self.assertIn("refreshContactPanelAfterExternalManagement", js_response.text)
         self.assertIn("addThreadParticipantsToDraft", js_response.text)
         self.assertIn("saveThreadParticipantsAsRecipientList", js_response.text)

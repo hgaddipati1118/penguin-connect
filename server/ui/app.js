@@ -2581,6 +2581,18 @@ async function quickCreateContact(contact, target = "contact") {
   }
 }
 
+function showThreadParticipantContact(participant, contact) {
+  const managedContact = participantManagedContact(participant, contact);
+  const key = contactDetailKey(managedContact);
+  if (!key) {
+    el.threadPeopleState.textContent = "No contact detail";
+    return;
+  }
+  setActiveContact(managedContact);
+  el.threadPeopleState.textContent = "Contact detail opened";
+  el.contactStatus.textContent = `Inspecting ${contactDisplayName(managedContact)}`;
+}
+
 async function createVisibleUnknownContacts() {
   const contacts = contactBulkCreatableContacts();
   if (!contacts.length) {
@@ -3565,9 +3577,15 @@ function renderThreadPeople() {
     item.querySelector('[data-action="copy"]').addEventListener("click", () => copyParticipantHandle(participant));
     item.querySelector('[data-action="draft"]').addEventListener("click", () => addParticipantToDraft(participant.handle));
     const contactButton = item.querySelector('[data-action="contact"]');
-    contactButton.textContent = savedContact ? "Saved" : "Create";
-    contactButton.disabled = Boolean(savedContact);
-    contactButton.addEventListener("click", () => quickCreateContact(participantManagedContact(participant, contact), "thread"));
+    contactButton.textContent = savedContact ? "Info" : "Create";
+    contactButton.disabled = !savedContact && !contactRecipientHandle(managedContact);
+    contactButton.addEventListener("click", () => {
+      if (savedContact) {
+        showThreadParticipantContact(participant, contact);
+      } else {
+        quickCreateContact(managedContact, "thread");
+      }
+    });
     el.threadPeople.append(item);
   }
 }
