@@ -4158,6 +4158,29 @@ async function copyContactHandle(contact) {
   }
 }
 
+function contactConversationSearchQuery(contact) {
+  return contactRecipientHandle(contact) || contactDisplayName(contact);
+}
+
+function filterConversationsForContact(contact) {
+  const query = contactConversationSearchQuery(contact);
+  if (!query) {
+    el.contactStatus.textContent = "No contact thread search value";
+    return;
+  }
+
+  state.conversationView = "all";
+  state.conversationLabel = "";
+  state.focusMessageId = "";
+  el.conversationSearch.value = query;
+  renderConversations();
+  const count = visibleConversationRows().length;
+  el.contactStatus.textContent = count
+    ? `Showing ${count} thread${count === 1 ? "" : "s"} for ${contactDisplayName(contact)}`
+    : `No matching threads for ${contactDisplayName(contact)}`;
+  el.conversationSearch.focus();
+}
+
 async function copyParticipantHandle(participant) {
   const handle = String(participant?.handle || "").trim();
   if (!handle) {
@@ -4705,6 +4728,7 @@ function renderContactInspector() {
       <button type="button" data-action="add">Add</button>
       <button type="button" data-action="copy">Copy</button>
       <button type="button" data-action="find">Find</button>
+      <button type="button" data-action="threads">Threads</button>
       <button type="button" data-action="recent">Recent</button>
       <button type="button" data-action="messages">Msg</button>
       <button type="button" data-action="favorite"></button>
@@ -4736,6 +4760,9 @@ function renderContactInspector() {
   const findButton = el.contactInspector.querySelector('[data-action="find"]');
   findButton.disabled = !(handle || contactDisplayName(contact));
   findButton.addEventListener("click", () => searchMessagesForContact(contact));
+  const threadsButton = el.contactInspector.querySelector('[data-action="threads"]');
+  threadsButton.disabled = !contactConversationSearchQuery(contact);
+  threadsButton.addEventListener("click", () => filterConversationsForContact(contact));
   const recentButton = el.contactInspector.querySelector('[data-action="recent"]');
   recentButton.disabled = !contactMessageSearchQuery(contact);
   recentButton.addEventListener("click", () => loadContactInspectorMessages(contact));
@@ -5235,6 +5262,7 @@ function renderContacts() {
         <button class="contact-note-button" type="button" title="Private contact note" aria-label="Private contact note">Note</button>
         <button class="contact-copy" type="button" title="Copy contact handle" aria-label="Copy contact handle">Copy</button>
         <button class="contact-search-messages" type="button" title="Search local Messages" aria-label="Search local Messages for contact">Find</button>
+        <button class="contact-thread-filter" type="button" title="Filter conversations" aria-label="Filter conversations for contact">Threads</button>
         <button class="contact-message" type="button" title="Open in Messages" aria-label="Open contact in Messages">Msg</button>
         <button class="contact-details" type="button" title="Show contact detail" aria-label="Show contact detail">Info</button>
         <button class="contact-add" type="button" title="Add to new chat" aria-label="Add contact to new chat">+</button>
@@ -5286,6 +5314,9 @@ function renderContacts() {
     const searchMessagesButton = item.querySelector(".contact-search-messages");
     searchMessagesButton.disabled = !(contactRecipientHandle(contact) || contactDisplayName(contact));
     searchMessagesButton.addEventListener("click", () => searchMessagesForContact(contact));
+    const threadFilterButton = item.querySelector(".contact-thread-filter");
+    threadFilterButton.disabled = !contactConversationSearchQuery(contact);
+    threadFilterButton.addEventListener("click", () => filterConversationsForContact(contact));
     const messageButton = item.querySelector(".contact-message");
     messageButton.disabled = !contactRecipientHandle(contact);
     messageButton.addEventListener("click", () => openContactInMessages(contact));

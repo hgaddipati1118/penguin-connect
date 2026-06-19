@@ -1242,6 +1242,7 @@ input[type="date"]:focus {
 .contact-note-button,
 .contact-copy,
 .contact-search-messages,
+.contact-thread-filter,
 .contact-message,
 .contact-details,
 .contact-create-result {
@@ -1271,6 +1272,10 @@ input[type="date"]:focus {
   font-size: 10px;
 }
 
+.contact-thread-filter {
+  font-size: 10px;
+}
+
 .contact-message {
   font-size: 10px;
 }
@@ -1297,6 +1302,8 @@ input[type="date"]:focus {
 .contact-copy:focus-visible,
 .contact-search-messages:hover,
 .contact-search-messages:focus-visible,
+.contact-thread-filter:hover,
+.contact-thread-filter:focus-visible,
 .contact-message:hover,
 .contact-message:focus-visible,
 .contact-details:hover,
@@ -1327,6 +1334,7 @@ input[type="date"]:focus {
 .contact-note-button:disabled,
 .contact-copy:disabled,
 .contact-search-messages:disabled,
+.contact-thread-filter:disabled,
 .contact-message:disabled,
 .contact-details:disabled,
 .contact-create-result:disabled {
