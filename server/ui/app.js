@@ -4359,7 +4359,8 @@ async function stageDraft() {
         message: el.draftMessage.value,
         attachments,
         copy_to_clipboard: el.draftCopyToggle.checked,
-        open_messages: el.draftOpenToggle.checked,
+        open_messages: false,
+        open_addressed: el.draftOpenToggle.checked,
         open_attachments: el.draftOpenAttachmentsToggle.checked,
       }),
     });
@@ -4367,7 +4368,7 @@ async function stageDraft() {
     state.draftAttachmentPaths = result.attachment_paths || [];
     const actions = [
       result.copied ? "copied" : "",
-      result.opened_messages ? "opened" : "",
+      result.opened_addressed ? "addressed chat opened" : result.opened_messages ? "opened" : "",
       result.opened_attachments ? "files opened" : result.attachment_count ? "files staged" : "",
     ].filter(Boolean).join(" + ");
     renderDraftPreview(result.participants || participants, result.draft || "");
