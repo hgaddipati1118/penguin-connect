@@ -1208,14 +1208,27 @@ input[type="date"]:focus {
 }
 
 .contact-thread-link {
+  display: grid;
+  gap: 3px;
   max-width: 100%;
   overflow: hidden;
-  padding: 0 8px;
+  padding: 5px 8px;
   background: var(--panel);
   color: var(--ink);
   cursor: pointer;
+  text-align: left;
+}
+
+.contact-thread-title,
+.contact-thread-meta {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.contact-thread-meta {
+  color: var(--muted);
+  font-size: 9px;
 }
 
 .contact-thread-link:hover,

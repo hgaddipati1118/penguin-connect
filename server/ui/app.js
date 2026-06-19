@@ -4176,6 +4176,16 @@ async function openContactConversation(contact, conversation) {
   buildCodexPrompt();
 }
 
+function contactRelatedThreadMetaText(conversation) {
+  const unread = Number(conversation.unread_count || 0);
+  return [
+    conversation.chat_type || "chat",
+    conversation.source_service_name || conversation.source_provider || conversation.provider || "",
+    unread > 0 ? `${unread} unread` : "",
+    formatTime(conversation.last_message_ts || conversation.latest_timestamp || conversation.updated_at || ""),
+  ].filter(Boolean).join(" · ");
+}
+
 function renderContactRelatedThreads(container, contact) {
   container.replaceChildren();
   const matches = findConversationsForContact(contact, 4);
@@ -4194,8 +4204,16 @@ function renderContactRelatedThreads(container, contact) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "contact-thread-link";
-    button.textContent = conversationDisplayName(conversation);
-    button.title = `Open ${conversationDisplayName(conversation)}`;
+    const title = document.createElement("span");
+    title.className = "contact-thread-title";
+    title.textContent = conversationDisplayName(conversation);
+    const meta = document.createElement("span");
+    meta.className = "contact-thread-meta";
+    meta.textContent = contactRelatedThreadMetaText(conversation);
+    button.append(title, meta);
+    button.title = meta.textContent
+      ? `Open ${conversationDisplayName(conversation)} · ${meta.textContent}`
+      : `Open ${conversationDisplayName(conversation)}`;
     button.addEventListener("click", (event) => {
       event.stopPropagation();
       openContactConversation(contact, conversation);
