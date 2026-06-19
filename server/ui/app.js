@@ -2291,6 +2291,19 @@ function messageSearchContactHandle(result) {
   return "";
 }
 
+function messageContactHandle(message) {
+  const participants = conversationParticipants().map((participant) => participant.handle);
+  const isMine = isOwnMessage(message);
+  const senderCandidates = isMine ? [] : [message.sender_email, message.sender_name];
+  const threadCandidates = [state.selected?.source_chat_identifier, ...participants];
+  const candidates = isMine ? threadCandidates : [...senderCandidates, ...threadCandidates];
+  for (const candidate of candidates) {
+    const handle = contactHandleCandidate(candidate);
+    if (handle) return handle;
+  }
+  return "";
+}
+
 function fillContactFormFromMessageSearchResult(result) {
   const handle = messageSearchContactHandle(result);
   if (!handle) {
@@ -2299,6 +2312,16 @@ function fillContactFormFromMessageSearchResult(result) {
   }
   fillContactFormFromHandle(handle, "Prefilled from message search");
   el.messageSearchStatus.textContent = "Contact form prefilled";
+}
+
+function fillContactFormFromMessage(message) {
+  const handle = messageContactHandle(message);
+  if (!handle) {
+    el.sendState.textContent = "No contact handle on message";
+    return;
+  }
+  fillContactFormFromHandle(handle, "Prefilled from message");
+  el.sendState.textContent = "Contact form prefilled";
 }
 
 function searchContactHandle(value) {
@@ -3328,6 +3351,7 @@ function renderMessages() {
         <button type="button" data-action="reply">Reply</button>
         <button type="button" data-action="draft">New draft</button>
         <button type="button" data-action="copy">Copy</button>
+        <button type="button" data-action="contact">Contact</button>
       </div>
     `;
     item.querySelector(".message-head span").textContent = messageSender(message);
@@ -3379,6 +3403,9 @@ function renderMessages() {
     noteButton.addEventListener("click", () => editMessageNote(message));
     item.querySelector('[data-action="reply"]').addEventListener("click", () => setReplyContext(message));
     item.querySelector('[data-action="draft"]').addEventListener("click", () => useMessageAsNewChatDraft(message));
+    const contactButton = item.querySelector('[data-action="contact"]');
+    contactButton.disabled = !messageContactHandle(message);
+    contactButton.addEventListener("click", () => fillContactFormFromMessage(message));
     item.querySelector('[data-action="copy"]').addEventListener("click", async () => {
       await copyText(messageCopyText(message));
       el.sendState.textContent = "Message copied";
