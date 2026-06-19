@@ -208,8 +208,6 @@ CREATE INDEX IF NOT EXISTS idx_penguin_connect_message_management_starred
 ON penguin_connect_message_management(conversation_id, is_starred, updated_at);
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_conversation_management_flags
 ON penguin_connect_conversation_management(is_archived, is_pinned, updated_at);
-CREATE INDEX IF NOT EXISTS idx_penguin_connect_conversation_management_muted
-ON penguin_connect_conversation_management(is_muted, is_archived, updated_at);
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_jobs_ready ON penguin_connect_jobs(job_type, status, next_run_at, id);
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_jobs_lease ON penguin_connect_jobs(job_type, status, lease_until);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_penguin_connect_jobs_active_dedupe

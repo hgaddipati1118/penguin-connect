@@ -1524,6 +1524,7 @@ class SyncIntegrationTests(unittest.TestCase):
             .replace("    title TEXT NOT NULL DEFAULT '',\n", "")
             .replace("    labels TEXT NOT NULL DEFAULT '[]',\n", "")
             .replace("    draft_text TEXT NOT NULL DEFAULT '',\n", "")
+            .replace("    is_muted INTEGER NOT NULL DEFAULT 0,\n", "")
         )
 
         raw_conn = sqlite3.connect(str(db.DB_PATH))
@@ -1572,12 +1573,18 @@ class SyncIntegrationTests(unittest.TestCase):
                 ).fetchall()
             }
             row = migrated_conn.execute(
-                """SELECT c.conversation_id, m.is_pinned, m.is_archived, m.title, m.note, m.labels, m.draft_text
+                """SELECT c.conversation_id, m.is_pinned, m.is_archived, m.is_muted, m.title, m.note, m.labels, m.draft_text
                    FROM penguin_connect_conversations c
                    JOIN penguin_connect_conversation_management m
                      ON m.conversation_id = c.conversation_id
                    LIMIT 1""",
             ).fetchone()
+            indexes = {
+                row["name"]
+                for row in migrated_conn.execute(
+                    "PRAGMA index_list(penguin_connect_conversation_management)"
+                ).fetchall()
+            }
         finally:
             migrated_conn.close()
 
@@ -1585,9 +1592,12 @@ class SyncIntegrationTests(unittest.TestCase):
         self.assertIn("note", columns)
         self.assertIn("labels", columns)
         self.assertIn("draft_text", columns)
+        self.assertIn("is_muted", columns)
+        self.assertIn("idx_penguin_connect_conversation_management_muted", indexes)
         self.assertIsNotNone(row)
         self.assertEqual(row["is_pinned"], 1)
         self.assertEqual(row["is_archived"], 0)
+        self.assertEqual(row["is_muted"], 0)
         self.assertEqual(row["title"], "")
         self.assertEqual(row["note"], "")
         self.assertEqual(row["labels"], "[]")
