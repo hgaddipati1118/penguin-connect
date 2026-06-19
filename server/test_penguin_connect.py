@@ -2067,9 +2067,26 @@ class PenguinConnectTests(unittest.TestCase):
                         "name": "+15551234567",
                         "chat_type": "dm",
                         "participants": ["+15551234567"],
+                        "last_message_at": "2026-03-04T09:00:00+00:00",
                     }
                 ],
             },
+        ), mock.patch(
+            "penguin_connect.fetch_imessage_messages",
+            return_value=[
+                {
+                    "native_message_id": "local-preview-1",
+                    "timestamp": "2026-03-04T09:00:00+00:00",
+                    "text": "latest local preview",
+                    "is_from_me": False,
+                    "handle": "+15551234567",
+                    "attachments": [],
+                    "chat_id": "chat-local-1",
+                }
+            ],
+        ), mock.patch(
+            "penguin_connect._get_imessage_unread_count",
+            return_value=0,
         ):
             result = penguin_connect.list_conversations(self.conn)
 
@@ -2077,14 +2094,23 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(result["gmail_email"], "")
         self.assertEqual(len(result["conversations"]), 1)
         conversation = result["conversations"][0]
-        self.assertEqual(conversation["gmail_email"] if "gmail_email" in conversation else "", "")
         self.assertEqual(conversation["source_chat_id"], "chat-local-1")
         self.assertEqual(conversation["source_service_name"], "iMessage")
         self.assertIsNone(conversation["alias_email"])
+        self.assertEqual(conversation["last_message_ts"], "2026-03-04T09:00:00+00:00")
         stored = self.conn.execute("SELECT gmail_email, alias_email FROM penguin_connect_conversations").fetchone()
         self.assertEqual(stored["gmail_email"], penguin_connect.LOCAL_MESSAGES_ACCOUNT_EMAIL)
         self.assertIsNone(stored["alias_email"])
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM penguin_connect_aliases").fetchone()[0], 0)
+        cached = self.conn.execute(
+            """SELECT provider_message_id, direction, body_text
+               FROM penguin_connect_messages
+               WHERE conversation_id = ?""",
+            (conversation["conversation_id"],),
+        ).fetchone()
+        self.assertEqual(cached["provider_message_id"], "imessage:local-preview-1")
+        self.assertEqual(cached["direction"], "imessage_local")
+        self.assertEqual(cached["body_text"], "latest local preview")
 
     def test_list_conversations_discovers_when_cache_empty(self):
         self.conn.execute("DELETE FROM penguin_connect_conversations WHERE gmail_email = ?", ("owner@gmail.com",))

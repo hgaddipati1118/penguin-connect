@@ -3607,6 +3607,11 @@ def ensure_conversations_discovered(
                 1 if excluded else 0,
             ),
         )
+        _record_conversation_activity_hint(
+            conn,
+            conversation_id,
+            active_chat.get("last_message_at"),
+        )
 
         for existing_row in existing_rows:
             if existing_row["conversation_id"] == conversation_id:
@@ -3845,6 +3850,55 @@ def self_heal_conversation_cache(conn: sqlite3.Connection, gmail_email: str) -> 
     return result
 
 
+def _record_conversation_activity_hint(
+    conn: sqlite3.Connection,
+    conversation_id: str,
+    activity_ts: Optional[str],
+) -> None:
+    if not _parse_iso(activity_ts):
+        return
+    conn.execute(
+        """INSERT INTO penguin_connect_sync_state
+           (conversation_id, last_message_ts, updated_at)
+           VALUES (?, ?, datetime('now'))
+           ON CONFLICT(conversation_id) DO UPDATE SET
+             last_message_ts = CASE
+               WHEN penguin_connect_sync_state.last_message_ts IS NULL THEN excluded.last_message_ts
+               WHEN excluded.last_message_ts > penguin_connect_sync_state.last_message_ts THEN excluded.last_message_ts
+               ELSE penguin_connect_sync_state.last_message_ts
+             END,
+             updated_at = datetime('now')""",
+        (conversation_id, activity_ts),
+    )
+
+
+def _local_preview_hydrate_limit() -> int:
+    return _env_int("PENGUIN_CONNECT_LOCAL_PREVIEW_HYDRATE_LIMIT", 25, 0, 100)
+
+
+def _hydrate_local_conversation_previews(conn: sqlite3.Connection, rows: list[sqlite3.Row]) -> int:
+    limit = _local_preview_hydrate_limit()
+    if limit <= 0:
+        return 0
+
+    hydrated = 0
+    for row in rows:
+        if hydrated >= limit:
+            break
+        if (row["gmail_email"] or "").strip().lower() != LOCAL_MESSAGES_ACCOUNT_EMAIL:
+            continue
+
+        try:
+            _cache_local_source_messages_for_view(conn, row, limit=1)
+        except sqlite3.OperationalError as exc:
+            msg = str(exc).lower()
+            if "locked" in msg or "busy" in msg:
+                return hydrated
+            raise
+        hydrated += 1
+    return hydrated
+
+
 def list_conversations(conn: sqlite3.Connection) -> dict[str, Any]:
     account = get_connected_account(conn)
     account_email = account["gmail_email"] if account else ""
@@ -3877,7 +3931,7 @@ def list_conversations(conn: sqlite3.Connection) -> dict[str, Any]:
             if "locked" not in msg and "busy" not in msg:
                 raise
 
-    query = """SELECT c.conversation_id, c.source_provider, c.source_chat_id, c.source_chat_identifier,
+    query = """SELECT c.gmail_email, c.conversation_id, c.source_provider, c.source_chat_id, c.source_chat_identifier,
                       c.source_service_name, c.display_name, c.chat_type, c.exclude_from_sync,
                       c.participants, c.alias_email, c.status, c.gmail_thread_id,
                       c.last_synced_at, c.updated_at,
@@ -3888,8 +3942,9 @@ def list_conversations(conn: sqlite3.Connection) -> dict[str, Any]:
     if account_email:
         query += " WHERE c.gmail_email = ?"
         params = (account_email,)
-    query += " ORDER BY c.updated_at DESC"
+    query += " ORDER BY COALESCE(s.last_message_ts, c.updated_at) DESC, c.updated_at DESC"
     rows = conn.execute(query, params).fetchall()
+    _hydrate_local_conversation_previews(conn, rows)
 
     conversations = []
     for row in rows:

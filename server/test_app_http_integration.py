@@ -290,9 +290,26 @@ class AppHttpIntegrationTests(unittest.TestCase):
                         "name": "+15551234567",
                         "chat_type": "dm",
                         "participants": ["+15551234567"],
+                        "last_message_at": "2026-03-11T12:00:00+00:00",
                     }
                 ],
             },
+        ), mock.patch(
+            "penguin_connect.fetch_imessage_messages",
+            return_value=[
+                {
+                    "native_message_id": "http-preview-1",
+                    "timestamp": "2026-03-11T12:00:00+00:00",
+                    "text": "HTTP local preview",
+                    "is_from_me": False,
+                    "handle": "+15551234567",
+                    "attachments": [],
+                    "chat_id": "chat-local-http",
+                }
+            ],
+        ), mock.patch(
+            "penguin_connect._get_imessage_unread_count",
+            return_value=0,
         ), TestClient(app_module.app) as client:
             response = client.get("/penguin-connect/conversations")
 
@@ -303,6 +320,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(len(body["conversations"]), 1)
         self.assertEqual(body["conversations"][0]["source_chat_id"], "chat-local-http")
         self.assertIsNone(body["conversations"][0]["alias_email"])
+        self.assertEqual(body["conversations"][0]["last_message_preview"], "HTTP local preview")
+        self.assertEqual(body["conversations"][0]["last_message_provider_id"], "imessage:http-preview-1")
+        self.assertEqual(body["conversations"][0]["last_message_ts"], "2026-03-11T12:00:00+00:00")
 
         verify_conn = self._get_connection()
         try:
