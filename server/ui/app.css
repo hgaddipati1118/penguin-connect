@@ -1880,6 +1880,13 @@ input[type="date"]:focus {
   white-space: pre-wrap;
 }
 
+.search-highlight {
+  padding: 0 2px;
+  border: 1px solid rgba(191, 128, 35, 0.28);
+  background: rgba(191, 128, 35, 0.18);
+  color: inherit;
+}
+
 .message-note {
   margin-top: 8px;
   padding: 7px 9px;

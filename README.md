@@ -160,7 +160,7 @@ shortcuts, visible-page auto-refresh with new-activity status for cached convers
 and the selected thread, message-level reply targets and copy actions, thread filtering and sorting,
 needs-reply/unread/drafts/unlabeled/muted/pinned/archived and label-based conversation views, bulk
 mark-read/mark-unread/pin-unpin/mute-unmute/archive-restore/label add-remove/draft cleanup actions, latest-message previews in the conversation rail,
-global synced-message search with recent-message browsing, open/copy/reply actions and filters for current thread, unread, sent,
+global synced-message search with highlighted results, recent-message browsing, open/copy/reply actions and filters for current thread, unread, sent,
 files and audio plus date ranges, loaded-message filters for unread/sent/files/audio,
 starred/noted-message filtering, local message starring and private
 message notes, per-message read/unread toggles, opening synced attachment files, a per-thread media browser for loaded

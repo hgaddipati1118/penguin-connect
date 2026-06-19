@@ -476,6 +476,60 @@ function digitsOnly(value) {
   return String(value || "").replace(/\D+/g, "");
 }
 
+function highlightTerms(value) {
+  const terms = String(value || "")
+    .toLowerCase()
+    .split(/\s+/)
+    .map((item) => item.trim())
+    .filter((item) => item.length >= 2);
+  return [...new Set(terms)].slice(0, 8);
+}
+
+function appendHighlightedText(target, value, terms = []) {
+  const text = String(value || "");
+  target.replaceChildren();
+  if (!text) return;
+  const cleanTerms = terms
+    .map((term) => String(term || "").toLowerCase())
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+  if (!cleanTerms.length) {
+    target.append(document.createTextNode(text));
+    return;
+  }
+
+  const lowerText = text.toLowerCase();
+  let cursor = 0;
+  while (cursor < text.length) {
+    let matchIndex = -1;
+    let matchTerm = "";
+    for (const term of cleanTerms) {
+      const index = lowerText.indexOf(term, cursor);
+      if (index === -1) continue;
+      if (
+        matchIndex === -1
+        || index < matchIndex
+        || (index === matchIndex && term.length > matchTerm.length)
+      ) {
+        matchIndex = index;
+        matchTerm = term;
+      }
+    }
+    if (matchIndex === -1) {
+      target.append(document.createTextNode(text.slice(cursor)));
+      return;
+    }
+    if (matchIndex > cursor) {
+      target.append(document.createTextNode(text.slice(cursor, matchIndex)));
+    }
+    const mark = document.createElement("mark");
+    mark.className = "search-highlight";
+    mark.textContent = text.slice(matchIndex, matchIndex + matchTerm.length);
+    target.append(mark);
+    cursor = matchIndex + matchTerm.length;
+  }
+}
+
 function contactDisplayName(contact) {
   return contact.display_name || [contact.first_name, contact.last_name].filter(Boolean).join(" ") || contact.organization || contact.primary_handle || "Contact";
 }
@@ -5129,6 +5183,7 @@ function renderMessageSearchResults() {
   el.messageSearchResults.replaceChildren();
   renderMessageSearchMoreControls();
   const query = el.globalMessageSearch.value.trim();
+  const terms = highlightTerms(query);
   const hasDateFilter = Boolean(el.messageDateFrom.value.trim() || el.messageDateTo.value.trim());
   if (!query && state.messageSearchView === "all" && !hasDateFilter) {
     el.messageSearchResults.hidden = true;
@@ -5181,12 +5236,12 @@ function renderMessageSearchResults() {
     `;
     const sender = result.sender_name || result.sender_email || result.direction || "unknown";
     const contactHandle = messageSearchContactHandle(result);
-    item.querySelector(".search-result-top").textContent = [
+    appendHighlightedText(item.querySelector(".search-result-top"), [
       searchResultConversationName(result),
       sender,
       formatTime(result.message_timestamp || result.timestamp),
-    ].filter(Boolean).join(" · ");
-    item.querySelector(".search-result-body").textContent = messageSnippet(result);
+    ].filter(Boolean).join(" · "), terms);
+    appendHighlightedText(item.querySelector(".search-result-body"), messageSnippet(result), terms);
     item.querySelector(".search-result-main").addEventListener("click", () => useMessageSearchResult(result));
     const attachmentChips = renderCompactAttachmentChips(result, {
       conversationId: result.conversation_id,
@@ -5504,6 +5559,7 @@ function renderThreadMedia() {
 
 function renderMessages() {
   const query = el.messageFilter.value.trim().toLowerCase();
+  const terms = highlightTerms(query);
   renderMessageViewFilters();
   renderMessageHistoryControls();
   const rows = [...state.messages].reverse().filter((message) => {
@@ -5571,9 +5627,9 @@ function renderMessages() {
         <button type="button" data-action="contact">Contact</button>
       </div>
     `;
-    item.querySelector(".message-head span").textContent = messageSender(message);
+    appendHighlightedText(item.querySelector(".message-head span"), messageSender(message), terms);
     item.querySelector("time").textContent = messageTime(message);
-    item.querySelector(".message-body").textContent = message.body_text || message.text || "";
+    appendHighlightedText(item.querySelector(".message-body"), message.body_text || message.text || "", terms);
     const noteText = messageNoteText(message);
     const editingNote = state.messageNoteEditorId && message.provider_message_id === state.messageNoteEditorId;
     const noteBox = item.querySelector(".message-note");
