@@ -192,6 +192,8 @@ h3 {
 
 .bulk-draft-row {
   display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
   grid-column: 1 / -1;
   justify-content: flex-end;
 }

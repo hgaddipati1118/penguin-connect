@@ -110,6 +110,8 @@ const el = {
   bulkFollowUpAt: document.querySelector("#bulkFollowUpAt"),
   bulkSetFollowUpButton: document.querySelector("#bulkSetFollowUpButton"),
   bulkClearFollowUpButton: document.querySelector("#bulkClearFollowUpButton"),
+  bulkAddPeopleButton: document.querySelector("#bulkAddPeopleButton"),
+  bulkSavePeopleButton: document.querySelector("#bulkSavePeopleButton"),
   bulkClearDraftsButton: document.querySelector("#bulkClearDraftsButton"),
   conversationList: document.querySelector("#conversationList"),
   contactRefreshButton: document.querySelector("#contactRefreshButton"),
@@ -928,6 +930,7 @@ function renderBulkActions(rows) {
   const labelCount = cleanBulkLabels(el.bulkLabelsInput.value).length;
   const bulkFollowUpValue = el.bulkFollowUpAt.value.trim();
   const selectedDraftCount = selectedRows.filter(conversationHasDraft).length;
+  const selectedPeopleCount = selectedConversationParticipantHandles(selectedRows).length;
   const markUnreadIntent = shouldBulkMarkUnread(selectedRows);
   const pinIntent = shouldBulkPin();
   const muteIntent = shouldBulkMute();
@@ -954,6 +957,10 @@ function renderBulkActions(rows) {
   el.bulkRemoveLabelButton.disabled = state.bulkBusy || selectedCount === 0 || labelCount === 0;
   el.bulkSetFollowUpButton.disabled = state.bulkBusy || selectedCount === 0 || !bulkFollowUpValue;
   el.bulkClearFollowUpButton.disabled = state.bulkBusy || selectedCount === 0;
+  el.bulkAddPeopleButton.disabled = state.bulkBusy || selectedPeopleCount === 0;
+  el.bulkAddPeopleButton.textContent = selectedPeopleCount ? `Add ${selectedPeopleCount} people` : "Add people";
+  el.bulkSavePeopleButton.disabled = state.bulkBusy || selectedPeopleCount === 0;
+  el.bulkSavePeopleButton.textContent = selectedPeopleCount ? `Save ${selectedPeopleCount} people` : "Save people";
   el.bulkClearDraftsButton.disabled = state.bulkBusy || selectedDraftCount === 0;
   el.bulkClearDraftsButton.title = selectedDraftCount
     ? `Clear ${selectedDraftCount} selected reply draft${selectedDraftCount === 1 ? "" : "s"}`
@@ -6203,6 +6210,75 @@ function selectedConversationSnapshot() {
   return selectedConversations().map((conversation) => ({ ...conversation }));
 }
 
+function selectedConversationParticipantHandles(targets = selectedConversationSnapshot()) {
+  return uniqueRecipientValues(
+    targets.flatMap((conversation) => conversationParticipants(conversation).map((participant) => participant.handle))
+  );
+}
+
+function selectedConversationPeopleListName(targets = selectedConversationSnapshot()) {
+  if (targets.length === 1) return `${conversationDisplayName(targets[0])} people`;
+  const query = el.conversationSearch.value.trim();
+  if (query) return `Selected people: ${query}`;
+  return `${targets.length} selected conversations people`;
+}
+
+function addSelectedConversationPeopleToDraft() {
+  const targets = selectedConversationSnapshot();
+  const participants = selectedConversationParticipantHandles(targets);
+  if (!participants.length) {
+    state.bulkMessage = targets.length ? "No selected people" : "Select conversations";
+    renderConversations();
+    return;
+  }
+
+  const before = uniqueRecipientValues(draftRecipientValues());
+  const beforeKeys = new Set(before.map(recipientCompareKey));
+  const recipients = setDraftRecipients([...before, ...participants], { focus: true });
+  const addedCount = recipients.filter((recipient) => !beforeKeys.has(recipientCompareKey(recipient))).length;
+  state.bulkMessage = addedCount
+    ? `Added ${addedCount} selected person${addedCount === 1 ? "" : "s"}`
+    : "Selected people already added";
+  el.draftState.textContent = state.bulkMessage;
+  renderConversations();
+}
+
+async function saveSelectedConversationPeopleAsRecipientList() {
+  const targets = selectedConversationSnapshot();
+  const participants = selectedConversationParticipantHandles(targets);
+  if (!participants.length) {
+    state.bulkMessage = targets.length ? "No selected people" : "Select conversations";
+    renderConversations();
+    return;
+  }
+
+  state.bulkBusy = true;
+  state.bulkMessage = "Saving selected people";
+  renderConversations();
+  try {
+    const result = await api("/penguin-connect/recipient-lists", {
+      method: "POST",
+      body: JSON.stringify({
+        name: selectedConversationPeopleListName(targets),
+        participants,
+      }),
+    });
+    const saved = result.recipient_list || {};
+    state.activeRecipientListId = saved.list_id || "";
+    el.recipientListName.value = recipientListLabel(saved);
+    setDraftRecipients(participants, { focus: true });
+    mergeRecipientList(saved);
+    renderRecipientLists();
+    state.bulkMessage = `${recipientListLabel(saved)} saved`;
+    el.draftState.textContent = state.bulkMessage;
+  } catch (error) {
+    state.bulkMessage = error.message;
+  } finally {
+    state.bulkBusy = false;
+    renderConversations();
+  }
+}
+
 async function bulkMarkSelectedRead() {
   const targets = selectedConversationSnapshot();
   if (!targets.length) return;
@@ -7328,6 +7404,8 @@ el.bulkRemoveLabelButton.addEventListener("click", bulkRemoveLabels);
 el.bulkFollowUpAt.addEventListener("input", renderConversations);
 el.bulkSetFollowUpButton.addEventListener("click", bulkSetFollowUp);
 el.bulkClearFollowUpButton.addEventListener("click", bulkClearFollowUps);
+el.bulkAddPeopleButton.addEventListener("click", addSelectedConversationPeopleToDraft);
+el.bulkSavePeopleButton.addEventListener("click", saveSelectedConversationPeopleAsRecipientList);
 el.bulkClearDraftsButton.addEventListener("click", bulkClearDrafts);
 el.bulkMarkReadButton.addEventListener("click", bulkMarkSelectedRead);
 el.bulkPinButton.addEventListener("click", bulkPinSelected);
