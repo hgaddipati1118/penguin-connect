@@ -2240,6 +2240,34 @@ function addContactToDraft(contact) {
   el.contactStatus.textContent = added ? "Added contact to new chat" : "Contact already in new chat";
 }
 
+async function openContactInMessages(contact) {
+  const handle = contactRecipientHandle(contact);
+  if (!handle) {
+    el.contactStatus.textContent = "No phone or email on contact";
+    return;
+  }
+
+  el.contactStatus.textContent = "Opening Messages";
+  try {
+    const result = await api("/penguin-connect/messages/draft", {
+      method: "POST",
+      body: JSON.stringify({
+        participants: [handle],
+        message: "",
+        attachments: [],
+        copy_to_clipboard: false,
+        open_messages: false,
+        open_addressed: true,
+        open_attachments: false,
+      }),
+    });
+    el.contactStatus.textContent = result.opened_addressed ? "Messages opened" : "Address ready";
+    el.draftState.textContent = result.opened_addressed ? "Contact chat opened" : "Contact address ready";
+  } catch (error) {
+    el.contactStatus.textContent = error.message;
+  }
+}
+
 function startContactDraft(contact) {
   const handle = contactRecipientHandle(contact);
   if (!handle) {
@@ -2733,6 +2761,7 @@ function renderContacts() {
         <button class="contact-favorite" type="button" title="Favorite contact" aria-label="Favorite contact">Star</button>
         <button class="contact-note-button" type="button" title="Private contact note" aria-label="Private contact note">Note</button>
         <button class="contact-copy" type="button" title="Copy contact handle" aria-label="Copy contact handle">Copy</button>
+        <button class="contact-message" type="button" title="Open in Messages" aria-label="Open contact in Messages">Msg</button>
         <button class="contact-add" type="button" title="Add to new chat" aria-label="Add contact to new chat">+</button>
         <button class="contact-create-result" type="button" title="Create contact" aria-label="Create contact from search result">Create</button>
       </span>
@@ -2775,6 +2804,9 @@ function renderContacts() {
     const copyButton = item.querySelector(".contact-copy");
     copyButton.disabled = !contactRecipientHandle(contact);
     copyButton.addEventListener("click", () => copyContactHandle(contact));
+    const messageButton = item.querySelector(".contact-message");
+    messageButton.disabled = !contactRecipientHandle(contact);
+    messageButton.addEventListener("click", () => openContactInMessages(contact));
     const createButton = item.querySelector(".contact-create-result");
     createButton.hidden = contact.is_saved !== false;
     createButton.disabled = !contactRecipientHandle(contact);
