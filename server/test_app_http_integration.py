@@ -998,10 +998,19 @@ class AppHttpIntegrationTests(unittest.TestCase):
                 "/penguin-connect/contacts/management",
                 json={"contact_key": "phone:15127436385", "note": "Met at demo day. Ask about pilots."},
             )
+            management_response = client.post(
+                "/penguin-connect/conversations/amc_test/management",
+                json={"title": "Launch Desk", "note": "Green room owners", "labels": ["Sponsor"]},
+            )
             browse_response = client.get("/penguin-connect/contacts", params={"limit": 10})
             response = client.get("/penguin-connect/contacts", params={"search": "taylor", "limit": 10})
             phone_response = client.get("/penguin-connect/contacts", params={"search": "+15127436385", "limit": 10})
             note_search_response = client.get("/penguin-connect/contacts", params={"search": "pilots", "limit": 10})
+            managed_note_response = client.get("/penguin-connect/contacts", params={"search": "green room", "limit": 10})
+            managed_label_response = client.get(
+                "/penguin-connect/contacts",
+                params={"source": "contacts", "search": "sponsor", "limit": 10},
+            )
             noted_response = client.get("/penguin-connect/contacts", params={"source": "noted", "limit": 10})
             noted_search_response = client.get(
                 "/penguin-connect/contacts",
@@ -1009,6 +1018,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
             )
             saved_response = client.get("/penguin-connect/contacts", params={"source": "contacts", "limit": 10})
             favorites_response = client.get("/penguin-connect/contacts", params={"source": "favorites", "limit": 1})
+            favorite_context_response = client.get(
+                "/penguin-connect/contacts",
+                params={"source": "favorites", "search": "launch desk", "limit": 10},
+            )
             unfavorite_response = client.post(
                 "/penguin-connect/contacts/management",
                 json={"contact_key": "phone:15127436385", "favorite": False},
@@ -1020,6 +1033,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(note_response.status_code, 200)
         self.assertTrue(note_response.json()["is_favorite"])
         self.assertTrue(note_response.json()["has_note"])
+        self.assertEqual(management_response.status_code, 200)
         self.assertEqual(browse_response.status_code, 200)
         browse_body = browse_response.json()
         self.assertEqual(browse_body["source"], "all")
@@ -1052,6 +1066,17 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(note_body["contacts"][0]["contact_key"], "phone:15127436385")
         self.assertEqual(note_body["contacts"][0]["contact_note"], "Met at demo day. Ask about pilots.")
 
+        self.assertEqual(managed_note_response.status_code, 200)
+        managed_note_body = managed_note_response.json()
+        self.assertEqual(managed_note_body["count"], 1)
+        self.assertEqual(managed_note_body["contacts"][0]["contact_key"], "phone:15127436385")
+
+        self.assertEqual(managed_label_response.status_code, 200)
+        managed_label_body = managed_label_response.json()
+        self.assertEqual(managed_label_body["source"], "contacts")
+        self.assertEqual(managed_label_body["count"], 1)
+        self.assertEqual(managed_label_body["contacts"][0]["display_name"], "Taylor Example")
+
         self.assertEqual(noted_response.status_code, 200)
         noted_body = noted_response.json()
         self.assertEqual(noted_body["source"], "noted")
@@ -1076,6 +1101,12 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(favorites_body["source"], "favorites")
         self.assertEqual(favorites_body["count"], 1)
         self.assertEqual(favorites_body["contacts"][0]["contact_key"], "phone:15127436385")
+
+        self.assertEqual(favorite_context_response.status_code, 200)
+        favorite_context_body = favorite_context_response.json()
+        self.assertEqual(favorite_context_body["source"], "favorites")
+        self.assertEqual(favorite_context_body["count"], 1)
+        self.assertEqual(favorite_context_body["contacts"][0]["display_name"], "Taylor Example")
 
         self.assertEqual(unfavorite_response.status_code, 200)
         self.assertFalse(unfavorite_response.json()["is_favorite"])
@@ -1162,6 +1193,17 @@ class AppHttpIntegrationTests(unittest.TestCase):
                     "owner+unsaved@gmail.com",
                 ),
             )
+            conn.execute(
+                """INSERT INTO penguin_connect_conversation_management
+                   (conversation_id, title, note, labels)
+                   VALUES (?, ?, ?, ?)""",
+                (
+                    "amc_unsaved",
+                    "Venue Ops",
+                    "Ask about soundcheck",
+                    json.dumps(["Green room"]),
+                ),
+            )
             conn.commit()
         finally:
             conn.close()
@@ -1170,6 +1212,11 @@ class AppHttpIntegrationTests(unittest.TestCase):
             all_browse_response = client.get("/penguin-connect/contacts", params={"limit": 10})
             response = client.get("/penguin-connect/contacts", params={"search": "5550199", "limit": 10})
             thread_name_response = client.get("/penguin-connect/contacts", params={"search": "unsaved thread", "limit": 10})
+            management_note_response = client.get("/penguin-connect/contacts", params={"search": "soundcheck", "limit": 10})
+            management_label_response = client.get(
+                "/penguin-connect/contacts",
+                params={"source": "participants", "search": "green room", "limit": 10},
+            )
             saved_response = client.get("/penguin-connect/contacts", params={"search": "+15127436385", "limit": 10})
             saved_only_response = client.get(
                 "/penguin-connect/contacts",
@@ -1191,9 +1238,17 @@ class AppHttpIntegrationTests(unittest.TestCase):
                 "/penguin-connect/contacts",
                 params={"source": "favorites", "search": "5550199", "limit": 10},
             )
+            favorite_unsaved_context_response = client.get(
+                "/penguin-connect/contacts",
+                params={"source": "favorites", "search": "venue ops", "limit": 10},
+            )
             noted_unsaved_response = client.get(
                 "/penguin-connect/contacts",
                 params={"source": "noted", "search": "venue", "limit": 10},
+            )
+            noted_unsaved_context_response = client.get(
+                "/penguin-connect/contacts",
+                params={"source": "noted", "search": "soundcheck", "limit": 10},
             )
 
         self.assertEqual(all_browse_response.status_code, 200)
@@ -1228,6 +1283,18 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(thread_name_body["contacts"][0]["source"], "conversation")
         self.assertEqual(thread_name_body["contacts"][0]["conversation_name"], "Unsaved Thread")
 
+        self.assertEqual(management_note_response.status_code, 200)
+        management_note_body = management_note_response.json()
+        self.assertEqual(management_note_body["count"], 1)
+        self.assertEqual(management_note_body["participant_count"], 1)
+        self.assertEqual(management_note_body["contacts"][0]["conversation_note"], "Ask about soundcheck")
+
+        self.assertEqual(management_label_response.status_code, 200)
+        management_label_body = management_label_response.json()
+        self.assertEqual(management_label_body["source"], "participants")
+        self.assertEqual(management_label_body["count"], 1)
+        self.assertEqual(management_label_body["contacts"][0]["conversation_labels"], ["Green room"])
+
         self.assertEqual(saved_response.status_code, 200)
         saved_body = saved_response.json()
         self.assertEqual(saved_body["count"], 1)
@@ -1261,6 +1328,13 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(favorite_unsaved_body["contacts"][0]["contact_key"], "phone:14155550199")
         self.assertTrue(favorite_unsaved_body["contacts"][0]["is_favorite"])
 
+        self.assertEqual(favorite_unsaved_context_response.status_code, 200)
+        favorite_unsaved_context_body = favorite_unsaved_context_response.json()
+        self.assertEqual(favorite_unsaved_context_body["source"], "favorites")
+        self.assertEqual(favorite_unsaved_context_body["count"], 1)
+        self.assertEqual(favorite_unsaved_context_body["participant_count"], 1)
+        self.assertEqual(favorite_unsaved_context_body["contacts"][0]["conversation_title"], "Venue Ops")
+
         self.assertEqual(noted_unsaved_response.status_code, 200)
         noted_unsaved_body = noted_unsaved_response.json()
         self.assertEqual(noted_unsaved_body["source"], "noted")
@@ -1269,6 +1343,13 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(noted_unsaved_body["contacts"][0]["source"], "conversation")
         self.assertEqual(noted_unsaved_body["contacts"][0]["contact_key"], "phone:14155550199")
         self.assertEqual(noted_unsaved_body["contacts"][0]["contact_note"], "Ask about venue seating.")
+
+        self.assertEqual(noted_unsaved_context_response.status_code, 200)
+        noted_unsaved_context_body = noted_unsaved_context_response.json()
+        self.assertEqual(noted_unsaved_context_body["source"], "noted")
+        self.assertEqual(noted_unsaved_context_body["count"], 1)
+        self.assertEqual(noted_unsaved_context_body["participant_count"], 1)
+        self.assertEqual(noted_unsaved_context_body["contacts"][0]["conversation_note"], "Ask about soundcheck")
 
     def test_contacts_refresh_endpoint_runs_refresh_once(self):
         with mock.patch(

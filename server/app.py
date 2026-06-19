@@ -926,12 +926,65 @@ def _participant_handle_matches_query(handle: str, query: str) -> bool:
     return len(query_digits) >= 3 and len(handle_digits) >= 7 and query_digits in handle_digits
 
 
-def _participant_matches_query(handle: str, conversation_name: str, query: str) -> bool:
+def _conversation_context_terms(row: sqlite3.Row) -> list[str]:
+    row_keys = set(row.keys())
+    labels = _parse_management_labels(row["management_labels"]) if "management_labels" in row_keys else []
+    values = [
+        row["display_name"] if "display_name" in row_keys else "",
+        row["source_chat_identifier"] if "source_chat_identifier" in row_keys else "",
+        row["management_title"] if "management_title" in row_keys else "",
+        row["management_note"] if "management_note" in row_keys else "",
+        *labels,
+    ]
+    return [str(value or "").strip() for value in values if str(value or "").strip()]
+
+
+def _conversation_context_text(row: sqlite3.Row) -> str:
+    return " ".join(_conversation_context_terms(row))
+
+
+def _conversation_context_matches_query(row: sqlite3.Row, query: str) -> bool:
+    clean_query = str(query or "").strip().lower()
+    if not clean_query:
+        return False
+    return clean_query in _conversation_context_text(row).lower()
+
+
+def _conversation_contact_keys_matching_context(conn: sqlite3.Connection, query: str) -> set[str]:
+    clean_query = str(query or "").strip()
+    if not clean_query:
+        return set()
+    rows = conn.execute(
+        """
+        SELECT c.conversation_id, c.display_name, c.source_chat_identifier, c.participants,
+               COALESCE(m.title, '') AS management_title,
+               COALESCE(m.note, '') AS management_note,
+               COALESCE(m.labels, '[]') AS management_labels
+        FROM penguin_connect_conversations c
+        LEFT JOIN penguin_connect_conversation_management m
+          ON m.conversation_id = c.conversation_id
+        ORDER BY c.updated_at DESC, c.display_name COLLATE NOCASE, c.conversation_id
+        """
+    ).fetchall()
+    keys: set[str] = set()
+    for row in rows:
+        if not _conversation_context_matches_query(row, clean_query):
+            continue
+        keys.update(
+            key
+            for key in (_contact_compare_key(handle) for handle in _conversation_participant_handles(row))
+            if key
+        )
+    return keys
+
+
+def _participant_matches_query(handle: str, conversation_name: str, query: str, context_text: str = "") -> bool:
     if _participant_handle_matches_query(handle, query):
         return True
     clean_query = str(query or "").strip().lower()
     clean_conversation = str(conversation_name or "").strip().lower()
-    return bool(clean_query and clean_query in clean_conversation)
+    clean_context = str(context_text or "").strip().lower()
+    return bool(clean_query and (clean_query in clean_conversation or clean_query in clean_context))
 
 
 def _conversation_participant_contact_results(
@@ -949,22 +1002,29 @@ def _conversation_participant_contact_results(
         return []
     rows = conn.execute(
         """
-        SELECT conversation_id, display_name, source_chat_identifier, participants
-        FROM penguin_connect_conversations
-        ORDER BY updated_at DESC, display_name COLLATE NOCASE, conversation_id
+        SELECT c.conversation_id, c.display_name, c.source_chat_identifier, c.participants,
+               COALESCE(m.title, '') AS management_title,
+               COALESCE(m.note, '') AS management_note,
+               COALESCE(m.labels, '[]') AS management_labels
+        FROM penguin_connect_conversations c
+        LEFT JOIN penguin_connect_conversation_management m
+          ON m.conversation_id = c.conversation_id
+        ORDER BY c.updated_at DESC, c.display_name COLLATE NOCASE, c.conversation_id
         """
     ).fetchall()
     results: list[dict] = []
     seen = set(existing_keys)
     for row in rows:
         conversation_name = (row["display_name"] or row["source_chat_identifier"] or "Conversation").strip()
+        context_text = _conversation_context_text(row)
+        context_labels = _parse_management_labels(row["management_labels"])
         for handle in _conversation_participant_handles(row):
             key = _contact_compare_key(handle)
             if not key or key in seen:
                 continue
             if allowed_keys is not None and key not in allowed_keys:
                 continue
-            if query and not _participant_matches_query(handle, conversation_name, query):
+            if query and not _participant_matches_query(handle, conversation_name, query, context_text):
                 continue
             seen.add(key)
             handle_type = _contact_handle_type(handle)
@@ -987,6 +1047,10 @@ def _conversation_participant_contact_results(
                     "is_saved": False,
                     "conversation_id": row["conversation_id"],
                     "conversation_name": conversation_name,
+                    "conversation_title": row["management_title"] or "",
+                    "conversation_note": row["management_note"] or "",
+                    "conversation_labels": context_labels,
+                    "conversation_context_text": context_text,
                 }
             )
             if len(results) >= limit:
@@ -1055,6 +1119,10 @@ def _contact_matches_query(contact: dict, query: str) -> bool:
             "primary_handle",
             "handle_type",
             "contact_note",
+            "conversation_name",
+            "conversation_title",
+            "conversation_note",
+            "conversation_context_text",
         )
     ).lower()
     if clean_query in text:
@@ -1124,6 +1192,12 @@ def _contact_candidate_keys(contact: dict) -> list[str]:
         seen.add(key)
         keys.append(key)
     return keys
+
+
+def _contact_has_any_key(contact: dict, keys: set[str]) -> bool:
+    if not keys:
+        return False
+    return bool(set(_contact_candidate_keys(contact)) & keys)
 
 
 def _attach_contact_management(conn: sqlite3.Connection, contacts: list[dict]) -> list[dict]:
@@ -1221,6 +1295,7 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
     noted_key_set = set(noted_keys)
     noted_order = {key: index for index, key in enumerate(noted_keys)}
     note_match_keys = _managed_contact_note_keys_matching(conn, query)
+    context_match_keys = _conversation_contact_keys_matching_context(conn, query)
     pattern = f"%{query.lower()}%"
     where = ""
     params: list[object] = []
@@ -1269,8 +1344,10 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
             contact_params,
         ).fetchall()
     contact_items = [_contact_to_dict(row) for row in rows]
-    if query and normalized_source in {"all", "contacts"} and note_match_keys:
-        contact_items.extend(_contact_to_dict(row) for row in _contact_rows_for_keys(conn, note_match_keys))
+    if query and normalized_source in {"all", "contacts"}:
+        extra_contact_keys = note_match_keys | context_match_keys
+        if extra_contact_keys:
+            contact_items.extend(_contact_to_dict(row) for row in _contact_rows_for_keys(conn, extra_contact_keys))
     participant_items: list[dict] = []
     if normalized_source in {"all", "participants", "favorites", "noted"}:
         existing_keys = _all_contact_keys(conn)
@@ -1282,22 +1359,27 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
             include_all=normalized_source in {"participants", "favorites", "noted"} or (normalized_source == "all" and not query),
             allowed_keys=favorite_key_set if normalized_source == "favorites" else (noted_key_set if normalized_source == "noted" else None),
         )
-        if query and normalized_source in {"all", "participants"} and note_match_keys:
-            participant_items.extend(
-                _conversation_participant_contact_results(
-                    conn,
-                    "",
-                    limit=limit_value,
-                    existing_keys=existing_keys,
-                    include_all=True,
-                    allowed_keys=note_match_keys,
+        if query and normalized_source in {"all", "participants"}:
+            extra_participant_keys = note_match_keys | context_match_keys
+            if extra_participant_keys:
+                participant_items.extend(
+                    _conversation_participant_contact_results(
+                        conn,
+                        "",
+                        limit=limit_value,
+                        existing_keys=existing_keys,
+                        include_all=True,
+                        allowed_keys=extra_participant_keys,
+                    )
                 )
-            )
     contacts = _attach_contact_management(conn, _dedupe_contact_items([*contact_items, *participant_items]))
     if normalized_source == "favorites":
         contacts = [contact for contact in contacts if contact.get("is_favorite")]
         if query:
-            contacts = [contact for contact in contacts if _contact_matches_query(contact, query)]
+            contacts = [
+                contact for contact in contacts
+                if _contact_matches_query(contact, query) or _contact_has_any_key(contact, context_match_keys)
+            ]
         contacts.sort(
             key=lambda contact: (
                 favorite_order.get(str(contact.get("favorite_contact_key") or contact.get("contact_key") or ""), len(favorite_order)),
@@ -1309,7 +1391,10 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
     elif normalized_source == "noted":
         contacts = [contact for contact in contacts if str(contact.get("contact_note") or "").strip()]
         if query:
-            contacts = [contact for contact in contacts if _contact_matches_query(contact, query)]
+            contacts = [
+                contact for contact in contacts
+                if _contact_matches_query(contact, query) or _contact_has_any_key(contact, context_match_keys)
+            ]
         contacts.sort(
             key=lambda contact: (
                 noted_order.get(str(contact.get("note_contact_key") or contact.get("contact_key") or ""), len(noted_order)),
