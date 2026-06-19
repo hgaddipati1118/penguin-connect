@@ -4,7 +4,6 @@ const state = {
   messages: [],
   messagesLoading: false,
   replyContext: null,
-  senderEmail: "",
   attachments: [],
   draftAttachments: [],
   draftAttachmentFolder: "",
@@ -3319,7 +3318,6 @@ function updateConversationFields(conversationId, fields) {
 async function loadStatus() {
   try {
     const status = await api("/penguin-connect/health");
-    state.senderEmail = status.gmail?.gmail_email || "";
     el.statusLine.textContent = status.ok
       ? "Messages ready · local send enabled"
       : "Messages warning";
@@ -3333,7 +3331,6 @@ async function loadStatus() {
 async function loadConversations({ autoSelect = true } = {}) {
   try {
     const payload = await api("/penguin-connect/conversations");
-    state.senderEmail = payload.gmail_email || state.senderEmail;
     state.conversations = payload.conversations || [];
     if (state.selected) {
       state.selected = state.conversations.find((conversation) => conversation.conversation_id === state.selected.conversation_id) || state.selected;

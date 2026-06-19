@@ -1439,6 +1439,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn('rel="icon"', html_response.text)
         self.assertIn("Checking Messages", html_response.text)
         self.assertIn("Search people, groups, handles", html_response.text)
+        self.assertIn("Search local Messages", html_response.text)
+        self.assertNotIn("Search all synced messages", html_response.text)
         self.assertIn('id="syncButton" type="button">Refresh</button>', html_response.text)
         self.assertIn("contactSearch", html_response.text)
         self.assertIn("contactSourceFilters", html_response.text)
