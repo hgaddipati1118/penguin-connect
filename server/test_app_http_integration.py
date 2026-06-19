@@ -1853,6 +1853,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn('appendHighlightedText(mainButton.querySelector(".conversation-meta")', js_response.text)
         self.assertIn("appendHighlightedText(contactContext, contactContextText, terms)", js_response.text)
         self.assertIn("appendHighlightedText(preview, previewText, terms)", js_response.text)
+        self.assertIn('appendHighlightedText(noteBox.querySelector("span"), noteText, terms)', js_response.text)
+        self.assertIn("appendHighlightedText(pill, attachmentLabel(attachment), terms)", js_response.text)
         self.assertIn("contactRecentContext", js_response.text)
         self.assertIn("Loaded contact recent messages:", js_response.text)
         self.assertIn("contactContext", js_response.text)

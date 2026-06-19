@@ -5640,7 +5640,7 @@ function renderMessages() {
     const noteBox = item.querySelector(".message-note");
     if (noteText) {
       noteBox.hidden = false;
-      noteBox.querySelector("span").textContent = noteText;
+      appendHighlightedText(noteBox.querySelector("span"), noteText, terms);
     }
     const noteEditor = item.querySelector(".message-note-editor");
     const noteInput = noteEditor.querySelector("textarea");
@@ -5710,7 +5710,7 @@ function renderMessages() {
         pill.rel = "noopener";
         pill.title = "Open attachment";
       }
-      pill.textContent = attachmentLabel(attachment);
+      appendHighlightedText(pill, attachmentLabel(attachment), terms);
       attachmentBox.append(pill);
     }
     if (!attachments.length) attachmentBox.remove();
