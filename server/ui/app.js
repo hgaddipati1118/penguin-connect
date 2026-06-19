@@ -2549,6 +2549,12 @@ function draftCreatedContactFromHandle(handle) {
 function quickCreateStatus(target, message) {
   if (target === "thread") {
     el.threadPeopleState.textContent = message;
+  } else if (target === "message-search") {
+    el.messageSearchStatus.textContent = message;
+    el.contactStatus.textContent = message;
+  } else if (target === "message") {
+    el.sendState.textContent = message;
+    el.contactStatus.textContent = message;
   } else {
     el.contactStatus.textContent = message;
   }
@@ -2576,8 +2582,10 @@ async function quickCreateContact(contact, target = "contact") {
     renderContactInspector();
     renderThreadPeople();
     quickCreateStatus(target, "Contact created");
+    return true;
   } catch (error) {
     quickCreateStatus(target, error.message);
+    return false;
   }
 }
 
@@ -2981,24 +2989,122 @@ function messageContactDisplayName(message) {
   return isOwnMessage(message) ? "" : String(message.sender_name || "").trim();
 }
 
-function fillContactFormFromMessageSearchResult(result) {
+function messageContactFromHandle(handle, displayName = "") {
+  const value = String(handle || "").trim();
+  const type = handleType(value);
+  const contactKey = contactManagementKeyForHandle(value);
+  return {
+    id: `message-contact:${contactKey || recipientCompareKey(value)}`,
+    display_name: String(displayName || "").trim() || value,
+    primary_handle: value,
+    phone: type === "email" ? "" : value,
+    phone_normalized: type === "phone" ? digitsOnly(value) : "",
+    email: type === "email" ? value : "",
+    handle_type: type || "handle",
+    source: "messages",
+    is_saved: false,
+    contact_key: contactKey,
+    contact_keys: contactKey ? [contactKey] : [],
+    favorite_contact_key: "",
+    contact_note: "",
+    note_contact_key: "",
+  };
+}
+
+async function lookupContactForMessageHandle(handle, { useCache = true } = {}) {
+  const cachedContacts = [
+    ...state.contacts,
+    ...Object.values(state.threadContactMatches).filter(Boolean),
+    ...(state.selected?.contact_context || []),
+  ];
+  const cached = useCache ? bestContactForHandle(handle, cachedContacts) : null;
+  if (cached && cached.is_saved !== false) return cached;
+
+  const payload = await api(`/penguin-connect/contacts?search=${encodeURIComponent(handle)}&limit=5&source=all`);
+  return bestContactForHandle(handle, payload.contacts || []) || cached;
+}
+
+function messageContactStatusTarget(target) {
+  if (target === "message-search") return el.messageSearchStatus;
+  if (target === "message") return el.sendState;
+  return el.contactStatus;
+}
+
+async function useMessageContactHandle(handle, displayName = "", { target = "message", fallbackState = "Prefilled from message" } = {}) {
+  const value = String(handle || "").trim();
+  const statusEl = messageContactStatusTarget(target);
+  if (!value) {
+    statusEl.textContent = "No contact handle on message";
+    return;
+  }
+
+  const fallbackContact = messageContactFromHandle(value, displayName);
+  statusEl.textContent = "Checking contact";
+  el.contactStatus.textContent = "Checking contact";
+
+  let contact = null;
+  try {
+    contact = await lookupContactForMessageHandle(value);
+  } catch (error) {
+    fillContactFormFromHandle(value, fallbackState, displayName);
+    statusEl.textContent = `Contact lookup failed; form prefilled · ${error.message}`;
+    el.contactStatus.textContent = "Contact form prefilled";
+    return;
+  }
+
+  if (contact && contact.is_saved !== false) {
+    setActiveContact(contact);
+    statusEl.textContent = "Contact detail opened";
+    el.contactStatus.textContent = "Contact detail opened";
+    await loadContactInspectorMessages(contact);
+    return;
+  }
+
+  const created = await quickCreateContact(contact || fallbackContact, target);
+  if (!created) return;
+
+  let savedContact = null;
+  try {
+    savedContact = await lookupContactForMessageHandle(value, { useCache: false });
+  } catch (_error) {
+    savedContact = null;
+  }
+  const createdFallbackContact = {
+    ...fallbackContact,
+    ...draftCreatedContactFromHandle(value),
+    display_name: fallbackContact.display_name,
+  };
+  const active = savedContact && savedContact.is_saved !== false
+    ? savedContact
+    : createdFallbackContact;
+  setActiveContact(active);
+  statusEl.textContent = "Contact created";
+  el.contactStatus.textContent = "Contact created";
+  await loadContactInspectorMessages(active);
+}
+
+async function useMessageSearchResultContact(result) {
   const handle = messageSearchContactHandle(result);
   if (!handle) {
     el.messageSearchStatus.textContent = "No contact handle on result";
     return;
   }
-  fillContactFormFromHandle(handle, "Prefilled from message search", messageSearchContactDisplayName(result));
-  el.messageSearchStatus.textContent = "Contact form prefilled";
+  await useMessageContactHandle(handle, messageSearchContactDisplayName(result), {
+    target: "message-search",
+    fallbackState: "Prefilled from message search",
+  });
 }
 
-function fillContactFormFromMessage(message) {
+async function useLoadedMessageContact(message) {
   const handle = messageContactHandle(message);
   if (!handle) {
     el.sendState.textContent = "No contact handle on message";
     return;
   }
-  fillContactFormFromHandle(handle, "Prefilled from message", messageContactDisplayName(message));
-  el.sendState.textContent = "Contact form prefilled";
+  await useMessageContactHandle(handle, messageContactDisplayName(message), {
+    target: "message",
+    fallbackState: "Prefilled from message",
+  });
 }
 
 function searchContactHandle(value) {
@@ -4180,7 +4286,7 @@ function renderMessageSearchResults() {
     });
     const contactButton = item.querySelector('[data-action="contact"]');
     contactButton.disabled = !contactHandle;
-    contactButton.addEventListener("click", () => fillContactFormFromMessageSearchResult(result));
+    contactButton.addEventListener("click", () => useMessageSearchResultContact(result));
     item.querySelector('[data-action="open"]').addEventListener("click", () => useMessageSearchResult(result));
     const messagesButton = item.querySelector('[data-action="messages"]');
     messagesButton.disabled = !result.conversation_id;
@@ -4556,7 +4662,7 @@ function renderMessages() {
     item.querySelector('[data-action="draft"]').addEventListener("click", () => useMessageAsNewChatDraft(message));
     const contactButton = item.querySelector('[data-action="contact"]');
     contactButton.disabled = !messageContactHandle(message);
-    contactButton.addEventListener("click", () => fillContactFormFromMessage(message));
+    contactButton.addEventListener("click", () => useLoadedMessageContact(message));
     item.querySelector('[data-action="copy"]').addEventListener("click", async () => {
       await copyText(messageCopyText(message));
       el.sendState.textContent = "Message copied";
