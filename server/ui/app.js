@@ -196,6 +196,7 @@ const el = {
   messageSearchResults: document.querySelector("#messageSearchResults"),
   messageViewFilters: document.querySelector("#messageViewFilters"),
   loadedMessageCount: document.querySelector("#loadedMessageCount"),
+  copyVisibleMessagesButton: document.querySelector("#copyVisibleMessagesButton"),
   starVisibleMessagesButton: document.querySelector("#starVisibleMessagesButton"),
   markVisibleMessagesReadButton: document.querySelector("#markVisibleMessagesReadButton"),
   markVisibleMessagesUnreadButton: document.querySelector("#markVisibleMessagesUnreadButton"),
@@ -1931,6 +1932,22 @@ async function markVisibleLoadedMessagesUnread() {
     empty: "Visible messages already unread",
     complete: (updated) => `Marked ${updated} visible message${updated === 1 ? "" : "s"} unread`,
   });
+}
+
+async function copyVisibleLoadedMessages() {
+  const rows = visibleLoadedMessages();
+  if (!state.selected || !rows.length) {
+    el.sendState.textContent = "No visible messages to copy";
+    renderMessageHistoryControls();
+    return;
+  }
+
+  try {
+    await copyText(rows.map(messageCopyText).filter(Boolean).join("\n\n"));
+    el.sendState.textContent = `Copied ${rows.length} visible message${rows.length === 1 ? "" : "s"}`;
+  } catch (error) {
+    el.sendState.textContent = error.message;
+  }
 }
 
 function editMessageNote(message) {
@@ -5519,6 +5536,10 @@ function renderMessageHistoryControls() {
       ? `Loading up to ${limit} messages`
       : `${filtered ? `${visible.length}/${loaded} visible` : `${loaded} loaded`} · window ${limit}${atMax ? " max" : ""}`)
     : "No thread loaded";
+  el.copyVisibleMessagesButton.disabled = bulkBusy || visible.length === 0;
+  el.copyVisibleMessagesButton.textContent = visible.length
+    ? `Copy ${visible.length}`
+    : "Copy visible";
   el.starVisibleMessagesButton.disabled = bulkBusy || unstarredVisibleCount === 0;
   el.starVisibleMessagesButton.textContent = state.messageBulkBusy
     ? "Updating"
@@ -7904,6 +7925,7 @@ el.contactUnfavoriteSelectedButton.addEventListener("click", () => setBulkContac
 el.contactCreateVisibleButton.addEventListener("click", createVisibleUnknownContacts);
 el.contactClearSelectedButton.addEventListener("click", clearSelectedContacts);
 el.messageFilter.addEventListener("input", renderMessages);
+el.copyVisibleMessagesButton.addEventListener("click", copyVisibleLoadedMessages);
 el.starVisibleMessagesButton.addEventListener("click", starVisibleLoadedMessages);
 el.markVisibleMessagesReadButton.addEventListener("click", markVisibleLoadedMessagesRead);
 el.markVisibleMessagesUnreadButton.addEventListener("click", markVisibleLoadedMessagesUnread);
