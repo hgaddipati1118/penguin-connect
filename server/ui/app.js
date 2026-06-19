@@ -49,6 +49,7 @@ const state = {
   bulkMessage: "",
   localRefreshBusy: false,
   draftSaveTimer: null,
+  replyMediaAttachments: [],
   codexMode: "reply",
   codexBusy: false,
   voiceMemoRecorder: null,
@@ -3242,6 +3243,33 @@ async function copyMediaLink(item) {
   }
 }
 
+function mediaAttachmentPath(item) {
+  return attachmentLocalPath(item?.attachment);
+}
+
+function attachMediaToReply(item) {
+  const path = mediaAttachmentPath(item);
+  if (!path) {
+    el.threadMediaState.textContent = "No local media path";
+    return;
+  }
+  if (state.replyMediaAttachments.some((entry) => entry.path === path)) {
+    el.threadMediaState.textContent = "Media already attached";
+    el.composer.focus();
+    return;
+  }
+  state.replyMediaAttachments.push({
+    path,
+    label: item.label || basename(path) || "media",
+    type: item.type || "file",
+  });
+  renderAttachments();
+  buildCodexPrompt();
+  el.threadMediaState.textContent = "Media attached to reply";
+  el.sendState.textContent = "Media attached to reply";
+  el.composer.focus();
+}
+
 function renderThreadMedia() {
   const items = threadMediaItems();
   renderMediaFilters(items);
@@ -3304,6 +3332,12 @@ function renderThreadMedia() {
       copy.textContent = "Copy";
       copy.addEventListener("click", () => copyMediaLink(item));
       row.querySelector(".media-actions").append(copy);
+      const attach = document.createElement("button");
+      attach.type = "button";
+      attach.dataset.action = "attach-reply";
+      attach.textContent = "Attach";
+      attach.addEventListener("click", () => attachMediaToReply(item));
+      row.querySelector(".media-actions").append(attach);
     }
     el.threadMedia.append(row);
   }
@@ -3485,6 +3519,21 @@ function renderAttachments(target = "reply") {
       }
     });
     list.append(chip);
+  }
+  if (target === "reply") {
+    for (const [index, item] of state.replyMediaAttachments.entries()) {
+      const chip = document.createElement("div");
+      chip.className = "attachment-chip";
+      chip.innerHTML = `<span></span><button class="remove-button" type="button" title="Remove">×</button>`;
+      chip.querySelector("span").textContent = `${item.label} · existing ${item.type || "media"}`;
+      chip.querySelector("button").addEventListener("click", () => {
+        state.replyMediaAttachments.splice(index, 1);
+        renderAttachments();
+        buildCodexPrompt();
+        el.sendState.textContent = "Media attachment removed";
+      });
+      list.append(chip);
+    }
   }
 }
 
@@ -4101,7 +4150,8 @@ async function sendMessage() {
   const conversationId = state.selected.conversation_id;
   const message = el.composer.value;
   const outboundMessage = outgoingReplyText(message);
-  if (!outboundMessage.trim() && !state.attachments.length) {
+  const attachmentPaths = state.replyMediaAttachments.map((item) => item.path).filter(Boolean);
+  if (!outboundMessage.trim() && !state.attachments.length && !attachmentPaths.length) {
     el.sendState.textContent = "Nothing to send";
     return;
   }
@@ -4113,12 +4163,14 @@ async function sendMessage() {
       method: "POST",
       body: JSON.stringify({
         message: outboundMessage,
+        attachment_paths: attachmentPaths,
         attachments,
       }),
     });
     el.composer.value = "";
     clearReplyContext();
     state.attachments = [];
+    state.replyMediaAttachments = [];
     renderAttachments();
     clearTimeout(state.draftSaveTimer);
     await saveLocalDraft(conversationId, "", { silent: true });
@@ -4636,7 +4688,9 @@ function codexReplyTargetText() {
 }
 
 function plannedAttachmentText() {
-  return state.attachments.map((file) => `${file.name} (${file.type || "file"}, ${file.size} bytes)`).join(", ") || "none";
+  const uploads = state.attachments.map((file) => `${file.name} (${file.type || "file"}, ${file.size} bytes)`);
+  const media = state.replyMediaAttachments.map((item) => `${item.label} (${item.type || "media"}, existing local media)`);
+  return [...uploads, ...media].join(", ") || "none";
 }
 
 function messageSearchContext(limit = 8) {
@@ -5128,6 +5182,7 @@ el.clearButton.addEventListener("click", () => {
   el.composer.value = "";
   clearReplyContext();
   state.attachments = [];
+  state.replyMediaAttachments = [];
   renderAttachments();
   scheduleDraftSave();
   buildCodexPrompt();
