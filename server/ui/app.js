@@ -1527,6 +1527,20 @@ function addContactToDraft(contact) {
   el.contactStatus.textContent = added ? "Added contact to new chat" : "Contact already in new chat";
 }
 
+function startContactDraft(contact) {
+  const handle = contactRecipientHandle(contact);
+  if (!handle) {
+    el.contactStatus.textContent = "No phone or email on contact";
+    return;
+  }
+
+  const added = addDraftRecipient(handle);
+  const status = added ? "Started new chat draft" : "Contact already in new chat";
+  el.contactStatus.textContent = status;
+  el.draftState.textContent = status;
+  el.draftMessage.focus();
+}
+
 async function copyContactHandle(contact) {
   const handle = contactRecipientHandle(contact);
   if (!handle) {
@@ -1558,17 +1572,12 @@ async function copyParticipantHandle(participant) {
 }
 
 async function useContact(contact) {
-  const searchValue = contact.primary_handle || contact.phone_normalized || contactDisplayName(contact);
   state.focusMessageId = "";
   const match = findConversationForContact(contact);
   if (match) {
     await openContactConversation(contact, match);
   } else {
-    el.conversationSearch.value = searchValue;
-    state.conversationView = "all";
-    state.conversationLabel = "";
-    renderConversations();
-    el.contactStatus.textContent = "No matching synced conversation";
+    startContactDraft(contact);
   }
 }
 
