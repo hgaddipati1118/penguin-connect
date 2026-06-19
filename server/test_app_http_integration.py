@@ -764,6 +764,15 @@ class AppHttpIntegrationTests(unittest.TestCase):
                 "UPDATE penguin_connect_messages SET is_read = 0 WHERE provider_message_id = ?",
                 ("imsg-latest",),
             )
+            conn.executemany(
+                """INSERT INTO penguin_connect_message_management
+                   (conversation_id, provider_message_id, is_starred, note)
+                   VALUES (?, ?, ?, ?)""",
+                [
+                    ("amc_test", "imsg-file", 1, ""),
+                    ("amc_test", "manual-sent", 0, "Follow up on sent plan"),
+                ],
+            )
             conn.commit()
         finally:
             conn.close()
@@ -774,6 +783,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
             audio_response = client.get("/penguin-connect/messages/search", params={"view": "audio", "limit": 10})
             files_response = client.get("/penguin-connect/messages/search", params={"view": "files", "limit": 10})
             unread_response = client.get("/penguin-connect/messages/search", params={"view": "unread", "limit": 10})
+            starred_response = client.get("/penguin-connect/messages/search", params={"view": "starred", "limit": 10})
+            noted_response = client.get("/penguin-connect/messages/search", params={"view": "noted", "limit": 10})
             mine_response = client.get("/penguin-connect/messages/search", params={"view": "mine", "limit": 10})
             date_response = client.get(
                 "/penguin-connect/messages/search",
@@ -815,6 +826,18 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(unread_response.status_code, 200)
         unread_ids = {message["provider_message_id"] for message in unread_response.json()["messages"]}
         self.assertIn("imsg-latest", unread_ids)
+
+        self.assertEqual(starred_response.status_code, 200)
+        starred_body = starred_response.json()
+        self.assertEqual(starred_body["view"], "starred")
+        self.assertEqual([message["provider_message_id"] for message in starred_body["messages"]], ["imsg-file"])
+        self.assertTrue(starred_body["messages"][0]["is_starred"])
+
+        self.assertEqual(noted_response.status_code, 200)
+        noted_body = noted_response.json()
+        self.assertEqual(noted_body["view"], "noted")
+        self.assertEqual([message["provider_message_id"] for message in noted_body["messages"]], ["manual-sent"])
+        self.assertEqual(noted_body["messages"][0]["message_note"], "Follow up on sent plan")
 
         self.assertEqual(mine_response.status_code, 200)
         self.assertEqual([message["provider_message_id"] for message in mine_response.json()["messages"]], ["manual-sent"])
@@ -1610,6 +1633,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("Type 2+ chars or choose dates", js_response.text)
         self.assertIn("messageSearchViews", js_response.text)
         self.assertIn('{ key: "recent", label: "Recent" }', js_response.text)
+        self.assertIn('{ key: "starred", label: "Starred" }', js_response.text)
+        self.assertIn('{ key: "noted", label: "Noted" }', js_response.text)
         self.assertIn("renderMessageViewFilters", js_response.text)
         self.assertIn("messageMatchesView", js_response.text)
         self.assertIn("messagesLoading", js_response.text)

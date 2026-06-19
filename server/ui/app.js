@@ -209,6 +209,8 @@ const messageSearchViews = [
   { key: "recent", label: "Recent" },
   { key: "current", label: "This thread" },
   { key: "unread", label: "Unread" },
+  { key: "starred", label: "Starred" },
+  { key: "noted", label: "Noted" },
   { key: "files", label: "Files" },
   { key: "audio", label: "Audio" },
   { key: "mine", label: "Mine" },

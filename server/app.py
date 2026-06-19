@@ -1238,7 +1238,7 @@ def _search_messages(
 ) -> dict:
     search = (query or "").strip()
     normalized_view = (view or "all").strip().lower()
-    if normalized_view not in {"all", "recent", "current", "unread", "files", "audio", "mine"}:
+    if normalized_view not in {"all", "recent", "current", "unread", "starred", "noted", "files", "audio", "mine"}:
         normalized_view = "all"
     target_conversation_id = (conversation_id or "").strip()
     start_bound = _message_search_date_bound(date_from, end=False)
@@ -1301,6 +1301,10 @@ def _search_messages(
         params.append(target_conversation_id)
     elif normalized_view == "unread":
         conditions.append("COALESCE(m.is_read, 0) = 0")
+    elif normalized_view == "starred":
+        conditions.append("COALESCE(mm.is_starred, 0) = 1")
+    elif normalized_view == "noted":
+        conditions.append("TRIM(COALESCE(mm.note, '')) <> ''")
     elif normalized_view == "files":
         conditions.append(
             """(
