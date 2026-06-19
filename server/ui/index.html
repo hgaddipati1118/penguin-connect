@@ -126,6 +126,11 @@
           </header>
           <textarea id="draftRecipients" rows="3" placeholder="Phones or emails"></textarea>
           <div class="draft-recipient-chips" id="draftRecipientChips" aria-live="polite"></div>
+          <div class="recipient-list-tools">
+            <input id="recipientListName" type="text" placeholder="List name" autocomplete="off" />
+            <button class="quiet-button" id="saveRecipientListButton" type="button">Save list</button>
+          </div>
+          <div class="recipient-lists" id="recipientLists" aria-live="polite"></div>
           <textarea id="draftMessage" rows="4" placeholder="Draft message"></textarea>
           <div class="toggle-row">
             <label><input id="draftCopyToggle" type="checkbox" checked /> Copy</label>

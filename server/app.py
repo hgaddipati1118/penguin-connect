@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -98,6 +99,12 @@ class PenguinConnectDraftCreateRequest(BaseModel):
     message: str = ""
     copy_to_clipboard: bool = True
     open_messages: bool = True
+
+class PenguinConnectRecipientListRequest(BaseModel):
+    list_id: str = ""
+    name: str = ""
+    participants: list[str] | None = None
+    note: str = ""
 
 class PenguinConnectCodexAskRequest(BaseModel):
     prompt: str = ""
@@ -456,6 +463,107 @@ def _contact_compare_key(value: str) -> str:
     if len(digits) >= 7:
         return f"phone:{digits}"
     return f"handle:{text}"
+
+
+def _clean_recipient_values(values: list[str] | None, *, max_count: int = 50) -> list[str]:
+    recipients: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        recipient = _clean_text(value, max_chars=240)
+        key = _contact_compare_key(recipient)
+        if not recipient or not key or key in seen:
+            continue
+        seen.add(key)
+        recipients.append(recipient)
+        if len(recipients) >= max_count:
+            break
+    return recipients
+
+
+def _recipient_list_id(value: str | None = None) -> str:
+    candidate = re.sub(r"[^A-Za-z0-9_-]+", "", str(value or "").strip())[:80]
+    return candidate or f"rl_{uuid.uuid4().hex[:12]}"
+
+
+def _clean_recipient_list_name(value: str | None, participants: list[str]) -> str:
+    name = _clean_text(value, max_chars=120)
+    if name:
+        return name
+    if participants:
+        return ", ".join(participants[:3])[:120]
+    return "Recipient list"
+
+
+def _recipient_list_to_dict(row: sqlite3.Row) -> dict:
+    try:
+        parsed = json.loads(row["participants"] or "[]")
+    except Exception:
+        parsed = []
+    participants = [str(value or "").strip() for value in parsed if str(value or "").strip()]
+    return {
+        "list_id": row["list_id"],
+        "name": row["name"] or "Recipient list",
+        "participants": participants,
+        "participants_count": len(participants),
+        "note": row["note"] or "",
+        "created_at": row["created_at"] or "",
+        "updated_at": row["updated_at"] or "",
+    }
+
+
+def _list_recipient_lists(conn: sqlite3.Connection) -> dict:
+    rows = conn.execute(
+        """SELECT list_id, name, participants, note, created_at, updated_at
+           FROM penguin_connect_recipient_lists
+           ORDER BY updated_at DESC, name COLLATE NOCASE, list_id"""
+    ).fetchall()
+    lists = [_recipient_list_to_dict(row) for row in rows]
+    return {"count": len(lists), "recipient_lists": lists}
+
+
+def _save_recipient_list(
+    conn: sqlite3.Connection,
+    *,
+    list_id: str = "",
+    name: str = "",
+    participants: list[str] | None = None,
+    note: str = "",
+) -> dict:
+    clean_participants = _clean_recipient_values(participants)
+    if not clean_participants:
+        raise HTTPException(status_code=400, detail="recipient_list_requires_participant")
+    clean_list_id = _recipient_list_id(list_id)
+    clean_name = _clean_recipient_list_name(name, clean_participants)
+    clean_note = _clean_text(note, max_chars=1000)
+    conn.execute(
+        """INSERT INTO penguin_connect_recipient_lists
+           (list_id, name, participants, note, created_at, updated_at)
+           VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+           ON CONFLICT(list_id) DO UPDATE SET
+             name = excluded.name,
+             participants = excluded.participants,
+             note = excluded.note,
+             updated_at = datetime('now')""",
+        (clean_list_id, clean_name, json.dumps(clean_participants), clean_note),
+    )
+    row = conn.execute(
+        """SELECT list_id, name, participants, note, created_at, updated_at
+           FROM penguin_connect_recipient_lists
+           WHERE list_id = ?""",
+        (clean_list_id,),
+    ).fetchone()
+    return {"success": True, "recipient_list": _recipient_list_to_dict(row)}
+
+
+def _delete_recipient_list(conn: sqlite3.Connection, list_id: str) -> dict:
+    clean_list_id = _recipient_list_id(list_id)
+    deleted = conn.execute(
+        "DELETE FROM penguin_connect_recipient_lists WHERE list_id = ?",
+        (clean_list_id,),
+    ).rowcount
+    if not deleted:
+        raise HTTPException(status_code=404, detail="recipient_list_not_found")
+    return {"success": True, "list_id": clean_list_id}
 
 
 def _contact_row_keys(row: sqlite3.Row) -> set[str]:
@@ -1679,10 +1787,55 @@ def search_penguinconnect_messages(
     finally:
         conn.close()
 
+@app.get("/api/penguin-connect/recipient-lists")
+@app.get("/penguin-connect/recipient-lists")
+def list_penguinconnect_recipient_lists():
+    conn = get_connection()
+    try:
+        return _list_recipient_lists(conn)
+    finally:
+        conn.close()
+
+@app.post("/api/penguin-connect/recipient-lists")
+@app.post("/penguin-connect/recipient-lists")
+def save_penguinconnect_recipient_list(req: PenguinConnectRecipientListRequest):
+    conn = get_connection()
+    try:
+        result = _save_recipient_list(
+            conn,
+            list_id=req.list_id,
+            name=req.name,
+            participants=req.participants,
+            note=req.note,
+        )
+        saved = result.get("recipient_list") or {}
+        log_action(
+            "api_save_recipient_list",
+            list_id=saved.get("list_id"),
+            participants_count=int(saved.get("participants_count") or 0),
+            has_note=bool(saved.get("note")),
+        )
+        conn.commit()
+        return result
+    finally:
+        conn.close()
+
+@app.delete("/api/penguin-connect/recipient-lists/{list_id}")
+@app.delete("/penguin-connect/recipient-lists/{list_id}")
+def delete_penguinconnect_recipient_list(list_id: str):
+    conn = get_connection()
+    try:
+        result = _delete_recipient_list(conn, list_id)
+        log_action("api_delete_recipient_list", list_id=result.get("list_id"))
+        conn.commit()
+        return result
+    finally:
+        conn.close()
+
 @app.post("/api/penguin-connect/messages/draft")
 @app.post("/penguin-connect/messages/draft")
 def create_penguinconnect_messages_draft(req: PenguinConnectDraftCreateRequest):
-    participants = _clean_text_values(req.participants, max_count=50, max_chars=240)
+    participants = _clean_recipient_values(req.participants)
     if not participants:
         raise HTTPException(status_code=400, detail="draft_requires_participant")
 

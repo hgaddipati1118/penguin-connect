@@ -816,6 +816,52 @@ class AppHttpIntegrationTests(unittest.TestCase):
         mock_copy.assert_called_once_with(body["draft"])
         mock_open.assert_called_once_with()
 
+    def test_recipient_lists_can_be_saved_updated_listed_and_deleted(self):
+        with TestClient(app_module.app) as client:
+            create_response = client.post(
+                "/penguin-connect/recipient-lists",
+                json={
+                    "name": "Demo crew",
+                    "participants": ["+14155550100", "friend@example.test", "+1 (415) 555-0100"],
+                    "note": "launch thread",
+                },
+            )
+            list_response = client.get("/penguin-connect/recipient-lists")
+            created = create_response.json()["recipient_list"]
+            update_response = client.post(
+                "/penguin-connect/recipient-lists",
+                json={
+                    "list_id": created["list_id"],
+                    "name": "Demo crew updated",
+                    "participants": ["friend@example.test", "+14155550100"],
+                },
+            )
+            delete_response = client.delete(f"/penguin-connect/recipient-lists/{created['list_id']}")
+            empty_response = client.get("/penguin-connect/recipient-lists")
+
+        self.assertEqual(create_response.status_code, 200)
+        self.assertTrue(create_response.json()["success"])
+        self.assertEqual(created["name"], "Demo crew")
+        self.assertEqual(created["participants"], ["+14155550100", "friend@example.test"])
+        self.assertEqual(created["participants_count"], 2)
+        self.assertEqual(created["note"], "launch thread")
+
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(list_response.json()["count"], 1)
+        self.assertEqual(list_response.json()["recipient_lists"][0]["list_id"], created["list_id"])
+
+        self.assertEqual(update_response.status_code, 200)
+        updated = update_response.json()["recipient_list"]
+        self.assertEqual(updated["list_id"], created["list_id"])
+        self.assertEqual(updated["name"], "Demo crew updated")
+        self.assertEqual(updated["participants"], ["friend@example.test", "+14155550100"])
+        self.assertEqual(updated["note"], "")
+
+        self.assertEqual(delete_response.status_code, 200)
+        self.assertEqual(delete_response.json()["list_id"], created["list_id"])
+        self.assertEqual(empty_response.status_code, 200)
+        self.assertEqual(empty_response.json()["count"], 0)
+
     def test_codex_ask_endpoint_runs_local_runner(self):
         with mock.patch(
             "app._run_codex_prompt",
@@ -866,6 +912,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("messageViewFilters", html_response.text)
         self.assertIn("stageDraftButton", html_response.text)
         self.assertIn("draftRecipientChips", html_response.text)
+        self.assertIn("recipientListName", html_response.text)
+        self.assertIn("saveRecipientListButton", html_response.text)
+        self.assertIn("recipientLists", html_response.text)
         self.assertIn("createContactButton", html_response.text)
         self.assertIn("markReadButton", html_response.text)
         self.assertIn("connectionButton", html_response.text)
@@ -907,6 +956,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn(".contact-thread-link", css_response.text)
         self.assertIn(".contact-create-result", css_response.text)
         self.assertIn(".draft-recipient-chip", css_response.text)
+        self.assertIn(".recipient-list-tools", css_response.text)
+        self.assertIn(".recipient-list-item", css_response.text)
         self.assertIn(".search-result", css_response.text)
         self.assertIn(".message-search-filters", css_response.text)
         self.assertIn(".message-view-filters", css_response.text)
@@ -974,6 +1025,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("addContactToDraft", js_response.text)
         self.assertIn("renderDraftRecipientChips", js_response.text)
         self.assertIn("removeDraftRecipient", js_response.text)
+        self.assertIn("loadRecipientLists", js_response.text)
+        self.assertIn("saveRecipientList", js_response.text)
+        self.assertIn("useRecipientList", js_response.text)
         self.assertIn("renderMessageSearchResults", js_response.text)
         self.assertIn("renderMessageSearchFilters", js_response.text)
         self.assertIn("messageSearchViews", js_response.text)

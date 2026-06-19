@@ -50,6 +50,18 @@ CREATE TABLE IF NOT EXISTS penguin_connect_contact_management (
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_contact_management_favorite
 ON penguin_connect_contact_management(is_favorite, updated_at);
 
+CREATE TABLE IF NOT EXISTS penguin_connect_recipient_lists (
+    list_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    participants TEXT NOT NULL DEFAULT '[]',
+    note TEXT NOT NULL DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_penguin_connect_recipient_lists_updated
+ON penguin_connect_recipient_lists(updated_at);
+
 CREATE TABLE IF NOT EXISTS penguin_connect_accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     gmail_email TEXT NOT NULL UNIQUE,

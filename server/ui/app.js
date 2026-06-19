@@ -10,6 +10,8 @@ const state = {
   contactSource: "all",
   contactSearchTimer: null,
   contactNoteEditorKey: "",
+  recipientLists: [],
+  activeRecipientListId: "",
   threadContactMatches: {},
   threadContactToken: 0,
   messageSearchResults: [],
@@ -92,6 +94,9 @@ const el = {
   draftState: document.querySelector("#draftState"),
   draftRecipients: document.querySelector("#draftRecipients"),
   draftRecipientChips: document.querySelector("#draftRecipientChips"),
+  recipientListName: document.querySelector("#recipientListName"),
+  saveRecipientListButton: document.querySelector("#saveRecipientListButton"),
+  recipientLists: document.querySelector("#recipientLists"),
   draftMessage: document.querySelector("#draftMessage"),
   draftCopyToggle: document.querySelector("#draftCopyToggle"),
   draftOpenToggle: document.querySelector("#draftOpenToggle"),
@@ -1080,6 +1085,124 @@ function addDraftRecipient(value) {
   setDraftRecipients([...recipients, recipient], { focus: true });
   el.draftState.textContent = "Recipient added";
   return true;
+}
+
+function recipientListLabel(list) {
+  return String(list.name || "").trim() || "Recipient list";
+}
+
+function renderRecipientLists() {
+  el.recipientLists.replaceChildren();
+  if (!state.recipientLists.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state compact-state";
+    empty.textContent = "No saved lists";
+    el.recipientLists.append(empty);
+    return;
+  }
+
+  for (const list of state.recipientLists) {
+    const participants = Array.isArray(list.participants) ? list.participants : [];
+    const item = document.createElement("div");
+    item.className = `recipient-list-item ${state.activeRecipientListId === list.list_id ? "active" : ""}`;
+    item.innerHTML = `
+      <button class="recipient-list-main" type="button">
+        <span class="recipient-list-name"></span>
+        <span class="recipient-list-meta"></span>
+      </button>
+      <span class="recipient-list-actions">
+        <button type="button" data-action="use-list">Use</button>
+        <button type="button" data-action="delete-list">Delete</button>
+      </span>
+    `;
+    item.querySelector(".recipient-list-name").textContent = recipientListLabel(list);
+    item.querySelector(".recipient-list-meta").textContent = [
+      `${participants.length} recipient${participants.length === 1 ? "" : "s"}`,
+      participants.slice(0, 3).join(", "),
+    ].filter(Boolean).join(" · ");
+    item.querySelector(".recipient-list-main").addEventListener("click", () => useRecipientList(list));
+    item.querySelector('[data-action="use-list"]').addEventListener("click", () => useRecipientList(list));
+    item.querySelector('[data-action="delete-list"]').addEventListener("click", () => deleteRecipientList(list));
+    el.recipientLists.append(item);
+  }
+}
+
+function mergeRecipientList(savedList) {
+  if (!savedList?.list_id) return;
+  state.recipientLists = [
+    savedList,
+    ...state.recipientLists.filter((list) => list.list_id !== savedList.list_id),
+  ];
+}
+
+function useRecipientList(list) {
+  const participants = Array.isArray(list.participants) ? list.participants : [];
+  state.activeRecipientListId = list.list_id || "";
+  el.recipientListName.value = recipientListLabel(list);
+  setDraftRecipients(participants, { focus: true });
+  el.draftState.textContent = `${recipientListLabel(list)} loaded`;
+  renderRecipientLists();
+}
+
+async function loadRecipientLists() {
+  try {
+    const payload = await api("/penguin-connect/recipient-lists");
+    state.recipientLists = payload.recipient_lists || [];
+  } catch (error) {
+    state.recipientLists = [];
+    el.draftState.textContent = error.message;
+  }
+  renderRecipientLists();
+}
+
+async function saveRecipientList() {
+  const participants = setDraftRecipients(draftRecipientValues());
+  if (!participants.length) {
+    el.draftState.textContent = "Add recipient";
+    el.draftRecipients.focus();
+    return;
+  }
+
+  el.saveRecipientListButton.disabled = true;
+  el.draftState.textContent = "Saving list";
+  try {
+    const result = await api("/penguin-connect/recipient-lists", {
+      method: "POST",
+      body: JSON.stringify({
+        list_id: state.activeRecipientListId,
+        name: el.recipientListName.value,
+        participants,
+      }),
+    });
+    const saved = result.recipient_list || {};
+    state.activeRecipientListId = saved.list_id || "";
+    el.recipientListName.value = recipientListLabel(saved);
+    mergeRecipientList(saved);
+    renderRecipientLists();
+    el.draftState.textContent = "List saved";
+  } catch (error) {
+    el.draftState.textContent = error.message;
+  } finally {
+    el.saveRecipientListButton.disabled = false;
+  }
+}
+
+async function deleteRecipientList(list) {
+  if (!list?.list_id) return;
+  try {
+    await api(`/penguin-connect/recipient-lists/${encodeURIComponent(list.list_id)}`, {
+      method: "DELETE",
+    });
+    state.recipientLists = state.recipientLists.filter((item) => item.list_id !== list.list_id);
+    if (state.activeRecipientListId === list.list_id) {
+      state.activeRecipientListId = "";
+      el.recipientListName.value = "";
+    }
+    renderRecipientLists();
+    el.draftState.textContent = "List deleted";
+  } catch (error) {
+    el.draftState.textContent = error.message;
+  }
 }
 
 function fillContactFormFromHandle(value, stateText = "Prefilled from thread") {
@@ -2551,9 +2674,12 @@ function addFiles(fileList) {
 
 function clearDraftForm() {
   el.draftRecipients.value = "";
+  el.recipientListName.value = "";
   el.draftMessage.value = "";
   el.draftState.textContent = "Idle";
+  state.activeRecipientListId = "";
   renderDraftRecipientChips();
+  renderRecipientLists();
 }
 
 async function stageDraft() {
@@ -2745,6 +2871,7 @@ el.copyThreadButton.addEventListener("click", async () => {
 });
 el.fileInput.addEventListener("change", (event) => addFiles(event.target.files));
 el.stageDraftButton.addEventListener("click", stageDraft);
+el.saveRecipientListButton.addEventListener("click", saveRecipientList);
 el.clearDraftButton.addEventListener("click", clearDraftForm);
 el.createContactButton.addEventListener("click", createContact);
 el.clearContactButton.addEventListener("click", clearContactForm);
@@ -2816,6 +2943,7 @@ renderMessages();
 renderContacts();
 renderContactSourceFilters();
 renderDraftRecipientChips();
+renderRecipientLists();
 renderMessageSearchFilters();
 renderMessageSearchResults();
 renderThreadControls();
@@ -2825,3 +2953,4 @@ renderCodexModes();
 renderCodexAnswerControls();
 loadStatus();
 loadConversations();
+loadRecipientLists();

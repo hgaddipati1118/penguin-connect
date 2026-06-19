@@ -166,7 +166,7 @@ for local audio attachments, cached Contacts search/refresh with saved/unsaved
 source filters, favorite-contact filtering, conversation-participant fallback and related-thread shortcuts,
 private contact notes with note-aware search, contact creation, contact-to-thread matching, saved-contact resolution for
 selected-thread participants, contact-to-new-chat recipient picking with
-removable recipient chips, selected-thread participant actions for contact
+removable recipient chips, reusable saved recipient lists, selected-thread participant actions for contact
 search/new-chat/contact creation, local thread titles, notes and tags,
 follow-up scheduling and filtering, read/unread management, bridge
 disconnect/reconnect controls, persistent per-thread reply drafts, new chat
