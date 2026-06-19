@@ -1790,6 +1790,69 @@ textarea:focus,
   color: var(--accent);
 }
 
+.draft-recipient-suggestions {
+  display: grid;
+  gap: 4px;
+  max-height: 188px;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--line);
+  background: var(--panel-alt);
+}
+
+.draft-recipient-suggestions[hidden] {
+  display: none;
+}
+
+.draft-recipient-suggestion {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 42px;
+  gap: 8px;
+  padding: 6px 7px;
+  border: 1px solid transparent;
+  background: var(--panel);
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.draft-recipient-suggestion:not(.empty-state):hover,
+.draft-recipient-suggestion:not(.empty-state):focus-visible {
+  border-color: var(--accent);
+}
+
+.draft-recipient-suggestion:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
+}
+
+.draft-recipient-suggestion-main {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.draft-recipient-suggestion-name,
+.draft-recipient-suggestion-handle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.draft-recipient-suggestion-name {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.draft-recipient-suggestion-handle,
+.draft-recipient-suggestion-source {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
 .draft-preview {
   display: grid;
   gap: 6px;

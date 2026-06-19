@@ -24,6 +24,11 @@ const state = {
   contactsLoading: false,
   contactLoadToken: 0,
   contactSearchTimer: null,
+  draftRecipientSuggestTimer: null,
+  draftRecipientSuggestToken: 0,
+  draftRecipientSuggestionQuery: "",
+  draftRecipientSuggestions: [],
+  draftRecipientContactCache: [],
   contactNoteEditorKey: "",
   selectedContactKeys: new Set(),
   recipientLists: [],
@@ -162,6 +167,7 @@ const el = {
   sendState: document.querySelector("#sendState"),
   draftState: document.querySelector("#draftState"),
   draftRecipients: document.querySelector("#draftRecipients"),
+  draftRecipientSuggestions: document.querySelector("#draftRecipientSuggestions"),
   draftRecipientChips: document.querySelector("#draftRecipientChips"),
   recipientListName: document.querySelector("#recipientListName"),
   saveRecipientListButton: document.querySelector("#saveRecipientListButton"),
@@ -1573,11 +1579,111 @@ function uniqueRecipientValues(values) {
 
 function draftRecipientContactCandidates() {
   return [
+    ...state.draftRecipientContactCache,
+    ...state.draftRecipientSuggestions,
     ...state.contacts,
     ...Object.values(state.threadContactMatches || {}),
     ...(state.selected?.contact_context || []),
     ...state.conversations.flatMap((conversation) => conversationContactContextItems(conversation)),
   ].filter((contact) => contact && typeof contact === "object");
+}
+
+function draftRecipientSearchText() {
+  const parts = String(el.draftRecipients.value || "").split(/[\n,;]+/);
+  return String(parts[parts.length - 1] || "").trim();
+}
+
+function clearDraftRecipientSuggestions() {
+  clearTimeout(state.draftRecipientSuggestTimer);
+  state.draftRecipientSuggestTimer = null;
+  state.draftRecipientSuggestToken += 1;
+  state.draftRecipientSuggestionQuery = "";
+  state.draftRecipientSuggestions = [];
+  renderDraftRecipientSuggestions();
+}
+
+function cacheDraftRecipientContact(contact) {
+  const handle = contactRecipientHandle(contact);
+  const key = recipientCompareKey(handle || contactDisplayName(contact));
+  if (!key) return;
+  state.draftRecipientContactCache = [
+    contact,
+    ...state.draftRecipientContactCache.filter((item) => (
+      recipientCompareKey(contactRecipientHandle(item) || contactDisplayName(item)) !== key
+    )),
+  ].slice(0, 20);
+}
+
+function renderDraftRecipientSuggestions() {
+  el.draftRecipientSuggestions.replaceChildren();
+  const query = state.draftRecipientSuggestionQuery;
+  const suggestions = state.draftRecipientSuggestions;
+  el.draftRecipientSuggestions.hidden = !query || query.length < 2;
+  if (el.draftRecipientSuggestions.hidden) return;
+
+  if (!suggestions.length) {
+    const empty = document.createElement("div");
+    empty.className = "draft-recipient-suggestion empty-state compact-state";
+    empty.textContent = "No contact matches";
+    el.draftRecipientSuggestions.append(empty);
+    return;
+  }
+
+  const existingKeys = new Set(uniqueRecipientValues(draftRecipientValues()).map(recipientCompareKey));
+  for (const contact of suggestions) {
+    const handle = contactRecipientHandle(contact);
+    const key = recipientCompareKey(handle);
+    const button = document.createElement("button");
+    button.className = "draft-recipient-suggestion";
+    button.type = "button";
+    button.disabled = !handle || existingKeys.has(key);
+    button.innerHTML = `
+      <span class="draft-recipient-suggestion-main">
+        <span class="draft-recipient-suggestion-name"></span>
+        <span class="draft-recipient-suggestion-handle"></span>
+      </span>
+      <span class="draft-recipient-suggestion-source"></span>
+    `;
+    button.querySelector(".draft-recipient-suggestion-name").textContent = contactDisplayName(contact);
+    button.querySelector(".draft-recipient-suggestion-handle").textContent = handle || contactHandleText(contact);
+    button.querySelector(".draft-recipient-suggestion-source").textContent = contact.is_saved === false ? "unsaved" : "contact";
+    button.addEventListener("click", () => addDraftRecipientFromSuggestion(contact));
+    el.draftRecipientSuggestions.append(button);
+  }
+}
+
+async function loadDraftRecipientSuggestions(query) {
+  const token = state.draftRecipientSuggestToken + 1;
+  state.draftRecipientSuggestToken = token;
+  state.draftRecipientSuggestionQuery = query;
+  if (query.length < 2) {
+    state.draftRecipientSuggestions = [];
+    renderDraftRecipientSuggestions();
+    return;
+  }
+
+  try {
+    const params = new URLSearchParams({
+      search: query,
+      limit: "6",
+      source: "all",
+    });
+    const payload = await api(`/penguin-connect/contacts?${params.toString()}`);
+    if (token !== state.draftRecipientSuggestToken) return;
+    state.draftRecipientSuggestions = (payload.contacts || []).filter(contactRecipientHandle).slice(0, 6);
+    renderDraftRecipientSuggestions();
+    refreshDraftRecipientChips();
+  } catch (_error) {
+    if (token !== state.draftRecipientSuggestToken) return;
+    state.draftRecipientSuggestions = [];
+    renderDraftRecipientSuggestions();
+  }
+}
+
+function scheduleDraftRecipientSuggestions() {
+  const query = draftRecipientSearchText();
+  clearTimeout(state.draftRecipientSuggestTimer);
+  state.draftRecipientSuggestTimer = setTimeout(() => loadDraftRecipientSuggestions(query), 180);
 }
 
 function draftRecipientContact(recipient) {
@@ -1823,6 +1929,23 @@ function addDraftRecipient(value) {
   setDraftRecipients([...recipients, recipient], { focus: true });
   el.draftState.textContent = "Recipient added";
   return true;
+}
+
+function addDraftRecipientFromSuggestion(contact) {
+  const handle = contactRecipientHandle(contact);
+  if (!handle) {
+    el.draftState.textContent = "No phone or email on contact";
+    return;
+  }
+  cacheDraftRecipientContact(contact);
+  const parts = String(el.draftRecipients.value || "").split(/[\n,;]+/);
+  const existing = uniqueRecipientValues(parts.slice(0, -1));
+  const existingKeys = new Set(existing.map(recipientCompareKey));
+  const alreadyAdded = existingKeys.has(recipientCompareKey(handle));
+  const recipients = alreadyAdded ? existing : uniqueRecipientValues([...existing, handle]);
+  setDraftRecipients(recipients, { focus: true });
+  clearDraftRecipientSuggestions();
+  el.draftState.textContent = alreadyAdded ? "Recipient already added" : `${contactDisplayName(contact)} added`;
 }
 
 function visibleContactRecipientHandles() {
@@ -5151,6 +5274,7 @@ function clearDraftForm() {
   renderAttachments("draft");
   renderDraftPreview([]);
   renderRecipientLists();
+  clearDraftRecipientSuggestions();
   clearSavedNewChatDraft();
 }
 
@@ -5397,11 +5521,21 @@ el.draftRecipients.addEventListener("input", () => {
   const recipients = uniqueRecipientValues(draftRecipientValues());
   renderDraftRecipientChips(recipients);
   renderDraftPreview(recipients);
+  scheduleDraftRecipientSuggestions();
   saveNewChatDraft();
 });
+el.draftRecipientSuggestions.addEventListener("mousedown", (event) => {
+  if (event.target.closest(".draft-recipient-suggestion")) {
+    event.preventDefault();
+  }
+});
 el.draftRecipients.addEventListener("blur", (event) => {
-  if (event.relatedTarget && el.draftRecipientChips.contains(event.relatedTarget)) return;
+  if (event.relatedTarget && (
+    el.draftRecipientChips.contains(event.relatedTarget)
+    || el.draftRecipientSuggestions.contains(event.relatedTarget)
+  )) return;
   setDraftRecipients(draftRecipientValues());
+  clearDraftRecipientSuggestions();
 });
 el.recipientListName.addEventListener("input", saveNewChatDraft);
 el.draftMessage.addEventListener("input", () => {
