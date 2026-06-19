@@ -139,6 +139,8 @@ const el = {
   contactAddVisibleButton: document.querySelector("#contactAddVisibleButton"),
   contactCopyVisibleButton: document.querySelector("#contactCopyVisibleButton"),
   contactSaveVisibleButton: document.querySelector("#contactSaveVisibleButton"),
+  contactFavoriteSelectedButton: document.querySelector("#contactFavoriteSelectedButton"),
+  contactUnfavoriteSelectedButton: document.querySelector("#contactUnfavoriteSelectedButton"),
   contactCreateVisibleButton: document.querySelector("#contactCreateVisibleButton"),
   contactClearSelectedButton: document.querySelector("#contactClearSelectedButton"),
   contactStatus: document.querySelector("#contactStatus"),
@@ -2933,6 +2935,20 @@ function contactBulkCreatableContacts() {
   return contacts.filter((contact) => contact.is_saved === false && contactRecipientHandle(contact));
 }
 
+function contactBulkManageableContacts() {
+  const selected = selectedContacts();
+  const contacts = selected.length ? selected : visibleContacts();
+  const seen = new Set();
+  const manageable = [];
+  for (const contact of contacts) {
+    const contactKey = contactFavoriteManagementKey(contact);
+    if (!contactKey || seen.has(contactKey)) continue;
+    seen.add(contactKey);
+    manageable.push(contact);
+  }
+  return manageable;
+}
+
 function pruneSelectedContacts() {
   const visibleKeys = visibleContactSelectionKeys();
   state.selectedContactKeys = new Set(
@@ -2953,15 +2969,22 @@ function renderContactBulkActions() {
   const visibleCount = visibleContactRecipientHandles().length;
   const hasRecipients = selectedCount ? selectedCount > 0 : visibleCount > 0;
   const creatableCount = contactBulkCreatableContacts().length;
+  const manageableContacts = contactBulkManageableContacts();
+  const favoriteCount = manageableContacts.filter(isFavoriteContact).length;
+  const unfavoriteCount = manageableContacts.length - favoriteCount;
   el.contactSelectVisibleButton.disabled = visibleCount === 0;
   el.contactAddVisibleButton.disabled = !hasRecipients;
   el.contactCopyVisibleButton.disabled = !hasRecipients;
   el.contactSaveVisibleButton.disabled = !hasRecipients;
+  el.contactFavoriteSelectedButton.disabled = unfavoriteCount === 0;
+  el.contactUnfavoriteSelectedButton.disabled = favoriteCount === 0;
   el.contactCreateVisibleButton.disabled = !creatableCount;
   el.contactClearSelectedButton.disabled = selectedCount === 0;
   el.contactAddVisibleButton.textContent = selectedCount ? "Add selected" : "Add visible";
   el.contactCopyVisibleButton.textContent = selectedCount ? "Copy selected" : "Copy visible";
   el.contactSaveVisibleButton.textContent = selectedCount ? "Save selected" : "Save visible";
+  el.contactFavoriteSelectedButton.textContent = unfavoriteCount ? `Star ${unfavoriteCount}` : "All starred";
+  el.contactUnfavoriteSelectedButton.textContent = favoriteCount ? `Unstar ${favoriteCount}` : "None starred";
   el.contactCreateVisibleButton.textContent = selectedCount
     ? `Create ${creatableCount || "unknown"}`
     : "Create unknown";
@@ -4920,6 +4943,51 @@ async function toggleContactFavorite(contact) {
   } catch (error) {
     el.contactStatus.textContent = error.message;
   }
+}
+
+async function setBulkContactFavorites(favorite) {
+  const targets = contactBulkManageableContacts().filter((contact) => isFavoriteContact(contact) !== favorite);
+  if (!targets.length) {
+    el.contactStatus.textContent = favorite ? "Selected contacts already starred" : "Selected contacts already unstarred";
+    renderContactBulkActions();
+    return;
+  }
+
+  el.contactFavoriteSelectedButton.disabled = true;
+  el.contactUnfavoriteSelectedButton.disabled = true;
+  el.contactStatus.textContent = favorite
+    ? `Starring ${targets.length} contact${targets.length === 1 ? "" : "s"}`
+    : `Unstarring ${targets.length} contact${targets.length === 1 ? "" : "s"}`;
+  let updated = 0;
+  const failures = [];
+  for (const contact of targets) {
+    const contactKey = contactFavoriteManagementKey(contact);
+    if (!contactKey) continue;
+    try {
+      const result = await api("/penguin-connect/contacts/management", {
+        method: "POST",
+        body: JSON.stringify({
+          contact_key: contactKey,
+          favorite,
+        }),
+      });
+      mergeContactManagement(result, { updatedNote: false });
+      updated += 1;
+      el.contactStatus.textContent = `Updated ${updated}/${targets.length}`;
+    } catch (error) {
+      failures.push(error.message);
+    }
+  }
+
+  el.contactStatus.textContent = failures.length
+    ? `Updated ${updated}; ${failures.length} failed`
+    : (favorite
+      ? `Starred ${updated} contact${updated === 1 ? "" : "s"}`
+      : `Unstarred ${updated} contact${updated === 1 ? "" : "s"}`);
+  renderContactInspector();
+  renderContacts();
+  renderThreadPeople();
+  buildCodexPrompt();
 }
 
 function participantManagedContact(participant, contact) {
@@ -7831,6 +7899,8 @@ el.contactSelectVisibleButton.addEventListener("click", selectVisibleContacts);
 el.contactAddVisibleButton.addEventListener("click", addVisibleContactsToDraft);
 el.contactCopyVisibleButton.addEventListener("click", copyVisibleContacts);
 el.contactSaveVisibleButton.addEventListener("click", saveVisibleContactsAsRecipientList);
+el.contactFavoriteSelectedButton.addEventListener("click", () => setBulkContactFavorites(true));
+el.contactUnfavoriteSelectedButton.addEventListener("click", () => setBulkContactFavorites(false));
 el.contactCreateVisibleButton.addEventListener("click", createVisibleUnknownContacts);
 el.contactClearSelectedButton.addEventListener("click", clearSelectedContacts);
 el.messageFilter.addEventListener("input", renderMessages);
