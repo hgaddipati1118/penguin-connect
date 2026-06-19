@@ -2364,6 +2364,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("stopVoiceMemoRecording", js_response.text)
         self.assertIn("Voice memo attached", js_response.text)
         self.assertIn("Stop voice memo before sending", js_response.text)
+        self.assertIn('button.setAttribute("aria-label", `Insert emoji ${emoji}`)', js_response.text)
+        self.assertIn('textarea.dispatchEvent(new Event("input", { bubbles: true }))', js_response.text)
         self.assertIn(".attachment-chip.with-preview", css_response.text)
         self.assertIn(".attachment-chip audio", css_response.text)
         self.assertIn(".attachment-chip img", css_response.text)

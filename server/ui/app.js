@@ -2039,6 +2039,7 @@ function renderEmojiButtons(target = "reply") {
     button.className = "emoji-button";
     button.textContent = emoji;
     button.title = `Insert ${emoji}`;
+    button.setAttribute("aria-label", `Insert emoji ${emoji}`);
     button.addEventListener("click", () => {
       const start = textarea.selectionStart ?? textarea.value.length;
       const end = textarea.selectionEnd ?? textarea.value.length;
@@ -2046,11 +2047,7 @@ function renderEmojiButtons(target = "reply") {
       textarea.focus();
       textarea.selectionStart = start + emoji.length;
       textarea.selectionEnd = start + emoji.length;
-      if (target === "draft") {
-        renderDraftPreview();
-      } else {
-        buildCodexPrompt();
-      }
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
     });
     row.append(button);
   }
