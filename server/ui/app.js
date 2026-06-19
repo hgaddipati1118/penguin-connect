@@ -4487,6 +4487,7 @@ function renderContactInspector() {
   const favorite = isFavoriteContact(contact);
   const noteText = contactNoteText(contact);
   const handle = contactRecipientHandle(contact);
+  const terms = highlightTerms(el.contactSearch.value.trim());
   el.contactInspector.innerHTML = `
     <div class="contact-inspector-head">
       <div class="contact-inspector-main">
@@ -4510,17 +4511,17 @@ function renderContactInspector() {
     <div class="contact-inspector-related"></div>
     <div class="contact-inspector-messages" hidden></div>
   `;
-  el.contactInspector.querySelector(".contact-inspector-name").textContent = contactDisplayName(contact);
-  el.contactInspector.querySelector(".contact-inspector-handle").textContent = contactHandleText(contact);
-  el.contactInspector.querySelector(".contact-inspector-meta").textContent = [
+  appendHighlightedText(el.contactInspector.querySelector(".contact-inspector-name"), contactDisplayName(contact), terms);
+  appendHighlightedText(el.contactInspector.querySelector(".contact-inspector-handle"), contactHandleText(contact), terms);
+  appendHighlightedText(el.contactInspector.querySelector(".contact-inspector-meta"), [
     contact.organization && contact.organization !== contactDisplayName(contact) ? contact.organization : "",
     contact.is_saved === false ? "unsaved participant" : contact.handle_type || "contact",
     favorite ? "favorite" : "",
-  ].filter(Boolean).join(" · ");
+  ].filter(Boolean).join(" · "), terms);
 
   const note = el.contactInspector.querySelector(".contact-inspector-note");
   note.hidden = !noteText;
-  note.textContent = noteText;
+  appendHighlightedText(note, noteText, terms);
 
   const addButton = el.contactInspector.querySelector('[data-action="add"]');
   addButton.disabled = !handle;
@@ -4942,6 +4943,7 @@ function renderContactMoreControls() {
 function renderContacts() {
   el.contactList.replaceChildren();
   const contacts = visibleContacts();
+  const terms = highlightTerms(el.contactSearch.value.trim());
   renderContactBulkActions();
   renderContactMoreControls();
   renderContactInspector();
@@ -4999,11 +5001,12 @@ function renderContacts() {
       </div>
       <div class="contact-related" hidden></div>
     `;
-    item.querySelector(".contact-name").textContent = contactDisplayName(contact);
-    item.querySelector(".contact-handle").textContent = contactHandleText(contact);
-    item.querySelector(".contact-meta").textContent = contact.organization && contact.organization !== contactDisplayName(contact)
+    appendHighlightedText(item.querySelector(".contact-name"), contactDisplayName(contact), terms);
+    appendHighlightedText(item.querySelector(".contact-handle"), contactHandleText(contact), terms);
+    const contactMeta = contact.organization && contact.organization !== contactDisplayName(contact)
       ? contact.organization
       : contact.handle_type || "contact";
+    appendHighlightedText(item.querySelector(".contact-meta"), contactMeta, terms);
     const selectButton = item.querySelector(".contact-select-toggle");
     selectButton.textContent = selected ? "x" : "";
     selectButton.classList.toggle("active", selected);
@@ -5046,7 +5049,7 @@ function renderContacts() {
     const noteBox = item.querySelector(".contact-note");
     if (noteText) {
       noteBox.hidden = false;
-      noteBox.querySelector("span").textContent = noteText;
+      appendHighlightedText(noteBox.querySelector("span"), noteText, terms);
     }
     const noteEditor = item.querySelector(".contact-note-editor");
     const noteInput = noteEditor.querySelector("textarea");
