@@ -74,6 +74,7 @@ const state = {
   focusMessageId: "",
   messageView: "all",
   messageNoteEditorId: "",
+  messageBulkBusy: false,
   mediaView: "all",
   conversationView: "inbox",
   conversationSort: "recent",
@@ -193,6 +194,9 @@ const el = {
   messageSearchResults: document.querySelector("#messageSearchResults"),
   messageViewFilters: document.querySelector("#messageViewFilters"),
   loadedMessageCount: document.querySelector("#loadedMessageCount"),
+  starVisibleMessagesButton: document.querySelector("#starVisibleMessagesButton"),
+  markVisibleMessagesReadButton: document.querySelector("#markVisibleMessagesReadButton"),
+  markVisibleMessagesUnreadButton: document.querySelector("#markVisibleMessagesUnreadButton"),
   loadMoreMessagesButton: document.querySelector("#loadMoreMessagesButton"),
   messageFilter: document.querySelector("#messageFilter"),
   messageList: document.querySelector("#messageList"),
@@ -1826,6 +1830,105 @@ async function toggleMessageRead(message) {
   } catch (error) {
     el.sendState.textContent = error.message;
   }
+}
+
+function loadedMessageMatchesFilter(message, query = el.messageFilter.value.trim().toLowerCase()) {
+  const haystack = [
+    message.sender_name,
+    message.sender_email,
+    message.body_text,
+    message.message_note,
+    JSON.stringify(attachmentRows(message)),
+  ].join(" ").toLowerCase();
+  return messageMatchesView(message) && (!query || haystack.includes(query));
+}
+
+function visibleLoadedMessages() {
+  const query = el.messageFilter.value.trim().toLowerCase();
+  return [...state.messages].reverse().filter((message) => loadedMessageMatchesFilter(message, query));
+}
+
+function manageableLoadedMessages(rows = visibleLoadedMessages()) {
+  const seen = new Set();
+  const messages = [];
+  for (const message of rows) {
+    const providerMessageId = message?.provider_message_id || "";
+    if (!providerMessageId || seen.has(providerMessageId)) continue;
+    seen.add(providerMessageId);
+    messages.push(message);
+  }
+  return messages;
+}
+
+async function bulkUpdateVisibleLoadedMessages(messages, payloadForMessage, { starting, empty, complete }) {
+  if (!state.selected) return;
+  const targets = manageableLoadedMessages(messages);
+  if (!targets.length) {
+    el.sendState.textContent = empty;
+    renderMessageHistoryControls();
+    return;
+  }
+
+  state.messageBulkBusy = true;
+  renderMessageHistoryControls();
+  el.sendState.textContent = starting;
+  let updated = 0;
+  const failures = [];
+  for (const message of targets) {
+    try {
+      const result = await api(`/penguin-connect/conversations/${encodeURIComponent(state.selected.conversation_id)}/messages/management`, {
+        method: "POST",
+        body: JSON.stringify({
+          provider_message_id: message.provider_message_id,
+          ...payloadForMessage(message),
+        }),
+      });
+      mergeMessageManagement(result);
+      updated += 1;
+      el.sendState.textContent = `Updated ${updated}/${targets.length}`;
+    } catch (error) {
+      failures.push(error.message);
+    }
+  }
+
+  state.messageBulkBusy = false;
+  el.sendState.textContent = failures.length
+    ? `Updated ${updated}; ${failures.length} failed`
+    : complete(updated);
+  renderConversations();
+  renderThreadHeader();
+  renderThreadControls();
+  renderMessages();
+  renderMessageSearchResults();
+  renderContactInspector();
+  buildCodexPrompt();
+}
+
+async function starVisibleLoadedMessages() {
+  const targets = manageableLoadedMessages().filter((message) => !isStarredMessage(message));
+  await bulkUpdateVisibleLoadedMessages(targets, () => ({ starred: true }), {
+    starting: `Starring ${targets.length} visible message${targets.length === 1 ? "" : "s"}`,
+    empty: "Visible messages already starred",
+    complete: (updated) => `Starred ${updated} visible message${updated === 1 ? "" : "s"}`,
+  });
+}
+
+async function markVisibleLoadedMessagesRead() {
+  const targets = manageableLoadedMessages().filter(isUnreadMessage);
+  await bulkUpdateVisibleLoadedMessages(targets, () => ({ unread: false }), {
+    starting: `Marking ${targets.length} visible message${targets.length === 1 ? "" : "s"} read`,
+    empty: "Visible messages already read",
+    complete: (updated) => `Marked ${updated} visible message${updated === 1 ? "" : "s"} read`,
+  });
+}
+
+async function markVisibleLoadedMessagesUnread() {
+  const targets = manageableLoadedMessages().filter((message) => !isUnreadMessage(message));
+  await bulkUpdateVisibleLoadedMessages(targets, () => ({ unread: true }), {
+    starting: `Marking ${targets.length} visible message${targets.length === 1 ? "" : "s"} unread`,
+    empty: "Visible messages already unread",
+    complete: (updated) => `Marked ${updated} visible message${updated === 1 ? "" : "s"} unread`,
+  });
 }
 
 function editMessageNote(message) {
@@ -5333,14 +5436,39 @@ function renderMessageViewFilters() {
 function renderMessageHistoryControls() {
   const hasSelection = Boolean(state.selected);
   const loaded = state.messages.length;
+  const visible = hasSelection ? visibleLoadedMessages() : [];
+  const manageable = manageableLoadedMessages(visible);
+  const unstarredVisibleCount = manageable.filter((message) => !isStarredMessage(message)).length;
+  const unreadVisibleCount = manageable.filter(isUnreadMessage).length;
+  const readVisibleCount = manageable.length - unreadVisibleCount;
+  const filtered = Boolean(el.messageFilter.value.trim() || state.messageView !== "all");
   const limit = state.messageLimit;
   const atMax = limit >= state.messageLimitMax;
   const canLoadMore = hasSelection && !state.messagesLoading && loaded >= limit && !atMax;
+  const bulkBusy = state.messageBulkBusy || state.messagesLoading;
   el.loadedMessageCount.textContent = hasSelection
     ? (state.messagesLoading
       ? `Loading up to ${limit} messages`
-      : `${loaded} loaded · window ${limit}${atMax ? " max" : ""}`)
+      : `${filtered ? `${visible.length}/${loaded} visible` : `${loaded} loaded`} · window ${limit}${atMax ? " max" : ""}`)
     : "No thread loaded";
+  el.starVisibleMessagesButton.disabled = bulkBusy || unstarredVisibleCount === 0;
+  el.starVisibleMessagesButton.textContent = state.messageBulkBusy
+    ? "Updating"
+    : (unstarredVisibleCount
+      ? `Star ${unstarredVisibleCount}`
+      : (manageable.length ? "All starred" : "Star visible"));
+  el.markVisibleMessagesReadButton.disabled = bulkBusy || unreadVisibleCount === 0;
+  el.markVisibleMessagesReadButton.textContent = state.messageBulkBusy
+    ? "Updating"
+    : (unreadVisibleCount
+      ? `Mark ${unreadVisibleCount} read`
+      : (manageable.length ? "All read" : "Mark read"));
+  el.markVisibleMessagesUnreadButton.disabled = bulkBusy || readVisibleCount === 0;
+  el.markVisibleMessagesUnreadButton.textContent = state.messageBulkBusy
+    ? "Updating"
+    : (readVisibleCount
+      ? `Mark ${readVisibleCount} unread`
+      : (manageable.length ? "All unread" : "Mark unread"));
   el.loadMoreMessagesButton.disabled = !canLoadMore;
   el.loadMoreMessagesButton.textContent = state.messagesLoading
     ? "Loading"
@@ -5568,16 +5696,7 @@ function renderMessages() {
   const terms = highlightTerms(query);
   renderMessageViewFilters();
   renderMessageHistoryControls();
-  const rows = [...state.messages].reverse().filter((message) => {
-    const haystack = [
-      message.sender_name,
-      message.sender_email,
-      message.body_text,
-      message.message_note,
-      JSON.stringify(attachmentRows(message)),
-    ].join(" ").toLowerCase();
-    return messageMatchesView(message) && (!query || haystack.includes(query));
-  });
+  const rows = visibleLoadedMessages();
 
   el.messageList.replaceChildren();
   if (!state.selected) {
@@ -7715,6 +7834,9 @@ el.contactSaveVisibleButton.addEventListener("click", saveVisibleContactsAsRecip
 el.contactCreateVisibleButton.addEventListener("click", createVisibleUnknownContacts);
 el.contactClearSelectedButton.addEventListener("click", clearSelectedContacts);
 el.messageFilter.addEventListener("input", renderMessages);
+el.starVisibleMessagesButton.addEventListener("click", starVisibleLoadedMessages);
+el.markVisibleMessagesReadButton.addEventListener("click", markVisibleLoadedMessagesRead);
+el.markVisibleMessagesUnreadButton.addEventListener("click", markVisibleLoadedMessagesUnread);
 el.messageViewFilters.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-message-view]");
   if (!button) return;

@@ -165,7 +165,12 @@
         <div class="message-view-filters" id="messageViewFilters" aria-label="Loaded message views"></div>
         <div class="message-history-bar" id="messageHistoryBar">
           <span id="loadedMessageCount">No thread loaded</span>
-          <button class="quiet-button" id="loadMoreMessagesButton" type="button" disabled>Load older</button>
+          <span class="loaded-message-actions">
+            <button class="quiet-button" id="starVisibleMessagesButton" type="button" disabled>Star visible</button>
+            <button class="quiet-button" id="markVisibleMessagesReadButton" type="button" disabled>Mark read</button>
+            <button class="quiet-button" id="markVisibleMessagesUnreadButton" type="button" disabled>Mark unread</button>
+            <button class="quiet-button" id="loadMoreMessagesButton" type="button" disabled>Load older</button>
+          </span>
         </div>
         <div class="message-search-status" id="messageSearchStatus">Type 2+ chars to search local cache</div>
         <div class="message-search-more" id="messageSearchMoreBar">
