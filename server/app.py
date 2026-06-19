@@ -926,6 +926,14 @@ def _participant_handle_matches_query(handle: str, query: str) -> bool:
     return len(query_digits) >= 3 and len(handle_digits) >= 7 and query_digits in handle_digits
 
 
+def _participant_matches_query(handle: str, conversation_name: str, query: str) -> bool:
+    if _participant_handle_matches_query(handle, query):
+        return True
+    clean_query = str(query or "").strip().lower()
+    clean_conversation = str(conversation_name or "").strip().lower()
+    return bool(clean_query and clean_query in clean_conversation)
+
+
 def _conversation_participant_contact_results(
     conn: sqlite3.Connection,
     query: str,
@@ -956,7 +964,7 @@ def _conversation_participant_contact_results(
                 continue
             if allowed_keys is not None and key not in allowed_keys:
                 continue
-            if query and not _participant_handle_matches_query(handle, query):
+            if query and not _participant_matches_query(handle, conversation_name, query):
                 continue
             seen.add(key)
             handle_type = _contact_handle_type(handle)

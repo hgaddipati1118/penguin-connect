@@ -1169,6 +1169,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         with TestClient(app_module.app) as client:
             all_browse_response = client.get("/penguin-connect/contacts", params={"limit": 10})
             response = client.get("/penguin-connect/contacts", params={"search": "5550199", "limit": 10})
+            thread_name_response = client.get("/penguin-connect/contacts", params={"search": "unsaved thread", "limit": 10})
             saved_response = client.get("/penguin-connect/contacts", params={"search": "+15127436385", "limit": 10})
             saved_only_response = client.get(
                 "/penguin-connect/contacts",
@@ -1219,6 +1220,13 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(result["handle_type"], "phone")
         self.assertEqual(result["conversation_id"], "amc_unsaved")
         self.assertIn("Unsaved Thread", result["organization"])
+
+        self.assertEqual(thread_name_response.status_code, 200)
+        thread_name_body = thread_name_response.json()
+        self.assertEqual(thread_name_body["count"], 1)
+        self.assertEqual(thread_name_body["participant_count"], 1)
+        self.assertEqual(thread_name_body["contacts"][0]["source"], "conversation")
+        self.assertEqual(thread_name_body["contacts"][0]["conversation_name"], "Unsaved Thread")
 
         self.assertEqual(saved_response.status_code, 200)
         saved_body = saved_response.json()
