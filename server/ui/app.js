@@ -25,6 +25,11 @@ const state = {
   messageSearchResults: [],
   messageSearchTimer: null,
   messageSearchView: "all",
+  messageSearchLimit: 30,
+  messageSearchLimitStep: 30,
+  messageSearchLimitMax: 100,
+  messageSearchLoading: false,
+  messageSearchToken: 0,
   messageSearchNoteEditorId: "",
   focusMessageId: "",
   messageView: "all",
@@ -110,6 +115,9 @@ const el = {
   managementState: document.querySelector("#managementState"),
   globalMessageSearch: document.querySelector("#globalMessageSearch"),
   globalMessageSearchFilters: document.querySelector("#globalMessageSearchFilters"),
+  messageSearchMoreBar: document.querySelector("#messageSearchMoreBar"),
+  messageSearchCount: document.querySelector("#messageSearchCount"),
+  loadMoreSearchButton: document.querySelector("#loadMoreSearchButton"),
   messageDateFrom: document.querySelector("#messageDateFrom"),
   messageDateTo: document.querySelector("#messageDateTo"),
   clearMessageDatesButton: document.querySelector("#clearMessageDatesButton"),
@@ -2624,8 +2632,32 @@ function renderMessageSearchFilters() {
   }
 }
 
+function searchHasRunnableInput() {
+  const query = el.globalMessageSearch.value.trim();
+  const hasDateFilter = Boolean(el.messageDateFrom.value.trim() || el.messageDateTo.value.trim());
+  const scoped = state.messageSearchView !== "all";
+  return query.length >= 2 || scoped || hasDateFilter;
+}
+
+function renderMessageSearchMoreControls() {
+  const runnable = searchHasRunnableInput();
+  const loaded = state.messageSearchResults.length;
+  const limit = state.messageSearchLimit;
+  const atMax = limit >= state.messageSearchLimitMax;
+  const canLoadMore = runnable && !state.messageSearchLoading && loaded >= limit && !atMax;
+  el.messageSearchMoreBar.hidden = !runnable;
+  el.messageSearchCount.textContent = state.messageSearchLoading
+    ? `Loading up to ${limit} results`
+    : `${loaded} loaded · window ${limit}${atMax ? " max" : ""}`;
+  el.loadMoreSearchButton.disabled = !canLoadMore;
+  el.loadMoreSearchButton.textContent = state.messageSearchLoading
+    ? "Loading"
+    : (atMax ? "Max shown" : "Show more");
+}
+
 function renderMessageSearchResults() {
   el.messageSearchResults.replaceChildren();
+  renderMessageSearchMoreControls();
   const query = el.globalMessageSearch.value.trim();
   const hasDateFilter = Boolean(el.messageDateFrom.value.trim() || el.messageDateTo.value.trim());
   if (!query && state.messageSearchView === "all" && !hasDateFilter) {
@@ -3452,8 +3484,11 @@ async function loadMessageSearch() {
   const query = el.globalMessageSearch.value.trim();
   const dateFrom = el.messageDateFrom.value.trim();
   const dateTo = el.messageDateTo.value.trim();
+  const searchToken = state.messageSearchToken + 1;
+  state.messageSearchToken = searchToken;
   const hasDateFilter = Boolean(dateFrom || dateTo);
   const scoped = state.messageSearchView !== "all";
+  state.messageSearchLoading = false;
   state.messageSearchNoteEditorId = "";
   renderMessageSearchFilters();
   if (query.length < 2 && !scoped && !hasDateFilter) {
@@ -3472,6 +3507,8 @@ async function loadMessageSearch() {
   }
 
   const view = messageSearchViews.find((item) => item.key === state.messageSearchView) || messageSearchViews[0];
+  state.messageSearchLoading = true;
+  renderMessageSearchMoreControls();
   el.messageSearchStatus.textContent = query
     ? "Searching local cache"
     : hasDateFilter
@@ -3480,7 +3517,7 @@ async function loadMessageSearch() {
   try {
     const params = new URLSearchParams({
       query,
-      limit: "30",
+      limit: String(state.messageSearchLimit),
       view: state.messageSearchView,
     });
     if (dateFrom) params.set("date_from", dateFrom);
@@ -3489,22 +3526,39 @@ async function loadMessageSearch() {
       params.set("conversation_id", state.selected.conversation_id);
     }
     const payload = await api(`/penguin-connect/messages/search?${params.toString()}`);
+    if (searchToken !== state.messageSearchToken) return;
     state.messageSearchResults = payload.messages || [];
+    state.messageSearchLoading = false;
     const rangeSuffix = hasDateFilter ? " in range" : "";
     el.messageSearchStatus.textContent = `${state.messageSearchResults.length} ${view.label.toLowerCase()} match${state.messageSearchResults.length === 1 ? "" : "es"}${rangeSuffix}`;
     renderMessageSearchResults();
     buildCodexPrompt();
   } catch (error) {
+    if (searchToken !== state.messageSearchToken) return;
     state.messageSearchResults = [];
+    state.messageSearchLoading = false;
     el.messageSearchStatus.textContent = error.message;
     renderMessageSearchResults();
     buildCodexPrompt();
   }
 }
 
-function scheduleMessageSearch() {
+function resetMessageSearchLimit() {
+  state.messageSearchLimit = 30;
+}
+
+function scheduleMessageSearch({ resetLimit = true } = {}) {
+  if (resetLimit) resetMessageSearchLimit();
   clearTimeout(state.messageSearchTimer);
   state.messageSearchTimer = setTimeout(() => loadMessageSearch(), 180);
+}
+
+async function loadMoreMessageSearchResults() {
+  if (state.messageSearchLoading || !searchHasRunnableInput()) return;
+  const nextLimit = Math.min(state.messageSearchLimit + state.messageSearchLimitStep, state.messageSearchLimitMax);
+  if (nextLimit <= state.messageSearchLimit) return;
+  state.messageSearchLimit = nextLimit;
+  await loadMessageSearch();
 }
 
 async function selectConversation(conversation) {
@@ -4548,6 +4602,7 @@ el.messageDateTo.addEventListener("input", scheduleMessageSearch);
 el.clearMessageDatesButton.addEventListener("click", () => {
   el.messageDateFrom.value = "";
   el.messageDateTo.value = "";
+  resetMessageSearchLimit();
   loadMessageSearch();
 });
 el.globalMessageSearchFilters.addEventListener("click", (event) => {
@@ -4556,8 +4611,10 @@ el.globalMessageSearchFilters.addEventListener("click", (event) => {
   state.messageSearchView = messageSearchViews.some((view) => view.key === button.dataset.messageSearchView)
     ? button.dataset.messageSearchView
     : "all";
+  resetMessageSearchLimit();
   loadMessageSearch();
 });
+el.loadMoreSearchButton.addEventListener("click", loadMoreMessageSearchResults);
 el.contactRefreshButton.addEventListener("click", async () => {
   el.contactRefreshButton.disabled = true;
   el.contactStatus.textContent = "Refreshing Contacts";
