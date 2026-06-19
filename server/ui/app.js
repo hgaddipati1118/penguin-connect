@@ -2655,7 +2655,10 @@ function renderThreadControls() {
     selected.is_archived ? "archived" : "",
     hasFollowUp(selected) ? `follow-up ${followUpLabel(selected)}` : "",
   ].filter(Boolean).join(" · ");
-  el.threadStatus.textContent = `${status}${excluded}${managed ? ` · ${managed}` : ""} · ${unread} unread · ${selected.alias_email || "no alias"}`;
+  const source = [selected.source_service_name || selected.source_provider || "Messages", selected.chat_type || ""]
+    .filter(Boolean)
+    .join(" · ");
+  el.threadStatus.textContent = `${status}${excluded}${managed ? ` · ${managed}` : ""} · ${unread} unread · ${source}`;
   el.pinButton.textContent = selected.is_pinned ? "Unpin" : "Pin";
   el.muteButton.textContent = selected.is_muted ? "Unmute" : "Mute";
   el.archiveButton.textContent = selected.is_archived ? "Unarchive" : "Archive";
@@ -2711,12 +2714,12 @@ async function loadStatus() {
     const status = await api("/penguin-connect/health");
     state.senderEmail = status.gmail?.gmail_email || "";
     el.statusLine.textContent = status.ok
-      ? `Bridge ready · local sender ${state.senderEmail || "configured"}`
+      ? "Bridge ready · local Messages send enabled"
       : "Bridge warning";
-    el.senderBadge.textContent = state.senderEmail ? `Local · ${state.senderEmail}` : "Local sender";
+    el.senderBadge.textContent = "Messages";
   } catch (error) {
     el.statusLine.textContent = `Bridge offline · ${error.message}`;
-    el.senderBadge.textContent = "Local sender";
+    el.senderBadge.textContent = "Messages";
   }
 }
 
@@ -2731,7 +2734,7 @@ async function loadConversations() {
       renderThreadControls();
       renderManagementFields();
     }
-    el.senderBadge.textContent = state.senderEmail ? `Local · ${state.senderEmail}` : "Local sender";
+    el.senderBadge.textContent = "Messages";
     renderConversations();
     renderContacts();
     if (!state.selected && state.conversations.length) {

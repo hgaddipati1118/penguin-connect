@@ -1867,7 +1867,7 @@ def get_penguinconnect_health():
         sync_status = _apply_runtime_sync_status(get_sync_status())
 
         return {
-            "ok": bool(gmail.get("connected")) and active >= 0,
+            "ok": active >= 0,
             "gmail": gmail,
             "conversations": {
                 "total": active + disconnected,
@@ -2319,10 +2319,6 @@ def send_penguinconnect_conversation_message(conversation_id: str, req: PenguinC
             attachment_count=len(attachment_paths),
         )
         if not result.get("success"):
-            if result.get("error") == "sender_not_connected_gmail":
-                raise HTTPException(status_code=403, detail="sender_not_connected_gmail")
-            if result.get("error") == "gmail_not_connected":
-                raise HTTPException(status_code=403, detail="local_sender_not_configured")
             raise HTTPException(status_code=400, detail=result.get("error", "penguin_connect_send_failed"))
         conn.commit()
         return result

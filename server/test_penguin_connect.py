@@ -579,18 +579,27 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertIn("to:owner+am-test@gmail.com", query)
         self.assertIn("in:sent", query)
 
-    def test_sender_gate_blocks_non_connected_sender(self):
-        result = penguin_connect.send_manual_message(
-            self.conn,
-            conversation_id="amc_test",
-            sender_email="attacker@example.com",
-            body_text="hello",
-        )
-        self.assertFalse(result["success"])
-        self.assertEqual(result["error"], "sender_not_connected_gmail")
-        self.assertEqual(result["status_code"], 403)
+    def test_manual_send_does_not_require_connected_gmail_account(self):
+        self.conn.execute("DELETE FROM penguin_connect_accounts")
+        with mock.patch("penguin_connect.send_imessage", return_value=(True, None)) as mock_send:
+            result = penguin_connect.send_manual_message(
+                self.conn,
+                conversation_id="amc_test",
+                body_text="hello",
+            )
 
-    def test_sender_gate_allows_primary_or_verified_send_as(self):
+        self.assertTrue(result["success"])
+        mock_send.assert_called_once_with("chat-123", "hello", attachment_paths=None)
+        row = self.conn.execute(
+            """SELECT sender_email, sender_name, body_text, direction
+               FROM penguin_connect_messages
+               WHERE direction = 'manual_to_imessage'"""
+        ).fetchone()
+        self.assertIsNone(row["sender_email"])
+        self.assertEqual(row["sender_name"], "Me")
+        self.assertEqual(row["body_text"], "hello")
+
+    def test_manual_send_accepts_optional_sender_metadata(self):
         with mock.patch("penguin_connect.send_imessage", return_value=(True, None)):
             primary = penguin_connect.send_manual_message(
                 self.conn,
@@ -607,8 +616,16 @@ class PenguinConnectTests(unittest.TestCase):
 
         self.assertTrue(primary["success"])
         self.assertTrue(alias["success"])
+        rows = self.conn.execute(
+            """SELECT sender_email, sender_name
+               FROM penguin_connect_messages
+               WHERE direction = 'manual_to_imessage'
+               ORDER BY message_timestamp, provider_message_id"""
+        ).fetchall()
+        self.assertEqual({row["sender_email"] for row in rows}, {"owner@gmail.com", "ops@company.com"})
+        self.assertEqual({row["sender_name"] for row in rows}, {"Me"})
 
-    def test_sender_gate_defaults_to_conversation_owner_for_local_send(self):
+    def test_manual_send_defaults_to_local_messages_sender(self):
         with mock.patch("penguin_connect.send_imessage", return_value=(True, None)) as mock_send:
             result = penguin_connect.send_manual_message(
                 self.conn,
@@ -623,7 +640,7 @@ class PenguinConnectTests(unittest.TestCase):
                FROM penguin_connect_messages
                WHERE direction = 'manual_to_imessage'"""
         ).fetchone()
-        self.assertEqual(row["sender_email"], "owner@gmail.com")
+        self.assertIsNone(row["sender_email"])
         self.assertEqual(row["sender_name"], "Me")
         self.assertEqual(row["body_text"], "hello from local console")
 
@@ -2016,6 +2033,21 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertTrue(result["connected"])
         self.assertEqual(len(result["conversations"]), 1)
         self.assertEqual(result["conversations"][0]["source_provider"], "imessage")
+        self.assertEqual(result["conversations"][0]["source_chat_id"], "chat-123")
+
+    def test_list_conversations_returns_cached_rows_without_gmail_account(self):
+        self.conn.execute("DELETE FROM penguin_connect_accounts")
+        with mock.patch("penguin_connect.ensure_conversations_discovered") as mock_discover, mock.patch(
+            "penguin_connect.refresh_conversation_exclusions"
+        ) as mock_refresh:
+            result = penguin_connect.list_conversations(self.conn)
+
+        mock_discover.assert_not_called()
+        mock_refresh.assert_not_called()
+        self.assertFalse(result["connected"])
+        self.assertEqual(result["gmail_email"], "")
+        self.assertEqual(len(result["conversations"]), 1)
+        self.assertEqual(result["conversations"][0]["conversation_id"], "amc_test")
         self.assertEqual(result["conversations"][0]["source_chat_id"], "chat-123")
 
     def test_list_conversations_discovers_when_cache_empty(self):

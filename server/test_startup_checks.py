@@ -55,7 +55,47 @@ class StartupChecksTests(unittest.TestCase):
         self.assertFalse(gmail_check["blocking"])
         self.assertEqual(gmail_check["reason"], "gmail_not_connected")
 
-    def test_bootstrap_mode_still_blocks_invalid_gmail_state(self):
+    def test_default_startup_allows_missing_gmail(self):
+        with mock.patch(
+            "startup_checks._check_apple_messages_access",
+            return_value={
+                "name": "apple_messages",
+                "ok": True,
+                "blocking": True,
+                "reason": None,
+                "detail": "ok",
+            },
+        ):
+            readiness = startup_checks.assert_startup_ready(self.conn)
+
+        self.assertTrue(readiness["ok"])
+        self.assertTrue(readiness["allow_missing_gmail_startup"])
+
+    def test_messages_mode_reports_invalid_gmail_state_as_nonblocking(self):
+        with mock.patch(
+            "startup_checks._check_apple_messages_access",
+            return_value={
+                "name": "apple_messages",
+                "ok": True,
+                "blocking": True,
+                "reason": None,
+                "detail": "ok",
+            },
+        ), mock.patch(
+            "startup_checks.get_connected_account",
+            return_value={"gmail_email": "owner@gmail.com", "keychain_service": "svc"},
+        ), mock.patch(
+            "startup_checks._build_gmail_service",
+            return_value=(None, "invalid_keychain_token_json"),
+        ):
+            readiness = startup_checks.assert_startup_ready(self.conn, allow_missing_gmail=True)
+
+        self.assertTrue(readiness["ok"])
+        gmail_check = next(item for item in readiness["checks"] if item["name"] == "gmail")
+        self.assertEqual(gmail_check["reason"], "invalid_keychain_token_json")
+        self.assertFalse(gmail_check["blocking"])
+
+    def test_strict_startup_blocks_invalid_gmail_state(self):
         with mock.patch(
             "startup_checks._check_apple_messages_access",
             return_value={
@@ -73,7 +113,7 @@ class StartupChecksTests(unittest.TestCase):
             return_value=(None, "invalid_keychain_token_json"),
         ):
             with self.assertRaises(startup_checks.StartupReadinessError) as ctx:
-                startup_checks.assert_startup_ready(self.conn, allow_missing_gmail=True)
+                startup_checks.assert_startup_ready(self.conn, allow_missing_gmail=False)
 
         self.assertEqual(ctx.exception.failures[0]["reason"], "invalid_keychain_token_json")
 

@@ -26,7 +26,7 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 
 def _allow_missing_gmail_startup() -> bool:
-    return _env_flag("PENGUIN_CONNECT_ALLOW_MISSING_GMAIL_STARTUP", default=False)
+    return _env_flag("PENGUIN_CONNECT_ALLOW_MISSING_GMAIL_STARTUP", default=True)
 
 
 def _check_apple_messages_access() -> dict[str, Any]:
@@ -95,7 +95,7 @@ def _check_gmail_access(conn: sqlite3.Connection, allow_missing_gmail: bool) -> 
     return {
         "name": "gmail",
         "ok": False,
-        "blocking": True,
+        "blocking": not allow_missing_gmail,
         "reason": err or "gmail_not_connected",
         "detail": detail,
     }
@@ -153,7 +153,7 @@ def _suggested_fix(failure: dict[str, Any]) -> str:
     if reason == "gmail_not_connected":
         return (
             "Finish first-run setup with ./scripts/penguin_connect_setup.py --gmail <you@gmail.com> "
-            "or temporarily start with PENGUIN_CONNECT_ALLOW_MISSING_GMAIL_STARTUP=1 only during setup."
+            "or start in local Messages-only mode with PENGUIN_CONNECT_ALLOW_MISSING_GMAIL_STARTUP=1."
         )
     if reason in {"invalid_keychain_token_json", "failed_to_initialize_gmail_service"}:
         return "Reconnect Gmail with ./scripts/penguin_connect_connect.py --gmail <you@gmail.com>."

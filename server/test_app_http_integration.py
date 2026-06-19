@@ -247,6 +247,25 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(conversation["last_message_provider_id"], "imsg-latest")
         self.assertFalse(conversation["last_message_has_attachments"])
 
+    def test_conversations_endpoint_returns_cached_threads_without_gmail_account(self):
+        conn = self._get_connection()
+        try:
+            conn.execute("DELETE FROM penguin_connect_accounts")
+            conn.commit()
+        finally:
+            conn.close()
+
+        with TestClient(app_module.app) as client:
+            response = client.get("/penguin-connect/conversations")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertFalse(body["connected"])
+        self.assertEqual(body["gmail_email"], "")
+        self.assertEqual(len(body["conversations"]), 1)
+        self.assertEqual(body["conversations"][0]["conversation_id"], "amc_test")
+        self.assertEqual(body["conversations"][0]["last_message_preview"], "Latest message")
+
     def test_conversation_management_endpoint_pins_and_archives(self):
         with TestClient(app_module.app) as client:
             pin_response = client.post(
@@ -1262,7 +1281,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("askCodex", js_response.text)
         self.assertIn("useCodexAnswerAsDraft", js_response.text)
         self.assertIn("renderCodexAnswerControls", js_response.text)
-        self.assertIn("Local sender", js_response.text)
+        self.assertIn("local Messages send enabled", js_response.text)
+        self.assertIn("Messages", js_response.text)
         self.assertIn("conversationDisplayName", js_response.text)
         self.assertIn("sourceDisplayName", js_response.text)
         self.assertIn("conversationParticipants", js_response.text)
@@ -1413,7 +1433,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         with mock.patch("penguin_connect.send_imessage", return_value=(True, None)), TestClient(app_module.app) as client:
             send_response = client.post(
                 "/penguin-connect/conversations/amc_test/send",
-                json={"sender_email": "owner@gmail.com", "message": "Hello from Gmail"},
+                json={"sender_email": "owner@gmail.com", "message": "Hello from Messages"},
             )
             response = client.get("/penguin-connect/conversations/amc_test/messages", params={"limit": 1})
 
@@ -1460,37 +1480,53 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json()["detail"], "conversation_not_found")
 
-    def test_send_endpoint_rejects_sender_not_connected_to_gmail(self):
-        with TestClient(app_module.app) as client:
-            response = client.post(
-                "/penguin-connect/conversations/amc_test/send",
-                json={"sender_email": "attacker@example.com", "message": "blocked"},
-            )
-
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json()["detail"], "sender_not_connected_gmail")
-
+    def test_send_endpoint_does_not_require_connected_gmail_account(self):
         conn = self._get_connection()
         try:
-            count = conn.execute(
-                "SELECT COUNT(*) FROM penguin_connect_messages WHERE direction = 'manual_to_imessage'"
-            ).fetchone()[0]
+            conn.execute("DELETE FROM penguin_connect_accounts")
+            conn.commit()
         finally:
             conn.close()
-        self.assertEqual(count, 0)
 
-    def test_send_endpoint_persists_manual_message_for_verified_sender(self):
         with mock.patch("penguin_connect.send_imessage", return_value=(True, None)) as mock_send, TestClient(
             app_module.app
         ) as client:
             response = client.post(
                 "/penguin-connect/conversations/amc_test/send",
-                json={"sender_email": "owner@gmail.com", "message": "Hello from Gmail"},
+                json={"message": "direct local send"},
             )
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["success"])
-        mock_send.assert_called_once_with("chat-123", "Hello from Gmail", attachment_paths=None)
+        mock_send.assert_called_once_with("chat-123", "direct local send", attachment_paths=None)
+
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                """SELECT sender_email, sender_name, body_text, direction
+                   FROM penguin_connect_messages
+                   WHERE direction = 'manual_to_imessage'"""
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNotNone(row)
+        self.assertIsNone(row["sender_email"])
+        self.assertEqual(row["sender_name"], "Me")
+        self.assertEqual(row["body_text"], "direct local send")
+        self.assertEqual(row["direction"], "manual_to_imessage")
+
+    def test_send_endpoint_persists_optional_sender_metadata(self):
+        with mock.patch("penguin_connect.send_imessage", return_value=(True, None)) as mock_send, TestClient(
+            app_module.app
+        ) as client:
+            response = client.post(
+                "/penguin-connect/conversations/amc_test/send",
+                json={"sender_email": "owner@gmail.com", "message": "Hello from Messages"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["success"])
+        mock_send.assert_called_once_with("chat-123", "Hello from Messages", attachment_paths=None)
 
         conn = self._get_connection()
         try:
@@ -1505,7 +1541,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertEqual(row["sender_email"], "owner@gmail.com")
         self.assertEqual(row["sender_name"], "Me")
-        self.assertEqual(row["body_text"], "Hello from Gmail")
+        self.assertEqual(row["body_text"], "Hello from Messages")
         self.assertEqual(row["direction"], "manual_to_imessage")
 
     def test_send_endpoint_defaults_to_local_conversation_sender(self):
@@ -1532,7 +1568,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
             conn.close()
 
         self.assertIsNotNone(row)
-        self.assertEqual(row["sender_email"], "owner@gmail.com")
+        self.assertIsNone(row["sender_email"])
         self.assertEqual(row["sender_name"], "Me")
         self.assertEqual(row["body_text"], "Hello from local console")
         self.assertEqual(row["direction"], "manual_to_imessage")

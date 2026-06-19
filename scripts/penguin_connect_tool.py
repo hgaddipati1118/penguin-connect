@@ -314,13 +314,6 @@ def command_messages(args: argparse.Namespace) -> int:
     return 0
 
 
-def _connected_gmail_email(api_base: str, timeout: float) -> str:
-    payload = _api_json("GET", "/penguin-connect/gmail/status", api_base=api_base, timeout=timeout)
-    if not payload.get("connected") or not payload.get("gmail_email"):
-        raise ToolError("No connected Gmail account found; pass --from explicitly after connecting Gmail.")
-    return str(payload["gmail_email"]).strip().lower()
-
-
 def command_send(args: argparse.Namespace) -> int:
     message = args.message
     if args.message_file:
@@ -329,8 +322,6 @@ def command_send(args: argparse.Namespace) -> int:
     if not (message or "").strip() and not attachment_paths:
         raise ToolError("Message text or at least one attachment is required.")
     sender_email = (args.sender_email or "").strip().lower()
-    if not sender_email:
-        sender_email = _connected_gmail_email(args.api_base, args.timeout)
 
     payload = _api_json(
         "POST",
@@ -605,7 +596,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     send = sub.add_parser("send", help="Send through an existing PenguinConnect conversation")
     send.add_argument("conversation_id")
-    send.add_argument("-f", "--from", dest="sender_email", default="", help="Connected Gmail sender")
+    send.add_argument("-f", "--from", dest="sender_email", default="", help="Optional local sender metadata")
     send.add_argument("-m", "--message", default="", help="Message text")
     send.add_argument("--message-file", help="Read message text from a UTF-8 file")
     send.add_argument(

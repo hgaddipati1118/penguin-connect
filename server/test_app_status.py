@@ -90,6 +90,23 @@ class AppStatusTests(unittest.TestCase):
         self.assertEqual(result["sync_metrics"]["totals"]["failed_permanent_count"], 1)
         self.assertEqual(result["sync_status"]["penguin_connect"]["last_completed_at"], "2026-03-04T12:05:00+00:00")
 
+    def test_health_is_ok_without_gmail_for_local_messages_mode(self):
+        conn = _build_conn()
+        with mock.patch("app.get_connection", return_value=conn), mock.patch(
+            "app.penguinconnect_get_gmail_connection_status",
+            return_value={"connected": False},
+        ), mock.patch(
+            "app.penguinconnect_get_cached_sync_metrics",
+            return_value={"totals": {}},
+        ), mock.patch(
+            "app.get_sync_status",
+            return_value={"penguin_connect": {"polling": False}},
+        ):
+            result = app_module.get_penguinconnect_health()
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["gmail"]["connected"])
+
     def test_map_sqlite_error_imessage_db_unreadable(self):
         err = sqlite3.OperationalError("unable to open database file")
         http_err = app_module._map_sqlite_error(err)

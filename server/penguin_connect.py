@@ -3832,39 +3832,40 @@ def self_heal_conversation_cache(conn: sqlite3.Connection, gmail_email: str) -> 
 
 def list_conversations(conn: sqlite3.Connection) -> dict[str, Any]:
     account = get_connected_account(conn)
-    if not account:
-        return {"connected": False, "conversations": []}
+    account_email = account["gmail_email"] if account else ""
 
     # Avoid write-heavy discovery on every read request. Discover on-demand only
     # when this account has no cached conversations yet.
-    try:
-        existing_count = conn.execute(
-            "SELECT COUNT(*) FROM penguin_connect_conversations WHERE gmail_email = ?",
-            (account["gmail_email"],),
-        ).fetchone()[0]
-        if existing_count == 0:
-            ensure_conversations_discovered(conn, account["gmail_email"])
-    except sqlite3.OperationalError as exc:
-        # If another writer is syncing, skip opportunistic discovery for this
-        # request and return cached rows.
-        msg = str(exc).lower()
-        if "locked" not in msg and "busy" not in msg:
-            raise
+    if account_email:
+        try:
+            existing_count = conn.execute(
+                "SELECT COUNT(*) FROM penguin_connect_conversations WHERE gmail_email = ?",
+                (account_email,),
+            ).fetchone()[0]
+            if existing_count == 0:
+                ensure_conversations_discovered(conn, account_email)
+        except sqlite3.OperationalError as exc:
+            # If another writer is syncing, skip opportunistic discovery for this
+            # request and return cached rows.
+            msg = str(exc).lower()
+            if "locked" not in msg and "busy" not in msg:
+                raise
 
-    refresh_conversation_exclusions(conn, account["gmail_email"])
+        refresh_conversation_exclusions(conn, account_email)
 
-    rows = conn.execute(
-        """SELECT c.conversation_id, c.source_provider, c.source_chat_id, c.source_chat_identifier,
-                  c.source_service_name, c.display_name, c.chat_type, c.exclude_from_sync,
-                  c.participants, c.alias_email, c.status, c.gmail_thread_id,
-                  c.last_synced_at, c.updated_at,
-                  s.last_source_ts, s.last_gmail_ts, s.last_message_ts, s.initial_sync_completed_at
-           FROM penguin_connect_conversations c
-           LEFT JOIN penguin_connect_sync_state s ON s.conversation_id = c.conversation_id
-           WHERE c.gmail_email = ?
-           ORDER BY c.updated_at DESC""",
-        (account["gmail_email"],),
-    ).fetchall()
+    query = """SELECT c.conversation_id, c.source_provider, c.source_chat_id, c.source_chat_identifier,
+                      c.source_service_name, c.display_name, c.chat_type, c.exclude_from_sync,
+                      c.participants, c.alias_email, c.status, c.gmail_thread_id,
+                      c.last_synced_at, c.updated_at,
+                      s.last_source_ts, s.last_gmail_ts, s.last_message_ts, s.initial_sync_completed_at
+               FROM penguin_connect_conversations c
+               LEFT JOIN penguin_connect_sync_state s ON s.conversation_id = c.conversation_id"""
+    params: tuple[Any, ...] = ()
+    if account_email:
+        query += " WHERE c.gmail_email = ?"
+        params = (account_email,)
+    query += " ORDER BY c.updated_at DESC"
+    rows = conn.execute(query, params).fetchall()
 
     conversations = []
     for row in rows:
@@ -3899,8 +3900,8 @@ def list_conversations(conn: sqlite3.Connection) -> dict[str, Any]:
         )
 
     return {
-        "connected": True,
-        "gmail_email": account["gmail_email"],
+        "connected": bool(account),
+        "gmail_email": account_email,
         "conversations": conversations,
     }
 
@@ -8558,56 +8559,29 @@ def send_manual_message(
         log_action("manual_send_result", success=False, error="conversation_excluded", **_conversation_log_fields(conv))
         return {"success": False, "error": "conversation_excluded"}
 
-    account = conn.execute(
-        "SELECT * FROM penguin_connect_accounts WHERE gmail_email = ? LIMIT 1",
-        (conv["gmail_email"],),
-    ).fetchone()
-    if not account:
-        log_action("manual_send_result", success=False, error="gmail_not_connected", **_conversation_log_fields(conv))
-        return {"success": False, "error": "gmail_not_connected"}
-
-    send_as = []
-    try:
-        send_as = json.loads(account["send_as_aliases"] or "[]")
-    except Exception:
-        send_as = []
-
-    resolved_sender_email = _normalize_email(sender_email) or _normalize_email(
-        account["primary_send_as"] or conv["gmail_email"]
-    )
-    if not _sender_allowed(resolved_sender_email, conv["gmail_email"], send_as):
-        log_action(
-            "manual_send_result",
-            success=False,
-            error="sender_not_connected_gmail",
-            sender_email=resolved_sender_email,
-            **_conversation_log_fields(conv),
-        )
-        return {
-            "success": False,
-            "error": "sender_not_connected_gmail",
-            "status_code": 403,
-        }
-
     source_provider = _conversation_source_provider(conv)
-    provider_id = f"manual:{hashlib.sha1(f'{resolved_sender_email}:{_now_iso()}:{body_text}'.encode('utf-8')).hexdigest()}"
-    sender_display_name = _friendly_email_sender_name(resolved_sender_email, resolved_sender_email, own_sender=True)
+    resolved_sender_email = _normalize_email(sender_email)
+    sender_identity = resolved_sender_email or "local"
+    provider_id = f"manual:{hashlib.sha1(f'{sender_identity}:{_now_iso()}:{body_text}'.encode('utf-8')).hexdigest()}"
+    sender_display_name = "Me"
+    action_context = {
+        "action": "manual_send",
+        "provider_message_id": provider_id,
+    }
+    if resolved_sender_email:
+        action_context["sender_email"] = resolved_sender_email
     ok, err = _send_to_source_conversation(
         conv,
         body_text,
         attachment_paths=attachment_paths or None,
-        action_context={
-            "action": "manual_send",
-            "provider_message_id": provider_id,
-            "sender_email": resolved_sender_email,
-        },
+        action_context=action_context,
     )
     if not ok:
         log_action(
             "manual_send_result",
             success=False,
             error=err or f"failed_to_send_{source_provider}",
-            sender_email=resolved_sender_email,
+            sender_email=resolved_sender_email or None,
             provider_message_id=provider_id,
             **_conversation_log_fields(conv),
             **message_fingerprint(body_text),
@@ -8623,7 +8597,7 @@ def send_manual_message(
         (
             conversation_id,
             provider_id,
-            resolved_sender_email,
+            resolved_sender_email or None,
             sender_display_name,
             _provider_subject(source_provider, conv["display_name"] or "Conversation"),
             body_text[:20000],
@@ -8641,7 +8615,7 @@ def send_manual_message(
     log_action(
         "manual_send_result",
         success=True,
-        sender_email=resolved_sender_email,
+        sender_email=resolved_sender_email or None,
         provider_message_id=provider_id,
         attachment_count=len(attachment_paths),
         **_conversation_log_fields(conv),

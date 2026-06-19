@@ -143,17 +143,18 @@ open http://127.0.0.1:9000/penguin-connect/ui
 ./scripts/penguin_connect_tool.py search "Taylor" --source both
 ./scripts/penguin_connect_tool.py message-search "dinner plan" --source both
 ./scripts/penguin_connect_tool.py messages CONVERSATION_ID --limit 25
-./scripts/penguin_connect_tool.py send CONVERSATION_ID --from you@gmail.com --message "On it"
-./scripts/penguin_connect_tool.py send CONVERSATION_ID --from you@gmail.com --attachment ~/Desktop/voice-memo.m4a
+./scripts/penguin_connect_tool.py send CONVERSATION_ID --message "On it"
+./scripts/penguin_connect_tool.py send CONVERSATION_ID --attachment ~/Desktop/voice-memo.m4a
 ./scripts/penguin_connect_tool.py contacts search "Taylor"
 ./scripts/penguin_connect_tool.py contacts create --first Taylor --phone +14155550101
 ./scripts/penguin_connect_tool.py contacts refresh
 ./scripts/penguin_connect_tool.py group compose --participant +14155550101 --participant friend@example.com --message "Starting this thread" --copy --open-messages
 ```
 
-The `send` command routes through an existing PenguinConnect conversation and
-keeps the normal route-safety checks. It can also attach local files, including
-audio voice memos. The local UI supports replies, file/image attachments from picker, drag/drop, or paste, in-composer
+The `send` command routes directly through an existing PenguinConnect conversation
+and keeps the normal Apple Messages route-safety checks; Gmail is not required
+for local manual sends. It can also attach local files, including audio voice
+memos. The local UI supports replies, file/image attachments from picker, drag/drop, or paste, in-composer
 voice memo recording, emoji
 shortcuts, message-level reply targets and copy actions, thread filtering,
 needs-reply/unread/drafts/unlabeled/muted/pinned/archived and label-based conversation views, bulk
