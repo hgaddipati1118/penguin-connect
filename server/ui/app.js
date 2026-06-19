@@ -623,6 +623,12 @@ function selectedConversations() {
   return state.conversations.filter((conversation) => state.selectedConversationIds.has(conversation.conversation_id));
 }
 
+function shouldBulkArchive(targets = selectedConversations()) {
+  if (state.conversationView === "archived") return false;
+  if (!targets.length) return true;
+  return !targets.every((conversation) => conversation.is_archived);
+}
+
 function pruneSelectedConversations() {
   const ids = new Set(state.conversations.map((conversation) => conversation.conversation_id));
   for (const selectedId of state.selectedConversationIds) {
@@ -636,9 +642,13 @@ function renderBulkActions(rows) {
   const allVisibleSelected = visibleCount > 0 && rows.every((conversation) => state.selectedConversationIds.has(conversation.conversation_id));
   const labelCount = cleanBulkLabels(el.bulkLabelsInput.value).length;
   const bulkFollowUpValue = el.bulkFollowUpAt.value.trim();
+  const archiveIntent = shouldBulkArchive();
   el.bulkState.textContent = state.bulkBusy ? "Updating selected" : (state.bulkMessage || `${selectedCount} selected`);
   el.selectVisibleButton.disabled = state.bulkBusy || !visibleCount || allVisibleSelected;
   el.bulkMarkReadButton.disabled = state.bulkBusy || selectedCount === 0;
+  el.bulkArchiveButton.textContent = archiveIntent ? "Archive" : "Restore";
+  el.bulkArchiveButton.title = archiveIntent ? "Archive selected conversations" : "Restore selected conversations";
+  el.bulkArchiveButton.setAttribute("aria-label", el.bulkArchiveButton.title);
   el.bulkArchiveButton.disabled = state.bulkBusy || selectedCount === 0;
   el.bulkLabelButton.disabled = state.bulkBusy || selectedCount === 0 || labelCount === 0;
   el.bulkRemoveLabelButton.disabled = state.bulkBusy || selectedCount === 0 || labelCount === 0;
@@ -2658,16 +2668,18 @@ async function bulkMarkSelectedRead() {
 async function bulkArchiveSelected() {
   const targets = selectedConversationSnapshot();
   if (!targets.length) return;
-  if (!window.confirm(`Archive ${targets.length} selected conversation${targets.length === 1 ? "" : "s"}?`)) return;
+  const archiveIntent = shouldBulkArchive(targets);
+  const actionLabel = archiveIntent ? "Archive" : "Restore";
+  if (!window.confirm(`${actionLabel} ${targets.length} selected conversation${targets.length === 1 ? "" : "s"}?`)) return;
   state.bulkBusy = true;
   state.bulkMessage = "";
   renderConversations();
   try {
     for (const conversation of targets) {
-      await updateConversationManagement(conversation.conversation_id, { archived: true });
+      await updateConversationManagement(conversation.conversation_id, { archived: archiveIntent });
     }
     state.selectedConversationIds.clear();
-    state.bulkMessage = `Archived ${targets.length}`;
+    state.bulkMessage = archiveIntent ? `Archived ${targets.length}` : `Restored ${targets.length}`;
   } catch (error) {
     state.bulkMessage = error.message;
   } finally {
