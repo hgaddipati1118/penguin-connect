@@ -155,6 +155,7 @@ const conversationViewLabels = {
   inbox: "Inbox",
   followup: "Follow-up",
   unread: "Unread",
+  drafts: "Drafts",
   pinned: "Pinned",
   archived: "Archived",
   all: "All",
@@ -522,6 +523,7 @@ function conversationSortValue(conversation) {
 function conversationMatchesView(conversation, view = state.conversationView) {
   if (view === "unread") return Number(conversation.unread_count || 0) > 0 && !conversation.is_archived;
   if (view === "followup") return hasFollowUp(conversation) && !conversation.is_archived;
+  if (view === "drafts") return Boolean(draftTextForConversation(conversation).trim()) && !conversation.is_archived;
   if (view === "pinned") return Boolean(conversation.is_pinned) && !conversation.is_archived;
   if (view === "archived") return Boolean(conversation.is_archived);
   if (view === "all") return true;
@@ -539,6 +541,7 @@ function conversationViewCounts() {
     inbox: state.conversations.filter((conversation) => conversationMatchesView(conversation, "inbox")).length,
     followup: state.conversations.filter((conversation) => conversationMatchesView(conversation, "followup")).length,
     unread: state.conversations.filter((conversation) => conversationMatchesView(conversation, "unread")).length,
+    drafts: state.conversations.filter((conversation) => conversationMatchesView(conversation, "drafts")).length,
     pinned: state.conversations.filter((conversation) => conversationMatchesView(conversation, "pinned")).length,
     archived: state.conversations.filter((conversation) => conversationMatchesView(conversation, "archived")).length,
     all: state.conversations.length,
