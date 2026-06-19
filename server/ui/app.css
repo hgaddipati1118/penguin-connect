@@ -1598,8 +1598,8 @@ textarea:focus,
 .draft-recipient-chip {
   display: inline-flex;
   align-items: center;
-  max-width: 100%;
-  min-height: 28px;
+  max-width: min(100%, 280px);
+  min-height: 34px;
   gap: 6px;
   padding: 3px 4px 3px 8px;
   border: 1px solid var(--line);
@@ -1609,11 +1609,41 @@ textarea:focus,
   font-size: 11px;
 }
 
-.draft-recipient-chip span {
+.draft-recipient-chip.known-recipient {
+  border-color: rgba(17, 100, 86, 0.34);
+  background: rgba(239, 248, 243, 0.72);
+}
+
+.draft-recipient-chip.unknown-recipient {
+  border-color: rgba(168, 83, 27, 0.32);
+}
+
+.draft-recipient-chip-main {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.draft-recipient-chip-label,
+.draft-recipient-chip-detail {
   overflow: hidden;
   max-width: 220px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.draft-recipient-chip-label {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.draft-recipient-chip-detail {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.draft-recipient-chip-detail[hidden] {
+  display: none;
 }
 
 .draft-recipient-chip button {

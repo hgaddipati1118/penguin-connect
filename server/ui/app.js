@@ -1374,6 +1374,43 @@ function uniqueRecipientValues(values) {
   return recipients;
 }
 
+function draftRecipientContactCandidates() {
+  return [
+    ...state.contacts,
+    ...Object.values(state.threadContactMatches || {}),
+    ...(state.selected?.contact_context || []),
+    ...state.conversations.flatMap((conversation) => conversationContactContextItems(conversation)),
+  ].filter((contact) => contact && typeof contact === "object");
+}
+
+function draftRecipientContact(recipient) {
+  return bestContactForHandle(recipient, draftRecipientContactCandidates());
+}
+
+function draftRecipientDisplay(recipient) {
+  const contact = draftRecipientContact(recipient);
+  const handle = String(recipient || "").trim();
+  if (!contact) {
+    return {
+      known: false,
+      label: handle,
+      detail: handleType(handle) || "recipient",
+      title: handle,
+    };
+  }
+
+  const label = contactDisplayName(contact);
+  const contactHandle = contactRecipientHandle(contact) || handle;
+  const organization = String(contact.organization || "").trim();
+  const note = contactNoteText(contact);
+  return {
+    known: contact.is_saved !== false,
+    label,
+    detail: [contactHandle !== label ? contactHandle : "", organization].filter(Boolean).join(" · "),
+    title: [label, contactHandle, organization, note ? `note: ${note}` : ""].filter(Boolean).join(" · "),
+  };
+}
+
 function buildMessagesDraftText(participants = uniqueRecipientValues(draftRecipientValues()), message = el.draftMessage.value) {
   if (!participants.length) return "";
   const body = String(message || "").trim().slice(0, 50000);
@@ -1507,13 +1544,21 @@ function renderDraftRecipientChips(values = uniqueRecipientValues(draftRecipient
   if (!values.length) return;
 
   values.forEach((recipient, index) => {
+    const display = draftRecipientDisplay(recipient);
     const chip = document.createElement("span");
-    chip.className = "draft-recipient-chip";
+    chip.className = `draft-recipient-chip ${display.known ? "known-recipient" : "unknown-recipient"}`;
+    chip.title = display.title;
     chip.innerHTML = `
-      <span></span>
+      <span class="draft-recipient-chip-main">
+        <span class="draft-recipient-chip-label"></span>
+        <span class="draft-recipient-chip-detail"></span>
+      </span>
       <button type="button" title="Remove recipient" aria-label="Remove recipient">x</button>
     `;
-    chip.querySelector("span").textContent = recipient;
+    chip.querySelector(".draft-recipient-chip-label").textContent = display.label;
+    const detail = chip.querySelector(".draft-recipient-chip-detail");
+    detail.textContent = display.detail;
+    detail.hidden = !display.detail;
     chip.querySelector("button").addEventListener("click", () => removeDraftRecipient(index));
     el.draftRecipientChips.append(chip);
   });
