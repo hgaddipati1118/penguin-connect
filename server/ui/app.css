@@ -1619,6 +1619,32 @@ textarea:focus,
   gap: 6px;
 }
 
+.voice-memo-row {
+  display: grid;
+  grid-template-columns: minmax(82px, 1fr) 48px minmax(64px, 0.8fr);
+  align-items: center;
+  gap: 6px;
+}
+
+.voice-memo-row .quiet-button.recording {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.voice-memo-timer,
+.voice-memo-status {
+  overflow: hidden;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-memo-timer {
+  text-align: center;
+}
+
 .emoji-button,
 .icon-button,
 .quiet-button,

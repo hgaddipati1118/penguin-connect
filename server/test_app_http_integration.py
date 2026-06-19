@@ -1108,6 +1108,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("saveRecipientListButton", html_response.text)
         self.assertIn("recipientLists", html_response.text)
         self.assertIn("createContactButton", html_response.text)
+        self.assertIn("voiceMemoButton", html_response.text)
+        self.assertIn("voiceMemoTimer", html_response.text)
         self.assertIn("markReadButton", html_response.text)
         self.assertIn("connectionButton", html_response.text)
         self.assertIn("conversationFilters", html_response.text)
@@ -1189,6 +1191,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn(".message-note-editor", css_response.text)
         self.assertIn(".message-actions", css_response.text)
         self.assertIn(".reply-context", css_response.text)
+        self.assertIn(".voice-memo-row", css_response.text)
+        self.assertIn(".voice-memo-timer", css_response.text)
         self.assertIn(".thread-management", css_response.text)
         self.assertIn(".codex-modes", css_response.text)
         self.assertIn("#codexQuestion", css_response.text)
@@ -1324,6 +1328,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("handleAttachmentPaste", js_response.text)
         self.assertIn("clipboardAttachmentFiles", js_response.text)
         self.assertIn("normalizeAttachmentFile", js_response.text)
+        self.assertIn("startVoiceMemoRecording", js_response.text)
+        self.assertIn("stopVoiceMemoRecording", js_response.text)
+        self.assertIn("Voice memo attached", js_response.text)
+        self.assertIn("Stop voice memo before sending", js_response.text)
         self.assertIn(".draft-preview", css_response.text)
 
     def test_messages_endpoint_uses_header_display_name_for_own_gmail_messages(self):

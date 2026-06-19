@@ -30,6 +30,12 @@ const state = {
   draftSaveTimer: null,
   codexMode: "reply",
   codexBusy: false,
+  voiceMemoRecorder: null,
+  voiceMemoStream: null,
+  voiceMemoChunks: [],
+  voiceMemoStartedAt: 0,
+  voiceMemoTimerId: 0,
+  voiceMemoStatus: "",
 };
 
 const el = {
@@ -97,6 +103,9 @@ const el = {
   clearReplyContextButton: document.querySelector("#clearReplyContextButton"),
   composer: document.querySelector("#composer"),
   emojiRow: document.querySelector("#emojiRow"),
+  voiceMemoButton: document.querySelector("#voiceMemoButton"),
+  voiceMemoTimer: document.querySelector("#voiceMemoTimer"),
+  voiceMemoStatus: document.querySelector("#voiceMemoStatus"),
   attachmentDrop: document.querySelector("#attachmentDrop"),
   fileInput: document.querySelector("#fileInput"),
   attachmentList: document.querySelector("#attachmentList"),
@@ -2438,6 +2447,154 @@ function renderAttachments() {
   }
 }
 
+function voiceMemoRecordingSupported() {
+  return Boolean(window.MediaRecorder && navigator.mediaDevices?.getUserMedia);
+}
+
+function voiceMemoMimeType() {
+  const candidates = [
+    "audio/mp4",
+    "audio/aac",
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/ogg;codecs=opus",
+  ];
+  if (!window.MediaRecorder?.isTypeSupported) return "";
+  return candidates.find((type) => window.MediaRecorder.isTypeSupported(type)) || "";
+}
+
+function voiceMemoDurationText(ms) {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
+}
+
+function stopVoiceMemoStream() {
+  if (!state.voiceMemoStream) return;
+  for (const track of state.voiceMemoStream.getTracks()) {
+    track.stop();
+  }
+  state.voiceMemoStream = null;
+}
+
+function clearVoiceMemoTimer() {
+  if (!state.voiceMemoTimerId) return;
+  window.clearInterval(state.voiceMemoTimerId);
+  state.voiceMemoTimerId = 0;
+}
+
+function renderVoiceMemoControls() {
+  const supported = voiceMemoRecordingSupported();
+  const recording = state.voiceMemoRecorder?.state === "recording";
+  el.voiceMemoButton.disabled = !supported;
+  el.voiceMemoButton.textContent = recording ? "Stop" : "Record";
+  el.voiceMemoButton.title = recording ? "Stop voice memo recording" : "Record voice memo";
+  el.voiceMemoButton.classList.toggle("recording", recording);
+  el.voiceMemoTimer.textContent = recording
+    ? voiceMemoDurationText(Date.now() - state.voiceMemoStartedAt)
+    : "00:00";
+  el.voiceMemoStatus.textContent = supported
+    ? state.voiceMemoStatus || "Mic ready"
+    : "Mic unavailable";
+}
+
+function voiceMemoFileName(mimeType) {
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+$/, "").replace("T", "-");
+  return `voice-memo-${stamp}${attachmentExtensionForType(mimeType) || ".webm"}`;
+}
+
+function makeVoiceMemoFile(blob, mimeType) {
+  const fileName = voiceMemoFileName(mimeType);
+  try {
+    return new File([blob], fileName, { type: mimeType || blob.type || "audio/webm", lastModified: Date.now() });
+  } catch (_error) {
+    blob.name = fileName;
+    blob.lastModified = Date.now();
+    return blob;
+  }
+}
+
+function finishVoiceMemoRecording(recorder) {
+  clearVoiceMemoTimer();
+  stopVoiceMemoStream();
+  const chunks = state.voiceMemoChunks;
+  const mimeType = recorder.mimeType || chunks[0]?.type || "audio/webm";
+  state.voiceMemoRecorder = null;
+  state.voiceMemoChunks = [];
+  state.voiceMemoStartedAt = 0;
+  if (!chunks.length) {
+    state.voiceMemoStatus = "No audio captured";
+    renderVoiceMemoControls();
+    return;
+  }
+  const blob = new Blob(chunks, { type: mimeType });
+  state.attachments.push(normalizeAttachmentFile(makeVoiceMemoFile(blob, mimeType)));
+  state.voiceMemoStatus = "Voice memo added";
+  el.sendState.textContent = "Voice memo attached";
+  renderAttachments();
+  renderVoiceMemoControls();
+  buildCodexPrompt();
+}
+
+async function startVoiceMemoRecording() {
+  if (!voiceMemoRecordingSupported()) {
+    state.voiceMemoStatus = "Mic unavailable";
+    renderVoiceMemoControls();
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mimeType = voiceMemoMimeType();
+    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    state.voiceMemoStream = stream;
+    state.voiceMemoRecorder = recorder;
+    state.voiceMemoChunks = [];
+    state.voiceMemoStartedAt = Date.now();
+    state.voiceMemoStatus = "Recording";
+    recorder.addEventListener("dataavailable", (event) => {
+      if (event.data && event.data.size > 0) {
+        state.voiceMemoChunks.push(event.data);
+      }
+    });
+    recorder.addEventListener("stop", () => finishVoiceMemoRecording(recorder), { once: true });
+    recorder.addEventListener("error", (event) => {
+      state.voiceMemoStatus = event.error?.message || "Recording failed";
+      state.voiceMemoRecorder = null;
+      state.voiceMemoChunks = [];
+      clearVoiceMemoTimer();
+      stopVoiceMemoStream();
+      renderVoiceMemoControls();
+    });
+    recorder.start();
+    state.voiceMemoTimerId = window.setInterval(renderVoiceMemoControls, 500);
+    renderVoiceMemoControls();
+  } catch (error) {
+    state.voiceMemoStatus = error.name === "NotAllowedError" ? "Mic permission denied" : error.message || "Recording failed";
+    state.voiceMemoRecorder = null;
+    state.voiceMemoChunks = [];
+    clearVoiceMemoTimer();
+    stopVoiceMemoStream();
+    renderVoiceMemoControls();
+  }
+}
+
+function stopVoiceMemoRecording() {
+  const recorder = state.voiceMemoRecorder;
+  if (!recorder || recorder.state === "inactive") return;
+  state.voiceMemoStatus = "Saving voice memo";
+  recorder.stop();
+  renderVoiceMemoControls();
+}
+
+function toggleVoiceMemoRecording() {
+  if (state.voiceMemoRecorder?.state === "recording") {
+    stopVoiceMemoRecording();
+  } else {
+    startVoiceMemoRecording();
+  }
+}
+
 function renderThreadControls() {
   const selected = state.selected;
   const hasSelection = Boolean(selected);
@@ -2731,6 +2888,10 @@ function readFileAsBase64(file) {
 
 async function sendMessage() {
   if (!state.selected) return;
+  if (state.voiceMemoRecorder?.state === "recording") {
+    el.sendState.textContent = "Stop voice memo before sending";
+    return;
+  }
   const conversationId = state.selected.conversation_id;
   const message = el.composer.value;
   if (!message.trim() && !state.attachments.length) {
@@ -3386,14 +3547,16 @@ function addFiles(fileList) {
 
 function attachmentExtensionForType(type) {
   const normalized = String(type || "").toLowerCase();
-  if (normalized === "image/png") return ".png";
-  if (normalized === "image/jpeg") return ".jpg";
-  if (normalized === "image/gif") return ".gif";
-  if (normalized === "image/webp") return ".webp";
-  if (normalized === "image/heic") return ".heic";
-  if (normalized === "audio/mp4" || normalized === "audio/aac") return ".m4a";
-  if (normalized === "audio/mpeg") return ".mp3";
-  if (normalized === "audio/wav") return ".wav";
+  if (normalized.startsWith("image/png")) return ".png";
+  if (normalized.startsWith("image/jpeg")) return ".jpg";
+  if (normalized.startsWith("image/gif")) return ".gif";
+  if (normalized.startsWith("image/webp")) return ".webp";
+  if (normalized.startsWith("image/heic")) return ".heic";
+  if (normalized.startsWith("audio/mp4") || normalized.startsWith("audio/aac")) return ".m4a";
+  if (normalized.startsWith("audio/mpeg")) return ".mp3";
+  if (normalized.startsWith("audio/wav")) return ".wav";
+  if (normalized.startsWith("audio/webm")) return ".webm";
+  if (normalized.startsWith("audio/ogg")) return ".ogg";
   return "";
 }
 
@@ -3592,6 +3755,7 @@ el.draftRecipients.addEventListener("blur", (event) => {
 });
 el.draftMessage.addEventListener("input", () => renderDraftPreview());
 el.sendButton.addEventListener("click", sendMessage);
+el.voiceMemoButton.addEventListener("click", toggleVoiceMemoRecording);
 el.pinButton.addEventListener("click", () => setConversationManagement({ pinned: !Boolean(state.selected?.is_pinned) }));
 el.archiveButton.addEventListener("click", () => setConversationManagement({ archived: !Boolean(state.selected?.is_archived) }));
 el.saveManagementButton.addEventListener("click", saveConversationManagement);
@@ -3721,6 +3885,7 @@ el.bulkPinButton.addEventListener("click", bulkPinSelected);
 el.bulkArchiveButton.addEventListener("click", bulkArchiveSelected);
 
 renderEmojiButtons();
+renderVoiceMemoControls();
 renderMessages();
 renderContacts();
 renderContactSourceFilters();

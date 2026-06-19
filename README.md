@@ -153,7 +153,8 @@ open http://127.0.0.1:9000/penguin-connect/ui
 
 The `send` command routes through an existing PenguinConnect conversation and
 keeps the normal route-safety checks. It can also attach local files, including
-audio voice memos. The local UI supports replies, file/image attachments from picker, drag/drop, or paste, emoji
+audio voice memos. The local UI supports replies, file/image attachments from picker, drag/drop, or paste, in-composer
+voice memo recording, emoji
 shortcuts, message-level reply targets and copy actions, thread filtering,
 needs-reply/unread/drafts/unlabeled/pinned/archived and label-based conversation views, bulk
 mark-read/mark-unread/pin-unpin/archive-restore/label add-remove/draft cleanup actions, latest-message previews in the conversation rail,
