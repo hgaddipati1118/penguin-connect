@@ -2667,8 +2667,13 @@ textarea:focus,
 }
 
 .draft-recipient-suggestion:not(.empty-state):hover,
-.draft-recipient-suggestion:not(.empty-state):focus-visible {
+.draft-recipient-suggestion:not(.empty-state):focus-visible,
+.draft-recipient-suggestion.active {
   border-color: var(--accent);
+}
+
+.draft-recipient-suggestion.active {
+  background: rgba(17, 100, 86, 0.08);
 }
 
 .draft-recipient-suggestion:disabled {

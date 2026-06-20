@@ -42,6 +42,7 @@ const state = {
   draftRecipientSuggestToken: 0,
   draftRecipientSuggestionQuery: "",
   draftRecipientSuggestions: [],
+  draftRecipientActiveSuggestionIndex: -1,
   draftRecipientContactCache: [],
   draftThreadResolveTimer: null,
   draftThreadResolveToken: 0,
@@ -3413,6 +3414,7 @@ function clearDraftRecipientSuggestions() {
   state.draftRecipientSuggestToken += 1;
   state.draftRecipientSuggestionQuery = "";
   state.draftRecipientSuggestions = [];
+  state.draftRecipientActiveSuggestionIndex = -1;
   renderDraftRecipientSuggestions();
 }
 
@@ -3428,29 +3430,72 @@ function cacheDraftRecipientContact(contact) {
   ].slice(0, 20);
 }
 
+function draftRecipientEnabledSuggestions() {
+  const existingKeys = new Set(uniqueRecipientValues(draftRecipientValues()).map(recipientCompareKey));
+  return state.draftRecipientSuggestions.filter((contact) => {
+    const handle = contactRecipientHandle(contact);
+    return handle && !existingKeys.has(recipientCompareKey(handle));
+  });
+}
+
+function normalizeDraftRecipientActiveSuggestionIndex() {
+  const enabledCount = draftRecipientEnabledSuggestions().length;
+  if (!enabledCount) {
+    state.draftRecipientActiveSuggestionIndex = -1;
+    return -1;
+  }
+  if (state.draftRecipientActiveSuggestionIndex < 0 || state.draftRecipientActiveSuggestionIndex >= enabledCount) {
+    state.draftRecipientActiveSuggestionIndex = 0;
+  }
+  return state.draftRecipientActiveSuggestionIndex;
+}
+
+function moveDraftRecipientActiveSuggestion(direction) {
+  const enabledCount = draftRecipientEnabledSuggestions().length;
+  if (!enabledCount) return;
+  const current = normalizeDraftRecipientActiveSuggestionIndex();
+  state.draftRecipientActiveSuggestionIndex = (current + direction + enabledCount) % enabledCount;
+  renderDraftRecipientSuggestions();
+}
+
 function renderDraftRecipientSuggestions() {
   el.draftRecipientSuggestions.replaceChildren();
   const query = state.draftRecipientSuggestionQuery;
   const suggestions = state.draftRecipientSuggestions;
   el.draftRecipientSuggestions.hidden = !query || query.length < 2;
-  if (el.draftRecipientSuggestions.hidden) return;
+  if (el.draftRecipientSuggestions.hidden) {
+    state.draftRecipientActiveSuggestionIndex = -1;
+    el.draftRecipients.removeAttribute("aria-activedescendant");
+    return;
+  }
 
   if (!suggestions.length) {
     const empty = document.createElement("div");
     empty.className = "draft-recipient-suggestion empty-state compact-state";
     empty.textContent = "No contact matches";
     el.draftRecipientSuggestions.append(empty);
+    state.draftRecipientActiveSuggestionIndex = -1;
+    el.draftRecipients.removeAttribute("aria-activedescendant");
     return;
   }
 
   const existingKeys = new Set(uniqueRecipientValues(draftRecipientValues()).map(recipientCompareKey));
+  const activeIndex = normalizeDraftRecipientActiveSuggestionIndex();
+  let enabledIndex = -1;
   for (const contact of suggestions) {
     const handle = contactRecipientHandle(contact);
     const key = recipientCompareKey(handle);
+    const enabled = Boolean(handle && !existingKeys.has(key));
+    if (enabled) enabledIndex += 1;
+    const active = enabled && enabledIndex === activeIndex;
     const button = document.createElement("button");
     button.className = "draft-recipient-suggestion";
+    button.classList.toggle("active", active);
     button.type = "button";
-    button.disabled = !handle || existingKeys.has(key);
+    button.disabled = !enabled;
+    button.setAttribute("role", "option");
+    button.setAttribute("aria-selected", active ? "true" : "false");
+    if (active) button.id = "activeDraftRecipientSuggestion";
     button.innerHTML = `
       <span class="draft-recipient-suggestion-main">
         <span class="draft-recipient-suggestion-name"></span>
@@ -3464,6 +3509,14 @@ function renderDraftRecipientSuggestions() {
     button.addEventListener("click", () => addDraftRecipientFromSuggestion(contact));
     el.draftRecipientSuggestions.append(button);
   }
+  if (activeIndex >= 0) {
+    el.draftRecipients.setAttribute("aria-activedescendant", "activeDraftRecipientSuggestion");
+    requestAnimationFrame(() => {
+      el.draftRecipientSuggestions.querySelector(".draft-recipient-suggestion.active")?.scrollIntoView({ block: "nearest" });
+    });
+  } else {
+    el.draftRecipients.removeAttribute("aria-activedescendant");
+  }
 }
 
 async function loadDraftRecipientSuggestions(query) {
@@ -3472,6 +3525,7 @@ async function loadDraftRecipientSuggestions(query) {
   state.draftRecipientSuggestionQuery = query;
   if (query.length < 2) {
     state.draftRecipientSuggestions = [];
+    state.draftRecipientActiveSuggestionIndex = -1;
     renderDraftRecipientSuggestions();
     return;
   }
@@ -3485,11 +3539,13 @@ async function loadDraftRecipientSuggestions(query) {
     const payload = await api(`/penguin-connect/contacts?${params.toString()}`);
     if (token !== state.draftRecipientSuggestToken) return;
     state.draftRecipientSuggestions = (payload.contacts || []).filter(contactRecipientHandle).slice(0, 6);
+    state.draftRecipientActiveSuggestionIndex = 0;
     renderDraftRecipientSuggestions();
     refreshDraftRecipientChips();
   } catch (_error) {
     if (token !== state.draftRecipientSuggestToken) return;
     state.draftRecipientSuggestions = [];
+    state.draftRecipientActiveSuggestionIndex = -1;
     renderDraftRecipientSuggestions();
   }
 }
@@ -3872,6 +3928,35 @@ function addDraftRecipientFromSuggestion(contact) {
   setDraftRecipients(recipients, { focus: true });
   clearDraftRecipientSuggestions();
   el.draftState.textContent = alreadyAdded ? "Recipient already added" : `${contactDisplayName(contact)} added`;
+}
+
+function selectActiveDraftRecipientSuggestion() {
+  const suggestions = draftRecipientEnabledSuggestions();
+  const index = normalizeDraftRecipientActiveSuggestionIndex();
+  const contact = index >= 0 ? suggestions[index] : null;
+  if (!contact) return false;
+  addDraftRecipientFromSuggestion(contact);
+  return true;
+}
+
+function handleDraftRecipientsKeydown(event) {
+  handleSubmitShortcut(event, el.sendDraftButton, sendDraftIfExisting);
+  if (event.defaultPrevented) return;
+  const suggestionsOpen = !el.draftRecipientSuggestions.hidden && draftRecipientEnabledSuggestions().length > 0;
+  if (!suggestionsOpen) return;
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    moveDraftRecipientActiveSuggestion(1);
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    moveDraftRecipientActiveSuggestion(-1);
+  } else if (event.key === "Enter" || event.key === "Tab") {
+    event.preventDefault();
+    selectActiveDraftRecipientSuggestion();
+  } else if (event.key === "Escape") {
+    event.preventDefault();
+    clearDraftRecipientSuggestions();
+  }
 }
 
 function visibleContactRecipientHandles() {
@@ -9881,7 +9966,7 @@ el.draftRecipients.addEventListener("input", () => {
   scheduleDraftRecipientSuggestions();
   saveNewChatDraft();
 });
-el.draftRecipients.addEventListener("keydown", (event) => handleSubmitShortcut(event, el.sendDraftButton, sendDraftIfExisting));
+el.draftRecipients.addEventListener("keydown", handleDraftRecipientsKeydown);
 el.draftRecipientSuggestions.addEventListener("mousedown", (event) => {
   if (event.target.closest(".draft-recipient-suggestion")) {
     event.preventDefault();
