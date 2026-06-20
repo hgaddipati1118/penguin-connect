@@ -2905,6 +2905,7 @@ function renderConversations() {
         <span class="conversation-preview"></span>
       </button>
       <span class="conversation-row-actions" aria-label="Conversation quick actions">
+        <button type="button" data-action="reply">Reply</button>
         <button type="button" data-action="read-state">Read</button>
         <button type="button" data-action="pin">Pin</button>
         <button type="button" data-action="mute">Mute</button>
@@ -3004,6 +3005,7 @@ function renderConversations() {
     const previewText = conversationPreviewText(conversation);
     appendHighlightedText(preview, previewText, terms);
     preview.hidden = !previewText;
+    row.querySelector('[data-action="reply"]').addEventListener("click", () => replyToConversationRow(conversation));
     const rowReadButton = row.querySelector('[data-action="read-state"]');
     const rowMarkUnreadIntent = !conversationHasUnread(conversation);
     rowReadButton.textContent = rowMarkUnreadIntent ? "Unread" : "Read";
@@ -3034,6 +3036,14 @@ function renderConversations() {
     });
     el.conversationList.append(row);
   }
+}
+
+async function replyToConversationRow(conversation) {
+  if (!conversation?.conversation_id) return;
+  state.focusMessageId = "";
+  await selectConversation(conversation);
+  el.composer.focus();
+  el.sendState.textContent = draftTextForConversation(conversation).trim() ? "Reply draft ready" : "Reply ready";
 }
 
 function findConversationForContact(contact) {
