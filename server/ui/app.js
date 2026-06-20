@@ -2064,6 +2064,16 @@ function selectedVisibleConversationIndex(rows = visibleConversationRows()) {
   return rows.findIndex((conversation) => conversation.conversation_id === state.selected.conversation_id);
 }
 
+function updateConversationSearchActiveDescendant(rows = visibleConversationRows()) {
+  const selectedIndex = selectedVisibleConversationIndex(rows);
+  if (selectedIndex >= 0) {
+    el.conversationSearch.setAttribute("aria-activedescendant", "activeConversationSearchResult");
+  } else {
+    el.conversationSearch.removeAttribute("aria-activedescendant");
+  }
+  return selectedIndex;
+}
+
 function scrollSelectedConversationIntoView() {
   if (!state.selected) return;
   requestAnimationFrame(() => {
@@ -2086,6 +2096,39 @@ async function navigateVisibleConversation(direction) {
   state.focusMessageId = "";
   await selectConversation(rows[nextIndex]);
   return true;
+}
+
+async function openVisibleConversationSearchResult() {
+  const rows = visibleConversationRows();
+  if (!rows.length) {
+    el.conversationSearch.removeAttribute("aria-activedescendant");
+    return false;
+  }
+  let index = selectedVisibleConversationIndex(rows);
+  if (index < 0) index = 0;
+  state.focusMessageId = "";
+  await selectConversation(rows[index]);
+  return true;
+}
+
+function handleConversationSearchKeydown(event) {
+  if (event.defaultPrevented || event.isComposing) return;
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    navigateVisibleConversation(1);
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    navigateVisibleConversation(-1);
+  } else if (event.key === "Enter") {
+    event.preventDefault();
+    openVisibleConversationSearchResult();
+  } else if (event.key === "Escape" && el.conversationSearch.value.trim()) {
+    event.preventDefault();
+    el.conversationSearch.value = "";
+    state.activeConversationViewId = "";
+    renderConversations();
+  }
 }
 
 function isShortcutEditableTarget(target) {
@@ -3025,6 +3068,7 @@ function renderConversations() {
   pruneSelectedConversations();
   const rows = visibleConversationRows();
   const terms = highlightTerms(el.conversationSearch.value.trim());
+  updateConversationSearchActiveDescendant(rows);
 
   renderConversationFilters();
   renderLabelFilters();
@@ -3041,8 +3085,12 @@ function renderConversations() {
 
   for (const conversation of rows) {
     const row = document.createElement("div");
-    row.className = `conversation-row ${state.selected?.conversation_id === conversation.conversation_id ? "active" : ""}`;
+    const active = state.selected?.conversation_id === conversation.conversation_id;
+    row.className = `conversation-row ${active ? "active" : ""}`;
     row.dataset.conversationId = conversation.conversation_id;
+    row.setAttribute("role", "listitem");
+    row.setAttribute("aria-current", active ? "true" : "false");
+    if (active) row.id = "activeConversationSearchResult";
     row.innerHTML = `
       <button class="conversation-select" type="button" title="Select conversation" aria-label="Select conversation"></button>
       <button class="conversation-item" type="button">
@@ -9914,6 +9962,7 @@ el.conversationSearch.addEventListener("input", () => {
   state.activeConversationViewId = "";
   renderConversations();
 });
+el.conversationSearch.addEventListener("keydown", handleConversationSearchKeydown);
 el.contactSearch.addEventListener("input", () => {
   state.activeContactSearchViewId = "";
   state.activeContactSearchResultIndex = -1;
