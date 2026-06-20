@@ -1310,7 +1310,19 @@ def _noted_contact_keys(conn: sqlite3.Connection) -> list[str]:
 
 
 def _contact_has_handle_type(contact: dict, handle_type: str) -> bool:
-    return str(contact.get("handle_type") or "").strip().lower() == handle_type
+    normalized = str(handle_type or "").strip().lower()
+    if normalized == "phone":
+        return bool(
+            str(contact.get("phone") or "").strip()
+            or str(contact.get("phone_normalized") or "").strip()
+            or any(str(key or "").startswith("phone:") for key in contact.get("contact_keys") or [])
+        )
+    if normalized == "email":
+        return bool(
+            str(contact.get("email") or "").strip()
+            or any(str(key or "").startswith("email:") for key in contact.get("contact_keys") or [])
+        )
+    return str(contact.get("handle_type") or "").strip().lower() == normalized
 
 
 def _contact_source_counts(conn: sqlite3.Connection) -> dict[str, int]:
@@ -1661,7 +1673,7 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
     elif normalized_source in {"all", "contacts", "favorites", "noted", "phones", "emails"}:
         contact_params = [*params]
         contact_limit = ""
-        if normalized_source not in {"favorites", "noted"}:
+        if normalized_source not in {"favorites", "noted", "phones", "emails"}:
             contact_result_limit = max(1, limit_value // 2) if normalized_source == "all" and not query else limit_value
             contact_params.append(contact_result_limit)
             contact_limit = "LIMIT ?"
@@ -1693,7 +1705,7 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
             "" if normalized_source in {"favorites", "noted", "threaded", "unread", "needs_reply", "followup"} else query,
             limit=limit_value
             if normalized_source in {"favorites", "noted", "threaded", "unread", "needs_reply", "followup"}
-            else max(0, limit_value - len(contact_items)),
+            else (limit_value if normalized_source in {"phones", "emails"} else max(0, limit_value - len(contact_items))),
             existing_keys=existing_keys,
             include_all=normalized_source in {"participants", "favorites", "noted", "threaded", "unread", "needs_reply", "followup", "phones", "emails"} or (normalized_source == "all" and not query),
             allowed_keys=favorite_key_set

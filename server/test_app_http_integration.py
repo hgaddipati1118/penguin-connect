@@ -1271,6 +1271,14 @@ class AppHttpIntegrationTests(unittest.TestCase):
                 "/penguin-connect/contacts",
                 params={"source": "favorites", "search": "alex", "limit": 10},
             )
+            phones_response = client.get(
+                "/penguin-connect/contacts",
+                params={"source": "phones", "search": "alex", "limit": 10},
+            )
+            emails_response = client.get(
+                "/penguin-connect/contacts",
+                params={"source": "emails", "search": "alex", "limit": 10},
+            )
 
         self.assertEqual(favorite_response.status_code, 200)
         self.assertEqual(note_response.status_code, 200)
@@ -1293,6 +1301,23 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(favorite_body["count"], 1)
         self.assertEqual(favorite_body["contacts"][0]["display_name"], "Alex Dual")
         self.assertEqual(favorite_body["contacts"][0]["contact_note"], "Bridge note on phone key.")
+
+        self.assertEqual(phones_response.status_code, 200)
+        phones_body = phones_response.json()
+        self.assertEqual(phones_body["source"], "phones")
+        self.assertEqual(phones_body["source_counts"]["phones"], 2)
+        self.assertEqual(phones_body["source_counts"]["emails"], 2)
+        self.assertEqual(phones_body["count"], 1)
+        self.assertEqual(phones_body["contacts"][0]["display_name"], "Alex Dual")
+        self.assertEqual(phones_body["contacts"][0]["handle_type"], "email")
+        self.assertEqual(phones_body["contacts"][0]["phone_normalized"], "14155550103")
+
+        self.assertEqual(emails_response.status_code, 200)
+        emails_body = emails_response.json()
+        self.assertEqual(emails_body["source"], "emails")
+        self.assertEqual(emails_body["count"], 1)
+        self.assertEqual(emails_body["contacts"][0]["display_name"], "Alex Dual")
+        self.assertEqual(emails_body["contacts"][0]["primary_handle"], "alex.dual@example.test")
 
     def test_contacts_endpoint_searches_unsaved_conversation_participants(self):
         conn = self._get_connection()

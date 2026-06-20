@@ -166,7 +166,7 @@ files and audio plus date ranges, highlighted loaded-message filters for sender/
 starred/noted-message filtering, local message starring and private
 message notes, per-message read/unread toggles, sender-history Find and thread-filter actions, visible loaded-message copy and bulk star/read/unread actions, opening synced attachment files, a per-thread media browser for loaded
 images/audio/files, inline previews for local image attachments, inline playback
-for local audio attachments, highlighted cached Contacts search/refresh with saved/unsaved/threaded/unread/needs-reply/follow-up/favorite/noted/phone/email
+for local audio attachments, highlighted cached Contacts search/refresh with saved/unsaved/threaded/unread/needs-reply/follow-up/favorite/noted/phone-handle/email-handle
 source filters with counts, contact thread, needs-reply, follow-up, and unread activity metadata, contact sorting including recent-activity, needs-reply-first, follow-up-first, unread-first, and threads-first triage, saved contact-search views, all/saved/unsaved contact browsing, conversation-participant fallback and related-thread shortcuts with unread/source context,
 thread-name, cached-message, and local-management-aware contact/participant search with highlighted related-thread label/note/message context, contact-to-thread rail filtering and matching-message focus, private contact notes with note-aware search, contact creation, contact-to-thread matching, saved-contact resolution for
 selected-thread participants, single and bulk copyable contact detail dossiers, copyable/searchable recent contact history with thread filters, click-to-draft contact starts, contact-to-new-chat recipient picking with visible-result bulk add/copy/save actions,
