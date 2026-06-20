@@ -395,6 +395,7 @@ const contactSortLabels = {
   unread: "Unread first",
   needsReply: "Needs reply first",
   followup: "Follow-ups first",
+  activity: "Recent activity",
   saved: "Saved first",
   unsaved: "Unsaved first",
   recent: "Recently imported",
@@ -1133,6 +1134,11 @@ function contactImportedSortValue(contact) {
   return Number.isNaN(value) ? 0 : value;
 }
 
+function contactActivitySortValue(contact) {
+  const value = Date.parse(contact?.last_thread_at || "");
+  return Number.isNaN(value) ? 0 : value;
+}
+
 function compareContactName(a, b) {
   return contactNameSortValue(a).localeCompare(contactNameSortValue(b))
     || contactHandleSortValue(a).localeCompare(contactHandleSortValue(b));
@@ -1207,6 +1213,11 @@ function compareContactFollowUp(a, b) {
     || compareContactThreads(a, b);
 }
 
+function compareContactActivity(a, b) {
+  return contactActivitySortValue(b) - contactActivitySortValue(a)
+    || compareContactThreads(a, b);
+}
+
 function compareContacts(a, b) {
   if (state.contactSort === "name") return compareContactName(a, b);
   if (state.contactSort === "favorite") return compareContactFavorite(a, b);
@@ -1215,6 +1226,7 @@ function compareContacts(a, b) {
   if (state.contactSort === "unread") return compareContactUnread(a, b);
   if (state.contactSort === "needsReply") return compareContactNeedsReply(a, b);
   if (state.contactSort === "followup") return compareContactFollowUp(a, b);
+  if (state.contactSort === "activity") return compareContactActivity(a, b);
   if (state.contactSort === "saved") return compareContactSaved(a, b);
   if (state.contactSort === "unsaved") return compareContactUnsaved(a, b);
   if (state.contactSort === "recent") return compareContactRecent(a, b);
