@@ -588,6 +588,7 @@ const conversationSortLabels = {
   priority: "Priority",
   unread: "Unread",
   followup: "Follow-up",
+  unknown: "Unknown first",
   name: "A-Z",
 };
 
@@ -1821,6 +1822,13 @@ function compareConversationUnread(a, b) {
     || compareConversationRecent(a, b);
 }
 
+function compareConversationUnknown(a, b) {
+  return pinnedSortDiff(a, b)
+    || conversationUnknownParticipantCount(b) - conversationUnknownParticipantCount(a)
+    || Number(conversationHasUnknownParticipants(b)) - Number(conversationHasUnknownParticipants(a))
+    || compareConversationRecent(a, b);
+}
+
 function compareConversationName(a, b) {
   return pinnedSortDiff(a, b)
     || conversationNameSortValue(a).localeCompare(conversationNameSortValue(b))
@@ -1831,6 +1839,7 @@ function compareConversations(a, b) {
   if (state.conversationSort === "priority") return compareConversationPriority(a, b);
   if (state.conversationSort === "unread") return compareConversationUnread(a, b);
   if (state.conversationSort === "followup") return compareConversationFollowUp(a, b);
+  if (state.conversationSort === "unknown") return compareConversationUnknown(a, b);
   if (state.conversationSort === "name") return compareConversationName(a, b);
   return pinnedSortDiff(a, b) || compareConversationRecent(a, b);
 }

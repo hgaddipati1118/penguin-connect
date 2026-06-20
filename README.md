@@ -157,7 +157,7 @@ for local manual sends. It can also attach local files, including audio voice
 memos. The local UI supports replies, file/image attachments from picker, drag/drop, or paste, in-composer
 voice memo recording, emoji
 shortcuts, visible-page auto-refresh with new-activity status for cached conversations
-and the selected thread, message-level reply targets and copy actions, thread filtering and sorting,
+and the selected thread, message-level reply targets and copy actions, thread filtering and unknown-first sorting,
 needs-reply/unread/direct/groups/unknown-participant/drafts/unlabeled/muted/pinned/archived and label-based conversation views, bulk
 mark-read/mark-unread/pin-unpin/mute-unmute/archive-restore/label add-remove, selected-thread summary copy, selected-people add/copy/save/create, and draft cleanup actions, latest-message previews in the conversation rail,
 highlighted conversation search with saved rail views,
