@@ -157,6 +157,7 @@ const el = {
   contactSavedViews: document.querySelector("#contactSavedViews"),
   contactSelectVisibleButton: document.querySelector("#contactSelectVisibleButton"),
   contactAddVisibleButton: document.querySelector("#contactAddVisibleButton"),
+  contactFilterThreadsButton: document.querySelector("#contactFilterThreadsButton"),
   contactCopyVisibleButton: document.querySelector("#contactCopyVisibleButton"),
   contactCopyDetailsButton: document.querySelector("#contactCopyDetailsButton"),
   contactSaveVisibleButton: document.querySelector("#contactSaveVisibleButton"),
@@ -2019,12 +2020,10 @@ function renderLabelFilters() {
 
 function visibleConversationRows() {
   const query = el.conversationSearch.value.trim().toLowerCase();
-  const digitQuery = digitsOnly(query);
   return state.conversations.filter((conversation) => {
     if (!conversationMatchesView(conversation)) return false;
     if (!conversationMatchesLabel(conversation)) return false;
-    const haystack = conversationHaystack(conversation);
-    return !query || haystack.includes(query) || (digitQuery.length >= 3 && haystack.includes(digitQuery));
+    return !query || conversationMatchesSearch(conversation, query);
   }).sort((a, b) => {
     if (state.conversationSort === "recent" && state.conversationView === "followup") {
       const followUpDiff = followUpSortValue(a) - followUpSortValue(b);
@@ -2032,6 +2031,29 @@ function visibleConversationRows() {
     }
     return compareConversations(a, b);
   });
+}
+
+function conversationSearchTerms(search) {
+  return String(search || "")
+    .toLowerCase()
+    .split(/\s*\|\s*|\n+/)
+    .map((term) => term.trim())
+    .filter(Boolean);
+}
+
+function conversationTermMatchesHaystack(haystack, term) {
+  const query = String(term || "").trim().toLowerCase();
+  if (!query) return false;
+  const digitQuery = digitsOnly(query);
+  return haystack.includes(query) || (digitQuery.length >= 3 && haystack.includes(digitQuery));
+}
+
+function conversationMatchesSearch(conversation, search) {
+  const haystack = conversationHaystack(conversation);
+  const terms = conversationSearchTerms(search);
+  if (!terms.length) return true;
+  if (terms.length === 1) return conversationTermMatchesHaystack(haystack, terms[0]);
+  return terms.some((term) => conversationTermMatchesHaystack(haystack, term));
 }
 
 function selectedVisibleConversationIndex(rows = visibleConversationRows()) {
@@ -3982,6 +4004,7 @@ function renderContactBulkActions() {
   const unfavoriteCount = manageableContacts.length - favoriteCount;
   el.contactSelectVisibleButton.disabled = visibleCount === 0;
   el.contactAddVisibleButton.disabled = !hasRecipients;
+  el.contactFilterThreadsButton.disabled = !hasRecipients;
   el.contactCopyVisibleButton.disabled = !hasRecipients;
   el.contactCopyDetailsButton.disabled = detailCount === 0;
   el.contactSaveVisibleButton.disabled = !hasRecipients;
@@ -3990,6 +4013,7 @@ function renderContactBulkActions() {
   el.contactCreateVisibleButton.disabled = !creatableCount;
   el.contactClearSelectedButton.disabled = selectedCount === 0;
   el.contactAddVisibleButton.textContent = selectedCount ? "Add selected" : "Add visible";
+  el.contactFilterThreadsButton.textContent = selectedCount ? "Threads selected" : "Threads visible";
   el.contactCopyVisibleButton.textContent = selectedCount ? "Copy selected" : "Copy visible";
   el.contactCopyDetailsButton.textContent = selectedCount ? "Copy selected details" : "Copy visible details";
   el.contactSaveVisibleButton.textContent = selectedCount ? "Save selected" : "Save visible";
@@ -4055,6 +4079,27 @@ function addVisibleContactsToDraft() {
     : "Contacts already added";
   el.contactStatus.textContent = status;
   el.draftState.textContent = status;
+}
+
+function filterConversationsForContactHandles() {
+  const handles = contactBulkRecipientHandles();
+  if (!handles.length) {
+    el.contactStatus.textContent = "No contact handles";
+    return;
+  }
+
+  state.conversationView = "all";
+  state.conversationLabel = "";
+  state.focusMessageId = "";
+  el.conversationSearch.value = handles.join(" | ");
+  renderConversations();
+  const count = visibleConversationRows().length;
+  const selectedCount = selectedContactRecipientHandles().length;
+  const sourceLabel = selectedCount ? "selected" : "visible";
+  el.contactStatus.textContent = count
+    ? `Showing ${count} thread${count === 1 ? "" : "s"} for ${handles.length} ${sourceLabel} contact${handles.length === 1 ? "" : "s"}`
+    : `No matching threads for ${handles.length} ${sourceLabel} contact${handles.length === 1 ? "" : "s"}`;
+  el.conversationSearch.focus();
 }
 
 async function copyVisibleContacts() {
@@ -9758,6 +9803,7 @@ el.contactRefreshButton.addEventListener("click", async () => {
 });
 el.contactSelectVisibleButton.addEventListener("click", selectVisibleContacts);
 el.contactAddVisibleButton.addEventListener("click", addVisibleContactsToDraft);
+el.contactFilterThreadsButton.addEventListener("click", filterConversationsForContactHandles);
 el.contactCopyVisibleButton.addEventListener("click", copyVisibleContacts);
 el.contactCopyDetailsButton.addEventListener("click", copyBulkContactDetails);
 el.contactSaveVisibleButton.addEventListener("click", saveVisibleContactsAsRecipientList);
