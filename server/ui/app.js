@@ -234,6 +234,8 @@ const el = {
   starFocusedMessageButton: document.querySelector("#starFocusedMessageButton"),
   readFocusedMessageButton: document.querySelector("#readFocusedMessageButton"),
   noteFocusedMessageButton: document.querySelector("#noteFocusedMessageButton"),
+  nextUnreadMessageButton: document.querySelector("#nextUnreadMessageButton"),
+  latestMessageButton: document.querySelector("#latestMessageButton"),
   copyVisibleMessagesButton: document.querySelector("#copyVisibleMessagesButton"),
   starVisibleMessagesButton: document.querySelector("#starVisibleMessagesButton"),
   markVisibleMessagesReadButton: document.querySelector("#markVisibleMessagesReadButton"),
@@ -2212,6 +2214,16 @@ function handleGlobalShortcuts(event) {
     editFocusedLoadedMessageNote();
     return;
   }
+  if (key === "m" && state.selected) {
+    event.preventDefault();
+    focusNextUnreadLoadedMessage();
+    return;
+  }
+  if (key === "." && state.selected) {
+    event.preventDefault();
+    focusLatestLoadedMessage();
+    return;
+  }
   if (key === "r" && state.selected) {
     event.preventDefault();
     if (focusedLoadedMessage()) {
@@ -3046,6 +3058,47 @@ function focusActiveLoadedMessage() {
   scrollFocusedLoadedMessageIntoView();
   el.sendState.textContent = `Focused loaded message ${index + 1} of ${rows.length}`;
   return true;
+}
+
+function focusLoadedMessageAtIndex(rows, index, statusText) {
+  const message = rows[index];
+  if (!message?.provider_message_id) return false;
+  state.focusMessageId = message.provider_message_id;
+  renderMessages();
+  scrollFocusedLoadedMessageIntoView();
+  el.sendState.textContent = statusText;
+  return true;
+}
+
+function focusNextUnreadLoadedMessage() {
+  const rows = loadedMessageNavigationRows();
+  const unreadRows = rows.filter(isUnreadMessage);
+  if (!unreadRows.length) {
+    el.sendState.textContent = rows.length ? "No unread loaded messages" : "No loaded message matches";
+    renderMessageHistoryControls();
+    return false;
+  }
+
+  const currentRowIndex = activeLoadedMessageIndex(rows);
+  const nextIndex = unreadRows.findIndex((message) => rows.indexOf(message) > currentRowIndex);
+  const unreadIndex = nextIndex >= 0 ? nextIndex : 0;
+  const rowIndex = rows.indexOf(unreadRows[unreadIndex]);
+  return focusLoadedMessageAtIndex(
+    rows,
+    rowIndex,
+    `Selected unread message ${unreadIndex + 1} of ${unreadRows.length}`
+  );
+}
+
+function focusLatestLoadedMessage() {
+  const rows = loadedMessageNavigationRows();
+  if (!rows.length) {
+    el.sendState.textContent = "No loaded message matches";
+    renderMessageHistoryControls();
+    return false;
+  }
+
+  return focusLoadedMessageAtIndex(rows, rows.length - 1, `Selected latest loaded message ${rows.length} of ${rows.length}`);
 }
 
 function handleMessageFilterKeydown(event) {
@@ -7603,6 +7656,9 @@ function renderMessageHistoryControls() {
   el.noteFocusedMessageButton.textContent = focusedNoted ? "Edit focused note" : "Note focused";
   el.noteFocusedMessageButton.classList.toggle("active", focusedNoted);
   el.noteFocusedMessageButton.setAttribute("aria-pressed", focusedNoted ? "true" : "false");
+  el.nextUnreadMessageButton.disabled = bulkBusy || unreadVisibleCount === 0;
+  el.nextUnreadMessageButton.textContent = unreadVisibleCount ? `Next unread ${unreadVisibleCount}` : "Next unread";
+  el.latestMessageButton.disabled = bulkBusy || visible.length === 0;
   el.copyVisibleMessagesButton.disabled = bulkBusy || visible.length === 0;
   el.copyVisibleMessagesButton.textContent = visible.length
     ? `Copy ${visible.length}`
@@ -10478,6 +10534,8 @@ el.draftFocusedMessageButton.addEventListener("click", draftFocusedLoadedMessage
 el.starFocusedMessageButton.addEventListener("click", toggleFocusedLoadedMessageStar);
 el.readFocusedMessageButton.addEventListener("click", toggleFocusedLoadedMessageRead);
 el.noteFocusedMessageButton.addEventListener("click", editFocusedLoadedMessageNote);
+el.nextUnreadMessageButton.addEventListener("click", focusNextUnreadLoadedMessage);
+el.latestMessageButton.addEventListener("click", focusLatestLoadedMessage);
 el.copyVisibleMessagesButton.addEventListener("click", copyVisibleLoadedMessages);
 el.starVisibleMessagesButton.addEventListener("click", starVisibleLoadedMessages);
 el.markVisibleMessagesReadButton.addEventListener("click", markVisibleLoadedMessagesRead);
