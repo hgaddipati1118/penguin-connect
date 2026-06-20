@@ -1448,6 +1448,19 @@ function sourceDisplayName(conversation) {
   return String(conversation?.display_name || conversation?.conversation_id || "Conversation").trim() || "Conversation";
 }
 
+function conversationSourceTitle(conversation) {
+  const sourceTitle = sourceDisplayName(conversation);
+  return sourceTitle && sourceTitle !== conversationDisplayName(conversation) ? sourceTitle : "";
+}
+
+function conversationSourceTitleText(conversation) {
+  const sourceTitle = conversationSourceTitle(conversation);
+  if (!sourceTitle) return "";
+  return isGroupConversation(conversation)
+    ? `Group name: ${sourceTitle}`
+    : `Messages name: ${sourceTitle}`;
+}
+
 function renderThreadHeader() {
   if (!state.selected) {
     el.threadProvider.textContent = "No thread selected";
@@ -3104,6 +3117,7 @@ function renderConversations() {
     const metaText = [
       conversation.chat_type || "chat",
       conversation.source_service_name || conversation.source_provider || "source",
+      conversationSourceTitleText(conversation),
       conversation.last_message_ts ? formatTime(conversation.last_message_ts) : conversation.status || "",
     ].filter(Boolean).join(" · ");
     appendHighlightedText(mainButton.querySelector(".conversation-meta"), metaText, terms);
@@ -7620,7 +7634,13 @@ function renderThreadControls() {
   const source = [selected.source_service_name || selected.source_provider || "Messages", selected.chat_type || ""]
     .filter(Boolean)
     .join(" · ");
-  el.threadStatus.textContent = state.threadActionMessage || `${status}${excluded}${managed ? ` · ${managed}` : ""} · ${unread} unread · ${source}`;
+  el.threadStatus.textContent = state.threadActionMessage || [
+    `${status}${excluded}`,
+    managed,
+    `${unread} unread`,
+    source,
+    conversationSourceTitleText(selected),
+  ].filter(Boolean).join(" · ");
   el.pinButton.textContent = selected.is_pinned ? "Unpin" : "Pin";
   el.muteButton.textContent = selected.is_muted ? "Unmute" : "Mute";
   el.archiveButton.textContent = selected.is_archived ? "Unarchive" : "Archive";
@@ -8402,13 +8422,14 @@ function selectedConversationSummary(conversation, index) {
   return [
     `${index + 1}. ${conversationDisplayName(conversation)}`,
     `Source: ${[conversation.source_service_name || conversation.source_provider || "Messages", conversation.chat_type || "chat"].filter(Boolean).join(" · ")}`,
+    conversationSourceTitle(conversation) ? `Messages group name: ${conversationSourceTitle(conversation)}` : "",
     `State: ${flags.join(", ") || "normal"}`,
     `Labels: ${labels.length ? labels.join(", ") : "none"}`,
     `Participants: ${participants.length ? participants.slice(0, 12).join(", ") : "unknown"}`,
     `Latest: ${conversationPreviewText(conversation) || "none"}`,
     `Private note: ${trim(conversation.note || "", 180) || "none"}`,
     `Draft: ${trim(draftTextForConversation(conversation), 180) || "none"}`,
-  ].join("\n");
+  ].filter((line) => line !== "").join("\n");
 }
 
 function selectedConversationSummariesText(targets = selectedConversationSnapshot()) {
