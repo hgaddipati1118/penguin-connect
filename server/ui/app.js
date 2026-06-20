@@ -127,6 +127,7 @@ const el = {
   bulkActions: document.querySelector("#bulkActions"),
   bulkState: document.querySelector("#bulkState"),
   selectVisibleButton: document.querySelector("#selectVisibleButton"),
+  selectUnknownButton: document.querySelector("#selectUnknownButton"),
   bulkMarkReadButton: document.querySelector("#bulkMarkReadButton"),
   bulkPinButton: document.querySelector("#bulkPinButton"),
   bulkMuteButton: document.querySelector("#bulkMuteButton"),
@@ -2124,6 +2125,10 @@ function renderBulkActions(rows) {
   const selectedCount = selectedRows.length;
   const visibleCount = rows.length;
   const allVisibleSelected = visibleCount > 0 && rows.every((conversation) => state.selectedConversationIds.has(conversation.conversation_id));
+  const visibleUnknownRows = rows.filter(conversationHasUnknownParticipants);
+  const visibleUnknownCount = visibleUnknownRows.length;
+  const allVisibleUnknownSelected = visibleUnknownCount > 0
+    && visibleUnknownRows.every((conversation) => state.selectedConversationIds.has(conversation.conversation_id));
   const labelCount = cleanBulkLabels(el.bulkLabelsInput.value).length;
   const bulkFollowUpValue = el.bulkFollowUpAt.value.trim();
   const selectedDraftCount = selectedRows.filter(conversationHasDraft).length;
@@ -2135,6 +2140,8 @@ function renderBulkActions(rows) {
   const archiveIntent = shouldBulkArchive();
   el.bulkState.textContent = state.bulkBusy ? "Updating selected" : (state.bulkMessage || `${selectedCount} selected`);
   el.selectVisibleButton.disabled = state.bulkBusy || !visibleCount || allVisibleSelected;
+  el.selectUnknownButton.disabled = state.bulkBusy || !visibleUnknownCount || allVisibleUnknownSelected;
+  el.selectUnknownButton.textContent = visibleUnknownCount ? `Select ${visibleUnknownCount} unknown` : "Select unknown";
   el.bulkMarkReadButton.textContent = markUnreadIntent ? "Mark unread" : "Mark read";
   el.bulkMarkReadButton.title = markUnreadIntent ? "Mark selected conversations unread" : "Mark selected conversations read";
   el.bulkMarkReadButton.setAttribute("aria-label", el.bulkMarkReadButton.title);
@@ -9748,6 +9755,19 @@ el.selectVisibleButton.addEventListener("click", () => {
     state.selectedConversationIds.add(conversation.conversation_id);
   }
   state.bulkMessage = "";
+  renderConversations();
+});
+el.selectUnknownButton.addEventListener("click", () => {
+  const rows = visibleConversationRows().filter(conversationHasUnknownParticipants);
+  let added = 0;
+  for (const conversation of rows) {
+    if (state.selectedConversationIds.has(conversation.conversation_id)) continue;
+    state.selectedConversationIds.add(conversation.conversation_id);
+    added += 1;
+  }
+  state.bulkMessage = added
+    ? `Selected ${added} unknown thread${added === 1 ? "" : "s"}`
+    : "Unknown threads already selected";
   renderConversations();
 });
 el.clearSelectionButton.addEventListener("click", () => {
