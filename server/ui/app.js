@@ -1092,6 +1092,13 @@ function contactHandleText(contact) {
   return [contact.phone, contact.email].filter(Boolean).join(" · ") || contact.phone_normalized || "No handle";
 }
 
+function contactThreadActivityText(contact) {
+  const count = Number(contact?.thread_count || 0);
+  if (!count) return "";
+  const last = contact.last_thread_at ? `last ${formatTime(contact.last_thread_at)}` : "";
+  return [`${count} thread${count === 1 ? "" : "s"}`, last].filter(Boolean).join(" · ");
+}
+
 function contactRecipientHandle(contact) {
   return contact.primary_handle || contact.phone || contact.email || contact.phone_normalized || "";
 }
@@ -1135,6 +1142,8 @@ function compareContactRecent(a, b) {
 }
 
 function contactThreadContextCount(contact) {
+  const apiCount = Number(contact?.thread_count || 0);
+  if (apiCount > 0) return apiCount;
   const contextIds = new Set(
     (Array.isArray(contact?.message_context) ? contact.message_context : [])
       .map((context) => String(context?.conversation_id || "").trim())
@@ -5102,6 +5111,8 @@ function contactDetailText(contact) {
     `Handle: ${handle}`,
     `Source: ${contact.is_saved === false ? "unsaved participant" : contact.source || contact.handle_type || "contact"}`,
     `Organization: ${contact.organization || "none"}`,
+    `Thread activity: ${contactThreadActivityText(contact) || "none"}`,
+    `Thread names: ${Array.isArray(contact.thread_names) && contact.thread_names.length ? contact.thread_names.join(", ") : "none"}`,
     `Favorite: ${isFavoriteContact(contact) ? "yes" : "no"}`,
     `Private note: ${note ? trim(note, 260) : "none"}`,
     "",
@@ -5784,6 +5795,7 @@ function renderContactInspector() {
   appendHighlightedText(el.contactInspector.querySelector(".contact-inspector-handle"), contactHandleText(contact), terms);
   appendHighlightedText(el.contactInspector.querySelector(".contact-inspector-meta"), [
     contact.organization && contact.organization !== contactDisplayName(contact) ? contact.organization : "",
+    contactThreadActivityText(contact),
     contact.is_saved === false ? "unsaved participant" : contact.handle_type || "contact",
     favorite ? "favorite" : "",
   ].filter(Boolean).join(" · "), terms);
@@ -6332,7 +6344,10 @@ function renderContacts() {
     const contactMeta = contact.organization && contact.organization !== contactDisplayName(contact)
       ? contact.organization
       : contact.handle_type || "contact";
-    appendHighlightedText(item.querySelector(".contact-meta"), contactMeta, terms);
+    appendHighlightedText(item.querySelector(".contact-meta"), [
+      contactMeta,
+      contactThreadActivityText(contact),
+    ].filter(Boolean).join(" · "), terms);
     const selectButton = item.querySelector(".contact-select-toggle");
     selectButton.textContent = selected ? "x" : "";
     selectButton.classList.toggle("active", selected);

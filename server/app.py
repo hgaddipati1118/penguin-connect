@@ -996,6 +996,48 @@ def _conversation_contact_keys(conn: sqlite3.Connection) -> set[str]:
     return keys
 
 
+def _conversation_contact_thread_stats(conn: sqlite3.Connection) -> dict[str, dict]:
+    rows = conn.execute(
+        """
+        SELECT c.conversation_id, c.display_name, c.source_chat_identifier, c.participants,
+               COALESCE(MAX(m.message_timestamp), c.updated_at, '') AS last_thread_at
+        FROM penguin_connect_conversations c
+        LEFT JOIN penguin_connect_messages m
+          ON m.conversation_id = c.conversation_id
+        GROUP BY c.conversation_id
+        ORDER BY last_thread_at DESC, c.updated_at DESC, c.display_name COLLATE NOCASE, c.conversation_id
+        """
+    ).fetchall()
+    stats: dict[str, dict] = {}
+    for row in rows:
+        conversation_id = str(row["conversation_id"] or "").strip()
+        thread_name = str(row["display_name"] or row["source_chat_identifier"] or "Conversation").strip()
+        last_thread_at = str(row["last_thread_at"] or "").strip()
+        for handle in _conversation_participant_handles(row):
+            key = _contact_compare_key(handle)
+            if not key:
+                continue
+            entry = stats.setdefault(
+                key,
+                {
+                    "thread_count": 0,
+                    "last_thread_at": "",
+                    "thread_names": [],
+                    "_conversation_ids": set(),
+                },
+            )
+            if conversation_id and conversation_id in entry["_conversation_ids"]:
+                continue
+            if conversation_id:
+                entry["_conversation_ids"].add(conversation_id)
+            entry["thread_count"] += 1
+            if last_thread_at and last_thread_at > entry["last_thread_at"]:
+                entry["last_thread_at"] = last_thread_at
+            if thread_name and thread_name not in entry["thread_names"] and len(entry["thread_names"]) < 3:
+                entry["thread_names"].append(thread_name)
+    return stats
+
+
 def _message_contact_context_from_row(row: sqlite3.Row) -> dict:
     message_text = " ".join(str(row["body_text"] or row["message_note"] or row["subject"] or "").split())
     return {
@@ -1079,6 +1121,33 @@ def _attach_contact_message_context(contacts: list[dict], contexts_by_key: dict[
                 for context in contexts[:3]
                 if str(context.get("message_text") or "").strip()
             )
+    return contacts
+
+
+def _attach_contact_thread_stats(contacts: list[dict], stats_by_key: dict[str, dict]) -> list[dict]:
+    for contact in contacts:
+        conversation_ids: set[str] = set()
+        thread_names: list[str] = []
+        last_thread_at = ""
+        thread_count = 0
+        for key in _contact_candidate_keys(contact):
+            stats = stats_by_key.get(key)
+            if not stats:
+                continue
+            ids = stats.get("_conversation_ids") or set()
+            for conversation_id in ids:
+                if conversation_id in conversation_ids:
+                    continue
+                conversation_ids.add(conversation_id)
+                thread_count += 1
+            if stats.get("last_thread_at") and stats["last_thread_at"] > last_thread_at:
+                last_thread_at = stats["last_thread_at"]
+            for name in stats.get("thread_names") or []:
+                if name and name not in thread_names and len(thread_names) < 3:
+                    thread_names.append(name)
+        contact["thread_count"] = thread_count
+        contact["last_thread_at"] = last_thread_at
+        contact["thread_names"] = thread_names
     return contacts
 
 
@@ -1395,7 +1464,8 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
     if normalized_source not in {"all", "contacts", "participants", "threaded", "favorites", "noted"}:
         normalized_source = "all"
     source_counts = _contact_source_counts(conn)
-    threaded_keys = _conversation_contact_keys(conn) if normalized_source == "threaded" else set()
+    thread_stats_by_key = _conversation_contact_thread_stats(conn)
+    threaded_keys = set(thread_stats_by_key)
     favorite_keys = _favorite_contact_keys(conn) if normalized_source == "favorites" else []
     favorite_key_set = set(favorite_keys)
     favorite_order = {key: index for index, key in enumerate(favorite_keys)}
@@ -1487,9 +1557,12 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
                         allowed_keys=extra_participant_keys,
                     )
                 )
-    contacts = _attach_contact_message_context(
-        _attach_contact_management(conn, _dedupe_contact_items([*contact_items, *participant_items])),
-        message_context_by_key,
+    contacts = _attach_contact_thread_stats(
+        _attach_contact_message_context(
+            _attach_contact_management(conn, _dedupe_contact_items([*contact_items, *participant_items])),
+            message_context_by_key,
+        ),
+        thread_stats_by_key,
     )
     if normalized_source == "favorites":
         contacts = [contact for contact in contacts if contact.get("is_favorite")]
