@@ -393,6 +393,8 @@ const conversationSortLabels = {
   name: "A-Z",
 };
 
+const messageLabelPresets = ["Important", "Needs reply", "Waiting", "Later"];
+
 const messageSearchViews = [
   { key: "all", label: "All" },
   { key: "recent", label: "Recent" },
@@ -983,6 +985,17 @@ function messageFollowUpSelectTitle(message, options = {}) {
   return "Set thread follow-up from this message";
 }
 
+function messageLabelSelectLabel(message, options = {}) {
+  const conversation = conversationForMessage(message, options);
+  return conversationHasLabels(conversation) ? "Tagged" : "Label";
+}
+
+function messageLabelSelectTitle(message, options = {}) {
+  const conversation = conversationForMessage(message, options);
+  const labels = labelsForConversation(conversation);
+  return labels.length ? `Thread labels: ${labels.join(", ")}` : "Add a thread label from this message";
+}
+
 function configureMessageFollowUpSelect(select, message, { allowSelectedFallback = false, statusElement = el.sendState } = {}) {
   if (!select) return;
   const options = { allowSelectedFallback };
@@ -1020,6 +1033,70 @@ async function applyMessageFollowUpPresetToConversation(message, preset, { allow
     if (statusElement) {
       statusElement.textContent = followUpAt ? `Follow-up set ${followUpText}` : "Follow-up cleared";
     }
+    renderConversations();
+    renderThreadControls();
+    renderManagementFields();
+    renderMessages();
+    renderMessageSearchResults();
+    renderContactInspector();
+    buildCodexPrompt();
+  } catch (error) {
+    if (statusElement) statusElement.textContent = error.message;
+  }
+}
+
+function configureMessageLabelSelect(select, message, { allowSelectedFallback = false, statusElement = el.sendState } = {}) {
+  if (!select) return;
+  if (!select.querySelector("option[data-label-preset]")) {
+    for (const label of messageLabelPresets) {
+      const option = document.createElement("option");
+      option.value = label;
+      option.dataset.labelPreset = "true";
+      option.textContent = `#${label}`;
+      select.append(option);
+    }
+  }
+  const options = { allowSelectedFallback };
+  const placeholder = select.querySelector('option[value=""]');
+  if (placeholder) placeholder.textContent = messageLabelSelectLabel(message, options);
+  select.disabled = !messageConversationId(message, options);
+  select.title = messageLabelSelectTitle(message, options);
+  select.addEventListener("change", () => {
+    const label = select.value;
+    select.value = "";
+    applyMessageLabelPresetToConversation(message, label, {
+      allowSelectedFallback,
+      statusElement,
+    });
+  });
+}
+
+async function applyMessageLabelPresetToConversation(message, label, { allowSelectedFallback = false, statusElement = el.sendState } = {}) {
+  const labels = cleanBulkLabels(label);
+  if (!labels.length) return;
+  const conversationId = messageConversationId(message, { allowSelectedFallback });
+  if (!conversationId) {
+    if (statusElement) statusElement.textContent = "No thread for label";
+    return;
+  }
+  const conversation = conversationForMessage(message, { allowSelectedFallback }) || message || {};
+  const nextLabels = mergeConversationLabels(conversation, labels);
+  const currentLabels = labelsForConversation(conversation);
+  const presetKey = labelKey(labels[0]);
+  if (currentLabels.some((current) => labelKey(current) === presetKey)) {
+    if (statusElement) statusElement.textContent = `Thread already tagged #${labels[0]}`;
+    return;
+  }
+  if (!nextLabels.some((current) => labelKey(current) === presetKey)) {
+    if (statusElement) statusElement.textContent = "Thread label limit reached";
+    return;
+  }
+  if (statusElement) statusElement.textContent = `Adding #${labels[0]}`;
+  try {
+    await updateConversationManagement(conversationId, {
+      labels: nextLabels,
+    });
+    if (statusElement) statusElement.textContent = `Tagged #${labels[0]}`;
     renderConversations();
     renderThreadControls();
     renderManagementFields();
@@ -4850,6 +4927,9 @@ function renderContactInspectorMessages(container, contact) {
           <option value="week">Next week</option>
           <option value="clear">Clear</option>
         </select>
+        <select class="message-label-select" data-action="label" aria-label="Add thread label from this message">
+          <option value="">Label</option>
+        </select>
       </span>
       <div class="contact-message-preview-note" hidden><span></span></div>
       <div class="contact-message-preview-note-editor" hidden>
@@ -4903,6 +4983,9 @@ function renderContactInspectorMessages(container, contact) {
     threadsButton.disabled = !contactHandle;
     threadsButton.addEventListener("click", () => filterConversationsForContactRecentMessage(result));
     configureMessageFollowUpSelect(item.querySelector('[data-action="follow-up"]'), result, {
+      statusElement: el.contactStatus,
+    });
+    configureMessageLabelSelect(item.querySelector('[data-action="label"]'), result, {
       statusElement: el.contactStatus,
     });
     const noteBox = item.querySelector(".contact-message-preview-note");
@@ -5822,6 +5905,9 @@ function renderMessageSearchResults() {
           <option value="week">Next week</option>
           <option value="clear">Clear</option>
         </select>
+        <select class="message-label-select" data-action="label" aria-label="Add thread label from this message">
+          <option value="">Label</option>
+        </select>
         <button type="button" data-action="open">Open</button>
         <button type="button" data-action="messages">Messages</button>
       </span>
@@ -5910,6 +5996,9 @@ function renderMessageSearchResults() {
     threadsButton.disabled = !contactHandle;
     threadsButton.addEventListener("click", () => filterConversationsForSearchResultContact(result));
     configureMessageFollowUpSelect(item.querySelector('[data-action="follow-up"]'), result, {
+      statusElement: el.messageSearchStatus,
+    });
+    configureMessageLabelSelect(item.querySelector('[data-action="label"]'), result, {
       statusElement: el.messageSearchStatus,
     });
     item.querySelector('[data-action="open"]').addEventListener("click", () => useMessageSearchResult(result));
@@ -6265,6 +6354,9 @@ function renderMessages() {
           <option value="week">Next week</option>
           <option value="clear">Clear</option>
         </select>
+        <select class="message-label-select" data-action="label" aria-label="Add thread label from this message">
+          <option value="">Label</option>
+        </select>
       </div>
     `;
     appendHighlightedText(item.querySelector(".message-head span"), messageSender(message), terms);
@@ -6329,6 +6421,10 @@ function renderMessages() {
     threadsButton.disabled = !messageContactHandle(message);
     threadsButton.addEventListener("click", () => filterConversationsForLoadedMessageContact(message));
     configureMessageFollowUpSelect(item.querySelector('[data-action="follow-up"]'), message, {
+      allowSelectedFallback: true,
+      statusElement: el.sendState,
+    });
+    configureMessageLabelSelect(item.querySelector('[data-action="label"]'), message, {
       allowSelectedFallback: true,
       statusElement: el.sendState,
     });

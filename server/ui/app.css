@@ -2131,6 +2131,10 @@ input[type="date"]:focus {
   max-width: 116px;
 }
 
+.message-label-select {
+  max-width: 96px;
+}
+
 .pill {
   max-width: 100%;
   padding: 4px 7px;

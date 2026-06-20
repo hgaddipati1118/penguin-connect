@@ -173,7 +173,7 @@ selected-thread participants, copyable/searchable recent contact history with th
 selected/visible contact bulk favorite and unfavorite actions,
 removable recipient chips, reusable saved recipient lists, selected-thread participant actions for contact
 search, thread filtering, local Messages search, new-chat, and contact creation, participant favoriting, bulk add-all, copy-all, and save-as-list actions, local thread titles, notes, tags and muted state,
-rail-level pin/mute/archive/read-unread actions, follow-up scheduling/filtering with quick presets from threads or message rows plus bulk follow-up set/clear, read/unread management, bridge
+rail-level pin/mute/archive/read-unread actions, follow-up scheduling/filtering with quick presets from threads or message rows, quick message-row labels plus bulk follow-up set/clear, read/unread management, bridge
 disconnect/reconnect controls, persistent per-thread reply drafts, new chat
 draft staging with live Messages-ready draft preview, copy-recipients/copy-body/copy-draft actions,
 addressed Messages compose links, and a Codex prompt helper with
