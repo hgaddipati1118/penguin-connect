@@ -1,5 +1,6 @@
 const newChatDraftStorageKey = "penguin-connect:new-chat-draft:v1";
 const contactSearchViewsStorageKey = "penguin-connect:contact-search-views:v1";
+const messageSearchViewsStorageKey = "penguin-connect:message-search-views:v1";
 
 function autoRefreshIntervalFromUrl() {
   const value = Number(new URLSearchParams(window.location.search).get("auto_refresh_ms"));
@@ -67,6 +68,8 @@ const state = {
   messageSearchResults: [],
   messageSearchTimer: null,
   messageSearchView: "all",
+  messageSavedSearchViews: [],
+  activeMessageSearchViewId: "",
   messageSearchLimit: 30,
   messageSearchLimitStep: 30,
   messageSearchLimitMax: 100,
@@ -186,6 +189,9 @@ const el = {
   managementState: document.querySelector("#managementState"),
   globalMessageSearch: document.querySelector("#globalMessageSearch"),
   globalMessageSearchFilters: document.querySelector("#globalMessageSearchFilters"),
+  messageSearchViewName: document.querySelector("#messageSearchViewName"),
+  saveMessageSearchViewButton: document.querySelector("#saveMessageSearchViewButton"),
+  messageSavedViews: document.querySelector("#messageSavedViews"),
   messageSearchMoreBar: document.querySelector("#messageSearchMoreBar"),
   messageSearchCount: document.querySelector("#messageSearchCount"),
   starSearchLoadedButton: document.querySelector("#starSearchLoadedButton"),
@@ -574,6 +580,187 @@ const messageSearchViews = [
   { key: "audio", label: "Audio" },
   { key: "mine", label: "Mine" },
 ];
+
+function knownMessageSearchView(view) {
+  return messageSearchViews.some((item) => item.key === view) ? view : "all";
+}
+
+function normalizeMessageSearchDate(value) {
+  const text = String(value || "").trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : "";
+}
+
+function messageSearchViewLabel(view) {
+  return (messageSearchViews.find((item) => item.key === view) || messageSearchViews[0]).label;
+}
+
+function messageSearchDateSummary(dateFrom, dateTo) {
+  if (dateFrom && dateTo) return `${dateFrom} to ${dateTo}`;
+  if (dateFrom) return `From ${dateFrom}`;
+  if (dateTo) return `To ${dateTo}`;
+  return "";
+}
+
+function defaultMessageSearchViewName({ query, view, dateFrom, dateTo }) {
+  const parts = [
+    query || messageSearchViewLabel(view),
+    view !== "all" && query ? messageSearchViewLabel(view) : "",
+    messageSearchDateSummary(dateFrom, dateTo),
+  ].filter(Boolean);
+  return parts.join(" · ") || "Message search";
+}
+
+function normalizeMessageSearchView(view) {
+  if (!view || typeof view !== "object") return null;
+  const query = String(view.query || "").trim().slice(0, 180);
+  const searchView = knownMessageSearchView(String(view.view || "all"));
+  const dateFrom = normalizeMessageSearchDate(view.dateFrom || view.date_from);
+  const dateTo = normalizeMessageSearchDate(view.dateTo || view.date_to);
+  const name = String(view.name || "").trim().replace(/\s+/g, " ").slice(0, 56)
+    || defaultMessageSearchViewName({ query, view: searchView, dateFrom, dateTo });
+  const id = String(view.id || "").trim().slice(0, 90)
+    || `message-search-view-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return { id, name, query, view: searchView, dateFrom, dateTo };
+}
+
+function savedMessageSearchViews() {
+  try {
+    const raw = window.localStorage?.getItem(messageSearchViewsStorageKey);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set();
+    const views = [];
+    for (const item of parsed) {
+      const view = normalizeMessageSearchView(item);
+      if (!view || seen.has(view.id)) continue;
+      seen.add(view.id);
+      views.push(view);
+      if (views.length >= 12) break;
+    }
+    return views;
+  } catch (_error) {
+    return [];
+  }
+}
+
+function saveMessageSearchViews() {
+  try {
+    window.localStorage?.setItem(messageSearchViewsStorageKey, JSON.stringify(state.messageSavedSearchViews));
+  } catch (_error) {
+    // Local storage can be unavailable in private or restricted browser contexts.
+  }
+}
+
+function currentMessageSearchViewSnapshot() {
+  const query = el.globalMessageSearch.value.trim();
+  const view = knownMessageSearchView(state.messageSearchView);
+  const dateFrom = normalizeMessageSearchDate(el.messageDateFrom.value);
+  const dateTo = normalizeMessageSearchDate(el.messageDateTo.value);
+  return {
+    query,
+    view,
+    dateFrom,
+    dateTo,
+    name: el.messageSearchViewName.value.trim()
+      || defaultMessageSearchViewName({ query, view, dateFrom, dateTo }),
+  };
+}
+
+function messageSearchViewMatchesCurrent(view) {
+  return view.query === el.globalMessageSearch.value.trim()
+    && view.view === knownMessageSearchView(state.messageSearchView)
+    && view.dateFrom === normalizeMessageSearchDate(el.messageDateFrom.value)
+    && view.dateTo === normalizeMessageSearchDate(el.messageDateTo.value);
+}
+
+function renderMessageSavedViews() {
+  el.messageSavedViews.replaceChildren();
+  state.messageSearchView = knownMessageSearchView(state.messageSearchView);
+  const activeId = state.messageSavedSearchViews.some((view) => view.id === state.activeMessageSearchViewId)
+    ? state.activeMessageSearchViewId
+    : "";
+  state.activeMessageSearchViewId = activeId;
+  if (!state.messageSavedSearchViews.length) {
+    const empty = document.createElement("span");
+    empty.className = "message-saved-view-empty";
+    empty.textContent = "No saved searches";
+    el.messageSavedViews.append(empty);
+    return;
+  }
+
+  for (const view of state.messageSavedSearchViews) {
+    const item = document.createElement("span");
+    item.className = `message-saved-view ${view.id === activeId || messageSearchViewMatchesCurrent(view) ? "active" : ""}`;
+    item.innerHTML = `
+      <button type="button" data-action="use-message-view">
+        <span class="message-saved-view-name"></span>
+        <span class="message-saved-view-meta"></span>
+      </button>
+      <button type="button" data-action="delete-message-view" aria-label="Delete saved message search">x</button>
+    `;
+    item.querySelector(".message-saved-view-name").textContent = view.name;
+    item.querySelector(".message-saved-view-meta").textContent = [
+      view.query ? `"${view.query}"` : messageSearchViewLabel(view.view),
+      view.view !== "all" && view.query ? messageSearchViewLabel(view.view) : "",
+      messageSearchDateSummary(view.dateFrom, view.dateTo),
+    ].filter(Boolean).join(" · ");
+    item.querySelector('[data-action="use-message-view"]').addEventListener("click", () => useMessageSearchView(view));
+    item.querySelector('[data-action="delete-message-view"]').addEventListener("click", () => deleteMessageSearchView(view));
+    el.messageSavedViews.append(item);
+  }
+}
+
+function saveMessageSearchView() {
+  if (!searchHasRunnableInput()) {
+    el.messageSearchStatus.textContent = "Add text, a filter, or dates first";
+    return;
+  }
+  const snapshot = currentMessageSearchViewSnapshot();
+  const duplicate = state.messageSavedSearchViews.find((view) => (
+    view.query === snapshot.query
+      && view.view === snapshot.view
+      && view.dateFrom === snapshot.dateFrom
+      && view.dateTo === snapshot.dateTo
+  ));
+  const view = normalizeMessageSearchView({
+    ...snapshot,
+    id: duplicate?.id || `message-search-view-${Date.now()}`,
+  });
+  if (!view) return;
+  state.messageSavedSearchViews = [
+    view,
+    ...state.messageSavedSearchViews.filter((item) => item.id !== view.id),
+  ].slice(0, 12);
+  state.activeMessageSearchViewId = view.id;
+  el.messageSearchViewName.value = view.name;
+  saveMessageSearchViews();
+  renderMessageSavedViews();
+  el.messageSearchStatus.textContent = `Saved message search · ${view.name}`;
+}
+
+function useMessageSearchView(view) {
+  const saved = normalizeMessageSearchView(view);
+  if (!saved) return;
+  state.activeMessageSearchViewId = saved.id;
+  state.messageSearchView = saved.view;
+  el.globalMessageSearch.value = saved.query;
+  el.messageDateFrom.value = saved.dateFrom;
+  el.messageDateTo.value = saved.dateTo;
+  el.messageSearchViewName.value = saved.name;
+  resetMessageSearchLimit();
+  renderMessageSearchFilters();
+  renderMessageSavedViews();
+  loadMessageSearch();
+}
+
+function deleteMessageSearchView(view) {
+  state.messageSavedSearchViews = state.messageSavedSearchViews.filter((item) => item.id !== view.id);
+  if (state.activeMessageSearchViewId === view.id) state.activeMessageSearchViewId = "";
+  saveMessageSearchViews();
+  renderMessageSavedViews();
+  el.messageSearchStatus.textContent = "Saved message search deleted";
+}
 
 const mediaViews = [
   { key: "all", label: "All" },
@@ -5919,6 +6106,7 @@ function renderContacts() {
 
 function renderMessageSearchFilters() {
   el.globalMessageSearchFilters.replaceChildren();
+  state.messageSearchView = knownMessageSearchView(state.messageSearchView);
   for (const view of messageSearchViews) {
     const button = document.createElement("button");
     button.type = "button";
@@ -7146,6 +7334,7 @@ async function loadMessageSearch() {
   state.messageSearchLoading = false;
   state.messageSearchNoteEditorId = "";
   renderMessageSearchFilters();
+  renderMessageSavedViews();
   if (query.length < 2 && !scoped && !hasDateFilter) {
     state.messageSearchResults = [];
     el.messageSearchStatus.textContent = "Type 2+ chars or choose dates";
@@ -7186,6 +7375,7 @@ async function loadMessageSearch() {
     state.messageSearchLoading = false;
     const rangeSuffix = hasDateFilter ? " in range" : "";
     el.messageSearchStatus.textContent = `${state.messageSearchResults.length} ${view.label.toLowerCase()} match${state.messageSearchResults.length === 1 ? "" : "es"}${rangeSuffix}`;
+    renderMessageSavedViews();
     renderMessageSearchResults();
     buildCodexPrompt();
   } catch (error) {
@@ -7193,6 +7383,7 @@ async function loadMessageSearch() {
     state.messageSearchResults = [];
     state.messageSearchLoading = false;
     el.messageSearchStatus.textContent = error.message;
+    renderMessageSavedViews();
     renderMessageSearchResults();
     buildCodexPrompt();
   }
@@ -8727,12 +8918,26 @@ el.contactViewName.addEventListener("keydown", (event) => {
   saveContactSearchView();
 });
 el.loadMoreContactsButton.addEventListener("click", loadMoreContacts);
-el.globalMessageSearch.addEventListener("input", scheduleMessageSearch);
-el.messageDateFrom.addEventListener("input", scheduleMessageSearch);
-el.messageDateTo.addEventListener("input", scheduleMessageSearch);
+el.globalMessageSearch.addEventListener("input", () => {
+  state.activeMessageSearchViewId = "";
+  renderMessageSavedViews();
+  scheduleMessageSearch();
+});
+el.messageDateFrom.addEventListener("input", () => {
+  state.activeMessageSearchViewId = "";
+  renderMessageSavedViews();
+  scheduleMessageSearch();
+});
+el.messageDateTo.addEventListener("input", () => {
+  state.activeMessageSearchViewId = "";
+  renderMessageSavedViews();
+  scheduleMessageSearch();
+});
 el.clearMessageDatesButton.addEventListener("click", () => {
   el.messageDateFrom.value = "";
   el.messageDateTo.value = "";
+  state.activeMessageSearchViewId = "";
+  renderMessageSavedViews();
   resetMessageSearchLimit();
   loadMessageSearch();
 });
@@ -8742,8 +8947,16 @@ el.globalMessageSearchFilters.addEventListener("click", (event) => {
   state.messageSearchView = messageSearchViews.some((view) => view.key === button.dataset.messageSearchView)
     ? button.dataset.messageSearchView
     : "all";
+  state.activeMessageSearchViewId = "";
+  renderMessageSavedViews();
   resetMessageSearchLimit();
   loadMessageSearch();
+});
+el.saveMessageSearchViewButton.addEventListener("click", saveMessageSearchView);
+el.messageSearchViewName.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  saveMessageSearchView();
 });
 el.loadMoreSearchButton.addEventListener("click", loadMoreMessageSearchResults);
 el.starSearchLoadedButton.addEventListener("click", starLoadedMessageSearchResults);
@@ -8999,6 +9212,7 @@ if (restoredNewChatDraft) {
   el.draftState.textContent = "Local draft restored";
 }
 state.contactSearchViews = savedContactSearchViews();
+state.messageSavedSearchViews = savedMessageSearchViews();
 
 renderAllEmojiButtons();
 renderAllVoiceMemoControls();
@@ -9013,6 +9227,7 @@ renderDraftPreview();
 scheduleDraftThreadResolve();
 renderRecipientLists();
 renderMessageSearchFilters();
+renderMessageSavedViews();
 renderMessageSearchResults();
 renderThreadControls();
 renderThreadPeople();

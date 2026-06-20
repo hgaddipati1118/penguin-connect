@@ -180,6 +180,13 @@
           </div>
         </div>
         <div class="message-search-filters" id="globalMessageSearchFilters" aria-label="Global message search filters"></div>
+        <div class="message-saved-views" aria-label="Saved message searches">
+          <div class="message-saved-view-tools">
+            <input id="messageSearchViewName" type="text" placeholder="Saved message search name" autocomplete="off" aria-label="Saved message search name" />
+            <button type="button" id="saveMessageSearchViewButton">Save search</button>
+          </div>
+          <div class="message-saved-view-list" id="messageSavedViews" aria-live="polite"></div>
+        </div>
         <div class="message-view-filters" id="messageViewFilters" aria-label="Loaded message views"></div>
         <div class="message-history-bar" id="messageHistoryBar">
           <span id="loadedMessageCount">No thread loaded</span>

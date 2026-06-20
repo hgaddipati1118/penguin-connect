@@ -343,6 +343,92 @@ h3 {
   opacity: 0.45;
 }
 
+.message-saved-views {
+  display: grid;
+  gap: 5px;
+  margin: 0 18px 10px;
+}
+
+.message-saved-view-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px;
+}
+
+.message-saved-view-tools input {
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 11px;
+}
+
+.message-saved-view-tools button,
+.message-saved-view button {
+  min-height: 26px;
+  border: 1px solid var(--line);
+  background: var(--panel-alt);
+  color: var(--muted);
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+.message-saved-view-tools button:hover,
+.message-saved-view-tools button:focus-visible,
+.message-saved-view button:hover,
+.message-saved-view button:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.message-saved-view-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-height: 20px;
+}
+
+.message-saved-view {
+  display: inline-flex;
+  max-width: 100%;
+}
+
+.message-saved-view button[data-action="use-message-view"] {
+  display: grid;
+  max-width: 220px;
+  padding: 4px 7px;
+  text-align: left;
+}
+
+.message-saved-view.active button[data-action="use-message-view"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.message-saved-view button[data-action="delete-message-view"] {
+  width: 24px;
+  padding: 0;
+  border-left: 0;
+}
+
+.message-saved-view-name,
+.message-saved-view-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-saved-view-meta,
+.message-saved-view-empty {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
 .message-history-bar {
   display: flex;
   align-items: center;
@@ -1733,6 +1819,7 @@ input[type="date"]:focus {
 
 .thread {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto auto auto auto auto minmax(0, 1fr);
   min-height: 0;
   background: rgba(246, 243, 238, 0.75);

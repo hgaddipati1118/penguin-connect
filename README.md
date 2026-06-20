@@ -161,7 +161,7 @@ and the selected thread, message-level reply targets and copy actions, thread fi
 needs-reply/unread/drafts/unlabeled/muted/pinned/archived and label-based conversation views, bulk
 mark-read/mark-unread/pin-unpin/mute-unmute/archive-restore/label add-remove, selected-people add/copy/save/create, and draft cleanup actions, latest-message previews in the conversation rail,
 highlighted conversation search,
-global synced-message search with highlighted note/attachment-aware results, recent-message browsing, open/copy/reply actions and filters for current thread, unread, sent,
+global synced-message search with saved message-search views and highlighted note/attachment-aware results, recent-message browsing, open/copy/reply actions and filters for current thread, unread, sent,
 files and audio plus date ranges, highlighted loaded-message filters for sender/body/notes/attachments and unread/sent/files/audio,
 starred/noted-message filtering, local message starring and private
 message notes, per-message read/unread toggles, sender-history Find and thread-filter actions, visible loaded-message copy and bulk star/read/unread actions, opening synced attachment files, a per-thread media browser for loaded
