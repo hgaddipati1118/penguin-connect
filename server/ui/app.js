@@ -1,4 +1,5 @@
 const newChatDraftStorageKey = "penguin-connect:new-chat-draft:v1";
+const contactSearchViewsStorageKey = "penguin-connect:contact-search-views:v1";
 
 function autoRefreshIntervalFromUrl() {
   const value = Number(new URLSearchParams(window.location.search).get("auto_refresh_ms"));
@@ -27,6 +28,8 @@ const state = {
   contactSourceCounts: {},
   contactSource: "all",
   contactSort: "default",
+  contactSearchViews: [],
+  activeContactSearchViewId: "",
   contactLimit: 20,
   contactLimitStep: 20,
   contactLimitMax: 100,
@@ -136,6 +139,9 @@ const el = {
   contactSearch: document.querySelector("#contactSearch"),
   contactSourceFilters: document.querySelector("#contactSourceFilters"),
   contactSort: document.querySelector("#contactSort"),
+  contactViewName: document.querySelector("#contactViewName"),
+  saveContactViewButton: document.querySelector("#saveContactViewButton"),
+  contactSavedViews: document.querySelector("#contactSavedViews"),
   contactSelectVisibleButton: document.querySelector("#contactSelectVisibleButton"),
   contactAddVisibleButton: document.querySelector("#contactAddVisibleButton"),
   contactCopyVisibleButton: document.querySelector("#contactCopyVisibleButton"),
@@ -371,6 +377,168 @@ const contactSortLabels = {
   unsaved: "Unsaved first",
   recent: "Recently imported",
 };
+
+function knownContactSource(source) {
+  return contactSources.some((item) => item.key === source) ? source : "all";
+}
+
+function knownContactSort(sort) {
+  return Object.prototype.hasOwnProperty.call(contactSortLabels, sort) ? sort : "default";
+}
+
+function normalizeContactSearchView(view) {
+  if (!view || typeof view !== "object") return null;
+  const query = String(view.query || "").trim().slice(0, 140);
+  const source = knownContactSource(String(view.source || "all"));
+  const sort = knownContactSort(String(view.sort || "default"));
+  const name = String(view.name || "").trim().replace(/\s+/g, " ").slice(0, 48)
+    || defaultContactSearchViewName({ query, source, sort });
+  const id = String(view.id || "").trim().slice(0, 80)
+    || `contact-view-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return { id, name, query, source, sort };
+}
+
+function savedContactSearchViews() {
+  try {
+    const raw = window.localStorage?.getItem(contactSearchViewsStorageKey);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set();
+    const views = [];
+    for (const item of parsed) {
+      const view = normalizeContactSearchView(item);
+      if (!view || seen.has(view.id)) continue;
+      seen.add(view.id);
+      views.push(view);
+      if (views.length >= 12) break;
+    }
+    return views;
+  } catch (_error) {
+    return [];
+  }
+}
+
+function saveContactSearchViews() {
+  try {
+    window.localStorage?.setItem(contactSearchViewsStorageKey, JSON.stringify(state.contactSearchViews));
+  } catch (_error) {
+    // Local storage can be unavailable in private or restricted browser contexts.
+  }
+}
+
+function contactSourceDisplay(source) {
+  return (contactSources.find((item) => item.key === source) || contactSources[0]).label;
+}
+
+function defaultContactSearchViewName({ query, source, sort }) {
+  const parts = [
+    query || contactSourceDisplay(source),
+    source !== "all" && query ? contactSourceDisplay(source) : "",
+    sort !== "default" ? contactSortLabels[sort] : "",
+  ].filter(Boolean);
+  return parts.join(" · ") || "Contact search";
+}
+
+function currentContactSearchViewSnapshot() {
+  const query = el.contactSearch.value.trim();
+  const source = knownContactSource(state.contactSource);
+  const sort = knownContactSort(state.contactSort);
+  return {
+    query,
+    source,
+    sort,
+    name: el.contactViewName.value.trim() || defaultContactSearchViewName({ query, source, sort }),
+  };
+}
+
+function contactSearchViewMatchesCurrent(view) {
+  return view.query === el.contactSearch.value.trim()
+    && view.source === knownContactSource(state.contactSource)
+    && view.sort === knownContactSort(state.contactSort);
+}
+
+function renderContactSavedViews() {
+  el.contactSavedViews.replaceChildren();
+  state.contactSource = knownContactSource(state.contactSource);
+  state.contactSort = knownContactSort(state.contactSort);
+  el.contactSort.value = state.contactSort;
+  const activeId = state.contactSearchViews.some((view) => view.id === state.activeContactSearchViewId)
+    ? state.activeContactSearchViewId
+    : "";
+  state.activeContactSearchViewId = activeId;
+  if (!state.contactSearchViews.length) {
+    const empty = document.createElement("span");
+    empty.className = "contact-saved-view-empty";
+    empty.textContent = "No saved searches";
+    el.contactSavedViews.append(empty);
+    return;
+  }
+
+  for (const view of state.contactSearchViews) {
+    const item = document.createElement("span");
+    item.className = `contact-saved-view ${view.id === activeId || contactSearchViewMatchesCurrent(view) ? "active" : ""}`;
+    item.innerHTML = `
+      <button type="button" data-action="use-view">
+        <span class="contact-saved-view-name"></span>
+        <span class="contact-saved-view-meta"></span>
+      </button>
+      <button type="button" data-action="delete-view" aria-label="Delete saved contact search">x</button>
+    `;
+    item.querySelector(".contact-saved-view-name").textContent = view.name;
+    item.querySelector(".contact-saved-view-meta").textContent = [
+      view.query ? `"${view.query}"` : contactSourceDisplay(view.source),
+      view.source !== "all" && view.query ? contactSourceDisplay(view.source) : "",
+      view.sort !== "default" ? contactSortLabels[view.sort] : "",
+    ].filter(Boolean).join(" · ");
+    item.querySelector('[data-action="use-view"]').addEventListener("click", () => useContactSearchView(view));
+    item.querySelector('[data-action="delete-view"]').addEventListener("click", () => deleteContactSearchView(view));
+    el.contactSavedViews.append(item);
+  }
+}
+
+function saveContactSearchView() {
+  const snapshot = currentContactSearchViewSnapshot();
+  const duplicate = state.contactSearchViews.find((view) => (
+    view.query === snapshot.query && view.source === snapshot.source && view.sort === snapshot.sort
+  ));
+  const view = normalizeContactSearchView({
+    ...snapshot,
+    id: duplicate?.id || `contact-view-${Date.now()}`,
+  });
+  if (!view) return;
+  state.contactSearchViews = [
+    view,
+    ...state.contactSearchViews.filter((item) => item.id !== view.id),
+  ].slice(0, 12);
+  state.activeContactSearchViewId = view.id;
+  el.contactViewName.value = view.name;
+  saveContactSearchViews();
+  renderContactSavedViews();
+  el.contactStatus.textContent = `Saved contact search · ${view.name}`;
+}
+
+function useContactSearchView(view) {
+  const saved = normalizeContactSearchView(view);
+  if (!saved) return;
+  state.activeContactSearchViewId = saved.id;
+  state.contactSource = saved.source;
+  state.contactSort = saved.sort;
+  el.contactSearch.value = saved.query;
+  el.contactViewName.value = saved.name;
+  resetContactLimit();
+  renderContactSourceFilters();
+  renderContactSavedViews();
+  loadContacts({ force: Boolean(saved.query) || saved.source !== "all" });
+}
+
+function deleteContactSearchView(view) {
+  state.contactSearchViews = state.contactSearchViews.filter((item) => item.id !== view.id);
+  if (state.activeContactSearchViewId === view.id) state.activeContactSearchViewId = "";
+  saveContactSearchViews();
+  renderContactSavedViews();
+  el.contactStatus.textContent = "Saved contact search deleted";
+}
 
 const conversationViewLabels = {
   inbox: "Inbox",
@@ -6912,6 +7080,7 @@ async function loadContacts({ force = false } = {}) {
     state.contactSourceCounts = payload.source_counts || state.contactSourceCounts || {};
     pruneSelectedContacts();
     renderContactSourceFilters();
+    renderContactSavedViews();
     const total = payload.total_contacts ?? 0;
     const counts = payload.source_counts || {};
     if (!query && state.contactSource === "all") {
@@ -6942,6 +7111,7 @@ async function loadContacts({ force = false } = {}) {
     state.contactsLoading = false;
     el.contactStatus.textContent = error.message;
     renderContacts();
+    renderContactSavedViews();
     refreshDraftRecipientChips();
     buildCodexPrompt();
   }
@@ -8520,7 +8690,9 @@ el.refreshButton.addEventListener("click", () => {
 });
 el.conversationSearch.addEventListener("input", renderConversations);
 el.contactSearch.addEventListener("input", () => {
+  state.activeContactSearchViewId = "";
   state.selectedContactKeys.clear();
+  renderContactSavedViews();
   scheduleContactSearch();
 });
 el.contactSourceFilters.addEventListener("click", (event) => {
@@ -8529,8 +8701,10 @@ el.contactSourceFilters.addEventListener("click", (event) => {
   state.contactSource = contactSources.some((source) => source.key === button.dataset.contactSource)
     ? button.dataset.contactSource
     : "all";
+  state.activeContactSearchViewId = "";
   state.selectedContactKeys.clear();
   resetContactLimit();
+  renderContactSavedViews();
   loadContacts({
     force: state.contactSource === "participants"
       || state.contactSource === "favorites"
@@ -8541,8 +8715,16 @@ el.contactSourceFilters.addEventListener("click", (event) => {
 });
 el.contactSort.addEventListener("change", () => {
   state.contactSort = contactSortLabels[el.contactSort.value] ? el.contactSort.value : "default";
+  state.activeContactSearchViewId = "";
   renderContactSourceFilters();
+  renderContactSavedViews();
   renderContacts();
+});
+el.saveContactViewButton.addEventListener("click", saveContactSearchView);
+el.contactViewName.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  saveContactSearchView();
 });
 el.loadMoreContactsButton.addEventListener("click", loadMoreContacts);
 el.globalMessageSearch.addEventListener("input", scheduleMessageSearch);
@@ -8816,12 +8998,14 @@ const restoredNewChatDraft = restoreNewChatDraft();
 if (restoredNewChatDraft) {
   el.draftState.textContent = "Local draft restored";
 }
+state.contactSearchViews = savedContactSearchViews();
 
 renderAllEmojiButtons();
 renderAllVoiceMemoControls();
 renderMessages();
 renderContacts();
 renderContactSourceFilters();
+renderContactSavedViews();
 renderDraftRecipientChips();
 renderAttachments();
 renderAttachments("draft");

@@ -94,6 +94,13 @@
               <option value="recent">Recently imported</option>
             </select>
           </label>
+          <div class="contact-saved-views" aria-label="Saved contact searches">
+            <div class="contact-saved-view-tools">
+              <input id="contactViewName" type="text" placeholder="Saved search name" autocomplete="off" aria-label="Saved contact search name" />
+              <button type="button" id="saveContactViewButton">Save view</button>
+            </div>
+            <div class="contact-saved-view-list" id="contactSavedViews" aria-live="polite"></div>
+          </div>
           <div class="contact-bulk-actions" id="contactBulkActions" aria-label="Visible contact actions">
             <button type="button" id="contactSelectVisibleButton">Select visible</button>
             <button type="button" id="contactAddVisibleButton">Add visible</button>
