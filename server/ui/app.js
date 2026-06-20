@@ -3076,7 +3076,44 @@ function handleMessageFilterKeydown(event) {
 
 function focusedLoadedMessage() {
   if (!state.focusMessageId) return null;
-  return state.messages.find((message) => message.provider_message_id === state.focusMessageId) || null;
+  return loadedMessageByProviderId(state.focusMessageId);
+}
+
+function loadedMessageByProviderId(providerMessageId) {
+  const messageId = String(providerMessageId || "").trim();
+  if (!messageId) return null;
+  return state.messages.find((message) => message.provider_message_id === messageId) || null;
+}
+
+async function ensureFocusedLoadedMessage({ statusElement = el.messageSearchStatus, label = "message" } = {}) {
+  const messageId = state.focusMessageId;
+  if (!state.selected || !messageId) return true;
+  if (loadedMessageByProviderId(messageId)) {
+    scrollFocusedLoadedMessageIntoView();
+    if (statusElement) statusElement.textContent = `Opened at ${label}`;
+    return true;
+  }
+
+  const conversationId = state.selected.conversation_id;
+  while (state.messageLimit < state.messageLimitMax) {
+    const nextLimit = Math.min(state.messageLimit + state.messageLimitStep, state.messageLimitMax);
+    if (nextLimit <= state.messageLimit) break;
+    state.messageLimit = nextLimit;
+    if (statusElement) statusElement.textContent = `Loading older messages to find ${label}`;
+    await loadMessages({ quiet: true });
+    if (!state.selected || state.selected.conversation_id !== conversationId || state.focusMessageId !== messageId) {
+      return false;
+    }
+    if (loadedMessageByProviderId(messageId)) {
+      scrollFocusedLoadedMessageIntoView();
+      if (statusElement) statusElement.textContent = `Opened at ${label}`;
+      return true;
+    }
+  }
+
+  renderMessageHistoryControls();
+  if (statusElement) statusElement.textContent = `Opened thread; ${label} is older than the loaded window`;
+  return false;
 }
 
 function replyToFocusedLoadedMessage() {
@@ -5982,9 +6019,17 @@ async function openContactConversation(contact, conversation, { messageId = "" }
   renderConversations();
   el.contactStatus.textContent = `Opening ${conversationDisplayName(conversation)}`;
   await selectConversation(conversation);
-  el.contactStatus.textContent = state.focusMessageId
-    ? `Opened ${conversationDisplayName(conversation)} at matching message`
-    : `Opened ${conversationDisplayName(conversation)}`;
+  if (state.focusMessageId) {
+    const found = await ensureFocusedLoadedMessage({
+      statusElement: el.contactStatus,
+      label: "matching message",
+    });
+    el.contactStatus.textContent = found
+      ? `Opened ${conversationDisplayName(conversation)} at matching message`
+      : `Opened ${conversationDisplayName(conversation)}; matching message is older than the loaded window`;
+  } else {
+    el.contactStatus.textContent = `Opened ${conversationDisplayName(conversation)}`;
+  }
   buildCodexPrompt();
 }
 
@@ -6741,6 +6786,10 @@ async function useMessageSearchResult(result) {
     return;
   }
   await selectConversation(conversation);
+  await ensureFocusedLoadedMessage({
+    statusElement: el.messageSearchStatus,
+    label: "search result",
+  });
 }
 
 async function openMessageSearchResultInMessages(result) {

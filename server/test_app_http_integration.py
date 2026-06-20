@@ -3060,6 +3060,12 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("refreshConversationsForSearchResult", js_response.text)
         self.assertIn("Loading imported thread", js_response.text)
         self.assertIn("loadConversations({ autoSelect: false })", js_response.text)
+        self.assertIn("ensureFocusedLoadedMessage", js_response.text)
+        self.assertIn("loadedMessageByProviderId", js_response.text)
+        self.assertIn("Loading older messages to find ${label}", js_response.text)
+        self.assertIn("Opened at ${label}", js_response.text)
+        self.assertIn("Opened thread; ${label} is older than the loaded window", js_response.text)
+        self.assertIn("await ensureFocusedLoadedMessage", js_response.text)
         self.assertIn(
             "async function loadConversations({ autoSelect = true, preserveManagementEditing = false, announceActivity = false } = {})",
             js_response.text,
