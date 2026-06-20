@@ -247,8 +247,12 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(conversation["last_message_direction"], "imessage_to_gmail")
         self.assertEqual(conversation["last_message_provider_id"], "imsg-latest")
         self.assertFalse(conversation["last_message_has_attachments"])
+        self.assertEqual(conversation["participant_count"], 1)
+        self.assertEqual(conversation["saved_participant_count"], 1)
+        self.assertEqual(conversation["unknown_participant_count"], 0)
         self.assertEqual(conversation["contact_context"][0]["display_name"], "Taylor Example")
         self.assertEqual(conversation["contact_context"][0]["primary_handle"], "+1 (512) 743-6385")
+        self.assertTrue(conversation["contact_context"][0]["is_saved"])
         self.assertIn("Taylor Example", conversation["contact_context_text"])
 
     def test_conversations_endpoint_includes_participant_contact_notes_for_search(self):
@@ -264,6 +268,65 @@ class AppHttpIntegrationTests(unittest.TestCase):
         conversation = response.json()["conversations"][0]
         self.assertEqual(conversation["contact_context"][0]["contact_note"], "Ask about launch seating.")
         self.assertIn("Ask about launch seating.", conversation["contact_context_text"])
+
+    def test_conversations_endpoint_counts_unknown_participants(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """INSERT INTO penguin_connect_conversations
+                   (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants,
+                    alias_email, status)
+                   VALUES (?, ?, ?, ?, 'dm', ?, ?, 'active')""",
+                (
+                    "owner@gmail.com",
+                    "amc_unknown_contact",
+                    "chat-unknown-contact",
+                    "Unknown Contact",
+                    '["+1 (415) 555-0198"]',
+                    "owner+unknown-contact@gmail.com",
+                ),
+            )
+            conn.execute(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction, sender_email, subject,
+                    body_text, message_timestamp, is_read, metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "amc_unknown_contact",
+                    "imessage",
+                    "imsg-unknown-contact",
+                    "imessage_to_gmail",
+                    None,
+                    "[Apple Messages] Unknown Contact",
+                    "Synthetic unknown contact message",
+                    "2026-03-11T09:00:00+00:00",
+                    1,
+                    "{}",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with TestClient(app_module.app) as client:
+            response = client.get("/penguin-connect/conversations")
+
+        self.assertEqual(response.status_code, 200)
+        conversations = {
+            conversation["conversation_id"]: conversation
+            for conversation in response.json()["conversations"]
+        }
+        unknown = conversations["amc_unknown_contact"]
+        self.assertEqual(unknown["participant_count"], 1)
+        self.assertEqual(unknown["saved_participant_count"], 0)
+        self.assertEqual(unknown["unknown_participant_count"], 1)
+        self.assertEqual(unknown["contact_context"][0]["display_name"], "+1 (415) 555-0198")
+        self.assertFalse(unknown["contact_context"][0]["is_saved"])
+
+        saved = conversations["amc_test"]
+        self.assertEqual(saved["participant_count"], 1)
+        self.assertEqual(saved["saved_participant_count"], 1)
+        self.assertEqual(saved["unknown_participant_count"], 0)
 
     def test_conversations_endpoint_returns_cached_threads_without_gmail_account(self):
         conn = self._get_connection()
@@ -2221,6 +2284,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn('data-view="needsReply"', html_response.text)
         self.assertIn('data-view="direct"', html_response.text)
         self.assertIn('data-view="groups"', html_response.text)
+        self.assertIn('data-view="unknown"', html_response.text)
         self.assertIn('data-view="drafts"', html_response.text)
         self.assertIn('data-view="unlabeled"', html_response.text)
         self.assertIn('data-view="muted"', html_response.text)
@@ -2372,6 +2436,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn(".label-badge", css_response.text)
         self.assertIn(".draft-badge", css_response.text)
         self.assertIn(".muted-badge", css_response.text)
+        self.assertIn(".unknown-badge", css_response.text)
         self.assertIn(".followup-badge", css_response.text)
         self.assertIn(".attachment-link", css_response.text)
         self.assertIn(".audio-attachment", css_response.text)
@@ -2553,8 +2618,11 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("conversationSortLabels", js_response.text)
         self.assertIn('direct: "Direct"', js_response.text)
         self.assertIn('groups: "Groups"', js_response.text)
+        self.assertIn('unknown: "Unknown"', js_response.text)
         self.assertIn("isDirectConversation", js_response.text)
         self.assertIn("isGroupConversation", js_response.text)
+        self.assertIn("conversationUnknownParticipantCount", js_response.text)
+        self.assertIn("conversationHasUnknownParticipants", js_response.text)
         self.assertIn("conversationViewsStorageKey", js_response.text)
         self.assertIn("savedConversationViews", js_response.text)
         self.assertIn("renderConversationSavedViews", js_response.text)

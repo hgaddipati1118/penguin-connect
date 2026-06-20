@@ -574,6 +574,7 @@ const conversationViewLabels = {
   unread: "Unread",
   direct: "Direct",
   groups: "Groups",
+  unknown: "Unknown",
   drafts: "Drafts",
   unlabeled: "Unlabeled",
   muted: "Muted",
@@ -1524,6 +1525,16 @@ function conversationContactContextText(conversation) {
   return `${items.join(" / ")}${extra > 0 ? ` / +${extra} more` : ""}`;
 }
 
+function conversationUnknownParticipantCount(conversation) {
+  const count = Number(conversation?.unknown_participant_count || 0);
+  if (count > 0) return count;
+  return conversationContactContextItems(conversation).filter((contact) => contact.is_saved === false).length;
+}
+
+function conversationHasUnknownParticipants(conversation) {
+  return conversationUnknownParticipantCount(conversation) > 0;
+}
+
 function labelKey(label) {
   return String(label || "").trim().toLowerCase();
 }
@@ -1866,6 +1877,7 @@ function conversationMatchesView(conversation, view = state.conversationView) {
   if (view === "followup") return hasFollowUp(conversation) && !conversation.is_archived;
   if (view === "direct") return isDirectConversation(conversation) && !conversation.is_archived;
   if (view === "groups") return isGroupConversation(conversation) && !conversation.is_archived;
+  if (view === "unknown") return conversationHasUnknownParticipants(conversation) && !conversation.is_archived;
   if (view === "drafts") return conversationHasDraft(conversation) && !conversation.is_archived;
   if (view === "unlabeled") return !conversationHasLabels(conversation) && !conversation.is_archived;
   if (view === "muted") return Boolean(conversation.is_muted) && !conversation.is_archived;
@@ -1889,6 +1901,7 @@ function conversationViewCounts() {
     unread: state.conversations.filter((conversation) => conversationMatchesView(conversation, "unread")).length,
     direct: state.conversations.filter((conversation) => conversationMatchesView(conversation, "direct")).length,
     groups: state.conversations.filter((conversation) => conversationMatchesView(conversation, "groups")).length,
+    unknown: state.conversations.filter((conversation) => conversationMatchesView(conversation, "unknown")).length,
     drafts: state.conversations.filter((conversation) => conversationMatchesView(conversation, "drafts")).length,
     unlabeled: state.conversations.filter((conversation) => conversationMatchesView(conversation, "unlabeled")).length,
     muted: state.conversations.filter((conversation) => conversationMatchesView(conversation, "muted")).length,
@@ -2997,6 +3010,13 @@ function renderConversations() {
       const badge = document.createElement("span");
       badge.className = "badge draft-badge";
       badge.textContent = "draft";
+      badges.append(badge);
+    }
+    const unknownParticipants = conversationUnknownParticipantCount(conversation);
+    if (unknownParticipants > 0) {
+      const badge = document.createElement("span");
+      badge.className = "badge unknown-badge";
+      badge.textContent = unknownParticipants === 1 ? "unknown" : `unknown ${unknownParticipants}`;
       badges.append(badge);
     }
     if (hasFollowUp(conversation)) {

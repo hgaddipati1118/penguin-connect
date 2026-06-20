@@ -2337,10 +2337,14 @@ def _attach_conversation_contact_context(conn: sqlite3.Connection, result: dict)
     for conversation in conversations:
         conversation["contact_context"] = []
         conversation["contact_context_text"] = ""
+        conversation["participant_count"] = 0
+        conversation["saved_participant_count"] = 0
+        conversation["unknown_participant_count"] = 0
         for handle in _conversation_dict_participant_handles(conversation):
             key = _contact_compare_key(handle)
             if not key:
                 continue
+            conversation["participant_count"] += 1
             handle_entries.append((conversation, handle, key))
             handle_keys.add(key)
     if not handle_keys:
@@ -2385,6 +2389,11 @@ def _attach_conversation_contact_context(conn: sqlite3.Connection, result: dict)
         contact = saved_by_key.get(key) or participant_by_key.get(key)
         if not contact:
             continue
+        is_saved = contact.get("is_saved") is not False
+        if is_saved:
+            conversation["saved_participant_count"] += 1
+        else:
+            conversation["unknown_participant_count"] += 1
         item = {
             "handle": handle,
             "display_name": contact.get("display_name") or handle,
@@ -2392,7 +2401,7 @@ def _attach_conversation_contact_context(conn: sqlite3.Connection, result: dict)
             "organization": contact.get("organization") or "",
             "contact_note": contact.get("contact_note") or "",
             "is_favorite": bool(contact.get("is_favorite")),
-            "is_saved": contact.get("is_saved") is not False,
+            "is_saved": is_saved,
         }
         if len(conversation["contact_context"]) < 12:
             conversation["contact_context"].append(item)

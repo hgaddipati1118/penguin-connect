@@ -754,6 +754,12 @@ input[type="date"]:focus {
   color: var(--muted);
 }
 
+.unknown-badge {
+  border-color: rgba(168, 83, 27, 0.45);
+  background: rgba(168, 83, 27, 0.1);
+  color: var(--warn);
+}
+
 .followup-badge {
   max-width: 104px;
   border-color: rgba(191, 128, 35, 0.52);
