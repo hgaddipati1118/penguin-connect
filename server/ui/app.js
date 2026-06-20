@@ -143,6 +143,7 @@ const el = {
   bulkAddPeopleButton: document.querySelector("#bulkAddPeopleButton"),
   bulkCopyPeopleButton: document.querySelector("#bulkCopyPeopleButton"),
   bulkSavePeopleButton: document.querySelector("#bulkSavePeopleButton"),
+  bulkStarPeopleButton: document.querySelector("#bulkStarPeopleButton"),
   bulkCreatePeopleButton: document.querySelector("#bulkCreatePeopleButton"),
   bulkClearDraftsButton: document.querySelector("#bulkClearDraftsButton"),
   conversationList: document.querySelector("#conversationList"),
@@ -2133,6 +2134,7 @@ function renderBulkActions(rows) {
   const bulkFollowUpValue = el.bulkFollowUpAt.value.trim();
   const selectedDraftCount = selectedRows.filter(conversationHasDraft).length;
   const selectedPeopleCount = selectedConversationParticipantHandles(selectedRows).length;
+  const selectedStarrablePeopleCount = selectedConversationFavoritePeople(selectedRows).length;
   const selectedCreatablePeopleCount = selectedConversationCreatablePeople(selectedRows).length;
   const markUnreadIntent = shouldBulkMarkUnread(selectedRows);
   const pinIntent = shouldBulkPin();
@@ -2170,6 +2172,8 @@ function renderBulkActions(rows) {
   el.bulkCopyPeopleButton.textContent = selectedPeopleCount ? `Copy ${selectedPeopleCount} people` : "Copy people";
   el.bulkSavePeopleButton.disabled = state.bulkBusy || selectedPeopleCount === 0;
   el.bulkSavePeopleButton.textContent = selectedPeopleCount ? `Save ${selectedPeopleCount} people` : "Save people";
+  el.bulkStarPeopleButton.disabled = state.bulkBusy || selectedStarrablePeopleCount === 0;
+  el.bulkStarPeopleButton.textContent = selectedStarrablePeopleCount ? `Star ${selectedStarrablePeopleCount}` : "Star people";
   el.bulkCreatePeopleButton.disabled = state.bulkBusy || selectedCreatablePeopleCount === 0;
   el.bulkCreatePeopleButton.textContent = selectedCreatablePeopleCount ? `Create ${selectedCreatablePeopleCount}` : "Create people";
   el.bulkClearDraftsButton.disabled = state.bulkBusy || selectedDraftCount === 0;
@@ -8322,6 +8326,22 @@ function selectedConversationCreatablePeople(targets = selectedConversationSnaps
     }));
 }
 
+function selectedConversationFavoritePeople(targets = selectedConversationSnapshot()) {
+  const candidates = selectedConversationPeopleContactCandidates(targets);
+  const seen = new Set();
+  return selectedConversationParticipantHandles(targets).map((handle) => {
+    const matched = bestContactForHandle(handle, candidates);
+    const fallback = messageContactFromHandle(handle, handle);
+    const contactKey = contactFavoriteManagementKey(matched || fallback) || contactManagementKeyForHandle(handle);
+    if (!contactKey || seen.has(contactKey)) return null;
+    seen.add(contactKey);
+    const contact = matched
+      ? { ...fallback, ...matched, contact_key: contactKey }
+      : { ...fallback, contact_key: contactKey, contact_keys: [contactKey] };
+    return { handle, contact, contactKey };
+  }).filter((item) => item && !isFavoriteContact(item.contact));
+}
+
 function selectedConversationPeopleListName(targets = selectedConversationSnapshot()) {
   if (targets.length === 1) return `${conversationDisplayName(targets[0])} people`;
   const query = el.conversationSearch.value.trim();
@@ -8513,6 +8533,62 @@ async function saveSelectedConversationPeopleAsRecipientList() {
   } finally {
     state.bulkBusy = false;
     renderConversations();
+  }
+}
+
+async function starSelectedConversationPeople() {
+  const targets = selectedConversationSnapshot();
+  const participants = selectedConversationParticipantHandles(targets);
+  const items = selectedConversationFavoritePeople(targets);
+  if (!participants.length) {
+    state.bulkMessage = targets.length ? "No selected people" : "Select conversations";
+    renderConversations();
+    return;
+  }
+  if (!items.length) {
+    state.bulkMessage = "Selected people already starred";
+    renderConversations();
+    return;
+  }
+
+  state.bulkBusy = true;
+  state.bulkMessage = `Starring ${items.length} selected ${items.length === 1 ? "person" : "people"}`;
+  renderConversations();
+  let updated = 0;
+  const failures = [];
+  for (const item of items) {
+    try {
+      const result = await api("/penguin-connect/contacts/management", {
+        method: "POST",
+        body: JSON.stringify({
+          contact_key: item.contactKey,
+          favorite: true,
+        }),
+      });
+      mergeContactManagement(result, { updatedNote: false });
+      updated += 1;
+      state.bulkMessage = `Starred ${updated}/${items.length}`;
+      renderConversations();
+    } catch (error) {
+      failures.push(error.message);
+    }
+  }
+
+  try {
+    await loadConversations({ autoSelect: false, preserveManagementEditing: true });
+    await refreshContactPanelAfterExternalManagement();
+    await loadThreadContactMatches();
+  } catch (error) {
+    failures.push(error.message);
+  } finally {
+    state.bulkBusy = false;
+    state.bulkMessage = failures.length
+      ? `Starred ${updated}; ${failures.length} failed`
+      : `Starred ${updated} selected ${updated === 1 ? "person" : "people"}`;
+    renderConversations();
+    renderContacts();
+    renderThreadPeople();
+    buildCodexPrompt();
   }
 }
 
@@ -9785,6 +9861,7 @@ el.bulkCopyThreadsButton.addEventListener("click", copySelectedConversationSumma
 el.bulkAddPeopleButton.addEventListener("click", addSelectedConversationPeopleToDraft);
 el.bulkCopyPeopleButton.addEventListener("click", copySelectedConversationPeople);
 el.bulkSavePeopleButton.addEventListener("click", saveSelectedConversationPeopleAsRecipientList);
+el.bulkStarPeopleButton.addEventListener("click", starSelectedConversationPeople);
 el.bulkCreatePeopleButton.addEventListener("click", createSelectedConversationPeopleContacts);
 el.bulkClearDraftsButton.addEventListener("click", bulkClearDrafts);
 el.bulkMarkReadButton.addEventListener("click", bulkMarkSelectedRead);
