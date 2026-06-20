@@ -1,4 +1,5 @@
 const newChatDraftStorageKey = "penguin-connect:new-chat-draft:v1";
+const conversationViewsStorageKey = "penguin-connect:conversation-views:v1";
 const contactSearchViewsStorageKey = "penguin-connect:contact-search-views:v1";
 const messageSearchViewsStorageKey = "penguin-connect:message-search-views:v1";
 
@@ -85,6 +86,8 @@ const state = {
   conversationView: "inbox",
   conversationSort: "recent",
   conversationLabel: "",
+  conversationSavedViews: [],
+  activeConversationViewId: "",
   conversationActivitySnapshot: new Map(),
   activityStatusUntil: 0,
   selectedConversationIds: new Set(),
@@ -118,6 +121,9 @@ const el = {
   conversationFilters: document.querySelector("#conversationFilters"),
   conversationSort: document.querySelector("#conversationSort"),
   labelFilters: document.querySelector("#labelFilters"),
+  conversationViewName: document.querySelector("#conversationViewName"),
+  saveConversationViewButton: document.querySelector("#saveConversationViewButton"),
+  conversationSavedViews: document.querySelector("#conversationSavedViews"),
   bulkActions: document.querySelector("#bulkActions"),
   bulkState: document.querySelector("#bulkState"),
   selectVisibleButton: document.querySelector("#selectVisibleButton"),
@@ -566,6 +572,183 @@ const conversationSortLabels = {
   followup: "Follow-up",
   name: "A-Z",
 };
+
+function knownConversationView(view) {
+  return Object.prototype.hasOwnProperty.call(conversationViewLabels, view) ? view : "inbox";
+}
+
+function knownConversationSort(sort) {
+  return Object.prototype.hasOwnProperty.call(conversationSortLabels, sort) ? sort : "recent";
+}
+
+function conversationViewDisplay(view) {
+  return conversationViewLabels[knownConversationView(view)] || conversationViewLabels.inbox;
+}
+
+function normalizeConversationLabel(value) {
+  return String(value || "").trim().replace(/\s+/g, " ").slice(0, 48);
+}
+
+function defaultConversationViewName({ query, view, sort, label }) {
+  const parts = [
+    query || (label ? `#${label}` : conversationViewDisplay(view)),
+    view !== "inbox" && (query || label) ? conversationViewDisplay(view) : "",
+    label && query ? `#${label}` : "",
+    sort !== "recent" ? conversationSortLabels[sort] : "",
+  ].filter(Boolean);
+  return parts.join(" · ") || "Conversation view";
+}
+
+function normalizeConversationView(view) {
+  if (!view || typeof view !== "object") return null;
+  const query = String(view.query || "").trim().slice(0, 140);
+  const railView = knownConversationView(String(view.view || "inbox"));
+  const sort = knownConversationSort(String(view.sort || "recent"));
+  const label = normalizeConversationLabel(view.label);
+  const name = String(view.name || "").trim().replace(/\s+/g, " ").slice(0, 56)
+    || defaultConversationViewName({ query, view: railView, sort, label });
+  const id = String(view.id || "").trim().slice(0, 90)
+    || `conversation-view-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return { id, name, query, view: railView, sort, label };
+}
+
+function savedConversationViews() {
+  try {
+    const raw = window.localStorage?.getItem(conversationViewsStorageKey);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set();
+    const views = [];
+    for (const item of parsed) {
+      const view = normalizeConversationView(item);
+      if (!view || seen.has(view.id)) continue;
+      seen.add(view.id);
+      views.push(view);
+      if (views.length >= 12) break;
+    }
+    return views;
+  } catch (_error) {
+    return [];
+  }
+}
+
+function saveConversationViews() {
+  try {
+    window.localStorage?.setItem(conversationViewsStorageKey, JSON.stringify(state.conversationSavedViews));
+  } catch (_error) {
+    // Local storage can be unavailable in private or restricted browser contexts.
+  }
+}
+
+function currentConversationViewSnapshot() {
+  const query = el.conversationSearch.value.trim();
+  const view = knownConversationView(state.conversationView);
+  const sort = knownConversationSort(state.conversationSort);
+  const label = normalizeConversationLabel(state.conversationLabel);
+  return {
+    query,
+    view,
+    sort,
+    label,
+    name: el.conversationViewName.value.trim()
+      || defaultConversationViewName({ query, view, sort, label }),
+  };
+}
+
+function conversationViewMatchesCurrent(view) {
+  return view.query === el.conversationSearch.value.trim()
+    && view.view === knownConversationView(state.conversationView)
+    && view.sort === knownConversationSort(state.conversationSort)
+    && labelKey(view.label) === labelKey(state.conversationLabel);
+}
+
+function renderConversationSavedViews() {
+  el.conversationSavedViews.replaceChildren();
+  state.conversationView = knownConversationView(state.conversationView);
+  state.conversationSort = knownConversationSort(state.conversationSort);
+  el.conversationSort.value = state.conversationSort;
+  const activeId = state.conversationSavedViews.some((view) => view.id === state.activeConversationViewId)
+    ? state.activeConversationViewId
+    : "";
+  state.activeConversationViewId = activeId;
+  if (!state.conversationSavedViews.length) {
+    const empty = document.createElement("span");
+    empty.className = "conversation-saved-view-empty";
+    empty.textContent = "No saved views";
+    el.conversationSavedViews.append(empty);
+    return;
+  }
+
+  for (const view of state.conversationSavedViews) {
+    const item = document.createElement("span");
+    item.className = `conversation-saved-view ${view.id === activeId || conversationViewMatchesCurrent(view) ? "active" : ""}`;
+    item.innerHTML = `
+      <button type="button" data-action="use-conversation-view">
+        <span class="conversation-saved-view-name"></span>
+        <span class="conversation-saved-view-meta"></span>
+      </button>
+      <button type="button" data-action="delete-conversation-view" aria-label="Delete saved conversation view">x</button>
+    `;
+    item.querySelector(".conversation-saved-view-name").textContent = view.name;
+    item.querySelector(".conversation-saved-view-meta").textContent = [
+      view.query ? `"${view.query}"` : conversationViewDisplay(view.view),
+      view.view !== "inbox" && view.query ? conversationViewDisplay(view.view) : "",
+      view.label ? `#${view.label}` : "",
+      view.sort !== "recent" ? conversationSortLabels[view.sort] : "",
+    ].filter(Boolean).join(" · ");
+    item.querySelector('[data-action="use-conversation-view"]').addEventListener("click", () => useConversationView(view));
+    item.querySelector('[data-action="delete-conversation-view"]').addEventListener("click", () => deleteConversationView(view));
+    el.conversationSavedViews.append(item);
+  }
+}
+
+function saveConversationView() {
+  const snapshot = currentConversationViewSnapshot();
+  const duplicate = state.conversationSavedViews.find((view) => (
+    view.query === snapshot.query
+      && view.view === snapshot.view
+      && view.sort === snapshot.sort
+      && labelKey(view.label) === labelKey(snapshot.label)
+  ));
+  const view = normalizeConversationView({
+    ...snapshot,
+    id: duplicate?.id || `conversation-view-${Date.now()}`,
+  });
+  if (!view) return;
+  state.conversationSavedViews = [
+    view,
+    ...state.conversationSavedViews.filter((item) => item.id !== view.id),
+  ].slice(0, 12);
+  state.activeConversationViewId = view.id;
+  el.conversationViewName.value = view.name;
+  saveConversationViews();
+  renderConversationSavedViews();
+  renderConversations();
+  el.statusLine.textContent = `Saved conversation view · ${view.name}`;
+}
+
+function useConversationView(view) {
+  const saved = normalizeConversationView(view);
+  if (!saved) return;
+  state.activeConversationViewId = saved.id;
+  state.conversationView = saved.view;
+  state.conversationSort = saved.sort;
+  state.conversationLabel = saved.label;
+  el.conversationSearch.value = saved.query;
+  el.conversationViewName.value = saved.name;
+  renderConversations();
+  el.statusLine.textContent = `Conversation view loaded · ${saved.name}`;
+}
+
+function deleteConversationView(view) {
+  state.conversationSavedViews = state.conversationSavedViews.filter((item) => item.id !== view.id);
+  if (state.activeConversationViewId === view.id) state.activeConversationViewId = "";
+  saveConversationViews();
+  renderConversationSavedViews();
+  renderConversations();
+  el.statusLine.textContent = "Saved conversation view deleted";
+}
 
 const messageLabelPresets = ["Important", "Needs reply", "Waiting", "Later"];
 
@@ -2612,6 +2795,7 @@ function renderConversations() {
 
   renderConversationFilters();
   renderLabelFilters();
+  renderConversationSavedViews();
   renderBulkActions(rows);
   el.conversationList.replaceChildren();
   if (!rows.length) {
@@ -8879,7 +9063,10 @@ el.refreshButton.addEventListener("click", () => {
   loadConversations();
   loadContacts();
 });
-el.conversationSearch.addEventListener("input", renderConversations);
+el.conversationSearch.addEventListener("input", () => {
+  state.activeConversationViewId = "";
+  renderConversations();
+});
 el.contactSearch.addEventListener("input", () => {
   state.activeContactSearchViewId = "";
   state.selectedContactKeys.clear();
@@ -9165,18 +9352,27 @@ el.codexModes.addEventListener("click", (event) => {
 el.conversationFilters.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-view]");
   if (!button) return;
-  state.conversationView = button.dataset.view || "inbox";
+  state.conversationView = knownConversationView(button.dataset.view || "inbox");
+  state.activeConversationViewId = "";
   renderConversations();
 });
 el.conversationSort.addEventListener("change", () => {
-  state.conversationSort = conversationSortLabels[el.conversationSort.value] ? el.conversationSort.value : "recent";
+  state.conversationSort = knownConversationSort(el.conversationSort.value);
+  state.activeConversationViewId = "";
   renderConversations();
 });
 el.labelFilters.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-label]");
   if (!button) return;
   state.conversationLabel = button.dataset.label || "";
+  state.activeConversationViewId = "";
   renderConversations();
+});
+el.saveConversationViewButton.addEventListener("click", saveConversationView);
+el.conversationViewName.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  saveConversationView();
 });
 el.selectVisibleButton.addEventListener("click", () => {
   for (const conversation of visibleConversationRows()) {
@@ -9213,11 +9409,13 @@ if (restoredNewChatDraft) {
 }
 state.contactSearchViews = savedContactSearchViews();
 state.messageSavedSearchViews = savedMessageSearchViews();
+state.conversationSavedViews = savedConversationViews();
 
 renderAllEmojiButtons();
 renderAllVoiceMemoControls();
 renderMessages();
 renderContacts();
+renderConversationSavedViews();
 renderContactSourceFilters();
 renderContactSavedViews();
 renderDraftRecipientChips();

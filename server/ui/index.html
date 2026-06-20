@@ -45,6 +45,13 @@
           </select>
         </label>
         <div class="label-filters" id="labelFilters" aria-label="Label filters"></div>
+        <div class="conversation-saved-views" aria-label="Saved conversation views">
+          <div class="conversation-saved-view-tools">
+            <input id="conversationViewName" type="text" placeholder="Saved rail view name" autocomplete="off" aria-label="Saved conversation view name" />
+            <button type="button" id="saveConversationViewButton">Save view</button>
+          </div>
+          <div class="conversation-saved-view-list" id="conversationSavedViews" aria-live="polite"></div>
+        </div>
         <div class="bulk-actions" id="bulkActions" aria-label="Bulk conversation actions">
           <span id="bulkState">0 selected</span>
           <button type="button" id="selectVisibleButton">Select visible</button>
