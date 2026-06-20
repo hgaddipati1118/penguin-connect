@@ -387,6 +387,7 @@ const contactSortLabels = {
   name: "Name",
   favorite: "Favorites first",
   noted: "Notes first",
+  threads: "Threads first",
   saved: "Saved first",
   unsaved: "Unsaved first",
   recent: "Recently imported",
@@ -1132,10 +1133,36 @@ function compareContactRecent(a, b) {
   return contactImportedSortValue(b) - contactImportedSortValue(a) || compareContactName(a, b);
 }
 
+function contactThreadContextCount(contact) {
+  const contextIds = new Set(
+    (Array.isArray(contact?.message_context) ? contact.message_context : [])
+      .map((context) => String(context?.conversation_id || "").trim())
+      .filter(Boolean)
+  );
+  const needles = contactNeedles(contact);
+  let count = 0;
+  for (const conversation of state.conversations) {
+    const conversationId = String(conversation?.conversation_id || "").trim();
+    if (conversationId && contextIds.has(conversationId)) {
+      count += 1;
+      continue;
+    }
+    const haystack = conversationHaystack(conversation);
+    if (needles.some((needle) => haystack.includes(needle))) count += 1;
+  }
+  return count || contextIds.size;
+}
+
+function compareContactThreads(a, b) {
+  return contactThreadContextCount(b) - contactThreadContextCount(a)
+    || compareContactRecent(a, b);
+}
+
 function compareContacts(a, b) {
   if (state.contactSort === "name") return compareContactName(a, b);
   if (state.contactSort === "favorite") return compareContactFavorite(a, b);
   if (state.contactSort === "noted") return compareContactNoted(a, b);
+  if (state.contactSort === "threads") return compareContactThreads(a, b);
   if (state.contactSort === "saved") return compareContactSaved(a, b);
   if (state.contactSort === "unsaved") return compareContactUnsaved(a, b);
   if (state.contactSort === "recent") return compareContactRecent(a, b);
