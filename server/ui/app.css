@@ -2036,6 +2036,11 @@ input[type="date"]:focus {
   border-color: var(--accent);
 }
 
+.search-result.active-search-result {
+  border-color: rgba(17, 100, 86, 0.48);
+  background: rgba(239, 248, 243, 0.58);
+}
+
 .search-result.starred {
   border-color: rgba(191, 128, 35, 0.45);
   box-shadow: inset 3px 0 0 rgba(191, 128, 35, 0.36);

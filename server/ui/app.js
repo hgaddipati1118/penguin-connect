@@ -73,6 +73,7 @@ const state = {
   messageSearchView: "all",
   messageSavedSearchViews: [],
   activeMessageSearchViewId: "",
+  activeMessageSearchResultKey: "",
   messageSearchLimit: 30,
   messageSearchLimitStep: 30,
   messageSearchLimitMax: 100,
@@ -955,6 +956,7 @@ function useMessageSearchView(view) {
   const saved = normalizeMessageSearchView(view);
   if (!saved) return;
   state.activeMessageSearchViewId = saved.id;
+  state.activeMessageSearchResultKey = "";
   state.messageSearchView = saved.view;
   el.globalMessageSearch.value = saved.query;
   el.messageDateFrom.value = saved.dateFrom;
@@ -2329,6 +2331,99 @@ function hasMessageNote(message) {
 
 function messageSearchResultKey(result) {
   return `${result?.conversation_id || ""}::${result?.provider_message_id || ""}`;
+}
+
+function activeMessageSearchResultIndex(results = state.messageSearchResults) {
+  if (!state.activeMessageSearchResultKey) return -1;
+  return results.findIndex((result) => messageSearchResultKey(result) === state.activeMessageSearchResultKey);
+}
+
+function messageSearchNavigationResults() {
+  return state.messageSearchResults.filter((result) => messageSearchResultKey(result) !== "::");
+}
+
+function updateMessageSearchActiveDescendant(results = state.messageSearchResults) {
+  const activeIndex = activeMessageSearchResultIndex(results);
+  if (activeIndex >= 0) {
+    el.globalMessageSearch.setAttribute("aria-activedescendant", "activeMessageSearchResult");
+  } else {
+    state.activeMessageSearchResultKey = "";
+    el.globalMessageSearch.removeAttribute("aria-activedescendant");
+  }
+  return activeIndex;
+}
+
+function scrollActiveMessageSearchResultIntoView() {
+  if (!state.activeMessageSearchResultKey) return;
+  requestAnimationFrame(() => {
+    el.messageSearchResults.querySelector(".search-result.active-search-result")?.scrollIntoView({ block: "nearest" });
+  });
+}
+
+function moveActiveMessageSearchResult(direction) {
+  const results = messageSearchNavigationResults();
+  if (!results.length) {
+    state.activeMessageSearchResultKey = "";
+    el.globalMessageSearch.removeAttribute("aria-activedescendant");
+    el.messageSearchStatus.textContent = "No message results";
+    return false;
+  }
+  const currentIndex = activeMessageSearchResultIndex(results);
+  let nextIndex = direction > 0 ? 0 : results.length - 1;
+  if (currentIndex >= 0) {
+    nextIndex = (currentIndex + direction + results.length) % results.length;
+  }
+  state.activeMessageSearchResultKey = messageSearchResultKey(results[nextIndex]);
+  renderMessageSearchResults();
+  scrollActiveMessageSearchResultIntoView();
+  el.messageSearchStatus.textContent = `Selected message result ${nextIndex + 1} of ${results.length}`;
+  return true;
+}
+
+async function openActiveMessageSearchResult() {
+  const results = messageSearchNavigationResults();
+  if (!results.length) {
+    el.globalMessageSearch.removeAttribute("aria-activedescendant");
+    el.messageSearchStatus.textContent = "No message results";
+    return false;
+  }
+  let index = activeMessageSearchResultIndex(results);
+  if (index < 0) index = 0;
+  const result = results[index];
+  state.activeMessageSearchResultKey = messageSearchResultKey(result);
+  renderMessageSearchResults();
+  scrollActiveMessageSearchResultIntoView();
+  el.messageSearchStatus.textContent = "Opening message result";
+  await useMessageSearchResult(result);
+  return true;
+}
+
+function handleGlobalMessageSearchKeydown(event) {
+  if (event.defaultPrevented || event.isComposing) return;
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    moveActiveMessageSearchResult(1);
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    moveActiveMessageSearchResult(-1);
+  } else if (event.key === "Enter") {
+    event.preventDefault();
+    openActiveMessageSearchResult();
+  } else if (event.key === "Escape") {
+    if (el.globalMessageSearch.value.trim()) {
+      event.preventDefault();
+      el.globalMessageSearch.value = "";
+      state.activeMessageSearchViewId = "";
+      state.activeMessageSearchResultKey = "";
+      renderMessageSavedViews();
+      loadMessageSearch();
+    } else if (state.activeMessageSearchResultKey) {
+      event.preventDefault();
+      state.activeMessageSearchResultKey = "";
+      renderMessageSearchResults();
+    }
+  }
 }
 
 function removeMessageSearchResultIfFiltered(result) {
@@ -6437,10 +6532,18 @@ async function refreshConversationsForSearchResult(result) {
 }
 
 async function useMessageSearchResult(result) {
+  if (!result?.conversation_id) {
+    el.messageSearchStatus.textContent = "No conversation on result";
+    return;
+  }
   state.focusMessageId = result.provider_message_id || "";
   el.conversationSearch.value = "";
   renderConversations();
   const conversation = await refreshConversationsForSearchResult(result);
+  if (!conversation) {
+    el.messageSearchStatus.textContent = "Conversation not loaded";
+    return;
+  }
   await selectConversation(conversation);
 }
 
@@ -7046,6 +7149,7 @@ function renderMessageSearchResults() {
   const query = el.globalMessageSearch.value.trim();
   const terms = highlightTerms(query);
   const hasDateFilter = Boolean(el.messageDateFrom.value.trim() || el.messageDateTo.value.trim());
+  updateMessageSearchActiveDescendant();
   if (!query && state.messageSearchView === "all" && !hasDateFilter) {
     el.messageSearchResults.hidden = true;
     return;
@@ -7067,7 +7171,12 @@ function renderMessageSearchResults() {
     const noteText = messageNoteText(result);
     const resultKey = messageSearchResultKey(result);
     const editingNote = state.messageSearchNoteEditorId && resultKey === state.messageSearchNoteEditorId;
-    item.className = ["search-result", unread ? "unread" : "", starred ? "starred" : "", noted ? "noted" : ""].filter(Boolean).join(" ");
+    const active = resultKey && resultKey === state.activeMessageSearchResultKey;
+    item.className = ["search-result", active ? "active-search-result" : "", unread ? "unread" : "", starred ? "starred" : "", noted ? "noted" : ""].filter(Boolean).join(" ");
+    item.dataset.messageSearchResultKey = resultKey;
+    item.setAttribute("role", "listitem");
+    item.setAttribute("aria-current", active ? "true" : "false");
+    if (active) item.id = "activeMessageSearchResult";
     item.innerHTML = `
       <button class="search-result-main" type="button">
         <span class="search-result-top"></span>
@@ -10013,16 +10122,20 @@ el.contactViewName.addEventListener("keydown", (event) => {
 el.loadMoreContactsButton.addEventListener("click", loadMoreContacts);
 el.globalMessageSearch.addEventListener("input", () => {
   state.activeMessageSearchViewId = "";
+  state.activeMessageSearchResultKey = "";
   renderMessageSavedViews();
   scheduleMessageSearch();
 });
+el.globalMessageSearch.addEventListener("keydown", handleGlobalMessageSearchKeydown);
 el.messageDateFrom.addEventListener("input", () => {
   state.activeMessageSearchViewId = "";
+  state.activeMessageSearchResultKey = "";
   renderMessageSavedViews();
   scheduleMessageSearch();
 });
 el.messageDateTo.addEventListener("input", () => {
   state.activeMessageSearchViewId = "";
+  state.activeMessageSearchResultKey = "";
   renderMessageSavedViews();
   scheduleMessageSearch();
 });
@@ -10030,6 +10143,7 @@ el.clearMessageDatesButton.addEventListener("click", () => {
   el.messageDateFrom.value = "";
   el.messageDateTo.value = "";
   state.activeMessageSearchViewId = "";
+  state.activeMessageSearchResultKey = "";
   renderMessageSavedViews();
   resetMessageSearchLimit();
   loadMessageSearch();
@@ -10041,6 +10155,7 @@ el.globalMessageSearchFilters.addEventListener("click", (event) => {
     ? button.dataset.messageSearchView
     : "all";
   state.activeMessageSearchViewId = "";
+  state.activeMessageSearchResultKey = "";
   renderMessageSavedViews();
   resetMessageSearchLimit();
   loadMessageSearch();

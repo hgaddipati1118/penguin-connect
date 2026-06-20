@@ -187,7 +187,7 @@
         <div class="message-tools">
           <label class="message-search">
             <span>Search local Messages</span>
-            <input id="globalMessageSearch" type="search" placeholder="Text, sender, contact, attachment" autocomplete="off" />
+            <input id="globalMessageSearch" type="search" placeholder="Text, sender, contact, attachment" autocomplete="off" aria-label="Search local Messages" aria-controls="messageSearchResults" />
           </label>
           <label class="message-filter">
             <span>Find in thread</span>
@@ -240,7 +240,7 @@
             <button class="quiet-button" id="loadMoreSearchButton" type="button" disabled>Show more</button>
           </span>
         </div>
-        <div class="message-search-results" id="messageSearchResults" aria-live="polite"></div>
+        <div class="message-search-results" id="messageSearchResults" aria-live="polite" role="list"></div>
         <div class="message-list" id="messageList" aria-live="polite"></div>
       </section>
 
