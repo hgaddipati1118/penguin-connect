@@ -393,6 +393,7 @@ const contactSortLabels = {
   noted: "Notes first",
   threads: "Threads first",
   unread: "Unread first",
+  needsReply: "Needs reply first",
   followup: "Follow-ups first",
   saved: "Saved first",
   unsaved: "Unsaved first",
@@ -1190,6 +1191,11 @@ function compareContactUnread(a, b) {
     || compareContactThreads(a, b);
 }
 
+function compareContactNeedsReply(a, b) {
+  return Number(b.needs_reply_thread_count || 0) - Number(a.needs_reply_thread_count || 0)
+    || compareContactUnread(a, b);
+}
+
 function contactFollowUpSortValue(contact) {
   const value = Date.parse(contact?.next_follow_up_at || "");
   return Number.isNaN(value) ? Number.POSITIVE_INFINITY : value;
@@ -1207,6 +1213,7 @@ function compareContacts(a, b) {
   if (state.contactSort === "noted") return compareContactNoted(a, b);
   if (state.contactSort === "threads") return compareContactThreads(a, b);
   if (state.contactSort === "unread") return compareContactUnread(a, b);
+  if (state.contactSort === "needsReply") return compareContactNeedsReply(a, b);
   if (state.contactSort === "followup") return compareContactFollowUp(a, b);
   if (state.contactSort === "saved") return compareContactSaved(a, b);
   if (state.contactSort === "unsaved") return compareContactUnsaved(a, b);
