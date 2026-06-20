@@ -2165,6 +2165,24 @@ def _name_contains_unresolved_handle_component(value: str) -> bool:
     return any(_looks_like_unresolved_handle(part) for part in parts)
 
 
+def _group_name_looks_like_partial_participant_list(source_name: str, participant_name: str) -> bool:
+    source_parts = [part.strip() for part in (source_name or "").split(",") if part.strip()]
+    participant_parts = [part.strip().lower() for part in (participant_name or "").split(",") if part.strip()]
+    if len(source_parts) <= 1:
+        return _looks_like_unresolved_handle(source_name)
+    if not participant_parts or len(source_parts) != len(participant_parts):
+        return False
+    has_unresolved = False
+    participant_names = set(participant_parts)
+    for part in source_parts:
+        if _looks_like_unresolved_handle(part):
+            has_unresolved = True
+            continue
+        if part.lower() not in participant_names:
+            return False
+    return has_unresolved
+
+
 def deterministic_conversation_id(
     gmail_email: str,
     source_chat_id: str,
@@ -3301,8 +3319,9 @@ def _preferred_group_display_name(source_name: str, participant_name: str) -> st
         return normalized_participant
     if not normalized_participant or normalized_source == normalized_participant:
         return normalized_source
-    if _name_contains_unresolved_handle_component(normalized_source) and not _name_contains_unresolved_handle_component(
-        normalized_participant
+    if (
+        _group_name_looks_like_partial_participant_list(normalized_source, normalized_participant)
+        and not _name_contains_unresolved_handle_component(normalized_participant)
     ):
         return normalized_participant
     return normalized_source

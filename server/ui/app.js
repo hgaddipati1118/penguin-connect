@@ -578,6 +578,7 @@ const conversationViewLabels = {
   direct: "Direct",
   groups: "Groups",
   unknown: "Unknown",
+  favorites: "Favorites",
   drafts: "Drafts",
   unlabeled: "Unlabeled",
   muted: "Muted",
@@ -592,6 +593,7 @@ const conversationSortLabels = {
   unread: "Unread",
   followup: "Follow-up",
   unknown: "Unknown first",
+  favorites: "Favorites first",
   name: "A-Z",
 };
 
@@ -1539,6 +1541,14 @@ function conversationHasUnknownParticipants(conversation) {
   return conversationUnknownParticipantCount(conversation) > 0;
 }
 
+function conversationFavoriteParticipantCount(conversation) {
+  return conversationContactContextItems(conversation).filter(isFavoriteContact).length;
+}
+
+function conversationHasFavoriteParticipants(conversation) {
+  return conversationFavoriteParticipantCount(conversation) > 0;
+}
+
 function labelKey(label) {
   return String(label || "").trim().toLowerCase();
 }
@@ -1832,6 +1842,13 @@ function compareConversationUnknown(a, b) {
     || compareConversationRecent(a, b);
 }
 
+function compareConversationFavorite(a, b) {
+  return pinnedSortDiff(a, b)
+    || conversationFavoriteParticipantCount(b) - conversationFavoriteParticipantCount(a)
+    || Number(conversationHasFavoriteParticipants(b)) - Number(conversationHasFavoriteParticipants(a))
+    || compareConversationRecent(a, b);
+}
+
 function compareConversationName(a, b) {
   return pinnedSortDiff(a, b)
     || conversationNameSortValue(a).localeCompare(conversationNameSortValue(b))
@@ -1843,6 +1860,7 @@ function compareConversations(a, b) {
   if (state.conversationSort === "unread") return compareConversationUnread(a, b);
   if (state.conversationSort === "followup") return compareConversationFollowUp(a, b);
   if (state.conversationSort === "unknown") return compareConversationUnknown(a, b);
+  if (state.conversationSort === "favorites") return compareConversationFavorite(a, b);
   if (state.conversationSort === "name") return compareConversationName(a, b);
   return pinnedSortDiff(a, b) || compareConversationRecent(a, b);
 }
@@ -1890,6 +1908,7 @@ function conversationMatchesView(conversation, view = state.conversationView) {
   if (view === "direct") return isDirectConversation(conversation) && !conversation.is_archived;
   if (view === "groups") return isGroupConversation(conversation) && !conversation.is_archived;
   if (view === "unknown") return conversationHasUnknownParticipants(conversation) && !conversation.is_archived;
+  if (view === "favorites") return conversationHasFavoriteParticipants(conversation) && !conversation.is_archived;
   if (view === "drafts") return conversationHasDraft(conversation) && !conversation.is_archived;
   if (view === "unlabeled") return !conversationHasLabels(conversation) && !conversation.is_archived;
   if (view === "muted") return Boolean(conversation.is_muted) && !conversation.is_archived;
@@ -1914,6 +1933,7 @@ function conversationViewCounts() {
     direct: state.conversations.filter((conversation) => conversationMatchesView(conversation, "direct")).length,
     groups: state.conversations.filter((conversation) => conversationMatchesView(conversation, "groups")).length,
     unknown: state.conversations.filter((conversation) => conversationMatchesView(conversation, "unknown")).length,
+    favorites: state.conversations.filter((conversation) => conversationMatchesView(conversation, "favorites")).length,
     drafts: state.conversations.filter((conversation) => conversationMatchesView(conversation, "drafts")).length,
     unlabeled: state.conversations.filter((conversation) => conversationMatchesView(conversation, "unlabeled")).length,
     muted: state.conversations.filter((conversation) => conversationMatchesView(conversation, "muted")).length,
@@ -3041,6 +3061,13 @@ function renderConversations() {
       const badge = document.createElement("span");
       badge.className = "badge unknown-badge";
       badge.textContent = unknownParticipants === 1 ? "unknown" : `unknown ${unknownParticipants}`;
+      badges.append(badge);
+    }
+    const favoriteParticipants = conversationFavoriteParticipantCount(conversation);
+    if (favoriteParticipants > 0) {
+      const badge = document.createElement("span");
+      badge.className = "badge favorite-badge";
+      badge.textContent = favoriteParticipants === 1 ? "fav" : `fav ${favoriteParticipants}`;
       badges.append(badge);
     }
     if (hasFollowUp(conversation)) {

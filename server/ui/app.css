@@ -760,6 +760,12 @@ input[type="date"]:focus {
   color: var(--warn);
 }
 
+.favorite-badge {
+  border-color: rgba(17, 100, 86, 0.42);
+  background: rgba(17, 100, 86, 0.1);
+  color: var(--accent);
+}
+
 .followup-badge {
   max-width: 104px;
   border-color: rgba(191, 128, 35, 0.52);

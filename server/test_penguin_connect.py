@@ -1009,6 +1009,25 @@ class PenguinConnectTests(unittest.TestCase):
 
         self.assertEqual(name, "Sai Mandhan, Nikhil (Remedy)")
 
+    def test_resolve_display_name_preserves_explicit_group_title_with_handle_text(self):
+        self.conn.executemany(
+            """INSERT INTO contacts (first_name, last_name, organization, phone, phone_normalized, email, source_db)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            [
+                ("Sai", "Mandhan", "", "+12405976093", "+12405976093", None, "test"),
+                ("Nikhil", "(Remedy)", "", "+15126629638", "+15126629638", None, "test"),
+            ],
+        )
+
+        name = penguin_connect._resolve_display_name(
+            self.conn,
+            "Project Phoenix, +15126629638",
+            ["+12405976093", "+15126629638"],
+            chat_type="group",
+        )
+
+        self.assertEqual(name, "Project Phoenix, +15126629638")
+
     def test_refresh_contact_display_names_updates_raw_group_title_after_contact_import(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_conversations
@@ -1040,6 +1059,38 @@ class PenguinConnectTests(unittest.TestCase):
 
         self.assertEqual(updated, 1)
         self.assertEqual(row["display_name"], "Sai Mandhan, Nikhil (Remedy)")
+
+    def test_refresh_contact_display_names_preserves_explicit_group_title_after_contact_import(self):
+        self.conn.execute(
+            """INSERT INTO penguin_connect_conversations
+               (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants, alias_email, status)
+               VALUES (?, ?, ?, ?, 'group', ?, ?, 'active')""",
+            (
+                "owner@gmail.com",
+                "amc_named_group",
+                "chat-named-group",
+                "Project Phoenix, +15126629638",
+                json.dumps(["+12405976093", "+15126629638"]),
+                "owner+am-named-group@gmail.com",
+            ),
+        )
+        self.conn.executemany(
+            """INSERT INTO contacts (first_name, last_name, organization, phone, phone_normalized, email, source_db)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            [
+                ("Sai", "Mandhan", "", "+12405976093", "+12405976093", None, "test"),
+                ("Nikhil", "(Remedy)", "", "+15126629638", "+15126629638", None, "test"),
+            ],
+        )
+
+        updated = penguin_connect._refresh_contact_display_names(self.conn)
+        row = self.conn.execute(
+            "SELECT display_name FROM penguin_connect_conversations WHERE conversation_id = ?",
+            ("amc_named_group",),
+        ).fetchone()
+
+        self.assertEqual(updated, 0)
+        self.assertEqual(row["display_name"], "Project Phoenix, +15126629638")
 
     def test_refresh_contacts_waits_for_active_sync_lane(self):
         entered_refresh = threading.Event()

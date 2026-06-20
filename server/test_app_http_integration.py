@@ -257,15 +257,21 @@ class AppHttpIntegrationTests(unittest.TestCase):
 
     def test_conversations_endpoint_includes_participant_contact_notes_for_search(self):
         with TestClient(app_module.app) as client:
+            favorite_response = client.post(
+                "/penguin-connect/contacts/management",
+                json={"contact_key": "phone:15127436385", "favorite": True},
+            )
             note_response = client.post(
                 "/penguin-connect/contacts/management",
                 json={"contact_key": "phone:15127436385", "note": "Ask about launch seating."},
             )
             response = client.get("/penguin-connect/conversations")
 
+        self.assertEqual(favorite_response.status_code, 200)
         self.assertEqual(note_response.status_code, 200)
         self.assertEqual(response.status_code, 200)
         conversation = response.json()["conversations"][0]
+        self.assertTrue(conversation["contact_context"][0]["is_favorite"])
         self.assertEqual(conversation["contact_context"][0]["contact_note"], "Ask about launch seating.")
         self.assertIn("Ask about launch seating.", conversation["contact_context_text"])
 
@@ -2285,6 +2291,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn('data-view="direct"', html_response.text)
         self.assertIn('data-view="groups"', html_response.text)
         self.assertIn('data-view="unknown"', html_response.text)
+        self.assertIn('data-view="favorites"', html_response.text)
         self.assertIn('data-view="drafts"', html_response.text)
         self.assertIn('data-view="unlabeled"', html_response.text)
         self.assertIn('data-view="muted"', html_response.text)
@@ -2325,6 +2332,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn('<option value="priority">Priority</option>', html_response.text)
         self.assertIn('<option value="followup">Follow-up</option>', html_response.text)
         self.assertIn('<option value="unknown">Unknown first</option>', html_response.text)
+        self.assertIn('<option value="favorites">Favorites first</option>', html_response.text)
         self.assertIn("pinButton", html_response.text)
         self.assertIn("muteButton", html_response.text)
         self.assertIn("archiveButton", html_response.text)
@@ -2626,10 +2634,13 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn('direct: "Direct"', js_response.text)
         self.assertIn('groups: "Groups"', js_response.text)
         self.assertIn('unknown: "Unknown"', js_response.text)
+        self.assertIn('favorites: "Favorites"', js_response.text)
         self.assertIn("isDirectConversation", js_response.text)
         self.assertIn("isGroupConversation", js_response.text)
         self.assertIn("conversationUnknownParticipantCount", js_response.text)
         self.assertIn("conversationHasUnknownParticipants", js_response.text)
+        self.assertIn("conversationFavoriteParticipantCount", js_response.text)
+        self.assertIn("conversationHasFavoriteParticipants", js_response.text)
         self.assertIn("conversationViewsStorageKey", js_response.text)
         self.assertIn("savedConversationViews", js_response.text)
         self.assertIn("renderConversationSavedViews", js_response.text)
@@ -2642,6 +2653,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("compareConversationFollowUp", js_response.text)
         self.assertIn("compareConversationUnknown", js_response.text)
         self.assertIn('unknown: "Unknown first"', js_response.text)
+        self.assertIn("compareConversationFavorite", js_response.text)
+        self.assertIn('favorites: "Favorites first"', js_response.text)
+        self.assertIn("favorite-badge", js_response.text)
         self.assertIn("compareConversationName", js_response.text)
         self.assertIn("compareConversations", js_response.text)
         self.assertIn('el.conversationSort.addEventListener("change"', js_response.text)

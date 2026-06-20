@@ -158,7 +158,7 @@ memos. The local UI supports replies, file/image attachments from picker, drag/d
 voice memo recording, emoji
 shortcuts, visible-page auto-refresh with new-activity status for cached conversations
 and the selected thread, message-level reply targets and copy actions, thread filtering and unknown-first sorting,
-needs-reply/unread/direct/groups/unknown-participant/drafts/unlabeled/muted/pinned/archived and label-based conversation views, visible unknown-thread selection, bulk
+needs-reply/unread/direct/groups/unknown-participant/favorite-participant/drafts/unlabeled/muted/pinned/archived and label-based conversation views, favorite-person and unknown-first sorting, visible unknown-thread selection, bulk
 mark-read/mark-unread/pin-unpin/mute-unmute/archive-restore/label add-remove, selected-thread summary copy, selected-people add/copy/save/star/unstar/create, and draft cleanup actions, latest-message previews in the conversation rail,
 highlighted conversation search with saved rail views,
 global synced-message search with saved message-search views and highlighted note/attachment-aware results, recent-message browsing, open/copy/reply actions and filters for current thread, unread, sent,
