@@ -158,6 +158,7 @@ const el = {
   contactSelectVisibleButton: document.querySelector("#contactSelectVisibleButton"),
   contactAddVisibleButton: document.querySelector("#contactAddVisibleButton"),
   contactFilterThreadsButton: document.querySelector("#contactFilterThreadsButton"),
+  contactSearchMessagesButton: document.querySelector("#contactSearchMessagesButton"),
   contactCopyVisibleButton: document.querySelector("#contactCopyVisibleButton"),
   contactCopyDetailsButton: document.querySelector("#contactCopyDetailsButton"),
   contactSaveVisibleButton: document.querySelector("#contactSaveVisibleButton"),
@@ -4005,6 +4006,7 @@ function renderContactBulkActions() {
   el.contactSelectVisibleButton.disabled = visibleCount === 0;
   el.contactAddVisibleButton.disabled = !hasRecipients;
   el.contactFilterThreadsButton.disabled = !hasRecipients;
+  el.contactSearchMessagesButton.disabled = !hasRecipients;
   el.contactCopyVisibleButton.disabled = !hasRecipients;
   el.contactCopyDetailsButton.disabled = detailCount === 0;
   el.contactSaveVisibleButton.disabled = !hasRecipients;
@@ -4014,6 +4016,7 @@ function renderContactBulkActions() {
   el.contactClearSelectedButton.disabled = selectedCount === 0;
   el.contactAddVisibleButton.textContent = selectedCount ? "Add selected" : "Add visible";
   el.contactFilterThreadsButton.textContent = selectedCount ? "Threads selected" : "Threads visible";
+  el.contactSearchMessagesButton.textContent = selectedCount ? "Find selected" : "Find visible";
   el.contactCopyVisibleButton.textContent = selectedCount ? "Copy selected" : "Copy visible";
   el.contactCopyDetailsButton.textContent = selectedCount ? "Copy selected details" : "Copy visible details";
   el.contactSaveVisibleButton.textContent = selectedCount ? "Save selected" : "Save visible";
@@ -4100,6 +4103,28 @@ function filterConversationsForContactHandles() {
     ? `Showing ${count} thread${count === 1 ? "" : "s"} for ${handles.length} ${sourceLabel} contact${handles.length === 1 ? "" : "s"}`
     : `No matching threads for ${handles.length} ${sourceLabel} contact${handles.length === 1 ? "" : "s"}`;
   el.conversationSearch.focus();
+}
+
+async function searchMessagesForContactHandles() {
+  const handles = contactBulkRecipientHandles();
+  if (!handles.length) {
+    el.contactStatus.textContent = "No contact handles";
+    return;
+  }
+
+  const selectedCount = selectedContactRecipientHandles().length;
+  const sourceLabel = selectedCount ? "selected" : "visible";
+  el.globalMessageSearch.value = handles.join(" | ");
+  el.messageDateFrom.value = "";
+  el.messageDateTo.value = "";
+  state.messageSearchView = "all";
+  resetMessageSearchLimit();
+  renderMessageSearchFilters();
+  el.contactStatus.textContent = `Searching Messages for ${handles.length} ${sourceLabel} contact${handles.length === 1 ? "" : "s"}`;
+  el.messageSearchStatus.textContent = el.contactStatus.textContent;
+  el.globalMessageSearch.focus();
+  await loadMessageSearch();
+  el.contactStatus.textContent = `${state.messageSearchResults.length} message match${state.messageSearchResults.length === 1 ? "" : "es"} for ${handles.length} ${sourceLabel} contact${handles.length === 1 ? "" : "s"}`;
 }
 
 async function copyVisibleContacts() {
@@ -9804,6 +9829,7 @@ el.contactRefreshButton.addEventListener("click", async () => {
 el.contactSelectVisibleButton.addEventListener("click", selectVisibleContacts);
 el.contactAddVisibleButton.addEventListener("click", addVisibleContactsToDraft);
 el.contactFilterThreadsButton.addEventListener("click", filterConversationsForContactHandles);
+el.contactSearchMessagesButton.addEventListener("click", searchMessagesForContactHandles);
 el.contactCopyVisibleButton.addEventListener("click", copyVisibleContacts);
 el.contactCopyDetailsButton.addEventListener("click", copyBulkContactDetails);
 el.contactSaveVisibleButton.addEventListener("click", saveVisibleContactsAsRecipientList);

@@ -1957,6 +1957,37 @@ def _message_search_date_bound(value: str, *, end: bool) -> dict[str, str] | Non
     return {"display": display, "sql": display}
 
 
+def _message_search_terms(query: str) -> list[str]:
+    raw = (query or "").strip().lower()
+    if not raw:
+        return []
+    terms = [
+        part.strip()
+        for part in re.split(r"\s*\|\s*|\n+", raw)
+        if part.strip()
+    ]
+    return list(dict.fromkeys(terms))[:100]
+
+
+def _message_search_blob_sql() -> str:
+    return """lower(
+        COALESCE(c.conversation_id, '') || ' ' ||
+        COALESCE(c.display_name, '') || ' ' ||
+        COALESCE(cm.title, '') || ' ' ||
+        COALESCE(cm.note, '') || ' ' ||
+        COALESCE(cm.labels, '') || ' ' ||
+        COALESCE(c.source_provider, '') || ' ' ||
+        COALESCE(c.source_chat_identifier, '') || ' ' ||
+        COALESCE(c.participants, '') || ' ' ||
+        COALESCE(m.sender_email, '') || ' ' ||
+        COALESCE(m.sender_name, '') || ' ' ||
+        COALESCE(m.subject, '') || ' ' ||
+        COALESCE(m.body_text, '') || ' ' ||
+        COALESCE(mm.note, '') || ' ' ||
+        COALESCE(m.metadata, '')
+    )"""
+
+
 def _search_messages(
     conn: sqlite3.Connection,
     query: str,
@@ -1997,30 +2028,16 @@ def _search_messages(
         }
 
     if search:
-        penguinconnect_import_local_imessage_search_results(conn, search, limit=limit)
+        for term in _message_search_terms(search) or [search]:
+            penguinconnect_import_local_imessage_search_results(conn, term, limit=limit)
 
     conditions: list[str] = []
     params: list[object] = []
     if search:
-        conditions.append(
-            """lower(
-                COALESCE(c.conversation_id, '') || ' ' ||
-                COALESCE(c.display_name, '') || ' ' ||
-                COALESCE(cm.title, '') || ' ' ||
-                COALESCE(cm.note, '') || ' ' ||
-                COALESCE(cm.labels, '') || ' ' ||
-                COALESCE(c.source_provider, '') || ' ' ||
-                COALESCE(c.source_chat_identifier, '') || ' ' ||
-                COALESCE(c.participants, '') || ' ' ||
-                COALESCE(m.sender_email, '') || ' ' ||
-                COALESCE(m.sender_name, '') || ' ' ||
-                COALESCE(m.subject, '') || ' ' ||
-                COALESCE(m.body_text, '') || ' ' ||
-                COALESCE(mm.note, '') || ' ' ||
-                COALESCE(m.metadata, '')
-            ) LIKE ?"""
-        )
-        params.append(f"%{search.lower()}%")
+        terms = _message_search_terms(search) or [search.lower()]
+        search_blob = _message_search_blob_sql()
+        conditions.append("(" + " OR ".join(f"{search_blob} LIKE ?" for _term in terms) + ")")
+        params.extend(f"%{term}%" for term in terms)
     if start_bound:
         conditions.append("m.message_timestamp >= ?")
         params.append(start_bound["sql"])

@@ -666,6 +666,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
 
         with TestClient(app_module.app) as client:
             response = client.get("/penguin-connect/messages/search", params={"query": "latest", "limit": 10})
+            or_response = client.get("/penguin-connect/messages/search", params={"query": "older | latest", "limit": 10})
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
@@ -675,6 +676,13 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(body["messages"][0]["provider_message_id"], "imsg-latest")
         self.assertTrue(body["messages"][0]["is_starred"])
         self.assertEqual(body["messages"][0]["message_note"], "Search-level note")
+        self.assertEqual(or_response.status_code, 200)
+        or_body = or_response.json()
+        self.assertEqual(or_body["count"], 2)
+        self.assertEqual(
+            [message["provider_message_id"] for message in or_body["messages"]],
+            ["imsg-latest", "imsg-older"],
+        )
 
     def test_message_search_endpoint_imports_raw_local_imessage_hits_without_gmail_account(self):
         conn = self._get_connection()
@@ -2201,6 +2209,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("contactAddVisibleButton", html_response.text)
         self.assertIn("contactFilterThreadsButton", html_response.text)
         self.assertIn("Threads visible", html_response.text)
+        self.assertIn("contactSearchMessagesButton", html_response.text)
+        self.assertIn("Find visible", html_response.text)
         self.assertIn("contactCopyVisibleButton", html_response.text)
         self.assertIn("contactCopyDetailsButton", html_response.text)
         self.assertIn("contactSaveVisibleButton", html_response.text)
@@ -2759,6 +2769,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("conversationMatchesSearch", js_response.text)
         self.assertIn("filterConversationsForContactHandles", js_response.text)
         self.assertIn("Threads selected", js_response.text)
+        self.assertIn("searchMessagesForContactHandles", js_response.text)
+        self.assertIn("Find selected", js_response.text)
         self.assertIn("contactBulkCreatableContacts", js_response.text)
         self.assertIn("contactBulkManageableContacts", js_response.text)
         self.assertIn("setBulkContactFavorites", js_response.text)
