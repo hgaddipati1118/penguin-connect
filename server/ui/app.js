@@ -2132,6 +2132,12 @@ function renderConversations() {
         <span class="conversation-contact-context"></span>
         <span class="conversation-preview"></span>
       </button>
+      <span class="conversation-row-actions" aria-label="Conversation quick actions">
+        <button type="button" data-action="read-state">Read</button>
+        <button type="button" data-action="pin">Pin</button>
+        <button type="button" data-action="mute">Mute</button>
+        <button type="button" data-action="archive">Archive</button>
+      </span>
     `;
     const selectButton = row.querySelector(".conversation-select");
     const isChecked = state.selectedConversationIds.has(conversation.conversation_id);
@@ -2226,6 +2232,30 @@ function renderConversations() {
     const previewText = conversationPreviewText(conversation);
     appendHighlightedText(preview, previewText, terms);
     preview.hidden = !previewText;
+    const rowReadButton = row.querySelector('[data-action="read-state"]');
+    const rowMarkUnreadIntent = !conversationHasUnread(conversation);
+    rowReadButton.textContent = rowMarkUnreadIntent ? "Unread" : "Read";
+    rowReadButton.title = rowMarkUnreadIntent ? "Mark conversation unread" : "Mark conversation read";
+    rowReadButton.setAttribute("aria-label", rowReadButton.title);
+    rowReadButton.addEventListener("click", () => toggleConversationRowReadState(conversation));
+    const rowPinButton = row.querySelector('[data-action="pin"]');
+    rowPinButton.textContent = conversation.is_pinned ? "Unpin" : "Pin";
+    rowPinButton.title = conversation.is_pinned ? "Unpin conversation" : "Pin conversation";
+    rowPinButton.setAttribute("aria-label", rowPinButton.title);
+    rowPinButton.classList.toggle("active", Boolean(conversation.is_pinned));
+    rowPinButton.addEventListener("click", () => toggleConversationRowManagement(conversation, "pinned"));
+    const rowMuteButton = row.querySelector('[data-action="mute"]');
+    rowMuteButton.textContent = conversation.is_muted ? "Unmute" : "Mute";
+    rowMuteButton.title = conversation.is_muted ? "Unmute conversation" : "Mute conversation";
+    rowMuteButton.setAttribute("aria-label", rowMuteButton.title);
+    rowMuteButton.classList.toggle("active", Boolean(conversation.is_muted));
+    rowMuteButton.addEventListener("click", () => toggleConversationRowManagement(conversation, "muted"));
+    const rowArchiveButton = row.querySelector('[data-action="archive"]');
+    rowArchiveButton.textContent = conversation.is_archived ? "Restore" : "Archive";
+    rowArchiveButton.title = conversation.is_archived ? "Restore conversation" : "Archive conversation";
+    rowArchiveButton.setAttribute("aria-label", rowArchiveButton.title);
+    rowArchiveButton.classList.toggle("active", Boolean(conversation.is_archived));
+    rowArchiveButton.addEventListener("click", () => toggleConversationRowManagement(conversation, "archived"));
     mainButton.addEventListener("click", () => {
       state.focusMessageId = "";
       selectConversation(conversation);
@@ -7123,6 +7153,72 @@ async function updateConversationManagement(conversationId, fields) {
   const updates = conversationManagementUpdates(result, fields);
   updateConversationFields(conversationId, updates);
   return updates;
+}
+
+function conversationManagementToggleFields(conversation, field) {
+  if (field === "pinned") return { pinned: !Boolean(conversation.is_pinned) };
+  if (field === "muted") return { muted: !Boolean(conversation.is_muted) };
+  if (field === "archived") return { archived: !Boolean(conversation.is_archived) };
+  return {};
+}
+
+function conversationManagementToggleLabel(conversation, field) {
+  if (field === "pinned") return conversation.is_pinned ? "Unpinned" : "Pinned";
+  if (field === "muted") return conversation.is_muted ? "Unmuted" : "Muted";
+  if (field === "archived") return conversation.is_archived ? "Restored" : "Archived";
+  return "Updated";
+}
+
+async function toggleConversationRowManagement(conversation, field) {
+  const conversationId = conversation?.conversation_id || "";
+  if (!conversationId) return;
+  const fields = conversationManagementToggleFields(conversation, field);
+  if (!Object.keys(fields).length) return;
+  state.bulkMessage = "Updating thread";
+  renderConversations();
+  try {
+    await updateConversationManagement(conversationId, fields);
+    state.bulkMessage = `${conversationManagementToggleLabel(conversation, field)} · ${conversationDisplayName(conversation)}`;
+  } catch (error) {
+    state.bulkMessage = error.message;
+  } finally {
+    renderConversations();
+    renderThreadControls();
+    renderManagementFields();
+    buildCodexPrompt();
+  }
+}
+
+async function toggleConversationRowReadState(conversation) {
+  const conversationId = conversation?.conversation_id || "";
+  if (!conversationId) return;
+  const markUnreadIntent = !conversationHasUnread(conversation);
+  state.bulkMessage = markUnreadIntent ? "Marking unread" : "Marking read";
+  renderConversations();
+  try {
+    const result = await api(`/penguin-connect/conversations/${encodeURIComponent(conversationId)}/read-state`, {
+      method: "POST",
+      body: JSON.stringify({ unread: markUnreadIntent }),
+    });
+    updateConversationFields(conversationId, {
+      unread_count: result.unread_count || 0,
+      has_unread: Boolean(result.has_unread),
+    });
+    if (state.selected?.conversation_id === conversationId) {
+      state.messages = state.messages.map((message) => ({ ...message, is_read: !markUnreadIntent }));
+    }
+    state.bulkMessage = markUnreadIntent
+      ? `Marked unread · ${conversationDisplayName(conversation)}`
+      : `Marked read · ${conversationDisplayName(conversation)}`;
+  } catch (error) {
+    state.bulkMessage = error.message;
+  } finally {
+    renderConversations();
+    renderThreadControls();
+    renderMessages();
+    renderThreadMedia();
+    buildCodexPrompt();
+  }
 }
 
 function selectedConversationSnapshot() {
