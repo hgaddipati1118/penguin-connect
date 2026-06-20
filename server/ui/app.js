@@ -2952,6 +2952,93 @@ function visibleLoadedMessages() {
   return [...state.messages].reverse().filter((message) => loadedMessageMatchesFilter(message, query));
 }
 
+function activeLoadedMessageIndex(rows = visibleLoadedMessages()) {
+  if (!state.focusMessageId) return -1;
+  return rows.findIndex((message) => message.provider_message_id === state.focusMessageId);
+}
+
+function updateMessageFilterActiveDescendant(rows = visibleLoadedMessages()) {
+  const activeIndex = activeLoadedMessageIndex(rows);
+  if (activeIndex >= 0) {
+    el.messageFilter.setAttribute("aria-activedescendant", "activeLoadedMessageFilterResult");
+  } else {
+    el.messageFilter.removeAttribute("aria-activedescendant");
+  }
+  return activeIndex;
+}
+
+function loadedMessageNavigationRows() {
+  return visibleLoadedMessages().filter((message) => message.provider_message_id);
+}
+
+function scrollFocusedLoadedMessageIntoView(block = "center") {
+  if (!state.focusMessageId) return;
+  requestAnimationFrame(() => {
+    el.messageList.querySelector(".message.focused")?.scrollIntoView({ block });
+  });
+}
+
+function moveActiveLoadedMessage(direction) {
+  const rows = loadedMessageNavigationRows();
+  if (!rows.length) {
+    el.messageFilter.removeAttribute("aria-activedescendant");
+    el.sendState.textContent = "No loaded message matches";
+    return false;
+  }
+  const currentIndex = activeLoadedMessageIndex(rows);
+  let nextIndex = direction > 0 ? 0 : rows.length - 1;
+  if (currentIndex >= 0) {
+    nextIndex = (currentIndex + direction + rows.length) % rows.length;
+  }
+  state.focusMessageId = rows[nextIndex].provider_message_id;
+  renderMessages();
+  scrollFocusedLoadedMessageIntoView();
+  el.sendState.textContent = `Selected loaded message ${nextIndex + 1} of ${rows.length}`;
+  return true;
+}
+
+function focusActiveLoadedMessage() {
+  const rows = loadedMessageNavigationRows();
+  if (!rows.length) {
+    el.messageFilter.removeAttribute("aria-activedescendant");
+    el.sendState.textContent = "No loaded message matches";
+    return false;
+  }
+  let index = activeLoadedMessageIndex(rows);
+  if (index < 0) index = 0;
+  state.focusMessageId = rows[index].provider_message_id;
+  renderMessages();
+  scrollFocusedLoadedMessageIntoView();
+  el.sendState.textContent = `Focused loaded message ${index + 1} of ${rows.length}`;
+  return true;
+}
+
+function handleMessageFilterKeydown(event) {
+  if (event.defaultPrevented || event.isComposing) return;
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    moveActiveLoadedMessage(1);
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    moveActiveLoadedMessage(-1);
+  } else if (event.key === "Enter") {
+    event.preventDefault();
+    focusActiveLoadedMessage();
+  } else if (event.key === "Escape") {
+    if (el.messageFilter.value.trim()) {
+      event.preventDefault();
+      el.messageFilter.value = "";
+      state.focusMessageId = "";
+      renderMessages();
+    } else if (state.focusMessageId) {
+      event.preventDefault();
+      state.focusMessageId = "";
+      renderMessages();
+    }
+  }
+}
+
 function manageableLoadedMessages(rows = visibleLoadedMessages()) {
   const seen = new Set();
   const messages = [];
@@ -7587,6 +7674,7 @@ function renderMessages() {
   renderMessageViewFilters();
   renderMessageHistoryControls();
   const rows = visibleLoadedMessages();
+  updateMessageFilterActiveDescendant(rows);
 
   el.messageList.replaceChildren();
   if (!state.selected) {
@@ -7614,6 +7702,9 @@ function renderMessages() {
     const noted = hasMessageNote(message);
     item.className = `message ${isOwnMessage(message) ? "mine" : ""} ${unread ? "unread" : ""} ${starred ? "starred" : ""} ${noted ? "noted" : ""} ${focused ? "focused" : ""}`;
     item.dataset.messageId = message.provider_message_id || "";
+    item.setAttribute("role", "listitem");
+    item.setAttribute("aria-current", focused ? "true" : "false");
+    if (focused) item.id = "activeLoadedMessageFilterResult";
     const attachments = attachmentRows(message);
     item.innerHTML = `
       <div class="message-head">
@@ -10201,6 +10292,7 @@ el.contactUnfavoriteSelectedButton.addEventListener("click", () => setBulkContac
 el.contactCreateVisibleButton.addEventListener("click", createVisibleUnknownContacts);
 el.contactClearSelectedButton.addEventListener("click", clearSelectedContacts);
 el.messageFilter.addEventListener("input", renderMessages);
+el.messageFilter.addEventListener("keydown", handleMessageFilterKeydown);
 el.copyVisibleMessagesButton.addEventListener("click", copyVisibleLoadedMessages);
 el.starVisibleMessagesButton.addEventListener("click", starVisibleLoadedMessages);
 el.markVisibleMessagesReadButton.addEventListener("click", markVisibleLoadedMessagesRead);

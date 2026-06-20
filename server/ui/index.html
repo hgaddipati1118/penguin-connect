@@ -191,7 +191,7 @@
           </label>
           <label class="message-filter">
             <span>Find in thread</span>
-            <input id="messageFilter" type="search" placeholder="Filter loaded messages" autocomplete="off" />
+            <input id="messageFilter" type="search" placeholder="Filter loaded messages" autocomplete="off" aria-label="Find in loaded thread" aria-controls="messageList" />
           </label>
           <div class="message-date-range" aria-label="Message search date range">
             <label class="message-date-field">
@@ -241,7 +241,7 @@
           </span>
         </div>
         <div class="message-search-results" id="messageSearchResults" aria-live="polite" role="list"></div>
-        <div class="message-list" id="messageList" aria-live="polite"></div>
+        <div class="message-list" id="messageList" aria-live="polite" role="list"></div>
       </section>
 
       <aside class="compose" aria-label="Reply tools">
