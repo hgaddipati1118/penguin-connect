@@ -2123,6 +2123,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("searchMessagesForParticipant", js_response.text)
         self.assertIn('data-action="threads"', js_response.text)
         self.assertIn('data-action="messages"', js_response.text)
+        self.assertIn("filterConversationsForMessageContact", js_response.text)
+        self.assertIn("filterConversationsForSearchResultContact", js_response.text)
+        self.assertIn("filterConversationsForLoadedMessageContact", js_response.text)
         self.assertIn("saveVisibleContactsAsRecipientList", js_response.text)
         self.assertIn("renderThreadPeople", js_response.text)
         self.assertIn("fillContactFormFromHandle", js_response.text)
@@ -2345,6 +2348,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
             js_response.text,
         )
         self.assertIn(
+            'threadsButton.addEventListener("click", () => filterConversationsForLoadedMessageContact(message));',
+            js_response.text,
+        )
+        self.assertIn(
             'addContactButton.addEventListener("click", () => addLoadedMessageContactToDraft(message));',
             js_response.text,
         )
@@ -2362,6 +2369,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("No contact handle on message", js_response.text)
         self.assertIn("openMessageSearchResultInMessages", js_response.text)
         self.assertIn('data-action="messages"', js_response.text)
+        self.assertIn(
+            'threadsButton.addEventListener("click", () => filterConversationsForSearchResultContact(result));',
+            js_response.text,
+        )
         self.assertIn("refreshConversationsForSearchResult", js_response.text)
         self.assertIn("Loading imported thread", js_response.text)
         self.assertIn("loadConversations({ autoSelect: false })", js_response.text)

@@ -3627,6 +3627,35 @@ async function searchMessagesForLoadedMessageContact(message) {
   );
 }
 
+function filterConversationsForMessageContact(handle, displayName = "", { target = "message" } = {}) {
+  const value = String(handle || "").trim();
+  const statusEl = messageContactStatusTarget(target);
+  if (!value) {
+    statusEl.textContent = "No contact handle on message";
+    return;
+  }
+
+  const contact = messageContactFromHandle(value, displayName);
+  filterConversationsForContact(contact);
+  statusEl.textContent = el.contactStatus.textContent;
+}
+
+function filterConversationsForSearchResultContact(result) {
+  filterConversationsForMessageContact(
+    messageSearchContactHandle(result),
+    messageSearchContactDisplayName(result),
+    { target: "message-search" }
+  );
+}
+
+function filterConversationsForLoadedMessageContact(message) {
+  filterConversationsForMessageContact(
+    messageContactHandle(message),
+    messageContactDisplayName(message),
+    { target: "message" }
+  );
+}
+
 function contactHandleCandidate(value) {
   const handle = String(value || "").trim();
   const type = handleType(handle);
@@ -5609,6 +5638,7 @@ function renderMessageSearchResults() {
         <button type="button" data-action="add-contact">Add</button>
         <button type="button" data-action="contact">Contact</button>
         <button type="button" data-action="find-contact">Find</button>
+        <button type="button" data-action="threads">Threads</button>
         <button type="button" data-action="open">Open</button>
         <button type="button" data-action="messages">Messages</button>
       </span>
@@ -5693,6 +5723,9 @@ function renderMessageSearchResults() {
     const findContactButton = item.querySelector('[data-action="find-contact"]');
     findContactButton.disabled = !contactHandle;
     findContactButton.addEventListener("click", () => searchMessagesForSearchResultContact(result));
+    const threadsButton = item.querySelector('[data-action="threads"]');
+    threadsButton.disabled = !contactHandle;
+    threadsButton.addEventListener("click", () => filterConversationsForSearchResultContact(result));
     item.querySelector('[data-action="open"]').addEventListener("click", () => useMessageSearchResult(result));
     const messagesButton = item.querySelector('[data-action="messages"]');
     messagesButton.disabled = !result.conversation_id;
@@ -6038,6 +6071,7 @@ function renderMessages() {
         <button type="button" data-action="add-contact">Add</button>
         <button type="button" data-action="contact">Contact</button>
         <button type="button" data-action="find-contact">Find</button>
+        <button type="button" data-action="threads">Threads</button>
       </div>
     `;
     appendHighlightedText(item.querySelector(".message-head span"), messageSender(message), terms);
@@ -6098,6 +6132,9 @@ function renderMessages() {
     const findContactButton = item.querySelector('[data-action="find-contact"]');
     findContactButton.disabled = !messageContactHandle(message);
     findContactButton.addEventListener("click", () => searchMessagesForLoadedMessageContact(message));
+    const threadsButton = item.querySelector('[data-action="threads"]');
+    threadsButton.disabled = !messageContactHandle(message);
+    threadsButton.addEventListener("click", () => filterConversationsForLoadedMessageContact(message));
     item.querySelector('[data-action="copy"]').addEventListener("click", async () => {
       await copyText(messageCopyText(message));
       el.sendState.textContent = "Message copied";
