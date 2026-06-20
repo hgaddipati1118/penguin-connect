@@ -3619,6 +3619,14 @@ async function searchMessagesForSearchResultContact(result) {
   );
 }
 
+async function searchMessagesForContactRecentMessage(result) {
+  await searchMessagesForMessageContact(
+    messageSearchContactHandle(result),
+    messageSearchContactDisplayName(result),
+    { target: "contact" }
+  );
+}
+
 async function searchMessagesForLoadedMessageContact(message) {
   await searchMessagesForMessageContact(
     messageContactHandle(message),
@@ -3645,6 +3653,14 @@ function filterConversationsForSearchResultContact(result) {
     messageSearchContactHandle(result),
     messageSearchContactDisplayName(result),
     { target: "message-search" }
+  );
+}
+
+function filterConversationsForContactRecentMessage(result) {
+  filterConversationsForMessageContact(
+    messageSearchContactHandle(result),
+    messageSearchContactDisplayName(result),
+    { target: "contact" }
   );
 }
 
@@ -4684,6 +4700,8 @@ function renderContactInspectorMessages(container, contact) {
         <button type="button" data-action="note">Note</button>
         <button type="button" data-action="read-state">Mark unread</button>
         <button type="button" data-action="copy">Copy</button>
+        <button type="button" data-action="find-contact">Find</button>
+        <button type="button" data-action="threads">Threads</button>
       </span>
       <div class="contact-message-preview-note" hidden><span></span></div>
       <div class="contact-message-preview-note-editor" hidden>
@@ -4729,6 +4747,13 @@ function renderContactInspectorMessages(container, contact) {
     readButton.classList.toggle("active", unread);
     readButton.disabled = !result.conversation_id || !result.provider_message_id;
     readButton.addEventListener("click", () => toggleContactRecentMessageRead(result));
+    const contactHandle = messageSearchContactHandle(result);
+    const findContactButton = item.querySelector('[data-action="find-contact"]');
+    findContactButton.disabled = !contactHandle;
+    findContactButton.addEventListener("click", () => searchMessagesForContactRecentMessage(result));
+    const threadsButton = item.querySelector('[data-action="threads"]');
+    threadsButton.disabled = !contactHandle;
+    threadsButton.addEventListener("click", () => filterConversationsForContactRecentMessage(result));
     const noteBox = item.querySelector(".contact-message-preview-note");
     if (noteText) {
       noteBox.hidden = false;
