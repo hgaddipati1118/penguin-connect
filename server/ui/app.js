@@ -155,6 +155,7 @@ const el = {
   contactSelectVisibleButton: document.querySelector("#contactSelectVisibleButton"),
   contactAddVisibleButton: document.querySelector("#contactAddVisibleButton"),
   contactCopyVisibleButton: document.querySelector("#contactCopyVisibleButton"),
+  contactCopyDetailsButton: document.querySelector("#contactCopyDetailsButton"),
   contactSaveVisibleButton: document.querySelector("#contactSaveVisibleButton"),
   contactFavoriteSelectedButton: document.querySelector("#contactFavoriteSelectedButton"),
   contactUnfavoriteSelectedButton: document.querySelector("#contactUnfavoriteSelectedButton"),
@@ -3707,6 +3708,20 @@ function contactBulkRecipientHandles() {
   return selected.length ? selected : visibleContactRecipientHandles();
 }
 
+function contactBulkDetailContacts() {
+  const selected = selectedContacts();
+  const contacts = selected.length ? selected : visibleContacts();
+  const seen = new Set();
+  const details = [];
+  for (const contact of contacts) {
+    const key = contactDetailKey(contact) || contactSelectionKey(contact) || contactDisplayName(contact);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    details.push(contact);
+  }
+  return details;
+}
+
 function contactBulkCreatableContacts() {
   const selected = selectedContacts();
   const contacts = selected.length ? selected : visibleContacts();
@@ -3746,6 +3761,7 @@ function renderContactBulkActions() {
   const selectedCount = selectedContactRecipientHandles().length;
   const visibleCount = visibleContactRecipientHandles().length;
   const hasRecipients = selectedCount ? selectedCount > 0 : visibleCount > 0;
+  const detailCount = contactBulkDetailContacts().length;
   const creatableCount = contactBulkCreatableContacts().length;
   const manageableContacts = contactBulkManageableContacts();
   const favoriteCount = manageableContacts.filter(isFavoriteContact).length;
@@ -3753,6 +3769,7 @@ function renderContactBulkActions() {
   el.contactSelectVisibleButton.disabled = visibleCount === 0;
   el.contactAddVisibleButton.disabled = !hasRecipients;
   el.contactCopyVisibleButton.disabled = !hasRecipients;
+  el.contactCopyDetailsButton.disabled = detailCount === 0;
   el.contactSaveVisibleButton.disabled = !hasRecipients;
   el.contactFavoriteSelectedButton.disabled = unfavoriteCount === 0;
   el.contactUnfavoriteSelectedButton.disabled = favoriteCount === 0;
@@ -3760,6 +3777,7 @@ function renderContactBulkActions() {
   el.contactClearSelectedButton.disabled = selectedCount === 0;
   el.contactAddVisibleButton.textContent = selectedCount ? "Add selected" : "Add visible";
   el.contactCopyVisibleButton.textContent = selectedCount ? "Copy selected" : "Copy visible";
+  el.contactCopyDetailsButton.textContent = selectedCount ? "Copy selected details" : "Copy visible details";
   el.contactSaveVisibleButton.textContent = selectedCount ? "Save selected" : "Save visible";
   el.contactFavoriteSelectedButton.textContent = unfavoriteCount ? `Star ${unfavoriteCount}` : "All starred";
   el.contactUnfavoriteSelectedButton.textContent = favoriteCount ? `Unstar ${favoriteCount}` : "None starred";
@@ -3837,6 +3855,23 @@ async function copyVisibleContacts() {
     const selectedCount = selectedContactRecipientHandles().length;
     const label = selectedCount ? "selected" : "visible";
     el.contactStatus.textContent = `${participants.length} ${label} handle${participants.length === 1 ? "" : "s"} copied`;
+  } catch (error) {
+    el.contactStatus.textContent = error.message;
+  }
+}
+
+async function copyBulkContactDetails() {
+  const contacts = contactBulkDetailContacts();
+  if (!contacts.length) {
+    el.contactStatus.textContent = "No contacts to copy";
+    return;
+  }
+
+  try {
+    await copyText(contacts.map(contactDetailText).join("\n\n---\n\n"));
+    const selectedCount = selectedContacts().length;
+    const label = selectedCount ? "selected" : "visible";
+    el.contactStatus.textContent = `${contacts.length} ${label} contact detail${contacts.length === 1 ? "" : "s"} copied`;
   } catch (error) {
     el.contactStatus.textContent = error.message;
   }
@@ -9268,6 +9303,7 @@ el.contactRefreshButton.addEventListener("click", async () => {
 el.contactSelectVisibleButton.addEventListener("click", selectVisibleContacts);
 el.contactAddVisibleButton.addEventListener("click", addVisibleContactsToDraft);
 el.contactCopyVisibleButton.addEventListener("click", copyVisibleContacts);
+el.contactCopyDetailsButton.addEventListener("click", copyBulkContactDetails);
 el.contactSaveVisibleButton.addEventListener("click", saveVisibleContactsAsRecipientList);
 el.contactFavoriteSelectedButton.addEventListener("click", () => setBulkContactFavorites(true));
 el.contactUnfavoriteSelectedButton.addEventListener("click", () => setBulkContactFavorites(false));
