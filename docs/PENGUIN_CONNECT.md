@@ -1,6 +1,6 @@
-# PenguinConnect (Mac Local Bridge)
+# PenguinConnect (Mac Local Messages Console)
 
-PenguinConnect bridges messaging conversations to a user's Gmail inbox using per-conversation alias addresses.
+PenguinConnect runs a local Apple Messages console on your Mac for `iMessage`, `SMS`, and `RCS` search, replies, contact cleanup, attachments, voice memos, new-chat drafts, and thread management. It can also bridge messaging conversations to a user's Gmail inbox using per-conversation alias addresses, but Gmail is optional for local Messages operation.
 
 Implemented source adapters:
 
@@ -8,9 +8,19 @@ Implemented source adapters:
 - **WhatsApp** (via whatsapp-mcp Go bridge)
 - **Telegram** (via Telethon MTProto API)
 
-This bridge is macOS local-only and runs on `127.0.0.1`.
+This runtime is macOS local-only and runs on `127.0.0.1`.
 
-## Fast Path: Guided Setup CLI
+## Fast Path: Local Messages UI
+
+```bash
+cd /path/to/penguin-connect
+./scripts/run_penguin_connect_bridge.sh
+open http://127.0.0.1:9000/penguin-connect/ui
+```
+
+Local startup allows missing Gmail by default with `PENGUIN_CONNECT_ALLOW_MISSING_GMAIL_STARTUP=1`. Apple Messages access is still required, so run from `Terminal.app` with Full Disk Access enabled.
+
+## Optional Gmail Bridge Setup
 
 ```bash
 cd /path/to/penguin-connect
@@ -27,7 +37,7 @@ Optional flags:
 - `--skip-sync-smoke` to skip final sync endpoint smoke test
 - `--explain-only` to print steps without executing
 
-## Setup Order (Required Sequence)
+## Gmail Bridge Setup Order
 
 1. Get Google OAuth client JSON.
 2. Connect Gmail to local bridge (requests full Gmail mailbox access scope).
@@ -208,7 +218,7 @@ cd /path/to/penguin-connect
 ./scripts/run_penguin_connect_bridge.sh
 ```
 
-Normal startup now fails fast if Apple Messages access is missing or Gmail has not been connected yet. For first-time setup only, the guided setup flow starts the bridge with a temporary bootstrap override so you can complete Gmail OAuth.
+Normal startup fails fast if Apple Messages access is missing. Missing Gmail is allowed by default so the local Messages UI can run without OAuth; set `PENGUIN_CONNECT_ALLOW_MISSING_GMAIL_STARTUP=0` only if you want Gmail bridge readiness to block startup.
 
 Run Gmail connect helper:
 

@@ -5,15 +5,15 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB)](./server/requirements.txt)
 [![MIT License](https://img.shields.io/badge/license-MIT-16a34a)](./LICENSE)
 
-PenguinConnect turns Gmail into a control surface for messaging conversations while keeping messaging-side access on your Mac. Today it bridges Gmail with Apple Messages (`iMessage`, `SMS`, `RCS`); the runtime is macOS-only and binds to `127.0.0.1`.
+PenguinConnect is a local Apple Messages console for searching, replying to, managing, and drafting `iMessage`, `SMS`, and `RCS` conversations from your Mac. The runtime is macOS-only, binds to `127.0.0.1`, and can run in local Messages-only mode without Gmail.
 
-Built as part of [Slashy](https://slashy.com) — an AI-native email client — so that Slashy has context on your text conversations too, not just email.
+It also keeps the older Gmail bridge available for Slashy/email workflows, but the operator UI and CLI are designed to work directly against the local Messages cache and Apple Messages route-safety checks.
 
 ```mermaid
 flowchart LR
-    Messages["Apple Messages<br/>iMessage / SMS / RCS"] -->|syncs messages| Bridge["PenguinConnect<br/>local bridge on your Mac"]
-    Bridge -->|mirrors unread state| Gmail["Gmail inbox<br/>per-conversation alias threads"]
-    Gmail -->|sends net-new replies| Bridge
+    Messages["Apple Messages<br/>iMessage / SMS / RCS"] -->|read local chat.db| Console["PenguinConnect<br/>local Messages console"]
+    Console -->|search, manage, draft, send safely| Messages
+    Console -->|optional bridge mode| Gmail["Gmail aliases<br/>legacy email workflow"]
 ```
 
 ## Demo
@@ -22,18 +22,18 @@ flowchart LR
 
 ## Why PenguinConnect
 
-I wanted a way to interact with my text messages from email. Email is already where work happens — why not bring messages there too?
-
-- **AI needs full context.** Email alone misses half the picture — important conversations happen over iMessage, SMS, and RCS. PenguinConnect brings them into Gmail so tools like [Slashy](https://slashy.com) can reason across both channels.
-- **Bidirectional sync unlocks cloud AI safely.** Because the bridge runs locally and syncs to your own Gmail, cloud-based AI tools can read and send messages through email without ever needing direct access to your messaging apps — no security vulnerability, no API keys to messaging services, no sensitive data in third-party systems.
-- **Your messages stay on your Mac.** No hosted service ever touches `chat.db`. The bridge runs on `127.0.0.1` and syncs to your own Gmail account.
-- **Work from Gmail threads** with per-conversation alias addresses — read, reply, and manage messages from one place.
+- **Use Messages like an operator console.** Search conversations, contacts, attachments, and local message history; then reply, stage group drafts, attach files, record voice memos, or open the exact Apple Messages route.
+- **Manage threads locally.** Add private titles, notes, labels, muted/pinned/archived state, follow-up dates, saved views, and group-name context without changing the underlying Messages chat.
+- **Clean up contacts from the same surface.** Search cached Contacts and unsaved participants, create missing contact cards, favorite people, save recipient lists, and jump from a person to related threads or messages.
+- **Ask Codex with real thread context.** Build or run a local Codex prompt from recent messages, notes, tags, search results, contacts, and draft text.
+- **Your messages stay on your Mac.** No hosted service ever touches `chat.db`. The local server binds to `127.0.0.1`; Gmail is optional bridge plumbing, not required for local Messages operation.
 - **Safe routing.** If Apple Messages route resolution is ambiguous, PenguinConnect does not send.
 
 ## Current Status
 
 - Shipping source adapter: **Apple Messages** (`iMessage`, `SMS`, `RCS`)
-- Shared inbox surface: **Gmail**
+- Primary operator surfaces: **local web UI** and **local CLI**
+- Optional legacy bridge surface: **Gmail aliases**
 - Planned next adapters: **WhatsApp**, **Telegram**, and more
 - Runtime: macOS 13+, Python 3.11+, `Terminal.app` with Full Disk Access
 
@@ -41,13 +41,15 @@ Want to help add a new messaging adapter or improve the bridge? Reach out at [ha
 
 ## Highlights
 
-- Two-way sync between Apple Messages conversations and Gmail threads
-- One active alias email per conversation
+- Local Messages UI for conversations, message history, contacts, media, replies, new-chat drafts, attachments, voice memos, and Codex prompts
+- Messages-only startup is allowed when Gmail is not connected
+- Optional two-way sync between Apple Messages conversations and Gmail threads
+- Optional active alias email per conversation
 - Direct-message unification across sibling `iMessage`, `SMS`, and `RCS` routes
 - Group chats stay separate per exact Apple Messages chat
 - Incremental sync prioritizes currently active conversations while startup catch-up stays in background batches
-- Gmail-to-chat delivery sends net-new text only and strips quoted history aggressively
-- Gmail `UNREAD` labels mirror Apple Messages unread state at the conversation level
+- Optional Gmail-to-chat delivery sends net-new text only and strips quoted history aggressively
+- Optional Gmail `UNREAD` labels mirror Apple Messages unread state at the conversation level
 - Durable local SQLite queue and JSONL action log survive process restarts
 - Ambiguous parsed replies are rejected visibly in Gmail instead of failing silently
 
@@ -55,8 +57,8 @@ Want to help add a new messaging adapter or improve the bridge? Reach out at [ha
 
 1. Copy `.env.example` to `.env`.
 2. Install backend dependencies.
-3. Run guided setup.
-4. Start the bridge.
+3. Start the local server.
+4. Open the local Messages UI.
 5. Run verification.
 
 ```bash
@@ -69,12 +71,12 @@ cd ..
 ```
 
 ```bash
-./scripts/penguin_connect_setup.py --gmail you@gmail.com
 ./scripts/run_penguin_connect_bridge.sh
+open http://127.0.0.1:9000/penguin-connect/ui
 ./scripts/check.sh
 ```
 
-During guided setup, the wizard also offers an interactive Apple Messages chat exclusion step and saves selections in `./.penguin_connect_excluded_chats.json` by default.
+For the full Gmail bridge setup, run `./scripts/penguin_connect_setup.py --gmail you@gmail.com`. During guided setup, the wizard also offers an interactive Apple Messages chat exclusion step and saves selections in `./.penguin_connect_excluded_chats.json` by default.
 
 Important: run setup and bridge commands from `Terminal.app` with Full Disk Access enabled, otherwise Apple Messages `chat.db` reads will fail.
 
@@ -98,10 +100,13 @@ Health check:
 curl -s http://127.0.0.1:9000/penguin-connect/health | jq
 ```
 
-Operational note:
+Local Messages operation notes:
 - Leave `PENGUIN_CONNECT_INCREMENTAL_CONVERSATIONS_PER_RUN` unset to let incremental runs expand to all currently hot conversations up to the built-in cap.
 - Set `PENGUIN_CONNECT_INCREMENTAL_CONVERSATIONS_PER_RUN` if you want to clamp each incremental batch manually.
 - Startup catch-up runs in small background batches so recent-message incremental sync can keep getting worker time.
+- `PENGUIN_CONNECT_ALLOW_MISSING_GMAIL_STARTUP` defaults to allowing local Messages-only startup when Gmail is not connected.
+
+Optional Gmail bridge notes:
 - While startup catch-up or backfill is importing iMessage history, the worker now yields after every 5 Gmail imports if a queued incremental job is waiting.
 - Preempted startup/backfill conversation imports resume from the saved Apple Messages cursor instead of rescanning from the beginning.
 - Gmail writes now flow through a per-account quota budget, and startup/backfill can only spend the smaller backfill bucket so incremental work keeps reserved headroom.
@@ -121,7 +126,7 @@ Install login auto-start plus a start-only watchdog:
 ./scripts/install_launchd_penguin_connect_bridge.sh
 ```
 
-That installer now sets up a launchd watchdog that runs at login and every 5 minutes, starting the bridge in `Terminal.app` only when nothing is listening on the configured local port. It never kills a running bridge, so Gmail cooldowns or temporary health warnings do not trigger restarts. If you later change `PENGUIN_CONNECT_PORT`, rerun the installer so the watchdog follows the new port.
+That installer now sets up a launchd watchdog that runs at login and every 5 minutes, starting the local server in `Terminal.app` only when nothing is listening on the configured local port. It never kills a running bridge, so temporary health warnings do not trigger restarts. If you later change `PENGUIN_CONNECT_PORT`, rerun the installer so the watchdog follows the new port.
 
 Quote-parsing audit:
 
@@ -174,15 +179,15 @@ selected/visible contact bulk favorite and unfavorite actions,
 removable recipient chips, reusable saved recipient lists, selected-thread participant actions for contact
 search, thread filtering, local Messages search, new-chat, and contact creation, participant favoriting, bulk add-all, copy-all, and save-as-list actions, local thread titles, notes, tags and muted state,
 native Messages group-name context whenever a local title differs plus one-click local-title restore from the native group name,
-rail-level quick reply, pin/mute/archive/read-unread actions, follow-up scheduling/filtering with quick presets from threads or message rows, quick message-row labels plus bulk follow-up set/clear, read/unread management, bridge
+rail-level quick reply, pin/mute/archive/read-unread actions, follow-up scheduling/filtering with quick presets from threads or message rows, quick message-row labels plus bulk follow-up set/clear, read/unread management, local route
 disconnect/reconnect controls, persistent per-thread reply drafts, new chat
 draft staging with live Messages-ready draft preview, copy-recipients/copy-body/copy-draft actions,
 addressed Messages compose links, and a Codex prompt helper with
 reply, summary, follow-up, contact-cleanup, and custom-question modes that can
 copy or run a local `codex exec` prompt over recent thread context, search
 results, contact results, local notes, tags, new-chat drafts, and your reply draft, then place the
-answer into the reply draft for review. Use `message-search` to search synced
-message bodies in the local bridge cache, or search Apple Messages text directly with the
+answer into the reply draft for review. Use `message-search` to search cached
+message bodies in the local database, or search Apple Messages text directly with the
 `--source imessage` or `--source both` options. The `messages` command shows
 imported attachment summaries, including audio attachments from Apple Messages.
 The group command stages a new Messages draft instead of auto-sending, because
@@ -195,7 +200,7 @@ brand-new group chat by API.
 - `conversation_id` is the primary logical identity
 - Apple Messages direct messages may unify across sibling routes; group chats stay separate
 - Exact Apple Messages route resolution must succeed before send
-- Gmail-to-chat parsing fails closed when reply text is still ambiguous
+- Optional Gmail-to-chat parsing fails closed when reply text is still ambiguous
 - Action logging stores identifiers, timestamps, statuses, and message fingerprints, not raw message text
 
 The default action log path is `~/penguinconnect-local-bridge-data/actions.jsonl`.
