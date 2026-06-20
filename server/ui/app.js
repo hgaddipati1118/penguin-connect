@@ -382,6 +382,8 @@ const contactSources = [
   { key: "followup", label: "Follow-up" },
   { key: "favorites", label: "Favorites" },
   { key: "noted", label: "Noted" },
+  { key: "phones", label: "Phones" },
+  { key: "emails", label: "Emails" },
   { key: "contacts", label: "Saved" },
   { key: "participants", label: "Unsaved" },
 ];
@@ -6366,6 +6368,10 @@ function renderContacts() {
       empty.textContent = el.contactSearch.value.trim() ? "No needs-reply matches" : "No contacts need reply";
     } else if (state.contactSource === "followup") {
       empty.textContent = el.contactSearch.value.trim() ? "No follow-up matches" : "No follow-up contacts";
+    } else if (state.contactSource === "phones") {
+      empty.textContent = el.contactSearch.value.trim() ? "No phone matches" : "No phone contacts";
+    } else if (state.contactSource === "emails") {
+      empty.textContent = el.contactSearch.value.trim() ? "No email matches" : "No email contacts";
     } else if (state.contactSource === "contacts") {
       empty.textContent = el.contactSearch.value.trim() ? "No saved matches" : "No saved contacts";
     } else if (state.contactSource === "participants") {
@@ -7634,6 +7640,8 @@ async function loadContacts({ force = false } = {}) {
   const browsesUnread = state.contactSource === "unread";
   const browsesNeedsReply = state.contactSource === "needs_reply";
   const browsesFollowUp = state.contactSource === "followup";
+  const browsesPhones = state.contactSource === "phones";
+  const browsesEmails = state.contactSource === "emails";
   renderContactSourceFilters();
   state.contactsLoading = true;
   renderContactMoreControls();
@@ -7654,6 +7662,10 @@ async function loadContacts({ force = false } = {}) {
     el.contactStatus.textContent = "Loading contacts needing reply";
   } else if (browsesFollowUp && !query) {
     el.contactStatus.textContent = "Loading follow-up contacts";
+  } else if (browsesPhones && !query) {
+    el.contactStatus.textContent = "Loading phone contacts";
+  } else if (browsesEmails && !query) {
+    el.contactStatus.textContent = "Loading email contacts";
   } else if (browsesSaved && !query) {
     el.contactStatus.textContent = "Loading saved contacts";
   } else {
@@ -7695,6 +7707,10 @@ async function loadContacts({ force = false } = {}) {
         : `${state.contacts.length} contacts need reply`;
     } else if (state.contactSource === "followup") {
       el.contactStatus.textContent = `${state.contacts.length} follow-up contact${state.contacts.length === 1 ? "" : "s"}`;
+    } else if (state.contactSource === "phones") {
+      el.contactStatus.textContent = `${state.contacts.length} phone contact${state.contacts.length === 1 ? "" : "s"}`;
+    } else if (state.contactSource === "emails") {
+      el.contactStatus.textContent = `${state.contacts.length} email contact${state.contacts.length === 1 ? "" : "s"}`;
     } else if (state.contactSource === "contacts") {
       el.contactStatus.textContent = `${state.contacts.length} saved contact${state.contacts.length === 1 ? "" : "s"} · ${total} saved`;
     } else if (query) {
@@ -9365,6 +9381,8 @@ el.contactSourceFilters.addEventListener("click", (event) => {
       || state.contactSource === "unread"
       || state.contactSource === "needs_reply"
       || state.contactSource === "followup"
+      || state.contactSource === "phones"
+      || state.contactSource === "emails"
       || state.contactSource === "contacts"
       || el.contactSearch.value.trim().length >= 2,
   });

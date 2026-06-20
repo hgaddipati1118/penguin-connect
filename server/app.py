@@ -1309,8 +1309,19 @@ def _noted_contact_keys(conn: sqlite3.Connection) -> list[str]:
     return [str(row["contact_key"] or "").strip() for row in rows if row["contact_key"]]
 
 
+def _contact_has_handle_type(contact: dict, handle_type: str) -> bool:
+    return str(contact.get("handle_type") or "").strip().lower() == handle_type
+
+
 def _contact_source_counts(conn: sqlite3.Connection) -> dict[str, int]:
-    saved_count = int(conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0] or 0)
+    saved_rows = conn.execute(
+        """
+        SELECT id, first_name, last_name, organization, phone, phone_normalized, email, imported_at
+        FROM contacts
+        """
+    ).fetchall()
+    saved_contacts = [_contact_to_dict(row) for row in saved_rows]
+    saved_count = len(saved_contacts)
     saved_keys = _all_contact_keys(conn)
     thread_stats_by_key = _conversation_contact_thread_stats(conn)
     threaded_keys = set(thread_stats_by_key)
@@ -1363,6 +1374,7 @@ def _contact_source_counts(conn: sqlite3.Connection) -> dict[str, int]:
     visible_keys = {key for key in saved_keys if key}
     visible_keys.update(str(contact.get("contact_key") or "").strip() for contact in unsaved_contacts)
     visible_keys.discard("")
+    visible_contacts = _dedupe_contact_items([*saved_contacts, *unsaved_contacts])
     favorite_keys = {key for key in _favorite_contact_keys(conn) if key}
     noted_keys = {key for key in _noted_contact_keys(conn) if key}
     threaded_saved_count = len(_contact_rows_for_keys(conn, threaded_keys))
@@ -1379,6 +1391,8 @@ def _contact_source_counts(conn: sqlite3.Connection) -> dict[str, int]:
         "followup": followup_saved_count + len(followup_unsaved_contacts),
         "favorites": len(favorite_keys & visible_keys),
         "noted": len(noted_keys & visible_keys),
+        "phones": sum(1 for contact in visible_contacts if _contact_has_handle_type(contact, "phone")),
+        "emails": sum(1 for contact in visible_contacts if _contact_has_handle_type(contact, "email")),
     }
 
 
@@ -1575,6 +1589,8 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
         "followup",
         "favorites",
         "noted",
+        "phones",
+        "emails",
     }:
         normalized_source = "all"
     source_counts = _contact_source_counts(conn)
@@ -1642,7 +1658,7 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
     rows = []
     if normalized_source in {"threaded", "unread", "needs_reply", "followup"}:
         rows = _contact_rows_for_keys(conn, thread_filter_keys)
-    elif normalized_source in {"all", "contacts", "favorites", "noted"}:
+    elif normalized_source in {"all", "contacts", "favorites", "noted", "phones", "emails"}:
         contact_params = [*params]
         contact_limit = ""
         if normalized_source not in {"favorites", "noted"}:
@@ -1665,12 +1681,12 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
             contact_params,
         ).fetchall()
     contact_items = [_contact_to_dict(row) for row in rows]
-    if query and normalized_source in {"all", "contacts"}:
+    if query and normalized_source in {"all", "contacts", "phones", "emails"}:
         extra_contact_keys = note_match_keys | thread_match_keys
         if extra_contact_keys:
             contact_items.extend(_contact_to_dict(row) for row in _contact_rows_for_keys(conn, extra_contact_keys))
     participant_items: list[dict] = []
-    if normalized_source in {"all", "participants", "threaded", "unread", "needs_reply", "followup", "favorites", "noted"}:
+    if normalized_source in {"all", "participants", "threaded", "unread", "needs_reply", "followup", "favorites", "noted", "phones", "emails"}:
         existing_keys = _all_contact_keys(conn)
         participant_items = _conversation_participant_contact_results(
             conn,
@@ -1679,7 +1695,7 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
             if normalized_source in {"favorites", "noted", "threaded", "unread", "needs_reply", "followup"}
             else max(0, limit_value - len(contact_items)),
             existing_keys=existing_keys,
-            include_all=normalized_source in {"participants", "favorites", "noted", "threaded", "unread", "needs_reply", "followup"} or (normalized_source == "all" and not query),
+            include_all=normalized_source in {"participants", "favorites", "noted", "threaded", "unread", "needs_reply", "followup", "phones", "emails"} or (normalized_source == "all" and not query),
             allowed_keys=favorite_key_set
             if normalized_source == "favorites"
             else (
@@ -1736,6 +1752,16 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
                 str(contact.get("display_name") or "").lower(),
             )
         )
+        contacts = contacts[:limit_value]
+        participant_items = [contact for contact in contacts if contact.get("source") == "conversation"]
+    elif normalized_source in {"phones", "emails"}:
+        handle_type = "phone" if normalized_source == "phones" else "email"
+        contacts = [contact for contact in contacts if _contact_has_handle_type(contact, handle_type)]
+        if query:
+            contacts = [
+                contact for contact in contacts
+                if _contact_matches_query(contact, query) or _contact_has_any_key(contact, thread_match_keys)
+            ]
         contacts = contacts[:limit_value]
         participant_items = [contact for contact in contacts if contact.get("source") == "conversation"]
     elif normalized_source in {"threaded", "unread", "needs_reply", "followup"}:

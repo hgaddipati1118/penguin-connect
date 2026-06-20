@@ -1044,6 +1044,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
                 params={"source": "needs_reply", "limit": 10},
             )
             followup_response = client.get("/penguin-connect/contacts", params={"source": "followup", "limit": 10})
+            phones_source_response = client.get("/penguin-connect/contacts", params={"source": "phones", "limit": 10})
+            emails_source_response = client.get("/penguin-connect/contacts", params={"source": "emails", "limit": 10})
             favorites_response = client.get("/penguin-connect/contacts", params={"source": "favorites", "limit": 1})
             favorite_context_response = client.get(
                 "/penguin-connect/contacts",
@@ -1077,6 +1079,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
                 "followup": 1,
                 "favorites": 1,
                 "noted": 1,
+                "phones": 1,
+                "emails": 1,
             },
         )
         self.assertEqual(response.status_code, 200)
@@ -1090,6 +1094,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(body["source_counts"]["followup"], 1)
         self.assertEqual(body["source_counts"]["favorites"], 1)
         self.assertEqual(body["source_counts"]["noted"], 1)
+        self.assertEqual(body["source_counts"]["phones"], 1)
+        self.assertEqual(body["source_counts"]["emails"], 1)
         self.assertEqual(body["contacts"][0]["display_name"], "Taylor Example")
         self.assertEqual(body["contacts"][0]["contact_key"], "phone:15127436385")
         self.assertTrue(body["contacts"][0]["is_favorite"])
@@ -1193,6 +1199,20 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(followup_body["contacts"][0]["thread_count"], 1)
         self.assertEqual(followup_body["contacts"][0]["follow_up_thread_count"], 1)
         self.assertEqual(followup_body["contacts"][0]["next_follow_up_at"], "2026-03-12T09:30")
+
+        self.assertEqual(phones_source_response.status_code, 200)
+        phones_source_body = phones_source_response.json()
+        self.assertEqual(phones_source_body["source"], "phones")
+        self.assertEqual(phones_source_body["count"], 1)
+        self.assertEqual(phones_source_body["contacts"][0]["display_name"], "Taylor Example")
+        self.assertEqual(phones_source_body["contacts"][0]["handle_type"], "phone")
+
+        self.assertEqual(emails_source_response.status_code, 200)
+        emails_source_body = emails_source_response.json()
+        self.assertEqual(emails_source_body["source"], "emails")
+        self.assertEqual(emails_source_body["count"], 1)
+        self.assertEqual(emails_source_body["contacts"][0]["display_name"], "Example Ops")
+        self.assertEqual(emails_source_body["contacts"][0]["handle_type"], "email")
 
         self.assertEqual(favorites_response.status_code, 200)
         favorites_body = favorites_response.json()
@@ -1376,6 +1396,14 @@ class AppHttpIntegrationTests(unittest.TestCase):
                 "/penguin-connect/contacts",
                 params={"source": "followup", "search": "soundcheck", "limit": 10},
             )
+            phones_browse_response = client.get(
+                "/penguin-connect/contacts",
+                params={"source": "phones", "limit": 10},
+            )
+            emails_browse_response = client.get(
+                "/penguin-connect/contacts",
+                params={"source": "emails", "limit": 10},
+            )
             favorite_unsaved_response = client.post(
                 "/penguin-connect/contacts/management",
                 json={"contact_key": "phone:14155550199", "favorite": True},
@@ -1417,6 +1445,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
                 "followup": 1,
                 "favorites": 0,
                 "noted": 0,
+                "phones": 2,
+                "emails": 1,
             },
         )
 
@@ -1429,6 +1459,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(body["source_counts"]["unread"], 1)
         self.assertEqual(body["source_counts"]["needs_reply"], 2)
         self.assertEqual(body["source_counts"]["followup"], 1)
+        self.assertEqual(body["source_counts"]["phones"], 2)
+        self.assertEqual(body["source_counts"]["emails"], 1)
         result = body["contacts"][0]
         self.assertEqual(result["source"], "conversation")
         self.assertFalse(result["is_saved"])
@@ -1568,6 +1600,22 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(followup_unsaved_context_body["contacts"][0]["source"], "conversation")
         self.assertEqual(followup_unsaved_context_body["contacts"][0]["conversation_note"], "Ask about soundcheck")
         self.assertEqual(followup_unsaved_context_body["contacts"][0]["thread_names"], ["Unsaved Thread"])
+
+        self.assertEqual(phones_browse_response.status_code, 200)
+        phones_browse_body = phones_browse_response.json()
+        self.assertEqual(phones_browse_body["source"], "phones")
+        self.assertEqual(phones_browse_body["count"], 2)
+        self.assertEqual(phones_browse_body["participant_count"], 1)
+        self.assertEqual({contact["handle_type"] for contact in phones_browse_body["contacts"]}, {"phone"})
+        self.assertIn("phone:14155550199", {contact["contact_key"] for contact in phones_browse_body["contacts"]})
+
+        self.assertEqual(emails_browse_response.status_code, 200)
+        emails_browse_body = emails_browse_response.json()
+        self.assertEqual(emails_browse_body["source"], "emails")
+        self.assertEqual(emails_browse_body["count"], 1)
+        self.assertEqual(emails_browse_body["participant_count"], 0)
+        self.assertEqual(emails_browse_body["contacts"][0]["display_name"], "Example Ops")
+        self.assertEqual(emails_browse_body["contacts"][0]["handle_type"], "email")
 
         self.assertEqual(favorite_unsaved_response.status_code, 200)
         self.assertTrue(favorite_unsaved_response.json()["is_favorite"])
@@ -2292,6 +2340,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn('{ key: "unread", label: "Unread" }', js_response.text)
         self.assertIn('{ key: "needs_reply", label: "Needs reply" }', js_response.text)
         self.assertIn('{ key: "followup", label: "Follow-up" }', js_response.text)
+        self.assertIn('{ key: "phones", label: "Phones" }', js_response.text)
+        self.assertIn('{ key: "emails", label: "Emails" }', js_response.text)
         self.assertIn("contactSourceCounts", js_response.text)
         self.assertIn("contactSortLabels", js_response.text)
         self.assertIn("compareContactFavorite", js_response.text)
@@ -2329,12 +2379,16 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("No unread contacts", js_response.text)
         self.assertIn("No contacts need reply", js_response.text)
         self.assertIn("No follow-up contacts", js_response.text)
+        self.assertIn("No phone contacts", js_response.text)
+        self.assertIn("No email contacts", js_response.text)
         self.assertIn("No noted contacts", js_response.text)
         self.assertIn("Loading contacts", js_response.text)
         self.assertIn("Loading threaded contacts", js_response.text)
         self.assertIn("Loading unread contacts", js_response.text)
         self.assertIn("Loading contacts needing reply", js_response.text)
         self.assertIn("Loading follow-up contacts", js_response.text)
+        self.assertIn("Loading phone contacts", js_response.text)
+        self.assertIn("Loading email contacts", js_response.text)
         self.assertIn("Loading saved contacts", js_response.text)
         self.assertNotIn("Type 2+ chars to search contacts", js_response.text)
         self.assertIn("No saved contacts", js_response.text)
