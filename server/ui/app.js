@@ -231,6 +231,9 @@ const el = {
   replyFocusedMessageButton: document.querySelector("#replyFocusedMessageButton"),
   copyFocusedMessageButton: document.querySelector("#copyFocusedMessageButton"),
   draftFocusedMessageButton: document.querySelector("#draftFocusedMessageButton"),
+  starFocusedMessageButton: document.querySelector("#starFocusedMessageButton"),
+  readFocusedMessageButton: document.querySelector("#readFocusedMessageButton"),
+  noteFocusedMessageButton: document.querySelector("#noteFocusedMessageButton"),
   copyVisibleMessagesButton: document.querySelector("#copyVisibleMessagesButton"),
   starVisibleMessagesButton: document.querySelector("#starVisibleMessagesButton"),
   markVisibleMessagesReadButton: document.querySelector("#markVisibleMessagesReadButton"),
@@ -2194,6 +2197,21 @@ function handleGlobalShortcuts(event) {
     draftFocusedLoadedMessage();
     return;
   }
+  if (key === "s" && focusedLoadedMessage()) {
+    event.preventDefault();
+    toggleFocusedLoadedMessageStar();
+    return;
+  }
+  if (key === "u" && focusedLoadedMessage()) {
+    event.preventDefault();
+    toggleFocusedLoadedMessageRead();
+    return;
+  }
+  if (key === "e" && focusedLoadedMessage()) {
+    event.preventDefault();
+    editFocusedLoadedMessageNote();
+    return;
+  }
   if (key === "r" && state.selected) {
     event.preventDefault();
     if (focusedLoadedMessage()) {
@@ -3095,6 +3113,38 @@ function draftFocusedLoadedMessage() {
     return false;
   }
   useMessageAsNewChatDraft(message);
+  return true;
+}
+
+async function toggleFocusedLoadedMessageStar() {
+  const message = focusedLoadedMessage();
+  if (!message) {
+    el.sendState.textContent = "No focused message";
+    return false;
+  }
+  await toggleMessageStar(message);
+  return true;
+}
+
+async function toggleFocusedLoadedMessageRead() {
+  const message = focusedLoadedMessage();
+  if (!message) {
+    el.sendState.textContent = "No focused message";
+    return false;
+  }
+  await toggleMessageRead(message);
+  return true;
+}
+
+function editFocusedLoadedMessageNote() {
+  const message = focusedLoadedMessage();
+  if (!message) {
+    el.sendState.textContent = "No focused message";
+    return false;
+  }
+  editMessageNote(message);
+  scrollFocusedLoadedMessageIntoView("nearest");
+  el.sendState.textContent = "Editing focused message note";
   return true;
 }
 
@@ -7479,6 +7529,9 @@ function renderMessageHistoryControls() {
   const atMax = limit >= state.messageLimitMax;
   const canLoadMore = hasSelection && !state.messagesLoading && loaded >= limit && !atMax;
   const bulkBusy = state.messageBulkBusy || state.messagesLoading;
+  const focusedStarred = focused ? isStarredMessage(focused) : false;
+  const focusedUnread = focused ? isUnreadMessage(focused) : false;
+  const focusedNoted = focused ? hasMessageNote(focused) : false;
   el.loadedMessageCount.textContent = hasSelection
     ? (state.messagesLoading
       ? `Loading up to ${limit} messages`
@@ -7487,6 +7540,20 @@ function renderMessageHistoryControls() {
   el.replyFocusedMessageButton.disabled = bulkBusy || !focused;
   el.copyFocusedMessageButton.disabled = bulkBusy || !focused;
   el.draftFocusedMessageButton.disabled = bulkBusy || !focused;
+  el.starFocusedMessageButton.disabled = bulkBusy || !focused;
+  el.starFocusedMessageButton.textContent = focusedStarred ? "Unstar focused" : "Star focused";
+  el.starFocusedMessageButton.classList.toggle("active", focusedStarred);
+  el.starFocusedMessageButton.setAttribute("aria-pressed", focusedStarred ? "true" : "false");
+  el.readFocusedMessageButton.disabled = bulkBusy || !focused;
+  el.readFocusedMessageButton.textContent = focused
+    ? (focusedUnread ? "Mark focused read" : "Mark focused unread")
+    : "Mark focused";
+  el.readFocusedMessageButton.classList.toggle("active", focusedUnread);
+  el.readFocusedMessageButton.setAttribute("aria-pressed", focusedUnread ? "true" : "false");
+  el.noteFocusedMessageButton.disabled = bulkBusy || !focused;
+  el.noteFocusedMessageButton.textContent = focusedNoted ? "Edit focused note" : "Note focused";
+  el.noteFocusedMessageButton.classList.toggle("active", focusedNoted);
+  el.noteFocusedMessageButton.setAttribute("aria-pressed", focusedNoted ? "true" : "false");
   el.copyVisibleMessagesButton.disabled = bulkBusy || visible.length === 0;
   el.copyVisibleMessagesButton.textContent = visible.length
     ? `Copy ${visible.length}`
@@ -10359,6 +10426,9 @@ el.messageFilter.addEventListener("keydown", handleMessageFilterKeydown);
 el.replyFocusedMessageButton.addEventListener("click", replyToFocusedLoadedMessage);
 el.copyFocusedMessageButton.addEventListener("click", copyFocusedLoadedMessage);
 el.draftFocusedMessageButton.addEventListener("click", draftFocusedLoadedMessage);
+el.starFocusedMessageButton.addEventListener("click", toggleFocusedLoadedMessageStar);
+el.readFocusedMessageButton.addEventListener("click", toggleFocusedLoadedMessageRead);
+el.noteFocusedMessageButton.addEventListener("click", editFocusedLoadedMessageNote);
 el.copyVisibleMessagesButton.addEventListener("click", copyVisibleLoadedMessages);
 el.starVisibleMessagesButton.addEventListener("click", starVisibleLoadedMessages);
 el.markVisibleMessagesReadButton.addEventListener("click", markVisibleLoadedMessagesRead);
