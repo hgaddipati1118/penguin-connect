@@ -1027,7 +1027,8 @@ input[type="date"]:focus {
 .contact-inspector-actions button,
 .contact-inspector-close,
 .contact-inspector-message-bulk button,
-.contact-message-preview-actions button {
+.contact-message-preview-actions button,
+.contact-message-preview-actions select {
   min-height: 26px;
   border: 1px solid var(--line);
   background: var(--panel);
@@ -1051,7 +1052,9 @@ input[type="date"]:focus {
 .contact-inspector-message-bulk button:hover,
 .contact-inspector-message-bulk button:focus-visible,
 .contact-message-preview-actions button:hover,
-.contact-message-preview-actions button:focus-visible {
+.contact-message-preview-actions button:focus-visible,
+.contact-message-preview-actions select:hover,
+.contact-message-preview-actions select:focus-visible {
   border-color: var(--accent);
   color: var(--accent);
 }
@@ -1072,7 +1075,8 @@ input[type="date"]:focus {
 }
 
 .contact-inspector-message-bulk button:disabled,
-.contact-message-preview-actions button:disabled {
+.contact-message-preview-actions button:disabled,
+.contact-message-preview-actions select:disabled {
   cursor: not-allowed;
   opacity: 0.45;
 }
@@ -1795,7 +1799,8 @@ input[type="date"]:focus {
   gap: 4px;
 }
 
-.search-result-actions button {
+.search-result-actions button,
+.search-result-actions select {
   min-height: 26px;
   border: 1px solid var(--line);
   background: var(--panel-alt);
@@ -1806,7 +1811,9 @@ input[type="date"]:focus {
 }
 
 .search-result-actions button:hover,
-.search-result-actions button:focus-visible {
+.search-result-actions button:focus-visible,
+.search-result-actions select:hover,
+.search-result-actions select:focus-visible {
   border-color: var(--accent);
   color: var(--accent);
 }
@@ -1816,7 +1823,8 @@ input[type="date"]:focus {
   color: var(--warn);
 }
 
-.search-result-actions button:disabled {
+.search-result-actions button:disabled,
+.search-result-actions select:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
@@ -2077,12 +2085,14 @@ input[type="date"]:focus {
 
 .message-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 6px;
   margin-top: 8px;
 }
 
 .message-actions button,
+.message-actions select,
 .message-note-actions button,
 .search-result-note-actions button,
 .contact-note-actions button,
@@ -2097,6 +2107,8 @@ input[type="date"]:focus {
 }
 
 .message-actions button:hover,
+.message-actions select:hover,
+.message-actions select:focus-visible,
 .message-note-actions button:hover,
 .search-result-note-actions button:hover,
 .contact-note-actions button:hover,
@@ -2108,6 +2120,15 @@ input[type="date"]:focus {
 .message-actions button.active {
   border-color: rgba(191, 128, 35, 0.65);
   color: #7a4d10;
+}
+
+.message-actions select:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.message-followup-select {
+  max-width: 116px;
 }
 
 .pill {

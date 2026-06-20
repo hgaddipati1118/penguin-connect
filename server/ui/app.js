@@ -959,6 +959,79 @@ function followUpStatus(conversation) {
   return value <= Date.now() ? "due" : "scheduled";
 }
 
+function messageConversationId(message, { allowSelectedFallback = false } = {}) {
+  const conversationId = String(message?.conversation_id || "").trim();
+  if (conversationId) return conversationId;
+  return allowSelectedFallback ? String(state.selected?.conversation_id || "").trim() : "";
+}
+
+function conversationForMessage(message, options = {}) {
+  const conversationId = messageConversationId(message, options);
+  if (!conversationId) return null;
+  if (state.selected?.conversation_id === conversationId) return state.selected;
+  return state.conversations.find((conversation) => conversation.conversation_id === conversationId) || null;
+}
+
+function messageFollowUpSelectLabel(message, options = {}) {
+  const conversation = conversationForMessage(message, options);
+  return conversation && hasFollowUp(conversation) ? "Follow-up set" : "Follow-up";
+}
+
+function messageFollowUpSelectTitle(message, options = {}) {
+  const conversation = conversationForMessage(message, options);
+  if (conversation && hasFollowUp(conversation)) return `Thread follow-up ${followUpLabel(conversation)}`;
+  return "Set thread follow-up from this message";
+}
+
+function configureMessageFollowUpSelect(select, message, { allowSelectedFallback = false, statusElement = el.sendState } = {}) {
+  if (!select) return;
+  const options = { allowSelectedFallback };
+  const placeholder = select.querySelector('option[value=""]');
+  if (placeholder) placeholder.textContent = messageFollowUpSelectLabel(message, options);
+  select.disabled = !messageConversationId(message, options);
+  select.title = messageFollowUpSelectTitle(message, options);
+  select.addEventListener("change", () => {
+    const preset = select.value;
+    select.value = "";
+    applyMessageFollowUpPresetToConversation(message, preset, {
+      allowSelectedFallback,
+      statusElement,
+    });
+  });
+}
+
+async function applyMessageFollowUpPresetToConversation(message, preset, { allowSelectedFallback = false, statusElement = el.sendState } = {}) {
+  if (!preset) return;
+  const conversationId = messageConversationId(message, { allowSelectedFallback });
+  if (!conversationId) {
+    if (statusElement) statusElement.textContent = "No thread for follow-up";
+    return;
+  }
+  const followUpAt = followUpPresetValue(preset);
+  if (preset !== "clear" && !followUpAt) return;
+  const followUpText = followUpAt ? followUpLabel({ follow_up_at: followUpAt }) : "";
+  if (statusElement) {
+    statusElement.textContent = followUpAt ? `Scheduling follow-up ${followUpText}` : "Clearing follow-up";
+  }
+  try {
+    await updateConversationManagement(conversationId, {
+      follow_up_at: followUpAt,
+    });
+    if (statusElement) {
+      statusElement.textContent = followUpAt ? `Follow-up set ${followUpText}` : "Follow-up cleared";
+    }
+    renderConversations();
+    renderThreadControls();
+    renderManagementFields();
+    renderMessages();
+    renderMessageSearchResults();
+    renderContactInspector();
+    buildCodexPrompt();
+  } catch (error) {
+    if (statusElement) statusElement.textContent = error.message;
+  }
+}
+
 function conversationSortValue(conversation) {
   const raw = conversation.last_message_ts || conversation.updated_at || conversation.management_updated_at || "";
   const value = Date.parse(raw);
@@ -4770,6 +4843,13 @@ function renderContactInspectorMessages(container, contact) {
         <button type="button" data-action="copy">Copy</button>
         <button type="button" data-action="find-contact">Find</button>
         <button type="button" data-action="threads">Threads</button>
+        <select class="message-followup-select" data-action="follow-up" aria-label="Set thread follow-up from this message">
+          <option value="">Follow-up</option>
+          <option value="tomorrow">Tomorrow</option>
+          <option value="weekend">Weekend</option>
+          <option value="week">Next week</option>
+          <option value="clear">Clear</option>
+        </select>
       </span>
       <div class="contact-message-preview-note" hidden><span></span></div>
       <div class="contact-message-preview-note-editor" hidden>
@@ -4822,6 +4902,9 @@ function renderContactInspectorMessages(container, contact) {
     const threadsButton = item.querySelector('[data-action="threads"]');
     threadsButton.disabled = !contactHandle;
     threadsButton.addEventListener("click", () => filterConversationsForContactRecentMessage(result));
+    configureMessageFollowUpSelect(item.querySelector('[data-action="follow-up"]'), result, {
+      statusElement: el.contactStatus,
+    });
     const noteBox = item.querySelector(".contact-message-preview-note");
     if (noteText) {
       noteBox.hidden = false;
@@ -5732,6 +5815,13 @@ function renderMessageSearchResults() {
         <button type="button" data-action="contact">Contact</button>
         <button type="button" data-action="find-contact">Find</button>
         <button type="button" data-action="threads">Threads</button>
+        <select class="message-followup-select" data-action="follow-up" aria-label="Set thread follow-up from this message">
+          <option value="">Follow-up</option>
+          <option value="tomorrow">Tomorrow</option>
+          <option value="weekend">Weekend</option>
+          <option value="week">Next week</option>
+          <option value="clear">Clear</option>
+        </select>
         <button type="button" data-action="open">Open</button>
         <button type="button" data-action="messages">Messages</button>
       </span>
@@ -5819,6 +5909,9 @@ function renderMessageSearchResults() {
     const threadsButton = item.querySelector('[data-action="threads"]');
     threadsButton.disabled = !contactHandle;
     threadsButton.addEventListener("click", () => filterConversationsForSearchResultContact(result));
+    configureMessageFollowUpSelect(item.querySelector('[data-action="follow-up"]'), result, {
+      statusElement: el.messageSearchStatus,
+    });
     item.querySelector('[data-action="open"]').addEventListener("click", () => useMessageSearchResult(result));
     const messagesButton = item.querySelector('[data-action="messages"]');
     messagesButton.disabled = !result.conversation_id;
@@ -6165,6 +6258,13 @@ function renderMessages() {
         <button type="button" data-action="contact">Contact</button>
         <button type="button" data-action="find-contact">Find</button>
         <button type="button" data-action="threads">Threads</button>
+        <select class="message-followup-select" data-action="follow-up" aria-label="Set thread follow-up from this message">
+          <option value="">Follow-up</option>
+          <option value="tomorrow">Tomorrow</option>
+          <option value="weekend">Weekend</option>
+          <option value="week">Next week</option>
+          <option value="clear">Clear</option>
+        </select>
       </div>
     `;
     appendHighlightedText(item.querySelector(".message-head span"), messageSender(message), terms);
@@ -6228,6 +6328,10 @@ function renderMessages() {
     const threadsButton = item.querySelector('[data-action="threads"]');
     threadsButton.disabled = !messageContactHandle(message);
     threadsButton.addEventListener("click", () => filterConversationsForLoadedMessageContact(message));
+    configureMessageFollowUpSelect(item.querySelector('[data-action="follow-up"]'), message, {
+      allowSelectedFallback: true,
+      statusElement: el.sendState,
+    });
     item.querySelector('[data-action="copy"]').addEventListener("click", async () => {
       await copyText(messageCopyText(message));
       el.sendState.textContent = "Message copied";
