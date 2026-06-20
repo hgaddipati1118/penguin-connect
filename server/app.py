@@ -978,6 +978,24 @@ def _conversation_contact_keys_matching_context(conn: sqlite3.Connection, query:
     return keys
 
 
+def _conversation_contact_keys(conn: sqlite3.Connection) -> set[str]:
+    rows = conn.execute(
+        """
+        SELECT source_chat_identifier, participants
+        FROM penguin_connect_conversations
+        ORDER BY updated_at DESC, display_name COLLATE NOCASE, conversation_id
+        """
+    ).fetchall()
+    keys: set[str] = set()
+    for row in rows:
+        keys.update(
+            key
+            for key in (_contact_compare_key(handle) for handle in _conversation_participant_handles(row))
+            if key
+        )
+    return keys
+
+
 def _message_contact_context_from_row(row: sqlite3.Row) -> dict:
     message_text = " ".join(str(row["body_text"] or row["message_note"] or row["subject"] or "").split())
     return {
@@ -1167,6 +1185,7 @@ def _noted_contact_keys(conn: sqlite3.Connection) -> list[str]:
 def _contact_source_counts(conn: sqlite3.Connection) -> dict[str, int]:
     saved_count = int(conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0] or 0)
     saved_keys = _all_contact_keys(conn)
+    threaded_keys = _conversation_contact_keys(conn)
     unsaved_contacts = _conversation_participant_contact_results(
         conn,
         "",
@@ -1179,10 +1198,12 @@ def _contact_source_counts(conn: sqlite3.Connection) -> dict[str, int]:
     visible_keys.discard("")
     favorite_keys = {key for key in _favorite_contact_keys(conn) if key}
     noted_keys = {key for key in _noted_contact_keys(conn) if key}
+    threaded_saved_count = len(_contact_rows_for_keys(conn, threaded_keys))
     return {
         "all": saved_count + len(unsaved_contacts),
         "contacts": saved_count,
         "participants": len(unsaved_contacts),
+        "threaded": threaded_saved_count + len(unsaved_contacts),
         "favorites": len(favorite_keys & visible_keys),
         "noted": len(noted_keys & visible_keys),
     }
@@ -1371,9 +1392,10 @@ def _set_contact_management(
 def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, source: str = "all") -> dict:
     query = (search or "").strip()
     normalized_source = (source or "all").strip().lower()
-    if normalized_source not in {"all", "contacts", "participants", "favorites", "noted"}:
+    if normalized_source not in {"all", "contacts", "participants", "threaded", "favorites", "noted"}:
         normalized_source = "all"
     source_counts = _contact_source_counts(conn)
+    threaded_keys = _conversation_contact_keys(conn) if normalized_source == "threaded" else set()
     favorite_keys = _favorite_contact_keys(conn) if normalized_source == "favorites" else []
     favorite_key_set = set(favorite_keys)
     favorite_order = {key: index for index, key in enumerate(favorite_keys)}
@@ -1388,7 +1410,7 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
     pattern = f"%{query.lower()}%"
     where = ""
     params: list[object] = []
-    sql_query = "" if normalized_source in {"favorites", "noted"} else query
+    sql_query = "" if normalized_source in {"favorites", "noted", "threaded"} else query
     if sql_query:
         phone_query = _contact_phone_search_key(query)
         conditions = [
@@ -1410,7 +1432,9 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
         """.format(conditions=" OR ".join(conditions))
     limit_value = max(1, min(limit, 100))
     rows = []
-    if normalized_source in {"all", "contacts", "favorites", "noted"}:
+    if normalized_source == "threaded":
+        rows = _contact_rows_for_keys(conn, threaded_keys)
+    elif normalized_source in {"all", "contacts", "favorites", "noted"}:
         contact_params = [*params]
         contact_limit = ""
         if normalized_source not in {"favorites", "noted"}:
@@ -1438,15 +1462,17 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
         if extra_contact_keys:
             contact_items.extend(_contact_to_dict(row) for row in _contact_rows_for_keys(conn, extra_contact_keys))
     participant_items: list[dict] = []
-    if normalized_source in {"all", "participants", "favorites", "noted"}:
+    if normalized_source in {"all", "participants", "threaded", "favorites", "noted"}:
         existing_keys = _all_contact_keys(conn)
         participant_items = _conversation_participant_contact_results(
             conn,
-            "" if normalized_source in {"favorites", "noted"} else query,
-            limit=limit_value if normalized_source in {"favorites", "noted"} else max(0, limit_value - len(contact_items)),
+            "" if normalized_source in {"favorites", "noted", "threaded"} else query,
+            limit=limit_value if normalized_source in {"favorites", "noted", "threaded"} else max(0, limit_value - len(contact_items)),
             existing_keys=existing_keys,
-            include_all=normalized_source in {"participants", "favorites", "noted"} or (normalized_source == "all" and not query),
-            allowed_keys=favorite_key_set if normalized_source == "favorites" else (noted_key_set if normalized_source == "noted" else None),
+            include_all=normalized_source in {"participants", "favorites", "noted", "threaded"} or (normalized_source == "all" and not query),
+            allowed_keys=favorite_key_set
+            if normalized_source == "favorites"
+            else (noted_key_set if normalized_source == "noted" else (threaded_keys if normalized_source == "threaded" else None)),
         )
         if query and normalized_source in {"all", "participants"}:
             extra_participant_keys = note_match_keys | thread_match_keys
@@ -1493,6 +1519,15 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
                 str(contact.get("display_name") or "").lower(),
             )
         )
+        contacts = contacts[:limit_value]
+        participant_items = [contact for contact in contacts if contact.get("source") == "conversation"]
+    elif normalized_source == "threaded":
+        contacts = [contact for contact in contacts if _contact_has_any_key(contact, threaded_keys)]
+        if query:
+            contacts = [
+                contact for contact in contacts
+                if _contact_matches_query(contact, query) or _contact_has_any_key(contact, thread_match_keys)
+            ]
         contacts = contacts[:limit_value]
         participant_items = [contact for contact in contacts if contact.get("source") == "conversation"]
     else:

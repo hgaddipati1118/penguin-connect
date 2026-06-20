@@ -1018,6 +1018,11 @@ class AppHttpIntegrationTests(unittest.TestCase):
                 params={"source": "noted", "search": "demo day", "limit": 10},
             )
             saved_response = client.get("/penguin-connect/contacts", params={"source": "contacts", "limit": 10})
+            threaded_response = client.get("/penguin-connect/contacts", params={"source": "threaded", "limit": 10})
+            threaded_context_response = client.get(
+                "/penguin-connect/contacts",
+                params={"source": "threaded", "search": "launch desk", "limit": 10},
+            )
             favorites_response = client.get("/penguin-connect/contacts", params={"source": "favorites", "limit": 1})
             favorite_context_response = client.get(
                 "/penguin-connect/contacts",
@@ -1041,13 +1046,14 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(browse_body["count"], 2)
         self.assertEqual(
             browse_body["source_counts"],
-            {"all": 2, "contacts": 2, "participants": 0, "favorites": 1, "noted": 1},
+            {"all": 2, "contacts": 2, "participants": 0, "threaded": 1, "favorites": 1, "noted": 1},
         )
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["count"], 1)
         self.assertEqual(body["total_contacts"], 2)
         self.assertEqual(body["source_counts"]["contacts"], 2)
+        self.assertEqual(body["source_counts"]["threaded"], 1)
         self.assertEqual(body["source_counts"]["favorites"], 1)
         self.assertEqual(body["source_counts"]["noted"], 1)
         self.assertEqual(body["contacts"][0]["display_name"], "Taylor Example")
@@ -1103,6 +1109,18 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(saved_body["source"], "contacts")
         self.assertEqual(saved_body["count"], 2)
         self.assertTrue(all(contact["source"] == "contacts" for contact in saved_body["contacts"]))
+
+        self.assertEqual(threaded_response.status_code, 200)
+        threaded_body = threaded_response.json()
+        self.assertEqual(threaded_body["source"], "threaded")
+        self.assertEqual(threaded_body["count"], 1)
+        self.assertEqual(threaded_body["contacts"][0]["display_name"], "Taylor Example")
+
+        self.assertEqual(threaded_context_response.status_code, 200)
+        threaded_context_body = threaded_context_response.json()
+        self.assertEqual(threaded_context_body["source"], "threaded")
+        self.assertEqual(threaded_context_body["count"], 1)
+        self.assertEqual(threaded_context_body["contacts"][0]["display_name"], "Taylor Example")
 
         self.assertEqual(favorites_response.status_code, 200)
         favorites_body = favorites_response.json()
@@ -1253,6 +1271,14 @@ class AppHttpIntegrationTests(unittest.TestCase):
                 "/penguin-connect/contacts",
                 params={"source": "participants", "limit": 10},
             )
+            threaded_browse_response = client.get(
+                "/penguin-connect/contacts",
+                params={"source": "threaded", "limit": 10},
+            )
+            threaded_unsaved_context_response = client.get(
+                "/penguin-connect/contacts",
+                params={"source": "threaded", "search": "soundcheck", "limit": 10},
+            )
             favorite_unsaved_response = client.post(
                 "/penguin-connect/contacts/management",
                 json={"contact_key": "phone:14155550199", "favorite": True},
@@ -1284,7 +1310,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(all_browse_body["count"], 3)
         self.assertEqual(
             all_browse_body["source_counts"],
-            {"all": 3, "contacts": 2, "participants": 1, "favorites": 0, "noted": 0},
+            {"all": 3, "contacts": 2, "participants": 1, "threaded": 2, "favorites": 0, "noted": 0},
         )
 
         self.assertEqual(response.status_code, 200)
@@ -1351,6 +1377,21 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(unsaved_body["count"], 1)
         self.assertEqual(unsaved_body["participant_count"], 1)
         self.assertEqual(unsaved_body["contacts"][0]["primary_handle"], "+1 (415) 555-0199")
+
+        self.assertEqual(threaded_browse_response.status_code, 200)
+        threaded_body = threaded_browse_response.json()
+        self.assertEqual(threaded_body["source"], "threaded")
+        self.assertEqual(threaded_body["count"], 2)
+        self.assertEqual(threaded_body["participant_count"], 1)
+        self.assertEqual({contact["source"] for contact in threaded_body["contacts"]}, {"contacts", "conversation"})
+
+        self.assertEqual(threaded_unsaved_context_response.status_code, 200)
+        threaded_unsaved_context_body = threaded_unsaved_context_response.json()
+        self.assertEqual(threaded_unsaved_context_body["source"], "threaded")
+        self.assertEqual(threaded_unsaved_context_body["count"], 1)
+        self.assertEqual(threaded_unsaved_context_body["participant_count"], 1)
+        self.assertEqual(threaded_unsaved_context_body["contacts"][0]["source"], "conversation")
+        self.assertEqual(threaded_unsaved_context_body["contacts"][0]["conversation_note"], "Ask about soundcheck")
 
         self.assertEqual(favorite_unsaved_response.status_code, 200)
         self.assertTrue(favorite_unsaved_response.json()["is_favorite"])
@@ -2066,6 +2107,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("Staged attachment folder:", js_response.text)
         self.assertIn("contactContext", js_response.text)
         self.assertIn("contactSources", js_response.text)
+        self.assertIn('{ key: "threaded", label: "Threaded" }', js_response.text)
         self.assertIn("contactSourceCounts", js_response.text)
         self.assertIn("contactSortLabels", js_response.text)
         self.assertIn("compareContactFavorite", js_response.text)
@@ -2087,8 +2129,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("Contact created", js_response.text)
         self.assertIn("source_counts", js_response.text)
         self.assertIn('{ key: "noted", label: "Noted" }', js_response.text)
+        self.assertIn("No threaded contacts", js_response.text)
         self.assertIn("No noted contacts", js_response.text)
         self.assertIn("Loading contacts", js_response.text)
+        self.assertIn("Loading threaded contacts", js_response.text)
         self.assertIn("Loading saved contacts", js_response.text)
         self.assertNotIn("Type 2+ chars to search contacts", js_response.text)
         self.assertIn("No saved contacts", js_response.text)
