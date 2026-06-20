@@ -378,6 +378,7 @@ const contactSources = [
   { key: "all", label: "All" },
   { key: "threaded", label: "Threaded" },
   { key: "unread", label: "Unread" },
+  { key: "needs_reply", label: "Needs reply" },
   { key: "favorites", label: "Favorites" },
   { key: "noted", label: "Noted" },
   { key: "contacts", label: "Saved" },
@@ -1098,9 +1099,11 @@ function contactThreadActivityText(contact) {
   const count = Number(contact?.thread_count || 0);
   if (!count) return "";
   const unread = Number(contact?.unread_message_count || 0);
+  const needsReply = Number(contact?.needs_reply_thread_count || 0);
   const last = contact.last_thread_at ? `last ${formatTime(contact.last_thread_at)}` : "";
   return [
     `${count} thread${count === 1 ? "" : "s"}`,
+    needsReply > 0 ? `${needsReply} needs reply` : "",
     unread > 0 ? `${unread} unread` : "",
     last,
   ].filter(Boolean).join(" · ");
@@ -5126,6 +5129,7 @@ function contactDetailText(contact) {
     `Source: ${contact.is_saved === false ? "unsaved participant" : contact.source || contact.handle_type || "contact"}`,
     `Organization: ${contact.organization || "none"}`,
     `Thread activity: ${contactThreadActivityText(contact) || "none"}`,
+    `Needs reply threads: ${Number(contact.needs_reply_thread_count || 0)}`,
     `Unread threads: ${Number(contact.unread_thread_count || 0)}`,
     `Unread messages: ${Number(contact.unread_message_count || 0)}`,
     `Thread names: ${Array.isArray(contact.thread_names) && contact.thread_names.length ? contact.thread_names.join(", ") : "none"}`,
@@ -6309,6 +6313,8 @@ function renderContacts() {
       empty.textContent = el.contactSearch.value.trim() ? "No threaded matches" : "No threaded contacts";
     } else if (state.contactSource === "unread") {
       empty.textContent = el.contactSearch.value.trim() ? "No unread matches" : "No unread contacts";
+    } else if (state.contactSource === "needs_reply") {
+      empty.textContent = el.contactSearch.value.trim() ? "No needs-reply matches" : "No contacts need reply";
     } else if (state.contactSource === "contacts") {
       empty.textContent = el.contactSearch.value.trim() ? "No saved matches" : "No saved contacts";
     } else if (state.contactSource === "participants") {
@@ -7575,6 +7581,7 @@ async function loadContacts({ force = false } = {}) {
   const browsesSaved = state.contactSource === "contacts";
   const browsesThreaded = state.contactSource === "threaded";
   const browsesUnread = state.contactSource === "unread";
+  const browsesNeedsReply = state.contactSource === "needs_reply";
   renderContactSourceFilters();
   state.contactsLoading = true;
   renderContactMoreControls();
@@ -7591,6 +7598,8 @@ async function loadContacts({ force = false } = {}) {
     el.contactStatus.textContent = "Loading threaded contacts";
   } else if (browsesUnread && !query) {
     el.contactStatus.textContent = "Loading unread contacts";
+  } else if (browsesNeedsReply && !query) {
+    el.contactStatus.textContent = "Loading contacts needing reply";
   } else if (browsesSaved && !query) {
     el.contactStatus.textContent = "Loading saved contacts";
   } else {
@@ -7626,6 +7635,10 @@ async function loadContacts({ force = false } = {}) {
       el.contactStatus.textContent = `${state.contacts.length} threaded contact${state.contacts.length === 1 ? "" : "s"}`;
     } else if (state.contactSource === "unread") {
       el.contactStatus.textContent = `${state.contacts.length} unread contact${state.contacts.length === 1 ? "" : "s"}`;
+    } else if (state.contactSource === "needs_reply") {
+      el.contactStatus.textContent = state.contacts.length === 1
+        ? "1 contact needs reply"
+        : `${state.contacts.length} contacts need reply`;
     } else if (state.contactSource === "contacts") {
       el.contactStatus.textContent = `${state.contacts.length} saved contact${state.contacts.length === 1 ? "" : "s"} · ${total} saved`;
     } else if (query) {
@@ -9294,6 +9307,7 @@ el.contactSourceFilters.addEventListener("click", (event) => {
       || state.contactSource === "noted"
       || state.contactSource === "threaded"
       || state.contactSource === "unread"
+      || state.contactSource === "needs_reply"
       || state.contactSource === "contacts"
       || el.contactSearch.value.trim().length >= 2,
   });
