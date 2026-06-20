@@ -181,7 +181,7 @@ search, thread filtering, local Messages search, new-chat, and contact creation,
 native Messages group-name context whenever a local title differs plus one-click local-title restore from the native group name,
 rail-level quick reply, pin/mute/archive/read-unread actions, follow-up scheduling/filtering with quick presets from threads or message rows, quick message-row labels plus bulk follow-up set/clear, read/unread management, local route
 disconnect/reconnect controls, persistent per-thread reply drafts, new chat
-draft staging with live Messages-ready draft preview, copy-recipients/copy-body/copy-draft actions,
+draft staging with live Messages-ready draft preview, Cmd/Ctrl+Enter keyboard submit, copy-recipients/copy-body/copy-draft actions,
 addressed Messages compose links, and a Codex prompt helper with
 reply, summary, follow-up, contact-cleanup, and custom-question modes that can
 copy or run a local `codex exec` prompt over recent thread context, search

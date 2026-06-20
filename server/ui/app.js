@@ -2140,6 +2140,21 @@ function handleGlobalShortcuts(event) {
   }
 }
 
+function isSubmitShortcut(event) {
+  return event.key === "Enter"
+    && !event.shiftKey
+    && !event.altKey
+    && !event.isComposing
+    && (event.metaKey || event.ctrlKey);
+}
+
+function handleSubmitShortcut(event, button, submit) {
+  if (!isSubmitShortcut(event)) return;
+  event.preventDefault();
+  if (button?.disabled) return;
+  submit();
+}
+
 function selectedConversations() {
   return state.conversations.filter((conversation) => state.selectedConversationIds.has(conversation.conversation_id));
 }
@@ -9866,6 +9881,7 @@ el.draftRecipients.addEventListener("input", () => {
   scheduleDraftRecipientSuggestions();
   saveNewChatDraft();
 });
+el.draftRecipients.addEventListener("keydown", (event) => handleSubmitShortcut(event, el.sendDraftButton, sendDraftIfExisting));
 el.draftRecipientSuggestions.addEventListener("mousedown", (event) => {
   if (event.target.closest(".draft-recipient-suggestion")) {
     event.preventDefault();
@@ -9884,6 +9900,7 @@ el.draftMessage.addEventListener("input", () => {
   renderDraftPreview();
   saveNewChatDraft();
 });
+el.draftMessage.addEventListener("keydown", (event) => handleSubmitShortcut(event, el.sendDraftButton, sendDraftIfExisting));
 el.draftCopyToggle.addEventListener("change", saveNewChatDraft);
 el.draftOpenToggle.addEventListener("change", saveNewChatDraft);
 el.draftOpenAttachmentsToggle.addEventListener("change", saveNewChatDraft);
@@ -9990,6 +10007,7 @@ el.composer.addEventListener("input", () => {
   scheduleDraftSave();
   buildCodexPrompt();
 });
+el.composer.addEventListener("keydown", (event) => handleSubmitShortcut(event, el.sendButton, sendMessage));
 el.buildPromptButton.addEventListener("click", buildCodexPrompt);
 el.copyPromptButton.addEventListener("click", async () => {
   await copyText(buildCodexPrompt());
