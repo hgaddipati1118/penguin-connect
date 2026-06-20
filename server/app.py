@@ -1000,7 +1000,8 @@ def _conversation_contact_thread_stats(conn: sqlite3.Connection) -> dict[str, di
     rows = conn.execute(
         """
         SELECT c.conversation_id, c.display_name, c.source_chat_identifier, c.participants,
-               COALESCE(MAX(m.message_timestamp), c.updated_at, '') AS last_thread_at
+               COALESCE(MAX(m.message_timestamp), c.updated_at, '') AS last_thread_at,
+               COALESCE(SUM(CASE WHEN COALESCE(m.is_read, 1) = 0 THEN 1 ELSE 0 END), 0) AS unread_message_count
         FROM penguin_connect_conversations c
         LEFT JOIN penguin_connect_messages m
           ON m.conversation_id = c.conversation_id
@@ -1013,6 +1014,7 @@ def _conversation_contact_thread_stats(conn: sqlite3.Connection) -> dict[str, di
         conversation_id = str(row["conversation_id"] or "").strip()
         thread_name = str(row["display_name"] or row["source_chat_identifier"] or "Conversation").strip()
         last_thread_at = str(row["last_thread_at"] or "").strip()
+        unread_message_count = int(row["unread_message_count"] or 0)
         for handle in _conversation_participant_handles(row):
             key = _contact_compare_key(handle)
             if not key:
@@ -1021,16 +1023,23 @@ def _conversation_contact_thread_stats(conn: sqlite3.Connection) -> dict[str, di
                 key,
                 {
                     "thread_count": 0,
+                    "unread_thread_count": 0,
+                    "unread_message_count": 0,
                     "last_thread_at": "",
                     "thread_names": [],
                     "_conversation_ids": set(),
+                    "_conversation_unread_counts": {},
                 },
             )
             if conversation_id and conversation_id in entry["_conversation_ids"]:
                 continue
             if conversation_id:
                 entry["_conversation_ids"].add(conversation_id)
+                entry["_conversation_unread_counts"][conversation_id] = unread_message_count
             entry["thread_count"] += 1
+            entry["unread_message_count"] += unread_message_count
+            if unread_message_count > 0:
+                entry["unread_thread_count"] += 1
             if last_thread_at and last_thread_at > entry["last_thread_at"]:
                 entry["last_thread_at"] = last_thread_at
             if thread_name and thread_name not in entry["thread_names"] and len(entry["thread_names"]) < 3:
@@ -1130,22 +1139,31 @@ def _attach_contact_thread_stats(contacts: list[dict], stats_by_key: dict[str, d
         thread_names: list[str] = []
         last_thread_at = ""
         thread_count = 0
+        unread_thread_count = 0
+        unread_message_count = 0
         for key in _contact_candidate_keys(contact):
             stats = stats_by_key.get(key)
             if not stats:
                 continue
             ids = stats.get("_conversation_ids") or set()
+            unread_counts = stats.get("_conversation_unread_counts") or {}
             for conversation_id in ids:
                 if conversation_id in conversation_ids:
                     continue
                 conversation_ids.add(conversation_id)
                 thread_count += 1
+                unread_count = int(unread_counts.get(conversation_id) or 0)
+                unread_message_count += unread_count
+                if unread_count > 0:
+                    unread_thread_count += 1
             if stats.get("last_thread_at") and stats["last_thread_at"] > last_thread_at:
                 last_thread_at = stats["last_thread_at"]
             for name in stats.get("thread_names") or []:
                 if name and name not in thread_names and len(thread_names) < 3:
                     thread_names.append(name)
         contact["thread_count"] = thread_count
+        contact["unread_thread_count"] = unread_thread_count
+        contact["unread_message_count"] = unread_message_count
         contact["last_thread_at"] = last_thread_at
         contact["thread_names"] = thread_names
     return contacts

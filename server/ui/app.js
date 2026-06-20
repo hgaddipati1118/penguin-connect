@@ -1095,8 +1095,13 @@ function contactHandleText(contact) {
 function contactThreadActivityText(contact) {
   const count = Number(contact?.thread_count || 0);
   if (!count) return "";
+  const unread = Number(contact?.unread_message_count || 0);
   const last = contact.last_thread_at ? `last ${formatTime(contact.last_thread_at)}` : "";
-  return [`${count} thread${count === 1 ? "" : "s"}`, last].filter(Boolean).join(" · ");
+  return [
+    `${count} thread${count === 1 ? "" : "s"}`,
+    unread > 0 ? `${unread} unread` : "",
+    last,
+  ].filter(Boolean).join(" · ");
 }
 
 function contactRecipientHandle(contact) {
@@ -5112,6 +5117,8 @@ function contactDetailText(contact) {
     `Source: ${contact.is_saved === false ? "unsaved participant" : contact.source || contact.handle_type || "contact"}`,
     `Organization: ${contact.organization || "none"}`,
     `Thread activity: ${contactThreadActivityText(contact) || "none"}`,
+    `Unread threads: ${Number(contact.unread_thread_count || 0)}`,
+    `Unread messages: ${Number(contact.unread_message_count || 0)}`,
     `Thread names: ${Array.isArray(contact.thread_names) && contact.thread_names.length ? contact.thread_names.join(", ") : "none"}`,
     `Favorite: ${isFavoriteContact(contact) ? "yes" : "no"}`,
     `Private note: ${note ? trim(note, 260) : "none"}`,

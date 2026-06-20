@@ -989,6 +989,16 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
 
     def test_contacts_endpoint_searches_cached_contacts(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                "UPDATE penguin_connect_messages SET is_read = 0 WHERE provider_message_id = ?",
+                ("imsg-latest",),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
         with TestClient(app_module.app) as client:
             favorite_response = client.post(
                 "/penguin-connect/contacts/management",
@@ -1063,6 +1073,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(body["contacts"][0]["primary_handle"], "+1 (512) 743-6385")
         self.assertEqual(body["contacts"][0]["handle_type"], "phone")
         self.assertEqual(body["contacts"][0]["thread_count"], 1)
+        self.assertEqual(body["contacts"][0]["unread_thread_count"], 1)
+        self.assertEqual(body["contacts"][0]["unread_message_count"], 1)
         self.assertEqual(body["contacts"][0]["last_thread_at"], "2026-03-10T10:00:00+00:00")
         self.assertEqual(body["contacts"][0]["thread_names"], ["Taylor"])
         self.assertEqual(phone_response.status_code, 200)
@@ -1119,6 +1131,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(threaded_body["count"], 1)
         self.assertEqual(threaded_body["contacts"][0]["display_name"], "Taylor Example")
         self.assertEqual(threaded_body["contacts"][0]["thread_count"], 1)
+        self.assertEqual(threaded_body["contacts"][0]["unread_message_count"], 1)
         self.assertEqual(threaded_body["contacts"][0]["last_thread_at"], "2026-03-10T10:00:00+00:00")
 
         self.assertEqual(threaded_context_response.status_code, 200)
@@ -2241,6 +2254,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn('data-action="copy-detail"', js_response.text)
         self.assertIn("Contact detail copied", js_response.text)
         self.assertIn("Thread activity:", js_response.text)
+        self.assertIn("Unread threads:", js_response.text)
+        self.assertIn("Unread messages:", js_response.text)
         self.assertIn("Thread names:", js_response.text)
         self.assertIn("Loaded recent messages:", js_response.text)
         self.assertIn("openContactInMessages", js_response.text)
