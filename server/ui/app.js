@@ -159,6 +159,9 @@ const el = {
   saveContactViewButton: document.querySelector("#saveContactViewButton"),
   contactSavedViews: document.querySelector("#contactSavedViews"),
   contactSelectVisibleButton: document.querySelector("#contactSelectVisibleButton"),
+  contactNextUnreadButton: document.querySelector("#contactNextUnreadButton"),
+  contactNextReplyButton: document.querySelector("#contactNextReplyButton"),
+  contactNextFollowUpButton: document.querySelector("#contactNextFollowUpButton"),
   contactAddVisibleButton: document.querySelector("#contactAddVisibleButton"),
   contactFilterThreadsButton: document.querySelector("#contactFilterThreadsButton"),
   contactSearchMessagesButton: document.querySelector("#contactSearchMessagesButton"),
@@ -4608,7 +4611,65 @@ function contactBulkListName() {
   return query ? `${label}: ${query}` : `${label} contacts`;
 }
 
+function contactHasUnreadActivity(contact) {
+  return Number(contact?.unread_thread_count || 0) > 0
+    || Number(contact?.unread_message_count || 0) > 0;
+}
+
+function contactNeedsReplyActivity(contact) {
+  return Number(contact?.needs_reply_thread_count || 0) > 0;
+}
+
+function contactHasFollowUpActivity(contact) {
+  return Number(contact?.follow_up_thread_count || 0) > 0
+    || Boolean(contact?.next_follow_up_at);
+}
+
+function focusContactAtIndex(rows, index, statusText) {
+  const contact = rows[index];
+  if (!contact) return false;
+  state.activeContactSearchResultIndex = index;
+  setActiveContact(contact);
+  el.contactStatus.textContent = statusText;
+  return true;
+}
+
+function focusNextContactByPredicate(predicate, label, emptyText) {
+  const rows = contactSearchNavigationRows();
+  const matches = rows
+    .map((contact, rowIndex) => ({ contact, rowIndex }))
+    .filter((item) => predicate(item.contact));
+  if (!matches.length) {
+    el.contactStatus.textContent = rows.length ? emptyText : "No contact results";
+    renderContactBulkActions();
+    return false;
+  }
+
+  const currentIndex = activeContactSearchResultIndex(rows);
+  const nextMatchIndex = matches.findIndex((item) => item.rowIndex > currentIndex);
+  const matchIndex = nextMatchIndex >= 0 ? nextMatchIndex : 0;
+  const match = matches[matchIndex];
+  return focusContactAtIndex(
+    rows,
+    match.rowIndex,
+    `Selected ${label} contact ${matchIndex + 1} of ${matches.length}`
+  );
+}
+
+function focusNextUnreadContact() {
+  return focusNextContactByPredicate(contactHasUnreadActivity, "unread", "No unread contacts visible");
+}
+
+function focusNextNeedsReplyContact() {
+  return focusNextContactByPredicate(contactNeedsReplyActivity, "needs-reply", "No needs-reply contacts visible");
+}
+
+function focusNextFollowUpContact() {
+  return focusNextContactByPredicate(contactHasFollowUpActivity, "follow-up", "No follow-up contacts visible");
+}
+
 function renderContactBulkActions() {
+  const visible = visibleContacts();
   const selectedCount = selectedContactRecipientHandles().length;
   const visibleCount = visibleContactRecipientHandles().length;
   const hasRecipients = selectedCount ? selectedCount > 0 : visibleCount > 0;
@@ -4617,7 +4678,13 @@ function renderContactBulkActions() {
   const manageableContacts = contactBulkManageableContacts();
   const favoriteCount = manageableContacts.filter(isFavoriteContact).length;
   const unfavoriteCount = manageableContacts.length - favoriteCount;
+  const unreadContactCount = visible.filter(contactHasUnreadActivity).length;
+  const needsReplyContactCount = visible.filter(contactNeedsReplyActivity).length;
+  const followUpContactCount = visible.filter(contactHasFollowUpActivity).length;
   el.contactSelectVisibleButton.disabled = visibleCount === 0;
+  el.contactNextUnreadButton.disabled = unreadContactCount === 0;
+  el.contactNextReplyButton.disabled = needsReplyContactCount === 0;
+  el.contactNextFollowUpButton.disabled = followUpContactCount === 0;
   el.contactAddVisibleButton.disabled = !hasRecipients;
   el.contactFilterThreadsButton.disabled = !hasRecipients;
   el.contactSearchMessagesButton.disabled = !hasRecipients;
@@ -4628,6 +4695,9 @@ function renderContactBulkActions() {
   el.contactUnfavoriteSelectedButton.disabled = favoriteCount === 0;
   el.contactCreateVisibleButton.disabled = !creatableCount;
   el.contactClearSelectedButton.disabled = selectedCount === 0;
+  el.contactNextUnreadButton.textContent = unreadContactCount ? `Next unread ${unreadContactCount}` : "Next unread";
+  el.contactNextReplyButton.textContent = needsReplyContactCount ? `Next reply ${needsReplyContactCount}` : "Next reply";
+  el.contactNextFollowUpButton.textContent = followUpContactCount ? `Next follow-up ${followUpContactCount}` : "Next follow-up";
   el.contactAddVisibleButton.textContent = selectedCount ? "Add selected" : "Add visible";
   el.contactFilterThreadsButton.textContent = selectedCount ? "Threads selected" : "Threads visible";
   el.contactSearchMessagesButton.textContent = selectedCount ? "Find selected" : "Find visible";
@@ -10516,6 +10586,9 @@ el.contactRefreshButton.addEventListener("click", async () => {
   }
 });
 el.contactSelectVisibleButton.addEventListener("click", selectVisibleContacts);
+el.contactNextUnreadButton.addEventListener("click", focusNextUnreadContact);
+el.contactNextReplyButton.addEventListener("click", focusNextNeedsReplyContact);
+el.contactNextFollowUpButton.addEventListener("click", focusNextFollowUpContact);
 el.contactAddVisibleButton.addEventListener("click", addVisibleContactsToDraft);
 el.contactFilterThreadsButton.addEventListener("click", filterConversationsForContactHandles);
 el.contactSearchMessagesButton.addEventListener("click", searchMessagesForContactHandles);
