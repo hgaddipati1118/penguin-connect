@@ -196,6 +196,7 @@ const el = {
   threadFollowUpPresets: document.querySelector("#threadFollowUpPresets"),
   threadTags: document.querySelector("#threadTags"),
   threadNote: document.querySelector("#threadNote"),
+  useSourceTitleButton: document.querySelector("#useSourceTitleButton"),
   saveManagementButton: document.querySelector("#saveManagementButton"),
   managementState: document.querySelector("#managementState"),
   globalMessageSearch: document.querySelector("#globalMessageSearch"),
@@ -7598,6 +7599,7 @@ function renderThreadControls() {
   el.pinButton.disabled = !hasSelection;
   el.muteButton.disabled = !hasSelection;
   el.archiveButton.disabled = !hasSelection;
+  el.useSourceTitleButton.disabled = !hasSelection || !conversationSourceTitle(selected);
   el.saveManagementButton.disabled = !hasSelection;
   el.threadLocalTitle.disabled = !hasSelection;
   el.threadFollowUpAt.disabled = !hasSelection;
@@ -7620,6 +7622,7 @@ function renderThreadControls() {
     el.muteButton.textContent = "Mute";
     el.archiveButton.textContent = "Archive";
     el.connectionButton.textContent = "Disconnect";
+    el.useSourceTitleButton.textContent = "Use group name";
     return;
   }
   const unread = Number(selected.unread_count || 0);
@@ -7646,6 +7649,10 @@ function renderThreadControls() {
   el.archiveButton.textContent = selected.is_archived ? "Unarchive" : "Archive";
   el.connectionButton.textContent = status === "active" ? "Disconnect" : "Reconnect";
   el.openMessagesButton.textContent = "Open Messages";
+  el.useSourceTitleButton.textContent = isGroupConversation(selected) ? "Use group name" : "Use Messages name";
+  el.useSourceTitleButton.title = conversationSourceTitle(selected)
+    ? `Set local title to ${conversationSourceTitle(selected)}`
+    : "Local title already matches Messages";
 }
 
 function renderManagementFields() {
@@ -9081,6 +9088,20 @@ async function toggleConnection() {
   }
 }
 
+function useSourceTitleAsLocalTitle() {
+  if (!state.selected) return;
+  const sourceTitle = conversationSourceTitle(state.selected);
+  if (!sourceTitle) {
+    el.managementState.textContent = "Already using Messages name";
+    return;
+  }
+  el.threadLocalTitle.value = sourceTitle;
+  el.managementState.textContent = "Unsaved";
+  el.threadLocalTitle.focus();
+  buildCodexPrompt();
+  renderThreadControls();
+}
+
 function threadText(limit = 18) {
   return state.messages.slice(0, limit).reverse().map((message) => {
     const sender = message.sender_name || message.sender_email || message.direction || "unknown";
@@ -9800,6 +9821,7 @@ el.draftVoiceMemoButton.addEventListener("click", () => toggleVoiceMemoRecording
 el.pinButton.addEventListener("click", () => setConversationManagement({ pinned: !Boolean(state.selected?.is_pinned) }));
 el.muteButton.addEventListener("click", () => setConversationManagement({ muted: !Boolean(state.selected?.is_muted) }));
 el.archiveButton.addEventListener("click", () => setConversationManagement({ archived: !Boolean(state.selected?.is_archived) }));
+el.useSourceTitleButton.addEventListener("click", useSourceTitleAsLocalTitle);
 el.saveManagementButton.addEventListener("click", saveConversationManagement);
 el.threadLocalTitle.addEventListener("input", () => {
   el.managementState.textContent = state.selected ? "Unsaved" : "No thread";
