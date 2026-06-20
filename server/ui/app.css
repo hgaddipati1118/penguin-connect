@@ -1646,6 +1646,38 @@ input[type="date"]:focus {
   resize: vertical;
 }
 
+.followup-control {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.followup-presets {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.followup-presets button {
+  min-height: 24px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-soft);
+  color: var(--muted);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.followup-presets button:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+
+.followup-presets button:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
 .management-actions {
   display: grid;
   gap: 4px;

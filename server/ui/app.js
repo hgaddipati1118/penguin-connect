@@ -173,6 +173,7 @@ const el = {
   threadMedia: document.querySelector("#threadMedia"),
   threadLocalTitle: document.querySelector("#threadLocalTitle"),
   threadFollowUpAt: document.querySelector("#threadFollowUpAt"),
+  threadFollowUpPresets: document.querySelector("#threadFollowUpPresets"),
   threadTags: document.querySelector("#threadTags"),
   threadNote: document.querySelector("#threadNote"),
   saveManagementButton: document.querySelector("#saveManagementButton"),
@@ -899,6 +900,43 @@ function hasFollowUp(conversation) {
 function followUpInputValue(conversation) {
   const value = followUpValue(conversation);
   return value.length >= 16 ? value.slice(0, 16) : value;
+}
+
+function dateInputPart(value) {
+  return String(value).padStart(2, "0");
+}
+
+function dateTimeLocalValue(date) {
+  return [
+    date.getFullYear(),
+    dateInputPart(date.getMonth() + 1),
+    dateInputPart(date.getDate()),
+  ].join("-") + "T" + [
+    dateInputPart(date.getHours()),
+    dateInputPart(date.getMinutes()),
+  ].join(":");
+}
+
+function nextWeekdayDate(targetDay, { hour = 9, minute = 0 } = {}) {
+  const date = new Date();
+  let daysUntil = (targetDay - date.getDay() + 7) % 7;
+  if (daysUntil === 0) daysUntil = 7;
+  date.setDate(date.getDate() + daysUntil);
+  date.setHours(hour, minute, 0, 0);
+  return date;
+}
+
+function followUpPresetValue(preset) {
+  if (preset === "clear") return "";
+  if (preset === "tomorrow") {
+    const date = new Date();
+    date.setDate(date.getDate() + 1);
+    date.setHours(9, 0, 0, 0);
+    return dateTimeLocalValue(date);
+  }
+  if (preset === "weekend") return dateTimeLocalValue(nextWeekdayDate(6, { hour: 10 }));
+  if (preset === "week") return dateTimeLocalValue(nextWeekdayDate(1, { hour: 9 }));
+  return "";
 }
 
 function followUpSortValue(conversation) {
@@ -6463,6 +6501,9 @@ function renderThreadControls() {
   el.saveManagementButton.disabled = !hasSelection;
   el.threadLocalTitle.disabled = !hasSelection;
   el.threadFollowUpAt.disabled = !hasSelection;
+  for (const button of el.threadFollowUpPresets.querySelectorAll("button[data-follow-up-preset]")) {
+    button.disabled = !hasSelection;
+  }
   el.threadTags.disabled = !hasSelection;
   el.threadNote.disabled = !hasSelection;
   el.markReadButton.disabled = !hasSelection;
@@ -7589,6 +7630,25 @@ async function saveConversationManagement() {
   });
 }
 
+async function applyFollowUpPreset(preset) {
+  if (!state.selected) return;
+  const followUpAt = followUpPresetValue(preset);
+  el.threadFollowUpAt.value = followUpAt;
+  el.managementState.textContent = "Updating";
+  try {
+    await updateConversationManagement(state.selected.conversation_id, {
+      follow_up_at: followUpAt,
+    });
+    renderManagementFields();
+    renderConversations();
+    renderThreadControls();
+    buildCodexPrompt();
+    el.managementState.textContent = followUpAt ? "Follow-up set" : "Follow-up cleared";
+  } catch (error) {
+    el.managementState.textContent = error.message;
+  }
+}
+
 async function toggleConnection() {
   if (!state.selected) return;
   const active = (state.selected.status || "active") === "active";
@@ -8302,6 +8362,11 @@ el.threadLocalTitle.addEventListener("input", () => {
 el.threadFollowUpAt.addEventListener("input", () => {
   el.managementState.textContent = state.selected ? "Unsaved" : "No thread";
   buildCodexPrompt();
+});
+el.threadFollowUpPresets.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-follow-up-preset]");
+  if (!button || button.disabled) return;
+  applyFollowUpPreset(button.dataset.followUpPreset || "");
 });
 el.threadTags.addEventListener("input", () => {
   el.managementState.textContent = state.selected ? "Unsaved" : "No thread";
