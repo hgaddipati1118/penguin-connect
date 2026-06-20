@@ -7649,6 +7649,35 @@ function plannedAttachmentText() {
   return [...uploads, ...media].join(", ") || "none";
 }
 
+function newChatThreadMatchText() {
+  if (state.draftThreadResolving) return "checking existing thread";
+  const match = state.draftThreadMatch;
+  if (!match) return "not checked";
+  if (match.match_state === "exact") {
+    return `exact: ${draftThreadMatchLabel(match.matched_conversation || {})}`;
+  }
+  if (match.match_state === "multiple") {
+    const rows = draftThreadMatchRows().slice(0, 3).map(draftThreadMatchLabel).filter(Boolean);
+    return `multiple: ${rows.join(" / ") || "matching threads"}`;
+  }
+  if (match.match_state === "error") return `error: ${match.error || "thread check failed"}`;
+  return "none";
+}
+
+function newChatDraftContext() {
+  const recipients = uniqueRecipientValues(draftRecipientValues());
+  const body = draftBodyText();
+  const attachments = draftAttachmentLabels();
+  return [
+    `Recipients: ${recipients.length ? recipients.join(", ") : "none"}`,
+    `Recipient count: ${recipients.length}`,
+    `Existing thread check: ${recipients.length ? newChatThreadMatchText() : "none"}`,
+    `Attachments: ${attachments.length ? attachments.join(", ") : "none"}`,
+    `Staged attachment folder: ${state.draftAttachmentFolder || "none"}`,
+    `Draft body: ${body ? trim(body, 800) : "none"}`,
+  ].join("\n");
+}
+
 function messageSearchContext(limit = 8) {
   const query = el.globalMessageSearch.value.trim();
   const dateFrom = el.messageDateFrom.value.trim();
@@ -7739,6 +7768,9 @@ function buildCodexPrompt() {
     "",
     `Reply target: ${codexReplyTargetText()}`,
     `Attachments I plan to send: ${plannedAttachmentText()}`,
+    "",
+    "New chat draft:",
+    newChatDraftContext(),
     "",
     "Loaded contact context:",
     contactContext(),

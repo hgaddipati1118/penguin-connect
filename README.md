@@ -179,7 +179,7 @@ draft staging with live Messages-ready draft preview, copy-recipients/copy-body/
 addressed Messages compose links, and a Codex prompt helper with
 reply, summary, follow-up, contact-cleanup, and custom-question modes that can
 copy or run a local `codex exec` prompt over recent thread context, search
-results, contact results, local notes, tags, and your draft, then place the
+results, contact results, local notes, tags, new-chat drafts, and your reply draft, then place the
 answer into the reply draft for review. Use `message-search` to search synced
 message bodies in the local bridge cache, or search Apple Messages text directly with the
 `--source imessage` or `--source both` options. The `messages` command shows
