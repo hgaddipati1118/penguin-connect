@@ -38,6 +38,7 @@ const state = {
   contactsLoading: false,
   contactLoadToken: 0,
   contactSearchTimer: null,
+  activeContactSearchResultIndex: -1,
   draftRecipientSuggestTimer: null,
   draftRecipientSuggestToken: 0,
   draftRecipientSuggestionQuery: "",
@@ -3987,6 +3988,20 @@ function activeContact() {
   return state.contacts.find(isActiveContact) || state.activeContact || null;
 }
 
+function activeContactSearchResultIndex(rows = visibleContacts()) {
+  if (!rows.length || !state.activeContactKey) return -1;
+  return rows.findIndex(isActiveContact);
+}
+
+function scrollActiveContactIntoView() {
+  if (!state.activeContactKey) return;
+  requestAnimationFrame(() => {
+    const row = [...el.contactList.querySelectorAll("[data-contact-detail-key]")]
+      .find((item) => item.dataset.contactDetailKey === state.activeContactKey);
+    row?.scrollIntoView({ block: "nearest" });
+  });
+}
+
 function resetActiveContactMessages() {
   state.activeContactMessageKey = "";
   state.activeContactMessages = [];
@@ -4007,16 +4022,86 @@ function setActiveContact(contact, { rerenderList = true } = {}) {
   state.activeContact = contact;
   renderContactInspector();
   if (rerenderList) renderContacts();
+  scrollActiveContactIntoView();
   buildCodexPrompt();
 }
 
 function clearActiveContact() {
   state.activeContactKey = "";
   state.activeContact = null;
+  state.activeContactSearchResultIndex = -1;
   resetActiveContactMessages();
   renderContactInspector();
   renderContacts();
   buildCodexPrompt();
+}
+
+function contactSearchNavigationRows() {
+  return visibleContacts().filter((contact) => contactDetailKey(contact));
+}
+
+function moveActiveContactSearchResult(direction) {
+  const rows = contactSearchNavigationRows();
+  if (!rows.length) {
+    state.activeContactSearchResultIndex = -1;
+    el.contactSearch.removeAttribute("aria-activedescendant");
+    el.contactStatus.textContent = "No contact results";
+    return false;
+  }
+  const currentIndex = activeContactSearchResultIndex(rows);
+  let nextIndex = direction > 0 ? 0 : rows.length - 1;
+  if (currentIndex >= 0) {
+    nextIndex = (currentIndex + direction + rows.length) % rows.length;
+  }
+  state.activeContactSearchResultIndex = nextIndex;
+  const contact = rows[nextIndex];
+  setActiveContact(contact);
+  el.contactStatus.textContent = `Selected contact result ${nextIndex + 1} of ${rows.length}`;
+  return true;
+}
+
+async function openActiveContactSearchResult() {
+  const rows = contactSearchNavigationRows();
+  if (!rows.length) {
+    el.contactStatus.textContent = "No contact results";
+    return false;
+  }
+  let index = activeContactSearchResultIndex(rows);
+  if (index < 0) index = state.activeContactSearchResultIndex;
+  if (index < 0 || index >= rows.length) index = 0;
+  const contact = rows[index];
+  state.activeContactSearchResultIndex = index;
+  setActiveContact(contact);
+  el.contactStatus.textContent = `Opening ${contactDisplayName(contact)}`;
+  await useContact(contact);
+  return true;
+}
+
+function handleContactSearchKeydown(event) {
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    moveActiveContactSearchResult(1);
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    moveActiveContactSearchResult(-1);
+  } else if (event.key === "Enter") {
+    event.preventDefault();
+    openActiveContactSearchResult();
+  } else if (event.key === "Escape") {
+    if (el.contactSearch.value.trim()) {
+      event.preventDefault();
+      el.contactSearch.value = "";
+      state.activeContactSearchViewId = "";
+      state.activeContactSearchResultIndex = -1;
+      renderContactSavedViews();
+      loadContacts();
+      el.contactStatus.textContent = "Contact search cleared";
+    } else if (state.activeContactKey) {
+      event.preventDefault();
+      clearActiveContact();
+    }
+  }
 }
 
 function visibleContactSelectionKeys() {
@@ -6633,6 +6718,13 @@ function renderContacts() {
   el.contactList.replaceChildren();
   const contacts = visibleContacts();
   const terms = highlightTerms(el.contactSearch.value.trim());
+  const activeIndex = activeContactSearchResultIndex(contacts);
+  state.activeContactSearchResultIndex = activeIndex;
+  if (activeIndex >= 0) {
+    el.contactSearch.setAttribute("aria-activedescendant", "activeContactSearchResult");
+  } else {
+    el.contactSearch.removeAttribute("aria-activedescendant");
+  }
   renderContactBulkActions();
   renderContactMoreControls();
   renderContactInspector();
@@ -6672,12 +6764,17 @@ function renderContacts() {
 
   for (const contact of contacts) {
     const item = document.createElement("div");
+    const detailKey = contactDetailKey(contact);
     const favorite = isFavoriteContact(contact);
     const noteText = contactNoteText(contact);
     const editingNote = state.contactNoteEditorKey === contactNoteManagementKey(contact);
     const selected = isContactSelected(contact);
     const active = isActiveContact(contact);
     item.className = `contact-item ${favorite ? "favorite-contact" : ""} ${noteText ? "noted-contact" : ""} ${selected ? "selected-contact" : ""} ${active ? "active-contact" : ""}`;
+    item.dataset.contactDetailKey = detailKey;
+    item.setAttribute("role", "listitem");
+    item.setAttribute("aria-current", active ? "true" : "false");
+    if (active) item.id = "activeContactSearchResult";
     item.innerHTML = `
       <button class="contact-select-toggle" type="button" title="Select contact" aria-label="Select contact"></button>
       <button class="contact-main" type="button">
@@ -9819,10 +9916,12 @@ el.conversationSearch.addEventListener("input", () => {
 });
 el.contactSearch.addEventListener("input", () => {
   state.activeContactSearchViewId = "";
+  state.activeContactSearchResultIndex = -1;
   state.selectedContactKeys.clear();
   renderContactSavedViews();
   scheduleContactSearch();
 });
+el.contactSearch.addEventListener("keydown", handleContactSearchKeydown);
 el.contactSourceFilters.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-contact-source]");
   if (!button) return;
