@@ -228,6 +228,9 @@ const el = {
   messageSearchResults: document.querySelector("#messageSearchResults"),
   messageViewFilters: document.querySelector("#messageViewFilters"),
   loadedMessageCount: document.querySelector("#loadedMessageCount"),
+  replyFocusedMessageButton: document.querySelector("#replyFocusedMessageButton"),
+  copyFocusedMessageButton: document.querySelector("#copyFocusedMessageButton"),
+  draftFocusedMessageButton: document.querySelector("#draftFocusedMessageButton"),
   copyVisibleMessagesButton: document.querySelector("#copyVisibleMessagesButton"),
   starVisibleMessagesButton: document.querySelector("#starVisibleMessagesButton"),
   markVisibleMessagesReadButton: document.querySelector("#markVisibleMessagesReadButton"),
@@ -2181,9 +2184,23 @@ function handleGlobalShortcuts(event) {
     focusControl(el.draftRecipients);
     return;
   }
+  if (key === "y" && focusedLoadedMessage()) {
+    event.preventDefault();
+    copyFocusedLoadedMessage();
+    return;
+  }
+  if (key === "d" && focusedLoadedMessage()) {
+    event.preventDefault();
+    draftFocusedLoadedMessage();
+    return;
+  }
   if (key === "r" && state.selected) {
     event.preventDefault();
-    focusControl(el.composer);
+    if (focusedLoadedMessage()) {
+      replyToFocusedLoadedMessage();
+    } else {
+      focusControl(el.composer);
+    }
   }
 }
 
@@ -3037,6 +3054,48 @@ function handleMessageFilterKeydown(event) {
       renderMessages();
     }
   }
+}
+
+function focusedLoadedMessage() {
+  if (!state.focusMessageId) return null;
+  return state.messages.find((message) => message.provider_message_id === state.focusMessageId) || null;
+}
+
+function replyToFocusedLoadedMessage() {
+  const message = focusedLoadedMessage();
+  if (!message) {
+    el.sendState.textContent = "No focused message";
+    return false;
+  }
+  setReplyContext(message);
+  el.sendState.textContent = "Reply target set from focused message";
+  return true;
+}
+
+async function copyFocusedLoadedMessage() {
+  const message = focusedLoadedMessage();
+  if (!message) {
+    el.sendState.textContent = "No focused message";
+    return false;
+  }
+  try {
+    await copyText(messageCopyText(message));
+    el.sendState.textContent = "Focused message copied";
+    return true;
+  } catch (error) {
+    el.sendState.textContent = error.message;
+    return false;
+  }
+}
+
+function draftFocusedLoadedMessage() {
+  const message = focusedLoadedMessage();
+  if (!message) {
+    el.draftState.textContent = "No focused message";
+    return false;
+  }
+  useMessageAsNewChatDraft(message);
+  return true;
 }
 
 function manageableLoadedMessages(rows = visibleLoadedMessages()) {
@@ -7414,6 +7473,7 @@ function renderMessageHistoryControls() {
   const unstarredVisibleCount = manageable.filter((message) => !isStarredMessage(message)).length;
   const unreadVisibleCount = manageable.filter(isUnreadMessage).length;
   const readVisibleCount = manageable.length - unreadVisibleCount;
+  const focused = hasSelection ? focusedLoadedMessage() : null;
   const filtered = Boolean(el.messageFilter.value.trim() || state.messageView !== "all");
   const limit = state.messageLimit;
   const atMax = limit >= state.messageLimitMax;
@@ -7424,6 +7484,9 @@ function renderMessageHistoryControls() {
       ? `Loading up to ${limit} messages`
       : `${filtered ? `${visible.length}/${loaded} visible` : `${loaded} loaded`} · window ${limit}${atMax ? " max" : ""}`)
     : "No thread loaded";
+  el.replyFocusedMessageButton.disabled = bulkBusy || !focused;
+  el.copyFocusedMessageButton.disabled = bulkBusy || !focused;
+  el.draftFocusedMessageButton.disabled = bulkBusy || !focused;
   el.copyVisibleMessagesButton.disabled = bulkBusy || visible.length === 0;
   el.copyVisibleMessagesButton.textContent = visible.length
     ? `Copy ${visible.length}`
@@ -10293,6 +10356,9 @@ el.contactCreateVisibleButton.addEventListener("click", createVisibleUnknownCont
 el.contactClearSelectedButton.addEventListener("click", clearSelectedContacts);
 el.messageFilter.addEventListener("input", renderMessages);
 el.messageFilter.addEventListener("keydown", handleMessageFilterKeydown);
+el.replyFocusedMessageButton.addEventListener("click", replyToFocusedLoadedMessage);
+el.copyFocusedMessageButton.addEventListener("click", copyFocusedLoadedMessage);
+el.draftFocusedMessageButton.addEventListener("click", draftFocusedLoadedMessage);
 el.copyVisibleMessagesButton.addEventListener("click", copyVisibleLoadedMessages);
 el.starVisibleMessagesButton.addEventListener("click", starVisibleLoadedMessages);
 el.markVisibleMessagesReadButton.addEventListener("click", markVisibleLoadedMessagesRead);
