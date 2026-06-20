@@ -377,6 +377,8 @@ const messageViews = [
 const contactSources = [
   { key: "all", label: "All" },
   { key: "threaded", label: "Threaded" },
+  { key: "direct", label: "Direct" },
+  { key: "groups", label: "Groups" },
   { key: "unread", label: "Unread" },
   { key: "needs_reply", label: "Needs reply" },
   { key: "followup", label: "Follow-up" },
@@ -1106,6 +1108,8 @@ function contactHandleText(contact) {
 function contactThreadActivityText(contact) {
   const count = Number(contact?.thread_count || 0);
   if (!count) return "";
+  const direct = Number(contact?.direct_thread_count || 0);
+  const groups = Number(contact?.group_thread_count || 0);
   const unread = Number(contact?.unread_message_count || 0);
   const needsReply = Number(contact?.needs_reply_thread_count || 0);
   const followUp = Number(contact?.follow_up_thread_count || 0);
@@ -1113,6 +1117,8 @@ function contactThreadActivityText(contact) {
   const last = contact.last_thread_at ? `last ${formatTime(contact.last_thread_at)}` : "";
   return [
     `${count} thread${count === 1 ? "" : "s"}`,
+    direct > 0 ? `${direct} direct` : "",
+    groups > 0 ? `${groups} group${groups === 1 ? "" : "s"}` : "",
     needsReply > 0 ? `${needsReply} needs reply` : "",
     followUp > 0 ? `${followUp} follow-up${followUp === 1 ? "" : "s"}` : "",
     nextFollowUp,
@@ -5197,6 +5203,8 @@ function contactDetailText(contact) {
     `Source: ${contact.is_saved === false ? "unsaved participant" : contact.source || contact.handle_type || "contact"}`,
     `Organization: ${contact.organization || "none"}`,
     `Thread activity: ${contactThreadActivityText(contact) || "none"}`,
+    `Direct threads: ${Number(contact.direct_thread_count || 0)}`,
+    `Group threads: ${Number(contact.group_thread_count || 0)}`,
     `Needs reply threads: ${Number(contact.needs_reply_thread_count || 0)}`,
     `Follow-up threads: ${Number(contact.follow_up_thread_count || 0)}`,
     `Next follow-up: ${contact.next_follow_up_at ? formatTime(contact.next_follow_up_at) : "none"}`,
@@ -6381,6 +6389,10 @@ function renderContacts() {
       empty.textContent = el.contactSearch.value.trim() ? "No noted matches" : "No noted contacts";
     } else if (state.contactSource === "threaded") {
       empty.textContent = el.contactSearch.value.trim() ? "No threaded matches" : "No threaded contacts";
+    } else if (state.contactSource === "direct") {
+      empty.textContent = el.contactSearch.value.trim() ? "No direct matches" : "No direct contacts";
+    } else if (state.contactSource === "groups") {
+      empty.textContent = el.contactSearch.value.trim() ? "No group matches" : "No group contacts";
     } else if (state.contactSource === "unread") {
       empty.textContent = el.contactSearch.value.trim() ? "No unread matches" : "No unread contacts";
     } else if (state.contactSource === "needs_reply") {
@@ -7656,6 +7668,8 @@ async function loadContacts({ force = false } = {}) {
   const browsesNoted = state.contactSource === "noted";
   const browsesSaved = state.contactSource === "contacts";
   const browsesThreaded = state.contactSource === "threaded";
+  const browsesDirect = state.contactSource === "direct";
+  const browsesGroups = state.contactSource === "groups";
   const browsesUnread = state.contactSource === "unread";
   const browsesNeedsReply = state.contactSource === "needs_reply";
   const browsesFollowUp = state.contactSource === "followup";
@@ -7675,6 +7689,10 @@ async function loadContacts({ force = false } = {}) {
     el.contactStatus.textContent = "Loading noted contacts";
   } else if (browsesThreaded && !query) {
     el.contactStatus.textContent = "Loading threaded contacts";
+  } else if (browsesDirect && !query) {
+    el.contactStatus.textContent = "Loading direct contacts";
+  } else if (browsesGroups && !query) {
+    el.contactStatus.textContent = "Loading group contacts";
   } else if (browsesUnread && !query) {
     el.contactStatus.textContent = "Loading unread contacts";
   } else if (browsesNeedsReply && !query) {
@@ -7718,6 +7736,10 @@ async function loadContacts({ force = false } = {}) {
       el.contactStatus.textContent = `${state.contacts.length} noted contact${state.contacts.length === 1 ? "" : "s"}`;
     } else if (state.contactSource === "threaded") {
       el.contactStatus.textContent = `${state.contacts.length} threaded contact${state.contacts.length === 1 ? "" : "s"}`;
+    } else if (state.contactSource === "direct") {
+      el.contactStatus.textContent = `${state.contacts.length} direct contact${state.contacts.length === 1 ? "" : "s"}`;
+    } else if (state.contactSource === "groups") {
+      el.contactStatus.textContent = `${state.contacts.length} group contact${state.contacts.length === 1 ? "" : "s"}`;
     } else if (state.contactSource === "unread") {
       el.contactStatus.textContent = `${state.contacts.length} unread contact${state.contacts.length === 1 ? "" : "s"}`;
     } else if (state.contactSource === "needs_reply") {
@@ -9397,6 +9419,8 @@ el.contactSourceFilters.addEventListener("click", (event) => {
       || state.contactSource === "favorites"
       || state.contactSource === "noted"
       || state.contactSource === "threaded"
+      || state.contactSource === "direct"
+      || state.contactSource === "groups"
       || state.contactSource === "unread"
       || state.contactSource === "needs_reply"
       || state.contactSource === "followup"

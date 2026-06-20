@@ -1034,6 +1034,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
             )
             saved_response = client.get("/penguin-connect/contacts", params={"source": "contacts", "limit": 10})
             threaded_response = client.get("/penguin-connect/contacts", params={"source": "threaded", "limit": 10})
+            direct_response = client.get("/penguin-connect/contacts", params={"source": "direct", "limit": 10})
+            groups_response = client.get("/penguin-connect/contacts", params={"source": "groups", "limit": 10})
             threaded_context_response = client.get(
                 "/penguin-connect/contacts",
                 params={"source": "threaded", "search": "launch desk", "limit": 10},
@@ -1074,6 +1076,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
                 "contacts": 2,
                 "participants": 0,
                 "threaded": 1,
+                "direct": 1,
+                "groups": 0,
                 "unread": 1,
                 "needs_reply": 1,
                 "followup": 1,
@@ -1089,6 +1093,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(body["total_contacts"], 2)
         self.assertEqual(body["source_counts"]["contacts"], 2)
         self.assertEqual(body["source_counts"]["threaded"], 1)
+        self.assertEqual(body["source_counts"]["direct"], 1)
+        self.assertEqual(body["source_counts"]["groups"], 0)
         self.assertEqual(body["source_counts"]["unread"], 1)
         self.assertEqual(body["source_counts"]["needs_reply"], 1)
         self.assertEqual(body["source_counts"]["followup"], 1)
@@ -1103,6 +1109,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(body["contacts"][0]["primary_handle"], "+1 (512) 743-6385")
         self.assertEqual(body["contacts"][0]["handle_type"], "phone")
         self.assertEqual(body["contacts"][0]["thread_count"], 1)
+        self.assertEqual(body["contacts"][0]["direct_thread_count"], 1)
+        self.assertEqual(body["contacts"][0]["group_thread_count"], 0)
         self.assertEqual(body["contacts"][0]["needs_reply_thread_count"], 1)
         self.assertEqual(body["contacts"][0]["follow_up_thread_count"], 1)
         self.assertEqual(body["contacts"][0]["next_follow_up_at"], "2026-03-12T09:30")
@@ -1166,6 +1174,19 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(threaded_body["contacts"][0]["thread_count"], 1)
         self.assertEqual(threaded_body["contacts"][0]["unread_message_count"], 1)
         self.assertEqual(threaded_body["contacts"][0]["last_thread_at"], "2026-03-10T10:00:00+00:00")
+
+        self.assertEqual(direct_response.status_code, 200)
+        direct_body = direct_response.json()
+        self.assertEqual(direct_body["source"], "direct")
+        self.assertEqual(direct_body["count"], 1)
+        self.assertEqual(direct_body["contacts"][0]["display_name"], "Taylor Example")
+        self.assertEqual(direct_body["contacts"][0]["direct_thread_count"], 1)
+        self.assertEqual(direct_body["contacts"][0]["group_thread_count"], 0)
+
+        self.assertEqual(groups_response.status_code, 200)
+        groups_body = groups_response.json()
+        self.assertEqual(groups_body["source"], "groups")
+        self.assertEqual(groups_body["count"], 0)
 
         self.assertEqual(threaded_context_response.status_code, 200)
         threaded_context_body = threaded_context_response.json()
@@ -1465,6 +1486,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
                 "contacts": 2,
                 "participants": 1,
                 "threaded": 2,
+                "direct": 2,
+                "groups": 0,
                 "unread": 1,
                 "needs_reply": 2,
                 "followup": 1,
@@ -1481,6 +1504,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(body["total_contacts"], 2)
         self.assertEqual(body["participant_count"], 1)
         self.assertEqual(body["source_counts"]["participants"], 1)
+        self.assertEqual(body["source_counts"]["direct"], 2)
+        self.assertEqual(body["source_counts"]["groups"], 0)
         self.assertEqual(body["source_counts"]["unread"], 1)
         self.assertEqual(body["source_counts"]["needs_reply"], 2)
         self.assertEqual(body["source_counts"]["followup"], 1)
@@ -1496,6 +1521,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(result["conversation_id"], "amc_unsaved")
         self.assertIn("Unsaved Thread", result["organization"])
         self.assertEqual(result["thread_count"], 1)
+        self.assertEqual(result["direct_thread_count"], 1)
+        self.assertEqual(result["group_thread_count"], 0)
         self.assertEqual(result["needs_reply_thread_count"], 1)
         self.assertEqual(result["follow_up_thread_count"], 1)
         self.assertEqual(result["next_follow_up_at"], "2026-03-13T14:00")
@@ -1679,6 +1706,66 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(noted_unsaved_context_body["count"], 1)
         self.assertEqual(noted_unsaved_context_body["participant_count"], 1)
         self.assertEqual(noted_unsaved_context_body["contacts"][0]["conversation_note"], "Ask about soundcheck")
+
+    def test_contacts_endpoint_filters_direct_and_group_thread_contacts(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """INSERT INTO penguin_connect_conversations
+                   (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants,
+                    alias_email, status)
+                   VALUES (?, ?, ?, ?, 'group', ?, ?, 'active')""",
+                (
+                    "owner@gmail.com",
+                    "amc_group_contact",
+                    "chat-group-contacts",
+                    "Project Room",
+                    '["+15127436385", "friend@example.test"]',
+                    "owner+group-contacts@gmail.com",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with TestClient(app_module.app) as client:
+            direct_response = client.get("/penguin-connect/contacts", params={"source": "direct", "limit": 10})
+            group_response = client.get("/penguin-connect/contacts", params={"source": "groups", "limit": 10})
+            group_context_response = client.get(
+                "/penguin-connect/contacts",
+                params={"source": "groups", "search": "project room", "limit": 10},
+            )
+
+        self.assertEqual(direct_response.status_code, 200)
+        direct_body = direct_response.json()
+        self.assertEqual(direct_body["source"], "direct")
+        self.assertEqual(direct_body["count"], 1)
+        self.assertEqual(direct_body["source_counts"]["direct"], 1)
+        self.assertEqual(direct_body["source_counts"]["groups"], 2)
+        self.assertEqual(direct_body["contacts"][0]["display_name"], "Taylor Example")
+        self.assertEqual(direct_body["contacts"][0]["direct_thread_count"], 1)
+        self.assertEqual(direct_body["contacts"][0]["group_thread_count"], 1)
+
+        self.assertEqual(group_response.status_code, 200)
+        group_body = group_response.json()
+        self.assertEqual(group_body["source"], "groups")
+        self.assertEqual(group_body["count"], 2)
+        self.assertEqual(group_body["participant_count"], 1)
+        by_key = {contact["contact_key"]: contact for contact in group_body["contacts"]}
+        self.assertEqual(set(by_key), {"phone:15127436385", "email:friend@example.test"})
+        self.assertEqual(by_key["phone:15127436385"]["thread_count"], 2)
+        self.assertEqual(by_key["phone:15127436385"]["direct_thread_count"], 1)
+        self.assertEqual(by_key["phone:15127436385"]["group_thread_count"], 1)
+        self.assertEqual(by_key["email:friend@example.test"]["source"], "conversation")
+        self.assertEqual(by_key["email:friend@example.test"]["thread_count"], 1)
+        self.assertEqual(by_key["email:friend@example.test"]["direct_thread_count"], 0)
+        self.assertEqual(by_key["email:friend@example.test"]["group_thread_count"], 1)
+
+        self.assertEqual(group_context_response.status_code, 200)
+        group_context_body = group_context_response.json()
+        self.assertEqual(group_context_body["source"], "groups")
+        self.assertEqual(group_context_body["count"], 2)
+        self.assertEqual(group_context_body["participant_count"], 1)
 
     def test_contacts_refresh_endpoint_runs_refresh_once(self):
         with mock.patch(
@@ -2401,8 +2488,16 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("quickCreateStatus", js_response.text)
         self.assertIn("Contact created", js_response.text)
         self.assertIn("source_counts", js_response.text)
+        self.assertIn('{ key: "direct", label: "Direct" }', js_response.text)
+        self.assertIn('{ key: "groups", label: "Groups" }', js_response.text)
         self.assertIn('{ key: "noted", label: "Noted" }', js_response.text)
+        self.assertIn("direct_thread_count", js_response.text)
+        self.assertIn("group_thread_count", js_response.text)
+        self.assertIn("Direct threads:", js_response.text)
+        self.assertIn("Group threads:", js_response.text)
         self.assertIn("No threaded contacts", js_response.text)
+        self.assertIn("No direct contacts", js_response.text)
+        self.assertIn("No group contacts", js_response.text)
         self.assertIn("No unread contacts", js_response.text)
         self.assertIn("No contacts need reply", js_response.text)
         self.assertIn("No follow-up contacts", js_response.text)
@@ -2411,6 +2506,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("No noted contacts", js_response.text)
         self.assertIn("Loading contacts", js_response.text)
         self.assertIn("Loading threaded contacts", js_response.text)
+        self.assertIn("Loading direct contacts", js_response.text)
+        self.assertIn("Loading group contacts", js_response.text)
         self.assertIn("Loading unread contacts", js_response.text)
         self.assertIn("Loading contacts needing reply", js_response.text)
         self.assertIn("Loading follow-up contacts", js_response.text)

@@ -847,6 +847,15 @@ def _conversation_participant_handles(row: sqlite3.Row) -> list[str]:
         handles.append(handle)
     return handles
 
+
+def _conversation_is_group_thread(row: sqlite3.Row, participant_handles: list[str] | None = None) -> bool:
+    row_keys = set(row.keys())
+    chat_type = str(row["chat_type"] if "chat_type" in row_keys else "").strip().lower()
+    source_identifier = str(row["source_chat_identifier"] if "source_chat_identifier" in row_keys else "").strip().lower()
+    participants = participant_handles if participant_handles is not None else _conversation_participant_handles(row)
+    return chat_type in {"group", "channel"} or source_identifier.startswith("chat") or len(participants) > 1
+
+
 def _recipient_key_set(values: list[str]) -> set[str]:
     return {
         key
@@ -995,7 +1004,7 @@ def _conversation_contact_thread_stats(conn: sqlite3.Connection) -> dict[str, di
             FROM penguin_connect_messages
             GROUP BY conversation_id
         )
-        SELECT c.conversation_id, c.display_name, c.source_chat_identifier, c.participants,
+        SELECT c.conversation_id, c.display_name, c.chat_type, c.source_chat_identifier, c.participants,
                COALESCE(lm.message_timestamp, c.updated_at, '') AS last_thread_at,
                COALESCE(uc.unread_message_count, 0) AS unread_message_count,
                COALESCE(lm.direction, '') AS last_message_direction,
@@ -1027,7 +1036,9 @@ def _conversation_contact_thread_stats(conn: sqlite3.Connection) -> dict[str, di
         } and not bool(row["is_archived"]) and not bool(row["is_muted"])
         follow_up_at = str(row["follow_up_at"] or "").strip()
         has_follow_up = bool(follow_up_at) and not bool(row["is_archived"])
-        for handle in _conversation_participant_handles(row):
+        participant_handles = _conversation_participant_handles(row)
+        is_group_thread = _conversation_is_group_thread(row, participant_handles)
+        for handle in participant_handles:
             key = _contact_compare_key(handle)
             if not key:
                 continue
@@ -1035,6 +1046,8 @@ def _conversation_contact_thread_stats(conn: sqlite3.Connection) -> dict[str, di
                 key,
                 {
                     "thread_count": 0,
+                    "direct_thread_count": 0,
+                    "group_thread_count": 0,
                     "unread_thread_count": 0,
                     "unread_message_count": 0,
                     "needs_reply_thread_count": 0,
@@ -1043,6 +1056,7 @@ def _conversation_contact_thread_stats(conn: sqlite3.Connection) -> dict[str, di
                     "last_thread_at": "",
                     "thread_names": [],
                     "_conversation_ids": set(),
+                    "_conversation_is_group": {},
                     "_conversation_unread_counts": {},
                     "_conversation_needs_reply": {},
                     "_conversation_follow_up_at": {},
@@ -1052,10 +1066,15 @@ def _conversation_contact_thread_stats(conn: sqlite3.Connection) -> dict[str, di
                 continue
             if conversation_id:
                 entry["_conversation_ids"].add(conversation_id)
+                entry["_conversation_is_group"][conversation_id] = is_group_thread
                 entry["_conversation_unread_counts"][conversation_id] = unread_message_count
                 entry["_conversation_needs_reply"][conversation_id] = needs_reply
                 entry["_conversation_follow_up_at"][conversation_id] = follow_up_at if has_follow_up else ""
             entry["thread_count"] += 1
+            if is_group_thread:
+                entry["group_thread_count"] += 1
+            else:
+                entry["direct_thread_count"] += 1
             entry["unread_message_count"] += unread_message_count
             if unread_message_count > 0:
                 entry["unread_thread_count"] += 1
@@ -1164,6 +1183,8 @@ def _attach_contact_thread_stats(contacts: list[dict], stats_by_key: dict[str, d
         thread_names: list[str] = []
         last_thread_at = ""
         thread_count = 0
+        direct_thread_count = 0
+        group_thread_count = 0
         unread_thread_count = 0
         unread_message_count = 0
         needs_reply_thread_count = 0
@@ -1174,6 +1195,7 @@ def _attach_contact_thread_stats(contacts: list[dict], stats_by_key: dict[str, d
             if not stats:
                 continue
             ids = stats.get("_conversation_ids") or set()
+            group_by_id = stats.get("_conversation_is_group") or {}
             unread_counts = stats.get("_conversation_unread_counts") or {}
             needs_reply_by_id = stats.get("_conversation_needs_reply") or {}
             follow_up_by_id = stats.get("_conversation_follow_up_at") or {}
@@ -1182,6 +1204,10 @@ def _attach_contact_thread_stats(contacts: list[dict], stats_by_key: dict[str, d
                     continue
                 conversation_ids.add(conversation_id)
                 thread_count += 1
+                if group_by_id.get(conversation_id):
+                    group_thread_count += 1
+                else:
+                    direct_thread_count += 1
                 unread_count = int(unread_counts.get(conversation_id) or 0)
                 unread_message_count += unread_count
                 if unread_count > 0:
@@ -1199,6 +1225,8 @@ def _attach_contact_thread_stats(contacts: list[dict], stats_by_key: dict[str, d
                 if name and name not in thread_names and len(thread_names) < 3:
                     thread_names.append(name)
         contact["thread_count"] = thread_count
+        contact["direct_thread_count"] = direct_thread_count
+        contact["group_thread_count"] = group_thread_count
         contact["unread_thread_count"] = unread_thread_count
         contact["unread_message_count"] = unread_message_count
         contact["needs_reply_thread_count"] = needs_reply_thread_count
@@ -1337,6 +1365,16 @@ def _contact_source_counts(conn: sqlite3.Connection) -> dict[str, int]:
     saved_keys = _all_contact_keys(conn)
     thread_stats_by_key = _conversation_contact_thread_stats(conn)
     threaded_keys = set(thread_stats_by_key)
+    direct_keys = {
+        key
+        for key, stats in thread_stats_by_key.items()
+        if int(stats.get("direct_thread_count") or 0) > 0
+    }
+    group_keys = {
+        key
+        for key, stats in thread_stats_by_key.items()
+        if int(stats.get("group_thread_count") or 0) > 0
+    }
     unread_keys = {
         key
         for key, stats in thread_stats_by_key.items()
@@ -1383,6 +1421,22 @@ def _contact_source_counts(conn: sqlite3.Connection) -> dict[str, int]:
         include_all=True,
         allowed_keys=followup_keys,
     )
+    direct_unsaved_contacts = _conversation_participant_contact_results(
+        conn,
+        "",
+        limit=10000,
+        existing_keys=saved_keys,
+        include_all=True,
+        allowed_keys=direct_keys,
+    )
+    group_unsaved_contacts = _conversation_participant_contact_results(
+        conn,
+        "",
+        limit=10000,
+        existing_keys=saved_keys,
+        include_all=True,
+        allowed_keys=group_keys,
+    )
     visible_keys = {key for key in saved_keys if key}
     visible_keys.update(str(contact.get("contact_key") or "").strip() for contact in unsaved_contacts)
     visible_keys.discard("")
@@ -1390,6 +1444,8 @@ def _contact_source_counts(conn: sqlite3.Connection) -> dict[str, int]:
     favorite_keys = {key for key in _favorite_contact_keys(conn) if key}
     noted_keys = {key for key in _noted_contact_keys(conn) if key}
     threaded_saved_count = len(_contact_rows_for_keys(conn, threaded_keys))
+    direct_saved_count = len(_contact_rows_for_keys(conn, direct_keys))
+    group_saved_count = len(_contact_rows_for_keys(conn, group_keys))
     unread_saved_count = len(_contact_rows_for_keys(conn, unread_keys))
     needs_reply_saved_count = len(_contact_rows_for_keys(conn, needs_reply_keys))
     followup_saved_count = len(_contact_rows_for_keys(conn, followup_keys))
@@ -1398,6 +1454,8 @@ def _contact_source_counts(conn: sqlite3.Connection) -> dict[str, int]:
         "contacts": saved_count,
         "participants": len(unsaved_contacts),
         "threaded": threaded_saved_count + len(unsaved_contacts),
+        "direct": direct_saved_count + len(direct_unsaved_contacts),
+        "groups": group_saved_count + len(group_unsaved_contacts),
         "unread": unread_saved_count + len(unread_unsaved_contacts),
         "needs_reply": needs_reply_saved_count + len(needs_reply_unsaved_contacts),
         "followup": followup_saved_count + len(followup_unsaved_contacts),
@@ -1596,6 +1654,8 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
         "contacts",
         "participants",
         "threaded",
+        "direct",
+        "groups",
         "unread",
         "needs_reply",
         "followup",
@@ -1608,6 +1668,16 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
     source_counts = _contact_source_counts(conn)
     thread_stats_by_key = _conversation_contact_thread_stats(conn)
     threaded_keys = set(thread_stats_by_key)
+    direct_keys = {
+        key
+        for key, stats in thread_stats_by_key.items()
+        if int(stats.get("direct_thread_count") or 0) > 0
+    }
+    group_keys = {
+        key
+        for key, stats in thread_stats_by_key.items()
+        if int(stats.get("group_thread_count") or 0) > 0
+    }
     unread_keys = {
         key
         for key, stats in thread_stats_by_key.items()
@@ -1623,15 +1693,16 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
         for key, stats in thread_stats_by_key.items()
         if int(stats.get("follow_up_thread_count") or 0) > 0
     }
-    thread_filter_keys = (
-        unread_keys
-        if normalized_source == "unread"
-        else (
-            needs_reply_keys
-            if normalized_source == "needs_reply"
-            else (followup_keys if normalized_source == "followup" else threaded_keys)
-        )
-    )
+    thread_sources = {"threaded", "direct", "groups", "unread", "needs_reply", "followup"}
+    thread_filter_key_sets = {
+        "threaded": threaded_keys,
+        "direct": direct_keys,
+        "groups": group_keys,
+        "unread": unread_keys,
+        "needs_reply": needs_reply_keys,
+        "followup": followup_keys,
+    }
+    thread_filter_keys = thread_filter_key_sets.get(normalized_source, threaded_keys)
     favorite_keys = _favorite_contact_keys(conn) if normalized_source == "favorites" else []
     favorite_key_set = set(favorite_keys)
     favorite_order = {key: index for index, key in enumerate(favorite_keys)}
@@ -1646,7 +1717,7 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
     pattern = f"%{query.lower()}%"
     where = ""
     params: list[object] = []
-    sql_query = "" if normalized_source in {"favorites", "noted", "threaded", "unread", "needs_reply", "followup"} else query
+    sql_query = "" if normalized_source in {"favorites", "noted", *thread_sources} else query
     if sql_query:
         phone_query = _contact_phone_search_key(query)
         conditions = [
@@ -1668,7 +1739,7 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
         """.format(conditions=" OR ".join(conditions))
     limit_value = max(1, min(limit, 100))
     rows = []
-    if normalized_source in {"threaded", "unread", "needs_reply", "followup"}:
+    if normalized_source in thread_sources:
         rows = _contact_rows_for_keys(conn, thread_filter_keys)
     elif normalized_source in {"all", "contacts", "favorites", "noted", "phones", "emails"}:
         contact_params = [*params]
@@ -1698,22 +1769,22 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
         if extra_contact_keys:
             contact_items.extend(_contact_to_dict(row) for row in _contact_rows_for_keys(conn, extra_contact_keys))
     participant_items: list[dict] = []
-    if normalized_source in {"all", "participants", "threaded", "unread", "needs_reply", "followup", "favorites", "noted", "phones", "emails"}:
+    if normalized_source in {"all", "participants", *thread_sources, "favorites", "noted", "phones", "emails"}:
         existing_keys = _all_contact_keys(conn)
         participant_items = _conversation_participant_contact_results(
             conn,
-            "" if normalized_source in {"favorites", "noted", "threaded", "unread", "needs_reply", "followup"} else query,
+            "" if normalized_source in {"favorites", "noted", *thread_sources} else query,
             limit=limit_value
-            if normalized_source in {"favorites", "noted", "threaded", "unread", "needs_reply", "followup"}
+            if normalized_source in {"favorites", "noted", *thread_sources}
             else (limit_value if normalized_source in {"phones", "emails"} else max(0, limit_value - len(contact_items))),
             existing_keys=existing_keys,
-            include_all=normalized_source in {"participants", "favorites", "noted", "threaded", "unread", "needs_reply", "followup", "phones", "emails"} or (normalized_source == "all" and not query),
+            include_all=normalized_source in {"participants", "favorites", "noted", *thread_sources, "phones", "emails"} or (normalized_source == "all" and not query),
             allowed_keys=favorite_key_set
             if normalized_source == "favorites"
             else (
                 noted_key_set
                 if normalized_source == "noted"
-                else (thread_filter_keys if normalized_source in {"threaded", "unread", "needs_reply", "followup"} else None)
+                else (thread_filter_keys if normalized_source in thread_sources else None)
             ),
         )
         if query and normalized_source in {"all", "participants"}:
@@ -1776,7 +1847,7 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
             ]
         contacts = contacts[:limit_value]
         participant_items = [contact for contact in contacts if contact.get("source") == "conversation"]
-    elif normalized_source in {"threaded", "unread", "needs_reply", "followup"}:
+    elif normalized_source in thread_sources:
         contacts = [contact for contact in contacts if _contact_has_any_key(contact, thread_filter_keys)]
         if query:
             contacts = [
