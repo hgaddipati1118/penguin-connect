@@ -377,6 +377,7 @@ const messageViews = [
 const contactSources = [
   { key: "all", label: "All" },
   { key: "threaded", label: "Threaded" },
+  { key: "unread", label: "Unread" },
   { key: "favorites", label: "Favorites" },
   { key: "noted", label: "Noted" },
   { key: "contacts", label: "Saved" },
@@ -6298,6 +6299,8 @@ function renderContacts() {
       empty.textContent = el.contactSearch.value.trim() ? "No noted matches" : "No noted contacts";
     } else if (state.contactSource === "threaded") {
       empty.textContent = el.contactSearch.value.trim() ? "No threaded matches" : "No threaded contacts";
+    } else if (state.contactSource === "unread") {
+      empty.textContent = el.contactSearch.value.trim() ? "No unread matches" : "No unread contacts";
     } else if (state.contactSource === "contacts") {
       empty.textContent = el.contactSearch.value.trim() ? "No saved matches" : "No saved contacts";
     } else if (state.contactSource === "participants") {
@@ -7563,6 +7566,7 @@ async function loadContacts({ force = false } = {}) {
   const browsesNoted = state.contactSource === "noted";
   const browsesSaved = state.contactSource === "contacts";
   const browsesThreaded = state.contactSource === "threaded";
+  const browsesUnread = state.contactSource === "unread";
   renderContactSourceFilters();
   state.contactsLoading = true;
   renderContactMoreControls();
@@ -7577,6 +7581,8 @@ async function loadContacts({ force = false } = {}) {
     el.contactStatus.textContent = "Loading noted contacts";
   } else if (browsesThreaded && !query) {
     el.contactStatus.textContent = "Loading threaded contacts";
+  } else if (browsesUnread && !query) {
+    el.contactStatus.textContent = "Loading unread contacts";
   } else if (browsesSaved && !query) {
     el.contactStatus.textContent = "Loading saved contacts";
   } else {
@@ -7610,6 +7616,8 @@ async function loadContacts({ force = false } = {}) {
       el.contactStatus.textContent = `${state.contacts.length} noted contact${state.contacts.length === 1 ? "" : "s"}`;
     } else if (state.contactSource === "threaded") {
       el.contactStatus.textContent = `${state.contacts.length} threaded contact${state.contacts.length === 1 ? "" : "s"}`;
+    } else if (state.contactSource === "unread") {
+      el.contactStatus.textContent = `${state.contacts.length} unread contact${state.contacts.length === 1 ? "" : "s"}`;
     } else if (state.contactSource === "contacts") {
       el.contactStatus.textContent = `${state.contacts.length} saved contact${state.contacts.length === 1 ? "" : "s"} · ${total} saved`;
     } else if (query) {
@@ -9277,6 +9285,7 @@ el.contactSourceFilters.addEventListener("click", (event) => {
       || state.contactSource === "favorites"
       || state.contactSource === "noted"
       || state.contactSource === "threaded"
+      || state.contactSource === "unread"
       || state.contactSource === "contacts"
       || el.contactSearch.value.trim().length >= 2,
   });

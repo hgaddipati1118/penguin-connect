@@ -1033,6 +1033,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
                 "/penguin-connect/contacts",
                 params={"source": "threaded", "search": "launch desk", "limit": 10},
             )
+            unread_response = client.get("/penguin-connect/contacts", params={"source": "unread", "limit": 10})
             favorites_response = client.get("/penguin-connect/contacts", params={"source": "favorites", "limit": 1})
             favorite_context_response = client.get(
                 "/penguin-connect/contacts",
@@ -1056,7 +1057,15 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(browse_body["count"], 2)
         self.assertEqual(
             browse_body["source_counts"],
-            {"all": 2, "contacts": 2, "participants": 0, "threaded": 1, "favorites": 1, "noted": 1},
+            {
+                "all": 2,
+                "contacts": 2,
+                "participants": 0,
+                "threaded": 1,
+                "unread": 1,
+                "favorites": 1,
+                "noted": 1,
+            },
         )
         self.assertEqual(response.status_code, 200)
         body = response.json()
@@ -1064,6 +1073,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(body["total_contacts"], 2)
         self.assertEqual(body["source_counts"]["contacts"], 2)
         self.assertEqual(body["source_counts"]["threaded"], 1)
+        self.assertEqual(body["source_counts"]["unread"], 1)
         self.assertEqual(body["source_counts"]["favorites"], 1)
         self.assertEqual(body["source_counts"]["noted"], 1)
         self.assertEqual(body["contacts"][0]["display_name"], "Taylor Example")
@@ -1139,6 +1149,15 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(threaded_context_body["source"], "threaded")
         self.assertEqual(threaded_context_body["count"], 1)
         self.assertEqual(threaded_context_body["contacts"][0]["display_name"], "Taylor Example")
+
+        self.assertEqual(unread_response.status_code, 200)
+        unread_body = unread_response.json()
+        self.assertEqual(unread_body["source"], "unread")
+        self.assertEqual(unread_body["count"], 1)
+        self.assertEqual(unread_body["contacts"][0]["display_name"], "Taylor Example")
+        self.assertEqual(unread_body["contacts"][0]["thread_count"], 1)
+        self.assertEqual(unread_body["contacts"][0]["unread_thread_count"], 1)
+        self.assertEqual(unread_body["contacts"][0]["unread_message_count"], 1)
 
         self.assertEqual(favorites_response.status_code, 200)
         favorites_body = favorites_response.json()
@@ -1262,7 +1281,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
                     "[Apple Messages] Unsaved Thread",
                     "Please send rider setup notes.",
                     "2026-03-11T10:00:00+00:00",
-                    1,
+                    0,
                     "{}",
                 ),
             )
@@ -1297,6 +1316,14 @@ class AppHttpIntegrationTests(unittest.TestCase):
                 "/penguin-connect/contacts",
                 params={"source": "threaded", "search": "soundcheck", "limit": 10},
             )
+            unread_browse_response = client.get(
+                "/penguin-connect/contacts",
+                params={"source": "unread", "limit": 10},
+            )
+            unread_unsaved_context_response = client.get(
+                "/penguin-connect/contacts",
+                params={"source": "unread", "search": "soundcheck", "limit": 10},
+            )
             favorite_unsaved_response = client.post(
                 "/penguin-connect/contacts/management",
                 json={"contact_key": "phone:14155550199", "favorite": True},
@@ -1328,7 +1355,15 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(all_browse_body["count"], 3)
         self.assertEqual(
             all_browse_body["source_counts"],
-            {"all": 3, "contacts": 2, "participants": 1, "threaded": 2, "favorites": 0, "noted": 0},
+            {
+                "all": 3,
+                "contacts": 2,
+                "participants": 1,
+                "threaded": 2,
+                "unread": 1,
+                "favorites": 0,
+                "noted": 0,
+            },
         )
 
         self.assertEqual(response.status_code, 200)
@@ -1337,6 +1372,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(body["total_contacts"], 2)
         self.assertEqual(body["participant_count"], 1)
         self.assertEqual(body["source_counts"]["participants"], 1)
+        self.assertEqual(body["source_counts"]["unread"], 1)
         result = body["contacts"][0]
         self.assertEqual(result["source"], "conversation")
         self.assertFalse(result["is_saved"])
@@ -1347,6 +1383,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(result["conversation_id"], "amc_unsaved")
         self.assertIn("Unsaved Thread", result["organization"])
         self.assertEqual(result["thread_count"], 1)
+        self.assertEqual(result["unread_thread_count"], 1)
+        self.assertEqual(result["unread_message_count"], 1)
         self.assertEqual(result["last_thread_at"], "2026-03-11T10:00:00+00:00")
         self.assertEqual(result["thread_names"], ["Unsaved Thread"])
 
@@ -1415,6 +1453,25 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(threaded_unsaved_context_body["contacts"][0]["source"], "conversation")
         self.assertEqual(threaded_unsaved_context_body["contacts"][0]["conversation_note"], "Ask about soundcheck")
         self.assertEqual(threaded_unsaved_context_body["contacts"][0]["thread_names"], ["Unsaved Thread"])
+
+        self.assertEqual(unread_browse_response.status_code, 200)
+        unread_body = unread_browse_response.json()
+        self.assertEqual(unread_body["source"], "unread")
+        self.assertEqual(unread_body["count"], 1)
+        self.assertEqual(unread_body["participant_count"], 1)
+        self.assertEqual(unread_body["contacts"][0]["source"], "conversation")
+        self.assertEqual(unread_body["contacts"][0]["contact_key"], "phone:14155550199")
+        self.assertEqual(unread_body["contacts"][0]["unread_thread_count"], 1)
+        self.assertEqual(unread_body["contacts"][0]["unread_message_count"], 1)
+
+        self.assertEqual(unread_unsaved_context_response.status_code, 200)
+        unread_unsaved_context_body = unread_unsaved_context_response.json()
+        self.assertEqual(unread_unsaved_context_body["source"], "unread")
+        self.assertEqual(unread_unsaved_context_body["count"], 1)
+        self.assertEqual(unread_unsaved_context_body["participant_count"], 1)
+        self.assertEqual(unread_unsaved_context_body["contacts"][0]["source"], "conversation")
+        self.assertEqual(unread_unsaved_context_body["contacts"][0]["conversation_note"], "Ask about soundcheck")
+        self.assertEqual(unread_unsaved_context_body["contacts"][0]["thread_names"], ["Unsaved Thread"])
 
         self.assertEqual(favorite_unsaved_response.status_code, 200)
         self.assertTrue(favorite_unsaved_response.json()["is_favorite"])
@@ -2131,6 +2188,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("contactContext", js_response.text)
         self.assertIn("contactSources", js_response.text)
         self.assertIn('{ key: "threaded", label: "Threaded" }', js_response.text)
+        self.assertIn('{ key: "unread", label: "Unread" }', js_response.text)
         self.assertIn("contactSourceCounts", js_response.text)
         self.assertIn("contactSortLabels", js_response.text)
         self.assertIn("compareContactFavorite", js_response.text)
@@ -2154,9 +2212,11 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("source_counts", js_response.text)
         self.assertIn('{ key: "noted", label: "Noted" }', js_response.text)
         self.assertIn("No threaded contacts", js_response.text)
+        self.assertIn("No unread contacts", js_response.text)
         self.assertIn("No noted contacts", js_response.text)
         self.assertIn("Loading contacts", js_response.text)
         self.assertIn("Loading threaded contacts", js_response.text)
+        self.assertIn("Loading unread contacts", js_response.text)
         self.assertIn("Loading saved contacts", js_response.text)
         self.assertNotIn("Type 2+ chars to search contacts", js_response.text)
         self.assertIn("No saved contacts", js_response.text)
