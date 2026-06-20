@@ -570,6 +570,8 @@ const conversationViewLabels = {
   needsReply: "Needs reply",
   followup: "Follow-up",
   unread: "Unread",
+  direct: "Direct",
+  groups: "Groups",
   drafts: "Drafts",
   unlabeled: "Unlabeled",
   muted: "Muted",
@@ -1347,6 +1349,19 @@ function conversationParticipants(conversation = state.selected) {
   return participants;
 }
 
+function isGroupConversation(conversation) {
+  const chatType = String(conversation?.chat_type || "").trim().toLowerCase();
+  const sourceIdentifier = String(conversation?.source_chat_identifier || conversation?.source_chat_id || "").trim().toLowerCase();
+  return chatType === "group"
+    || chatType === "channel"
+    || sourceIdentifier.startsWith("chat")
+    || conversationParticipants(conversation).length > 1;
+}
+
+function isDirectConversation(conversation) {
+  return !isGroupConversation(conversation);
+}
+
 async function loadThreadContactMatches(conversation = state.selected) {
   if (!conversation) return;
   const participants = conversationParticipants(conversation);
@@ -1843,6 +1858,8 @@ function conversationMatchesView(conversation, view = state.conversationView) {
   if (view === "unread") return Number(conversation.unread_count || 0) > 0 && !conversation.is_archived && !conversation.is_muted;
   if (view === "needsReply") return conversationNeedsReply(conversation) && !conversation.is_archived && !conversation.is_muted;
   if (view === "followup") return hasFollowUp(conversation) && !conversation.is_archived;
+  if (view === "direct") return isDirectConversation(conversation) && !conversation.is_archived;
+  if (view === "groups") return isGroupConversation(conversation) && !conversation.is_archived;
   if (view === "drafts") return conversationHasDraft(conversation) && !conversation.is_archived;
   if (view === "unlabeled") return !conversationHasLabels(conversation) && !conversation.is_archived;
   if (view === "muted") return Boolean(conversation.is_muted) && !conversation.is_archived;
@@ -1864,6 +1881,8 @@ function conversationViewCounts() {
     needsReply: state.conversations.filter((conversation) => conversationMatchesView(conversation, "needsReply")).length,
     followup: state.conversations.filter((conversation) => conversationMatchesView(conversation, "followup")).length,
     unread: state.conversations.filter((conversation) => conversationMatchesView(conversation, "unread")).length,
+    direct: state.conversations.filter((conversation) => conversationMatchesView(conversation, "direct")).length,
+    groups: state.conversations.filter((conversation) => conversationMatchesView(conversation, "groups")).length,
     drafts: state.conversations.filter((conversation) => conversationMatchesView(conversation, "drafts")).length,
     unlabeled: state.conversations.filter((conversation) => conversationMatchesView(conversation, "unlabeled")).length,
     muted: state.conversations.filter((conversation) => conversationMatchesView(conversation, "muted")).length,
