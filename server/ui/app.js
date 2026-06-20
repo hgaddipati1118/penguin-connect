@@ -138,6 +138,7 @@ const el = {
   bulkFollowUpAt: document.querySelector("#bulkFollowUpAt"),
   bulkSetFollowUpButton: document.querySelector("#bulkSetFollowUpButton"),
   bulkClearFollowUpButton: document.querySelector("#bulkClearFollowUpButton"),
+  bulkCopyThreadsButton: document.querySelector("#bulkCopyThreadsButton"),
   bulkAddPeopleButton: document.querySelector("#bulkAddPeopleButton"),
   bulkCopyPeopleButton: document.querySelector("#bulkCopyPeopleButton"),
   bulkSavePeopleButton: document.querySelector("#bulkSavePeopleButton"),
@@ -2013,6 +2014,8 @@ function renderBulkActions(rows) {
   el.bulkRemoveLabelButton.disabled = state.bulkBusy || selectedCount === 0 || labelCount === 0;
   el.bulkSetFollowUpButton.disabled = state.bulkBusy || selectedCount === 0 || !bulkFollowUpValue;
   el.bulkClearFollowUpButton.disabled = state.bulkBusy || selectedCount === 0;
+  el.bulkCopyThreadsButton.disabled = state.bulkBusy || selectedCount === 0;
+  el.bulkCopyThreadsButton.textContent = selectedCount ? `Copy ${selectedCount} thread${selectedCount === 1 ? "" : "s"}` : "Copy threads";
   el.bulkAddPeopleButton.disabled = state.bulkBusy || selectedPeopleCount === 0;
   el.bulkAddPeopleButton.textContent = selectedPeopleCount ? `Add ${selectedPeopleCount} people` : "Add people";
   el.bulkCopyPeopleButton.disabled = state.bulkBusy || selectedPeopleCount === 0;
@@ -8006,6 +8009,50 @@ function selectedConversationPeopleListName(targets = selectedConversationSnapsh
   return `${targets.length} selected conversations people`;
 }
 
+function selectedConversationSummary(conversation, index) {
+  const participants = conversationParticipants(conversation).map((participant) => participant.handle);
+  const labels = labelsForConversation(conversation);
+  const flags = [
+    Number(conversation.unread_count || 0) ? `${Number(conversation.unread_count || 0)} unread` : "",
+    conversationNeedsReply(conversation) ? "needs reply" : "",
+    hasFollowUp(conversation) ? `follow-up ${followUpLabel(conversation)}` : "",
+    conversation.is_pinned ? "pinned" : "",
+    conversation.is_muted ? "muted" : "",
+    conversation.is_archived ? "archived" : "",
+  ].filter(Boolean);
+  return [
+    `${index + 1}. ${conversationDisplayName(conversation)}`,
+    `Source: ${[conversation.source_service_name || conversation.source_provider || "Messages", conversation.chat_type || "chat"].filter(Boolean).join(" · ")}`,
+    `State: ${flags.join(", ") || "normal"}`,
+    `Labels: ${labels.length ? labels.join(", ") : "none"}`,
+    `Participants: ${participants.length ? participants.slice(0, 12).join(", ") : "unknown"}`,
+    `Latest: ${conversationPreviewText(conversation) || "none"}`,
+    `Private note: ${trim(conversation.note || "", 180) || "none"}`,
+    `Draft: ${trim(draftTextForConversation(conversation), 180) || "none"}`,
+  ].join("\n");
+}
+
+function selectedConversationSummariesText(targets = selectedConversationSnapshot()) {
+  return targets.map(selectedConversationSummary).join("\n\n");
+}
+
+async function copySelectedConversationSummaries() {
+  const targets = selectedConversationSnapshot();
+  if (!targets.length) {
+    state.bulkMessage = "Select conversations";
+    renderConversations();
+    return;
+  }
+
+  try {
+    await copyText(selectedConversationSummariesText(targets));
+    state.bulkMessage = `Copied ${targets.length} selected thread${targets.length === 1 ? "" : "s"}`;
+  } catch (error) {
+    state.bulkMessage = error.message;
+  }
+  renderConversations();
+}
+
 function addSelectedConversationPeopleToDraft() {
   const targets = selectedConversationSnapshot();
   const participants = selectedConversationParticipantHandles(targets);
@@ -9392,6 +9439,7 @@ el.bulkRemoveLabelButton.addEventListener("click", bulkRemoveLabels);
 el.bulkFollowUpAt.addEventListener("input", renderConversations);
 el.bulkSetFollowUpButton.addEventListener("click", bulkSetFollowUp);
 el.bulkClearFollowUpButton.addEventListener("click", bulkClearFollowUps);
+el.bulkCopyThreadsButton.addEventListener("click", copySelectedConversationSummaries);
 el.bulkAddPeopleButton.addEventListener("click", addSelectedConversationPeopleToDraft);
 el.bulkCopyPeopleButton.addEventListener("click", copySelectedConversationPeople);
 el.bulkSavePeopleButton.addEventListener("click", saveSelectedConversationPeopleAsRecipientList);
