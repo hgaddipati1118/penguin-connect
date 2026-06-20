@@ -5011,6 +5011,54 @@ async function copyContactHandle(contact) {
   }
 }
 
+function contactDetailText(contact) {
+  const handle = contactHandleText(contact) || "none";
+  const note = contactNoteText(contact);
+  const threads = findConversationsForContact(contact, 4);
+  const threadRows = threads.map((conversation, index) => {
+    const context = contactThreadMessageContextText(contact, conversation);
+    return [
+      `${index + 1}. ${conversationDisplayName(conversation)}`,
+      contactRelatedThreadMetaText(conversation) || "thread",
+      context,
+    ].filter(Boolean).join(" | ");
+  });
+  const recentRows = state.activeContactMessageKey === contactDetailKey(contact)
+    ? state.activeContactMessages.slice(0, 8).map((message, index) => {
+      const flags = [
+        isUnreadMessage(message) ? "unread" : "",
+        isStarredMessage(message) ? "starred" : "",
+        messageNoteText(message) ? `note:${trim(messageNoteText(message), 100)}` : "",
+      ].filter(Boolean).join(", ");
+      const flagText = flags ? ` | ${flags}` : "";
+      return `${index + 1}. ${messageTime(message)} | ${searchResultConversationName(message)} | ${messageSender(message)}: ${messageSnippet(message, 180)}${flagText}`;
+    })
+    : [];
+  return [
+    `Contact: ${contactDisplayName(contact)}`,
+    `Handle: ${handle}`,
+    `Source: ${contact.is_saved === false ? "unsaved participant" : contact.source || contact.handle_type || "contact"}`,
+    `Organization: ${contact.organization || "none"}`,
+    `Favorite: ${isFavoriteContact(contact) ? "yes" : "no"}`,
+    `Private note: ${note ? trim(note, 260) : "none"}`,
+    "",
+    "Related threads:",
+    threadRows.length ? threadRows.join("\n") : "none",
+    "",
+    "Loaded recent messages:",
+    recentRows.length ? recentRows.join("\n") : "none loaded",
+  ].join("\n");
+}
+
+async function copyContactDetail(contact) {
+  try {
+    await copyText(contactDetailText(contact));
+    el.contactStatus.textContent = "Contact detail copied";
+  } catch (error) {
+    el.contactStatus.textContent = error.message;
+  }
+}
+
 function contactConversationSearchQuery(contact) {
   return contactRecipientHandle(contact) || contactDisplayName(contact);
 }
@@ -5656,6 +5704,7 @@ function renderContactInspector() {
     <div class="contact-inspector-actions">
       <button type="button" data-action="add">Add</button>
       <button type="button" data-action="copy">Copy</button>
+      <button type="button" data-action="copy-detail">Copy detail</button>
       <button type="button" data-action="find">Find</button>
       <button type="button" data-action="threads">Threads</button>
       <button type="button" data-action="recent">Recent</button>
@@ -5686,6 +5735,7 @@ function renderContactInspector() {
   const copyButton = el.contactInspector.querySelector('[data-action="copy"]');
   copyButton.disabled = !handle;
   copyButton.addEventListener("click", () => copyContactHandle(contact));
+  el.contactInspector.querySelector('[data-action="copy-detail"]').addEventListener("click", () => copyContactDetail(contact));
   const findButton = el.contactInspector.querySelector('[data-action="find"]');
   findButton.disabled = !(handle || contactDisplayName(contact));
   findButton.addEventListener("click", () => searchMessagesForContact(contact));
