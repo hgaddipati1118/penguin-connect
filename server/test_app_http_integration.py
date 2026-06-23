@@ -1,5 +1,6 @@
 import json
 import base64
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -3836,6 +3837,68 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(attachment_response.status_code, 200)
         self.assertEqual(attachment_response.content, b"fake-image")
         self.assertEqual(attachment_response.headers["content-type"], "image/png")
+
+
+class BrowserSafeAttachmentTests(unittest.TestCase):
+    def test_is_heic_attachment_detects_by_mime_or_suffix(self):
+        self.assertTrue(app_module._is_heic_attachment("IMG_0001.HEIC", ""))
+        self.assertTrue(app_module._is_heic_attachment("photo.heif", ""))
+        self.assertTrue(app_module._is_heic_attachment("noext", "image/heic"))
+        self.assertFalse(app_module._is_heic_attachment("photo.jpg", "image/jpeg"))
+        self.assertFalse(app_module._is_heic_attachment("photo.png", ""))
+
+    def test_non_heic_attachment_passes_through_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "photo.png"
+            src.write_bytes(b"not-a-real-image")
+            path, name, media_type = app_module._browser_safe_image_attachment(
+                src, "photo.png", "image/png"
+            )
+            self.assertEqual(path, src)
+            self.assertEqual(name, "photo.png")
+            self.assertEqual(media_type, "image/png")
+
+    def test_heic_falls_back_to_original_when_sips_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "IMG_0001.HEIC"
+            src.write_bytes(b"fake-heic-bytes")
+            with mock.patch.object(app_module.shutil, "which", return_value=None):
+                path, name, media_type = app_module._browser_safe_image_attachment(
+                    src, "IMG_0001.HEIC", "image/heic"
+                )
+            self.assertEqual(path, src)
+            self.assertEqual(name, "IMG_0001.HEIC")
+            self.assertEqual(media_type, "image/heic")
+
+    @unittest.skipUnless(shutil.which("sips"), "requires macOS sips")
+    def test_heic_is_transcoded_to_jpeg_with_sips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # Build a real HEIC from a generated PNG using sips so the test does
+            # not ship binary fixtures.
+            png = Path(tmp) / "src.png"
+            # 1x1 white PNG.
+            png.write_bytes(
+                base64.b64decode(
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+                )
+            )
+            heic = Path(tmp) / "IMG_0001.HEIC"
+            convert = subprocess.run(
+                ["sips", "-s", "format", "heic", str(png), "--out", str(heic)],
+                capture_output=True,
+                text=True,
+            )
+            if convert.returncode != 0 or not heic.exists():
+                self.skipTest("sips could not produce a HEIC fixture")
+            path, name, media_type = app_module._browser_safe_image_attachment(
+                heic, "IMG_0001.HEIC", "image/heic"
+            )
+            self.assertNotEqual(path, heic)
+            self.assertEqual(name, "IMG_0001.jpg")
+            self.assertEqual(media_type, "image/jpeg")
+            self.assertTrue(path.exists())
+            self.assertGreater(path.stat().st_size, 0)
+            self.assertEqual(path.read_bytes()[6:10], b"JFIF")
 
 
 if __name__ == "__main__":

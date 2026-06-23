@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import json
 import mimetypes
 import os
@@ -2007,6 +2008,81 @@ def _stored_message_attachment(
     return path, display_name, media_type
 
 
+_BROWSER_ATTACHMENT_CACHE_DIRNAME = "penguin_connect_browser_attachments"
+_HEIC_MEDIA_TYPES = {
+    "image/heic",
+    "image/heif",
+    "image/heic-sequence",
+    "image/heif-sequence",
+}
+_HEIC_SUFFIXES = {".heic", ".heif"}
+
+
+def _is_heic_attachment(display_name: str, media_type: str) -> bool:
+    if (media_type or "").strip().lower() in _HEIC_MEDIA_TYPES:
+        return True
+    return Path(display_name or "").suffix.lower() in _HEIC_SUFFIXES
+
+
+def _browser_attachment_cache_dir() -> Path:
+    cache_dir = Path(tempfile.gettempdir()) / _BROWSER_ATTACHMENT_CACHE_DIRNAME
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def _browser_safe_image_attachment(
+    path: Path, display_name: str, media_type: str
+) -> tuple[Path, str, str]:
+    """Return a browser-renderable variant of an attachment.
+
+    Chromium-based browsers (including the Console UI) cannot decode HEIC/HEIF,
+    so Apple Messages photos saved in that format do not render. When the source
+    is HEIC/HEIF, transcode it to JPEG on demand using the macOS ``sips`` tool
+    and cache the result keyed by source identity (path + mtime + size). Falls
+    back to the original file if ``sips`` is unavailable or conversion fails, so
+    non-macOS hosts and unexpected inputs degrade gracefully.
+    """
+    if not _is_heic_attachment(display_name, media_type):
+        return path, display_name, media_type
+    sips = shutil.which("sips")
+    if not sips:
+        return path, display_name, media_type
+    try:
+        stat = path.stat()
+        key = hashlib.sha1(
+            f"{path.resolve()}::{stat.st_mtime_ns}::{stat.st_size}".encode("utf-8")
+        ).hexdigest()
+    except OSError:
+        return path, display_name, media_type
+    jpeg_name = f"{Path(display_name).stem or 'attachment'}.jpg"
+    cache_dir = _browser_attachment_cache_dir()
+    cached = cache_dir / f"{key}.jpg"
+    try:
+        if cached.exists() and cached.stat().st_size > 0:
+            return cached, jpeg_name, "image/jpeg"
+    except OSError:
+        return path, display_name, media_type
+    tmp = cache_dir / f"{key}.{uuid.uuid4().hex}.tmp.jpg"
+    try:
+        result = subprocess.run(
+            [sips, "-s", "format", "jpeg", str(path), "--out", str(tmp)],
+            capture_output=True,
+            text=True,
+            timeout=30.0,
+        )
+        if result.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+            tmp.unlink(missing_ok=True)
+            return path, display_name, media_type
+        tmp.replace(cached)
+        return cached, jpeg_name, "image/jpeg"
+    except (subprocess.SubprocessError, OSError):
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return path, display_name, media_type
+
+
 def _message_search_date_bound(value: str, *, end: bool) -> dict[str, str] | None:
     raw = (value or "").strip()
     if not raw:
@@ -3257,6 +3333,7 @@ def get_penguinconnect_conversation_attachment(
     conversation_id: str,
     attachment_index: int,
     provider_message_id: str = Query(...),
+    original: bool = Query(False),
 ):
     conn = get_connection()
     try:
@@ -3266,6 +3343,10 @@ def get_penguinconnect_conversation_attachment(
             provider_message_id,
             attachment_index,
         )
+        if not original:
+            path, display_name, media_type = _browser_safe_image_attachment(
+                path, display_name, media_type
+            )
         return FileResponse(path, media_type=media_type, filename=display_name)
     finally:
         conn.close()
