@@ -103,6 +103,7 @@ const state = {
   replyMediaAttachments: [],
   codexMode: "reply",
   codexBusy: false,
+  codexStatus: null,
   voiceMemoRecorder: null,
   voiceMemoStream: null,
   voiceMemoChunks: [],
@@ -317,6 +318,10 @@ const el = {
   codexQuestion: document.querySelector("#codexQuestion"),
   codexPrompt: document.querySelector("#codexPrompt"),
   codexAnswer: document.querySelector("#codexAnswer"),
+  codexAuthState: document.querySelector("#codexAuthState"),
+  refreshCodexAuthButton: document.querySelector("#refreshCodexAuthButton"),
+  copyCodexLoginButton: document.querySelector("#copyCodexLoginButton"),
+  copyCodexTokenLoginButton: document.querySelector("#copyCodexTokenLoginButton"),
   buildPromptButton: document.querySelector("#buildPromptButton"),
   copyPromptButton: document.querySelector("#copyPromptButton"),
   askCodexButton: document.querySelector("#askCodexButton"),
@@ -10510,12 +10515,34 @@ function codexAnswerText() {
   return el.codexAnswer.value.trim();
 }
 
+function codexStatusLabel(status) {
+  if (!status) return "Checking Codex auth";
+  if (!status.available) return "Codex CLI unavailable";
+  if (status.auth_state === "detected") {
+    if (status.auth_method === "codex_access_token_env") return "Codex ready · access token env";
+    if (status.auth_method === "codex_api_key_env") return "Codex ready · API key env";
+    return "Codex ready · CLI auth detected";
+  }
+  return "Codex CLI ready · login not detected";
+}
+
+function renderCodexAuthControls() {
+  if (!el.codexAuthState) return;
+  const status = state.codexStatus;
+  el.codexAuthState.textContent = codexStatusLabel(status);
+  el.refreshCodexAuthButton.disabled = state.codexBusy;
+  el.copyCodexLoginButton.disabled = state.codexBusy;
+  el.copyCodexTokenLoginButton.disabled = state.codexBusy;
+}
+
 function renderCodexAnswerControls() {
   const hasAnswer = Boolean(codexAnswerText());
-  el.askCodexButton.disabled = state.codexBusy;
+  const cliMissing = state.codexStatus && !state.codexStatus.ask_enabled;
+  el.askCodexButton.disabled = state.codexBusy || cliMissing;
   el.copyCodexAnswerButton.disabled = state.codexBusy || !hasAnswer;
   el.useCodexDraftButton.disabled = state.codexBusy || !hasAnswer;
   el.useCodexNewChatButton.disabled = state.codexBusy || !hasAnswer;
+  renderCodexAuthControls();
 }
 
 function codexModeConfig() {
@@ -10586,9 +10613,41 @@ async function askCodex() {
     el.codexAnswer.value = "";
     el.codexAnswer.placeholder = error.message;
     el.codexCount.textContent = error.message;
+    if (error.message === "codex_auth_required" || error.message === "codex_cli_unavailable") {
+      loadCodexStatus();
+    }
   } finally {
     state.codexBusy = false;
     renderCodexAnswerControls();
+  }
+}
+
+async function loadCodexStatus() {
+  if (el.codexAuthState) el.codexAuthState.textContent = "Checking Codex auth";
+  try {
+    state.codexStatus = await api("/penguin-connect/codex/status");
+  } catch (error) {
+    state.codexStatus = {
+      available: false,
+      ask_enabled: false,
+      auth_state: "unavailable",
+      chatgpt_login_command: "codex login",
+      access_token_login_command: "printf '%s' \"$CODEX_ACCESS_TOKEN\" | codex login --with-access-token",
+    };
+    if (el.codexAuthState) el.codexAuthState.textContent = error.message;
+  } finally {
+    renderCodexAnswerControls();
+  }
+}
+
+async function copyCodexLoginCommand(kind = "chatgpt") {
+  const status = state.codexStatus || {};
+  const command = kind === "token"
+    ? status.access_token_login_command || "printf '%s' \"$CODEX_ACCESS_TOKEN\" | codex login --with-access-token"
+    : status.chatgpt_login_command || "codex login";
+  await copyText(command);
+  if (el.codexAuthState) {
+    el.codexAuthState.textContent = kind === "token" ? "Codex token login copied" : "Codex login copied";
   }
 }
 
@@ -11218,6 +11277,9 @@ el.copyPromptButton.addEventListener("click", async () => {
   await copyText(buildCodexPrompt());
   el.sendState.textContent = "Codex prompt copied";
 });
+el.refreshCodexAuthButton.addEventListener("click", loadCodexStatus);
+el.copyCodexLoginButton.addEventListener("click", () => copyCodexLoginCommand("chatgpt"));
+el.copyCodexTokenLoginButton.addEventListener("click", () => copyCodexLoginCommand("token"));
 el.askCodexButton.addEventListener("click", askCodex);
 el.copyCodexAnswerButton.addEventListener("click", async () => {
   const answer = codexAnswerText();
@@ -11337,6 +11399,7 @@ renderThreadMedia();
 renderCodexModes();
 renderCodexAnswerControls();
 loadStatus();
+loadCodexStatus();
 loadConversations();
 startAutoRefresh();
 loadContacts();

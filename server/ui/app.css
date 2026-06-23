@@ -2550,6 +2550,27 @@ input[type="date"]:focus {
   color: var(--accent-ink);
 }
 
+.codex-auth-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-height: 34px;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  background: rgba(255, 253, 248, 0.64);
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.codex-auth-row .quiet-button {
+  min-height: 24px;
+  padding: 3px 8px;
+  font-size: 10px;
+}
+
 textarea {
   width: 100%;
   resize: vertical;

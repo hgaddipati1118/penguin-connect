@@ -8,6 +8,7 @@ import json
 import mimetypes
 import os
 import re
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -581,6 +582,74 @@ def _codex_timeout_seconds() -> float:
     return max(5.0, min(value, 300.0))
 
 
+def _codex_command_name() -> str:
+    return (os.environ.get("PENGUIN_CONNECT_CODEX_BIN") or "codex").strip() or "codex"
+
+
+def _codex_auth_cache_detected() -> bool:
+    codex_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser()
+    auth_path = codex_home / "auth.json"
+    try:
+        return auth_path.is_file() and auth_path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _codex_status() -> dict:
+    command_name = _codex_command_name()
+    codex_bin = shutil.which(command_name)
+    has_access_token = bool((os.environ.get("CODEX_ACCESS_TOKEN") or "").strip())
+    has_api_key = bool((os.environ.get("CODEX_API_KEY") or "").strip())
+    has_auth_cache = _codex_auth_cache_detected()
+    auth_state = "not_detected"
+    auth_method = ""
+    if has_access_token:
+        auth_state = "detected"
+        auth_method = "codex_access_token_env"
+    elif has_api_key:
+        auth_state = "detected"
+        auth_method = "codex_api_key_env"
+    elif has_auth_cache:
+        auth_state = "detected"
+        auth_method = "codex_cli_cache"
+    elif not codex_bin:
+        auth_state = "unavailable"
+
+    quoted_command = shlex.quote(command_name)
+    return {
+        "available": bool(codex_bin),
+        "ask_enabled": bool(codex_bin),
+        "binary": codex_bin or "",
+        "command": command_name,
+        "auth_state": auth_state,
+        "auth_method": auth_method,
+        "auth_cache_detected": has_auth_cache,
+        "access_token_env_detected": has_access_token,
+        "api_key_env_detected": has_api_key,
+        "chatgpt_login_command": f"{quoted_command} login",
+        "device_login_command": f"{quoted_command} login --device-auth",
+        "access_token_login_command": f"printf '%s' \"$CODEX_ACCESS_TOKEN\" | {quoted_command} login --with-access-token",
+        "credential_owner": "codex_cli",
+        "credential_storage": "Codex CLI manages credentials locally; PenguinConnect does not read or store tokens.",
+    }
+
+
+def _looks_like_codex_auth_error(text: str) -> bool:
+    normalized = (text or "").lower()
+    return any(
+        marker in normalized
+        for marker in [
+            "codex login",
+            "not logged in",
+            "not authenticated",
+            "authentication",
+            "unauthorized",
+            "access token",
+            "api key",
+        ]
+    )
+
+
 def _run_codex_prompt(prompt: str) -> dict:
     prompt_text = (prompt or "").strip()
     if not prompt_text:
@@ -590,7 +659,7 @@ def _run_codex_prompt(prompt: str) -> dict:
     if len(prompt_text) > max_chars:
         raise HTTPException(status_code=413, detail="codex_prompt_too_large")
 
-    codex_bin = shutil.which(os.environ.get("PENGUIN_CONNECT_CODEX_BIN", "codex"))
+    codex_bin = shutil.which(_codex_command_name())
     if not codex_bin:
         raise HTTPException(status_code=501, detail="codex_cli_unavailable")
 
@@ -634,6 +703,8 @@ def _run_codex_prompt(prompt: str) -> dict:
         if not answer:
             answer = (result.stdout or "").strip()
         if result.returncode != 0:
+            if _looks_like_codex_auth_error("\n".join([result.stdout or "", result.stderr or ""])):
+                raise HTTPException(status_code=401, detail="codex_auth_required")
             raise HTTPException(status_code=400, detail="codex_failed")
         if not answer:
             raise HTTPException(status_code=400, detail="codex_empty_response")
@@ -3120,6 +3191,11 @@ def send_penguinconnect_messages_draft(req: PenguinConnectDraftSendRequest):
         if staged_dir and not success:
             shutil.rmtree(staged_dir, ignore_errors=True)
         conn.close()
+
+@app.get("/api/penguin-connect/codex/status")
+@app.get("/penguin-connect/codex/status")
+def penguinconnect_codex_status():
+    return _codex_status()
 
 @app.post("/api/penguin-connect/codex/ask")
 @app.post("/penguin-connect/codex/ask")

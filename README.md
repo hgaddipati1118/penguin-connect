@@ -80,6 +80,8 @@ For the full Gmail bridge setup, run `./scripts/penguin_connect_setup.py --gmail
 
 Important: run setup and bridge commands from `Terminal.app` with Full Disk Access enabled, otherwise Apple Messages `chat.db` reads will fail.
 
+Codex helper auth is local to the same Mac. To use ChatGPT/Codex subscription access, install the Codex CLI and run `codex login`; PenguinConnect detects the local CLI session and does not read or store Codex tokens. Trusted Business/Enterprise workflows can also use `CODEX_ACCESS_TOKEN` or `codex login --with-access-token`.
+
 ## Useful Commands
 
 Start the bridge:

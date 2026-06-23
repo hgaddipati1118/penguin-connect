@@ -2176,6 +2176,66 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
         self.assertEqual(command[command.index("--ask-for-approval") + 1], "never")
 
+    def test_codex_status_reports_cli_auth_without_exposing_tokens(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            auth_path = Path(tmp) / "auth.json"
+            auth_path.write_text('{"secret":"redacted"}', encoding="utf-8")
+            with mock.patch.dict(
+                app_module.os.environ,
+                {
+                    "CODEX_HOME": tmp,
+                    "CODEX_ACCESS_TOKEN": "",
+                    "CODEX_API_KEY": "",
+                    "PENGUIN_CONNECT_CODEX_BIN": "codex",
+                },
+                clear=False,
+            ), mock.patch("app.shutil.which", return_value="/usr/local/bin/codex"), TestClient(app_module.app) as client:
+                response = client.get("/penguin-connect/codex/status")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["available"])
+        self.assertTrue(body["ask_enabled"])
+        self.assertEqual(body["auth_state"], "detected")
+        self.assertEqual(body["auth_method"], "codex_cli_cache")
+        self.assertEqual(body["credential_owner"], "codex_cli")
+        self.assertIn("codex login", body["chatgpt_login_command"])
+        self.assertIn("login --with-access-token", body["access_token_login_command"])
+        self.assertNotIn("redacted", response.text)
+
+    def test_codex_status_prefers_access_token_env_without_exposing_value(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            app_module.os.environ,
+            {
+                "CODEX_HOME": tmp,
+                "CODEX_ACCESS_TOKEN": "secret-token-value",
+                "CODEX_API_KEY": "",
+                "PENGUIN_CONNECT_CODEX_BIN": "codex",
+            },
+            clear=False,
+        ), mock.patch("app.shutil.which", return_value="/usr/local/bin/codex"), TestClient(app_module.app) as client:
+            response = client.get("/penguin-connect/codex/status")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["auth_state"], "detected")
+        self.assertEqual(body["auth_method"], "codex_access_token_env")
+        self.assertTrue(body["access_token_env_detected"])
+        self.assertNotIn("secret-token-value", response.text)
+
+    def test_codex_runner_maps_login_failure_to_auth_required(self):
+        def fake_run(command, *, input, capture_output, text, timeout):
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="not logged in; run codex login")
+
+        with mock.patch("app.shutil.which", return_value="/usr/local/bin/codex"), mock.patch(
+            "app.subprocess.run", side_effect=fake_run
+        ):
+            with self.assertRaises(Exception) as ctx:
+                app_module._run_codex_prompt("Synthetic prompt")
+
+        self.assertEqual(ctx.exception.status_code, 401)
+        self.assertEqual(ctx.exception.detail, "codex_auth_required")
+
     def test_ui_endpoint_serves_console_assets(self):
         with TestClient(app_module.app) as client:
             html_response = client.get("/penguin-connect/ui")
@@ -2410,6 +2470,14 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("useCodexDraftButton", html_response.text)
         self.assertIn("useCodexNewChatButton", html_response.text)
         self.assertIn("Use in new chat", html_response.text)
+        self.assertIn("codexAuthRow", html_response.text)
+        self.assertIn("codexAuthState", html_response.text)
+        self.assertIn("refreshCodexAuthButton", html_response.text)
+        self.assertIn("Check auth", html_response.text)
+        self.assertIn("copyCodexLoginButton", html_response.text)
+        self.assertIn("Copy login", html_response.text)
+        self.assertIn("copyCodexTokenLoginButton", html_response.text)
+        self.assertIn("Copy token login", html_response.text)
         self.assertIn("senderBadge", html_response.text)
         self.assertIn("threadPeople", html_response.text)
         self.assertIn("threadPeopleState", html_response.text)
@@ -2546,6 +2614,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn(".followup-control", css_response.text)
         self.assertIn(".followup-presets", css_response.text)
         self.assertIn(".codex-modes", css_response.text)
+        self.assertIn(".codex-auth-row", css_response.text)
         self.assertIn("#codexQuestion", css_response.text)
         self.assertIn("#codexAnswer", css_response.text)
         self.assertIn(".thread-people", css_response.text)
@@ -2669,6 +2738,11 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("No saved contacts", js_response.text)
         self.assertIn("renderCodexModes", js_response.text)
         self.assertIn("askCodex", js_response.text)
+        self.assertIn("loadCodexStatus", js_response.text)
+        self.assertIn("copyCodexLoginCommand", js_response.text)
+        self.assertIn("/penguin-connect/codex/status", js_response.text)
+        self.assertIn("codex_auth_required", js_response.text)
+        self.assertIn("Codex ready", js_response.text)
         self.assertIn("useCodexAnswerAsDraft", js_response.text)
         self.assertIn("useCodexAnswerAsNewChatDraft", js_response.text)
         self.assertIn("Codex answer moved to new chat", js_response.text)

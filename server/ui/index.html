@@ -397,6 +397,12 @@
           <textarea id="codexQuestion" rows="2" placeholder="Ask about this chat"></textarea>
           <textarea id="codexPrompt" rows="10" readonly></textarea>
           <textarea id="codexAnswer" rows="8" readonly placeholder="Codex answer"></textarea>
+          <div class="codex-auth-row" id="codexAuthRow" aria-live="polite">
+            <span id="codexAuthState">Checking Codex auth</span>
+            <button class="quiet-button" id="refreshCodexAuthButton" type="button">Check auth</button>
+            <button class="quiet-button" id="copyCodexLoginButton" type="button">Copy login</button>
+            <button class="quiet-button" id="copyCodexTokenLoginButton" type="button">Copy token login</button>
+          </div>
           <div class="send-row">
             <button class="quiet-button" id="buildPromptButton" type="button">Build prompt</button>
             <button class="quiet-button" id="copyPromptButton" type="button">Copy prompt</button>
