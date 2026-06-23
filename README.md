@@ -167,7 +167,7 @@ shortcuts, visible-page auto-refresh with new-activity status for cached convers
 and the selected thread, message-level reply targets and copy actions, thread filtering and unknown-first sorting,
 needs-reply/unread/direct/groups/unknown-participant/favorite-participant/drafts/unlabeled/muted/pinned/archived and label-based conversation views, favorite-person and unknown-first sorting, visible unknown-thread selection, bulk
 mark-read/mark-unread/pin-unpin/mute-unmute/archive-restore/label add-remove, selected-thread summary copy, selected-people add/copy/save/star/unstar/create, and draft cleanup actions, latest-message previews in the conversation rail,
-highlighted conversation search with saved rail views, SlashyEmail-style keyboard shortcuts and help overlay for compose/search/view jumps/thread actions/loaded-message actions, and keyboard result navigation,
+highlighted conversation search with saved rail views, SlashyEmail-style keyboard shortcuts and help overlay for compose/search/view jumps/panels/contact filters/thread actions/message and media filters, and keyboard result navigation,
 global synced-message search with saved message-search views, keyboard result navigation, exact-hit thread opening that loads older message windows as needed, and highlighted note/attachment-aware results, recent-message browsing, open/copy/reply actions and filters for current thread, unread, sent,
 files and audio plus date ranges, highlighted loaded-message filters with keyboard result navigation, next-unread/latest-message jumps, and focused-message reply/copy/draft/star/read/note actions for sender/body/notes/attachments and unread/sent/files/audio,
 starred/noted-message filtering, local message starring and private

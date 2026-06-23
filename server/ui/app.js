@@ -2236,6 +2236,21 @@ function clearSelectedConversationsShortcut() {
   renderConversations();
 }
 
+function selectVisibleFromFocusedShortcut() {
+  const rows = visibleConversationRows();
+  if (!rows.length) {
+    el.statusLine.textContent = "No visible threads";
+    return false;
+  }
+  const currentIndex = Math.max(0, selectedVisibleConversationIndex(rows));
+  for (const conversation of rows.slice(currentIndex)) {
+    state.selectedConversationIds.add(conversation.conversation_id);
+  }
+  state.bulkMessage = `Selected ${rows.length - currentIndex} from focused thread`;
+  renderConversations();
+  return true;
+}
+
 async function focusFirstVisibleConversation() {
   const rows = visibleConversationRows();
   return focusConversationAtIndex(rows, 0, "Selected first visible thread");
@@ -2276,6 +2291,28 @@ function setConversationSortShortcut(sort) {
   state.activeConversationViewId = "";
   renderConversations();
   el.statusLine.textContent = `Conversation sort · ${conversationSortLabels[state.conversationSort]}`;
+}
+
+function setContactSourceShortcut(source) {
+  state.contactSource = knownContactSource(source);
+  state.activeContactSearchViewId = "";
+  state.selectedContactKeys.clear();
+  resetContactLimit();
+  renderContactSourceFilters();
+  renderContactSavedViews();
+  loadContacts({ force: true });
+}
+
+function setMessageViewShortcut(view) {
+  state.messageView = messageViews.some((item) => item.key === view) ? view : "all";
+  renderMessages();
+  el.sendState.textContent = `Loaded messages · ${(messageViews.find((item) => item.key === state.messageView) || messageViews[0]).label}`;
+}
+
+function setMediaViewShortcut(view) {
+  state.mediaView = mediaViews.some((item) => item.key === view) ? view : "all";
+  renderThreadMedia();
+  el.threadMediaState.textContent = `Media · ${(mediaViews.find((item) => item.key === state.mediaView) || mediaViews[0]).label}`;
 }
 
 async function ensureSelectedConversationForShortcut() {
@@ -2357,6 +2394,19 @@ function focusConversationLabelsShortcut() {
   focusControl(state.selectedConversationIds.size ? el.bulkLabelsInput : el.threadTags);
 }
 
+async function toggleFollowUpTriageShortcut() {
+  if (state.selectedConversationIds.size) {
+    focusControl(el.bulkFollowUpAt);
+    return true;
+  }
+  if (!await ensureSelectedConversationForShortcut()) return false;
+  if (state.selected && hasFollowUp(state.selected)) {
+    return setConversationManagement({ follow_up_at: "" });
+  }
+  focusControl(el.threadFollowUpAt);
+  return true;
+}
+
 async function replyShortcut() {
   if (focusedLoadedMessage()) {
     replyToFocusedLoadedMessage();
@@ -2405,6 +2455,76 @@ async function openMessagesShortcut() {
   return openSelectedConversationInMessages();
 }
 
+function focusCodexShortcut({ fresh = false } = {}) {
+  if (fresh) {
+    el.codexQuestion.value = "";
+    el.codexAnswer.value = "";
+  }
+  focusControl(el.codexQuestion);
+  buildCodexPrompt();
+}
+
+function focusThreadMediaShortcut() {
+  setMediaViewShortcut("all");
+  el.threadMedia.scrollIntoView({ block: "nearest" });
+  el.mediaFilters.querySelector("button")?.focus();
+}
+
+function focusContactCreateShortcut() {
+  focusControl(el.newContactFirst);
+}
+
+function focusThreadManagementShortcut() {
+  focusControl(el.threadLocalTitle);
+}
+
+function scrollLoadedMessagesShortcut(direction) {
+  const target = el.messageList;
+  const amount = Math.max(240, Math.floor((target.clientHeight || window.innerHeight || 600) * 0.82));
+  target.scrollBy({ top: amount * direction, behavior: "smooth" });
+}
+
+function triggerAttachmentPickerShortcut(target = "") {
+  const useDraftPicker = target === "draft" || (!state.selected && document.activeElement !== el.composer);
+  const picker = useDraftPicker ? el.draftFileInput : el.fileInput;
+  picker.click();
+  const label = useDraftPicker ? "new chat" : "reply";
+  el.statusLine.textContent = `Choose attachment for ${label}`;
+}
+
+function discardActiveDraftShortcut() {
+  if (state.selected && el.composer.value.trim()) {
+    el.composer.value = "";
+    clearReplyContext();
+    revokeAttachmentPreviews(state.attachments);
+    state.attachments = [];
+    state.replyMediaAttachments = [];
+    renderAttachments();
+    scheduleDraftSave();
+    buildCodexPrompt();
+    el.sendState.textContent = "Reply draft cleared";
+    return;
+  }
+  if (
+    el.draftRecipients.value.trim()
+    || el.recipientListName.value.trim()
+    || el.draftMessage.value.trim()
+    || state.draftAttachments.length
+    || state.draftMediaAttachments.length
+  ) {
+    clearDraftForm();
+  }
+}
+
+async function copyCurrentLinkShortcut() {
+  await copyText(window.location.href);
+  el.statusLine.textContent = "Local link copied";
+}
+
+function toggleArchivedViewShortcut() {
+  setConversationViewShortcut(state.conversationView === "archived" ? "inbox" : "archived");
+}
+
 function clearActiveShortcutSurface() {
   if (el.shortcutHelp && !el.shortcutHelp.hidden) {
     hideShortcutHelp();
@@ -2438,16 +2558,26 @@ function refreshLocalShortcut() {
 const shortcutDefinitions = [
   { key: "shift+?", category: "Global", description: "Open keyboard shortcuts", run: toggleShortcutHelp },
   { key: "escape", category: "Global", description: "Close help, clear focus, or clear selected threads", run: clearActiveShortcutSurface },
+  { key: "mod+k", category: "Global", description: "Focus command search", run: () => focusControl(el.conversationSearch) },
   { key: "/", category: "Global", description: "Search conversations", run: () => focusControl(el.conversationSearch) },
   { key: "f", category: "Global", description: "Search local Messages", run: () => focusControl(el.globalMessageSearch) },
   { key: "d+/", category: "Global", description: "Search local Messages", run: () => focusControl(el.globalMessageSearch) },
   { key: "i", category: "Global", description: "Search contacts", run: () => focusControl(el.contactSearch) },
   { key: "d+i", category: "Global", description: "Search contacts", run: () => focusControl(el.contactSearch) },
   { key: "mod+r", category: "Global", description: "Refresh Messages and Contacts", run: refreshLocalShortcut },
+  { key: "mod+[", category: "Global", description: "Navigate back", run: () => window.history.back() },
+  { key: "mod+]", category: "Global", description: "Navigate forward", run: () => window.history.forward() },
+  { key: "mod+left", category: "Global", description: "Navigate back", run: () => window.history.back() },
+  { key: "mod+right", category: "Global", description: "Navigate forward", run: () => window.history.forward() },
 
   { key: "c", category: "Compose", description: "Compose a new Messages chat", run: () => focusControl(el.draftRecipients) },
   { key: "n", category: "Compose", description: "Compose a new Messages chat", run: () => focusControl(el.draftRecipients) },
   { key: "n+l", category: "Compose", description: "Add labels to selected thread(s)", run: focusConversationLabelsShortcut },
+  { key: "n+s", category: "Compose", description: "Save the visible recipient list", run: saveRecipientList },
+  { key: "mod+shift+u", category: "Compose", description: "Add an attachment", run: triggerAttachmentPickerShortcut },
+  { key: "mod+shift+,", category: "Compose", description: "Discard active draft", run: discardActiveDraftShortcut },
+  { key: "mod+shift+.", category: "Compose", description: "Discard active draft", run: discardActiveDraftShortcut },
+  { key: "mod+shift+p", category: "Compose", description: "Focus reply tools", run: () => focusControl(el.composer) },
 
   { key: "j", category: "Thread List", description: "Next visible thread", run: () => navigateVisibleConversation(1) },
   { key: "down", category: "Thread List", description: "Next visible thread", run: () => navigateVisibleConversation(1) },
@@ -2463,7 +2593,9 @@ const shortcutDefinitions = [
   { key: "shift+k", category: "Thread List", description: "Select focused thread and move up", run: () => selectAndNavigateVisibleConversation(-1) },
   { key: "shift+up", category: "Thread List", description: "Select focused thread and move up", run: () => selectAndNavigateVisibleConversation(-1) },
   { key: "mod+a", category: "Thread List", description: "Select all visible threads", run: selectVisibleConversationsShortcut },
-  { key: "mod+shift+a", category: "Thread List", description: "Clear selected threads", run: clearSelectedConversationsShortcut },
+  { key: "mod+shift+a", category: "Thread List", description: "Select from focused thread to bottom", run: selectVisibleFromFocusedShortcut },
+  { key: "space", category: "Thread List", description: "Scroll loaded messages down", run: () => scrollLoadedMessagesShortcut(1) },
+  { key: "shift+space", category: "Thread List", description: "Scroll loaded messages up", run: () => scrollLoadedMessagesShortcut(-1) },
 
   { key: "g+i", category: "Views", description: "Go to Inbox", run: () => setConversationViewShortcut("inbox") },
   { key: "g+a", category: "Views", description: "Go to All", run: () => setConversationViewShortcut("all") },
@@ -2477,20 +2609,46 @@ const shortcutDefinitions = [
   { key: "g+o", category: "Views", description: "Go to Unknown", run: () => setConversationViewShortcut("unknown") },
   { key: "g+p", category: "Views", description: "Go to Pinned", run: () => setConversationViewShortcut("pinned") },
   { key: "g+m", category: "Views", description: "Go to Muted", run: () => setConversationViewShortcut("muted") },
+  { key: "g+#", category: "Views", description: "Go to Archived", run: () => setConversationViewShortcut("archived") },
+  { key: "g+!", category: "Views", description: "Go to Muted", run: () => setConversationViewShortcut("muted") },
+  { key: "g+t", category: "Views", description: "Show sent loaded messages", run: () => setMessageViewShortcut("mine") },
+  { key: "g+/", category: "Views", description: "Search local Messages", run: () => focusControl(el.globalMessageSearch) },
+  { key: "alt+0", category: "Views", description: "Go to All", run: () => setConversationViewShortcut("all") },
+  { key: "alt+1", category: "Views", description: "Go to Inbox", run: () => setConversationViewShortcut("inbox") },
+  { key: "alt+2", category: "Views", description: "Go to Needs reply", run: () => setConversationViewShortcut("needsReply") },
+  { key: "alt+3", category: "Views", description: "Go to Follow-up", run: () => setConversationViewShortcut("followup") },
+  { key: "alt+4", category: "Views", description: "Go to Unread", run: () => setConversationViewShortcut("unread") },
+  { key: "alt+5", category: "Views", description: "Go to Direct", run: () => setConversationViewShortcut("direct") },
+  { key: "alt+6", category: "Views", description: "Go to Groups", run: () => setConversationViewShortcut("groups") },
+  { key: "alt+7", category: "Views", description: "Go to Unknown", run: () => setConversationViewShortcut("unknown") },
+  { key: "alt+8", category: "Views", description: "Go to Favorites", run: () => setConversationViewShortcut("favorites") },
+  { key: "alt+9", category: "Views", description: "Go to Archived", run: () => setConversationViewShortcut("archived") },
   { key: "shift+i", category: "Views", description: "Filter Inbox", run: () => setConversationViewShortcut("inbox") },
   { key: "shift+u", category: "Views", description: "Filter Unread", run: () => setConversationViewShortcut("unread") },
   { key: "shift+r", category: "Views", description: "Filter Needs reply", run: () => setConversationViewShortcut("needsReply") },
   { key: "shift+h", category: "Views", description: "Filter Follow-up", run: () => setConversationViewShortcut("followup") },
   { key: "shift+s", category: "Views", description: "Filter Favorites", run: () => setConversationViewShortcut("favorites") },
+  { key: "mod+shift+e", category: "Views", description: "Show or hide archived threads", run: toggleArchivedViewShortcut },
   { key: "1", category: "Views", description: "Sort by recent activity", run: () => setConversationSortShortcut("recent") },
   { key: "2", category: "Views", description: "Sort by priority", run: () => setConversationSortShortcut("priority") },
   { key: "3", category: "Views", description: "Sort by unread", run: () => setConversationSortShortcut("unread") },
+
+  { key: "d+a", category: "Panels", description: "Display Codex panel", run: () => focusCodexShortcut() },
+  { key: "mod+/", category: "Panels", description: "Display Codex panel", run: () => focusCodexShortcut() },
+  { key: "mod+alt+n", category: "Panels", description: "New Codex question", run: () => focusCodexShortcut({ fresh: true }) },
+  { key: "d+o", category: "Panels", description: "Display thread media panel", run: focusThreadMediaShortcut },
+  { key: "d+c", category: "Panels", description: "Display create-contact panel", run: focusContactCreateShortcut },
+  { key: "mod+,", category: "Panels", description: "Display thread management", run: focusThreadManagementShortcut },
+  { key: "0", category: "Panels", description: "Show all thread media", run: () => setMediaViewShortcut("all") },
 
   { key: "e", category: "Thread Actions", description: "Archive or restore selected thread(s)", run: toggleSelectedConversationArchive },
   { key: "[", category: "Thread Actions", description: "Archive selected thread and move down", run: () => archiveSelectedConversationAndMove(1) },
   { key: "]", category: "Thread Actions", description: "Archive selected thread and move up", run: () => archiveSelectedConversationAndMove(-1) },
   { key: "shift+e", category: "Thread Actions", description: "Restore archived selected thread", run: restoreSelectedConversationArchive },
   { key: "#", category: "Thread Actions", description: "Archive selected thread(s)", run: toggleSelectedConversationArchive },
+  { key: "!", category: "Thread Actions", description: "Mute or unmute selected thread(s)", run: toggleSelectedConversationMute },
+  { key: "mod+u", category: "Thread Actions", description: "Mute or unmute selected thread(s)", run: toggleSelectedConversationMute },
+  { key: "t", category: "Thread Actions", description: "Toggle follow-up triage", run: toggleFollowUpTriageShortcut },
   { key: "u", category: "Thread Actions", description: "Toggle read/unread for focused message or thread", run: () => (focusedLoadedMessage() ? toggleFocusedLoadedMessageRead() : toggleSelectedConversationRead()) },
   { key: "p", category: "Thread Actions", description: "Pin or unpin selected thread(s)", run: toggleSelectedConversationPin },
   { key: "shift+m", category: "Thread Actions", description: "Mute or unmute selected thread(s)", run: toggleSelectedConversationMute },
@@ -2499,18 +2657,44 @@ const shortcutDefinitions = [
   { key: "l", category: "Thread Actions", description: "Add or remove thread labels", run: focusConversationLabelsShortcut },
   { key: "v", category: "Thread Actions", description: "Add or remove thread labels", run: focusConversationLabelsShortcut },
   { key: "r", category: "Thread Actions", description: "Reply to focused message or selected thread", run: replyShortcut },
+  { key: "a", category: "Thread Actions", description: "Reply to selected thread", run: replyShortcut },
   { key: "o", category: "Thread Actions", description: "Open selected thread in Messages", run: openMessagesShortcut },
   { key: "y", category: "Thread Actions", description: "Copy focused message or thread summary", run: copySelectedConversationShortcut },
+  { key: "ctrl+/", category: "Thread Actions", description: "Copy local link", run: copyCurrentLinkShortcut },
 
   { key: "m", category: "Loaded Messages", description: "Jump to next unread loaded message", run: focusNextUnreadLoadedMessage },
   { key: ".", category: "Loaded Messages", description: "Jump to latest loaded message", run: focusLatestLoadedMessage },
   { key: "d", category: "Loaded Messages", description: "Draft from focused message or focus new-chat body", run: draftFocusedMessageShortcut },
   { key: "s", category: "Loaded Messages", description: "Star or unstar focused message", run: starFocusedMessageShortcut },
   { key: "shift+n", category: "Loaded Messages", description: "Edit focused message note", run: editFocusedMessageNoteShortcut },
+  { key: "shift+o", category: "Loaded Messages", description: "Show all loaded messages", run: () => setMessageViewShortcut("all") },
+  { key: "4", category: "Loaded Messages", description: "Show unread loaded messages", run: () => setMessageViewShortcut("unread") },
+  { key: "5", category: "Loaded Messages", description: "Show starred loaded messages", run: () => setMessageViewShortcut("starred") },
+  { key: "6", category: "Loaded Messages", description: "Show files in loaded messages", run: () => setMessageViewShortcut("files") },
+  { key: "7", category: "Loaded Messages", description: "Show audio in loaded messages", run: () => setMessageViewShortcut("audio") },
+  { key: "8", category: "Loaded Messages", description: "Show my sent loaded messages", run: () => setMessageViewShortcut("mine") },
+  { key: "9", category: "Loaded Messages", description: "Show noted loaded messages", run: () => setMessageViewShortcut("noted") },
+
+  { key: "c+a", category: "Contacts", description: "Show all contacts", run: () => setContactSourceShortcut("all") },
+  { key: "c+t", category: "Contacts", description: "Show threaded contacts", run: () => setContactSourceShortcut("threaded") },
+  { key: "c+d", category: "Contacts", description: "Show direct contacts", run: () => setContactSourceShortcut("direct") },
+  { key: "c+g", category: "Contacts", description: "Show group contacts", run: () => setContactSourceShortcut("groups") },
+  { key: "c+u", category: "Contacts", description: "Show unread contacts", run: () => setContactSourceShortcut("unread") },
+  { key: "c+r", category: "Contacts", description: "Show contacts needing reply", run: () => setContactSourceShortcut("needs_reply") },
+  { key: "c+h", category: "Contacts", description: "Show follow-up contacts", run: () => setContactSourceShortcut("followup") },
+  { key: "c+s", category: "Contacts", description: "Show favorite contacts", run: () => setContactSourceShortcut("favorites") },
+  { key: "c+o", category: "Contacts", description: "Show noted contacts", run: () => setContactSourceShortcut("noted") },
+  { key: "c+p", category: "Contacts", description: "Show phone contacts", run: () => setContactSourceShortcut("phones") },
+  { key: "c+e", category: "Contacts", description: "Show email contacts", run: () => setContactSourceShortcut("emails") },
+  { key: "c+n", category: "Contacts", description: "Show unsaved participants", run: () => setContactSourceShortcut("participants") },
+  { key: "c+c", category: "Contacts", description: "Show saved contacts", run: () => setContactSourceShortcut("contacts") },
+
+  { key: "mod+j", category: "Codex", description: "Ask Codex with current context", run: askCodex },
 ];
 
 const shortcutHelpOnlyDefinitions = [
   { key: "mod+enter", category: "Composer", description: "Send the active reply or new-chat composer" },
+  { key: "mod+shift+enter", category: "Composer", description: "Send the active reply or new-chat composer now" },
 ];
 
 function shortcutKeyName(eventKey) {
@@ -2524,26 +2708,35 @@ function shortcutKeyName(eventKey) {
     Enter: "enter",
     Escape: "escape",
     " ": "space",
+    "<": ",",
+    ">": ".",
   };
   return namedKeys[eventKey] || (eventKey.length === 1 ? eventKey.toLowerCase() : eventKey.toLowerCase());
+}
+
+function isMacShortcutPlatform() {
+  return /Mac|iPhone|iPad/.test(navigator.platform || "");
 }
 
 function eventShortcutKey(event) {
   const key = shortcutKeyName(event.key);
   if (!key) return "";
   const modifiers = [];
-  if (event.metaKey || event.ctrlKey) modifiers.push("mod");
+  const isMac = isMacShortcutPlatform();
+  if (event.metaKey || (event.ctrlKey && !isMac)) modifiers.push("mod");
+  if (event.ctrlKey && isMac) modifiers.push("ctrl");
   if (event.altKey) modifiers.push("alt");
-  if (event.shiftKey && (/^[a-z]$/.test(key) || ["up", "down", "left", "right", "?", "enter"].includes(key))) {
+  if (event.shiftKey && (/^[a-z]$/.test(key) || ["up", "down", "left", "right", "?", "enter", ",", "."].includes(key))) {
     modifiers.push("shift");
   }
   return [...modifiers, key].join("+");
 }
 
 function shortcutDisplay(sequence) {
-  const isMac = /Mac|iPhone|iPad/.test(navigator.platform || "");
+  const isMac = isMacShortcutPlatform();
   const labels = {
     mod: isMac ? "⌘" : "Ctrl",
+    ctrl: "Ctrl",
     shift: "Shift",
     alt: isMac ? "⌥" : "Alt",
     enter: "Enter",
@@ -2679,7 +2872,6 @@ function handleGlobalShortcuts(event) {
 
 function isSubmitShortcut(event) {
   return event.key === "Enter"
-    && !event.shiftKey
     && !event.altKey
     && !event.isComposing
     && (event.metaKey || event.ctrlKey);
@@ -2690,6 +2882,43 @@ function handleSubmitShortcut(event, button, submit) {
   event.preventDefault();
   if (button?.disabled) return;
   submit();
+}
+
+function isAttachmentShortcut(event) {
+  return event.key.toLowerCase() === "u"
+    && event.shiftKey
+    && !event.altKey
+    && !event.isComposing
+    && (event.metaKey || event.ctrlKey);
+}
+
+function handleAttachmentShortcut(event, target = "") {
+  if (!isAttachmentShortcut(event)) return false;
+  event.preventDefault();
+  triggerAttachmentPickerShortcut(target);
+  return true;
+}
+
+function isDiscardDraftShortcut(event) {
+  const key = shortcutKeyName(event.key);
+  return (key === "," || key === ".")
+    && event.shiftKey
+    && !event.altKey
+    && !event.isComposing
+    && (event.metaKey || event.ctrlKey);
+}
+
+function handleDiscardDraftShortcut(event) {
+  if (!isDiscardDraftShortcut(event)) return false;
+  event.preventDefault();
+  discardActiveDraftShortcut();
+  return true;
+}
+
+function handleComposerTextShortcut(event, button, submit, target = "") {
+  if (handleAttachmentShortcut(event, target)) return;
+  if (handleDiscardDraftShortcut(event)) return;
+  handleSubmitShortcut(event, button, submit);
 }
 
 function selectedConversations() {
@@ -11164,7 +11393,9 @@ el.draftMessage.addEventListener("input", () => {
   renderDraftPreview();
   saveNewChatDraft();
 });
-el.draftMessage.addEventListener("keydown", (event) => handleSubmitShortcut(event, el.sendDraftButton, sendDraftIfExisting));
+el.draftMessage.addEventListener("keydown", (event) => {
+  handleComposerTextShortcut(event, el.sendDraftButton, sendDraftIfExisting, "draft");
+});
 el.draftCopyToggle.addEventListener("change", saveNewChatDraft);
 el.draftOpenToggle.addEventListener("change", saveNewChatDraft);
 el.draftOpenAttachmentsToggle.addEventListener("change", saveNewChatDraft);
@@ -11271,7 +11502,9 @@ el.composer.addEventListener("input", () => {
   scheduleDraftSave();
   buildCodexPrompt();
 });
-el.composer.addEventListener("keydown", (event) => handleSubmitShortcut(event, el.sendButton, sendMessage));
+el.composer.addEventListener("keydown", (event) => {
+  handleComposerTextShortcut(event, el.sendButton, sendMessage, "reply");
+});
 el.buildPromptButton.addEventListener("click", buildCodexPrompt);
 el.copyPromptButton.addEventListener("click", async () => {
   await copyText(buildCodexPrompt());
