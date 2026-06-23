@@ -1,15 +1,26 @@
 :root {
-  --bg: #f6f3ee;
-  --ink: #161512;
-  --muted: #6d675e;
-  --line: #d8d1c6;
-  --panel: #fffdf8;
-  --panel-alt: #ede7dd;
-  --accent: #116456;
-  --accent-ink: #f7fffb;
-  --warn: #a8531b;
-  --danger: #8f2f24;
-  --shadow: 0 18px 50px rgba(38, 31, 22, 0.12);
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --bg: #ffffff;
+  --ink: #1d1d1f;
+  --text: #1d1d1f;
+  --muted: #8a8a8e;
+  --line: #e6e6ea;
+  --line-strong: #d6d6db;
+  --panel: #ffffff;
+  --panel-alt: #f2f2f7;
+  --panel-soft: #f5f5f7;
+  --accent: #007aff;
+  --accent-ink: #ffffff;
+  --blue: #0b84ff;
+  --bubble-in: #e9e9eb;
+  --bubble-out: #0b84ff;
+  --warn: #b06a17;
+  --danger: #d23b32;
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
+  --radius: 12px;
+  --radius-lg: 18px;
+  --radius-pill: 999px;
   color-scheme: light;
 }
 
@@ -20,13 +31,11 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background:
-    linear-gradient(90deg, rgba(22, 21, 18, 0.04) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(22, 21, 18, 0.04) 1px, transparent 1px),
-    var(--bg);
-  background-size: 28px 28px;
+  background: var(--bg);
   color: var(--ink);
-  font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif;
+  font-family: var(--sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 button,
@@ -3265,3 +3274,377 @@ textarea:focus,
     grid-template-columns: 1fr;
   }
 }
+
+/* =====================================================================
+   iMessage-style redesign layer
+   Appended overrides — wins on source order. Keeps all existing
+   element ids/classes intact so app.js keeps working untouched.
+   ===================================================================== */
+
+/* ---- Layout: independent scrolling columns instead of one tall page -- */
+.shell {
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
+}
+.rail,
+.thread {
+  display: block;
+  height: 100vh;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.rail {
+  background: var(--panel-soft);
+  border-right: 1px solid var(--line);
+}
+.thread {
+  background: var(--bg);
+}
+.compose {
+  height: 100vh;
+  max-height: 100vh;
+  background: var(--panel-soft);
+  border-left: 1px solid var(--line);
+  gap: 18px;
+}
+.conversation-list {
+  flex: initial;
+  min-height: 0;
+  overflow: visible;
+  padding: 0 8px 16px;
+}
+.contact-list {
+  max-height: none;
+  overflow: visible;
+}
+
+/* ---- Sticky, frosted headers ---------------------------------------- */
+.rail-head,
+.thread-head {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  min-height: 64px;
+  padding: 14px 18px;
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  backdrop-filter: saturate(180%) blur(18px);
+  -webkit-backdrop-filter: saturate(180%) blur(18px);
+  border-bottom: 1px solid var(--line);
+}
+.rail-head { background: color-mix(in srgb, var(--panel-soft) 82%, transparent); }
+h1 { font-size: 22px; letter-spacing: -0.02em; }
+h2 { font-size: 19px; letter-spacing: -0.02em; }
+h3 { font-size: 15px; letter-spacing: -0.01em; }
+.eyebrow {
+  font-family: var(--sans);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+.status-line,
+.contact-status,
+.contact-more,
+.send-state,
+.message-search-status,
+.management-actions span,
+.section-head span,
+.voice-memo-status,
+.voice-memo-timer,
+.contact-count,
+#contactCount,
+#loadedMessageCount,
+#messageSearchCount {
+  font-family: var(--sans);
+}
+
+/* ---- Rounded, soft inputs ------------------------------------------- */
+input:not([type="checkbox"]):not([type="radio"]),
+select,
+textarea {
+  border-radius: var(--radius);
+}
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.search-box,
+.compact-search,
+.message-filter,
+.message-search {
+  border-radius: var(--radius-pill);
+  border-color: var(--line);
+  background: var(--panel);
+}
+.search-box span,
+.message-filter span,
+.message-search span {
+  color: var(--muted);
+}
+
+/* ---- Buttons: pill shaped, calmer ----------------------------------- */
+.quiet-button,
+.primary-button,
+.remove-button,
+.icon-button {
+  border-radius: var(--radius-pill);
+  font-family: var(--sans);
+}
+.icon-button {
+  border-radius: 50%;
+  color: var(--muted);
+}
+.icon-button:hover { color: var(--accent); }
+.primary-button {
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+.primary-button:hover { background: color-mix(in srgb, var(--accent) 88%, #000); }
+
+/* dense filter/bulk pills */
+.conversation-filters button,
+.label-filters button,
+.contact-source-filters button,
+.message-search-filters button,
+.message-view-filters button,
+.media-filters button,
+.codex-modes button {
+  border-radius: var(--radius-pill);
+  font-family: var(--sans);
+  font-size: 12px;
+  letter-spacing: -0.01em;
+  text-transform: none;
+  color: var(--muted);
+  background: var(--panel);
+}
+.conversation-filters button.active,
+.label-filters button.active,
+.contact-source-filters button.active,
+.message-search-filters button.active,
+.message-view-filters button.active,
+.media-filters button.active,
+.codex-modes button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* tame the big stacked tool clusters so they read as secondary */
+.bulk-actions,
+.contact-bulk-actions,
+.thread-management,
+.message-tools,
+.message-saved-views,
+.conversation-saved-views,
+.contact-saved-views,
+.message-history-bar,
+.message-search-more,
+.recipient-list-tools {
+  border-radius: var(--radius-lg);
+}
+
+/* ---- Conversation rows: clean iMessage list ------------------------- */
+.conversation-list { display: flex; flex-direction: column; gap: 2px; }
+.conversation-row {
+  position: relative;
+  display: block;
+  border-radius: var(--radius-lg);
+}
+.conversation-item {
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: var(--radius-lg);
+  padding: 10px 12px;
+  gap: 3px;
+}
+.conversation-item:hover {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.conversation-row.active .conversation-item {
+  border-color: transparent;
+  background: var(--accent);
+  color: #fff;
+}
+.conversation-row.active .conversation-name,
+.conversation-row.active .conversation-meta,
+.conversation-row.active .conversation-preview,
+.conversation-row.active .conversation-contact-context {
+  color: #fff;
+}
+.conversation-name { font-family: var(--sans); font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
+.conversation-meta,
+.conversation-preview,
+.conversation-contact-context {
+  font-family: var(--sans);
+  font-size: 13px;
+}
+.conversation-preview { color: var(--muted); }
+
+/* hide bulk-select checkbox + quick actions until hover (declutter) */
+.conversation-select {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: none;
+  z-index: 3;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+}
+.conversation-row:hover .conversation-select,
+.conversation-select.active {
+  display: grid;
+  place-items: center;
+}
+.conversation-row-actions {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  display: none;
+  grid-auto-flow: column;
+  gap: 4px;
+  margin: 0;
+  padding: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  border: 1px solid var(--line);
+  z-index: 3;
+}
+.conversation-row:hover .conversation-row-actions,
+.conversation-row:focus-within .conversation-row-actions {
+  display: inline-grid;
+}
+.conversation-row-actions button {
+  min-width: 0;
+  border-radius: var(--radius-pill);
+  border-color: transparent;
+  font-family: var(--sans);
+  font-size: 11px;
+  padding: 3px 9px;
+}
+
+/* badges as soft rounded pills */
+.badge {
+  border-radius: var(--radius-pill);
+  font-family: var(--sans);
+  font-size: 11px;
+}
+.unread-badge {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+/* ---- Message bubbles ------------------------------------------------ */
+.message-list { padding: 18px 18px 28px; }
+.message {
+  max-width: 100%;
+  margin: 0 0 3px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.message.mine { margin-left: 0; align-items: flex-end; }
+.message + .message { margin-top: 1px; }
+
+.message-head {
+  order: -1;
+  gap: 8px;
+  margin: 6px 6px 2px;
+  font-family: var(--sans);
+  font-size: 11px;
+  color: var(--muted);
+}
+.message.mine .message-head { flex-direction: row-reverse; }
+
+.message-body {
+  max-width: min(74%, 560px);
+  margin-top: 0;
+  padding: 8px 13px;
+  border-radius: var(--radius-lg);
+  background: var(--bubble-in);
+  color: var(--ink);
+  line-height: 1.35;
+  box-shadow: none;
+}
+.message-body:empty { display: none; }
+.message.mine .message-body {
+  background: var(--bubble-out);
+  color: #fff;
+}
+.message.mine .message-body a { color: #fff; text-decoration: underline; }
+
+/* status accents move to a left rail bar on the bubble, not the card */
+.message.unread .message-body { box-shadow: -3px 0 0 0 color-mix(in srgb, var(--warn) 70%, transparent); }
+.message.starred .message-body { box-shadow: -3px 0 0 0 color-mix(in srgb, #e0a500 80%, transparent); }
+.message.focused .message-body { box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent); }
+.message.mine.unread .message-body,
+.message.mine.starred .message-body,
+.message.mine.focused .message-body { box-shadow: none; }
+
+.message-attachments { margin-top: 4px; }
+.message.mine .message-attachments { justify-content: flex-end; }
+.image-attachment { border-radius: var(--radius-lg); border: 0; }
+.image-attachment img { max-height: 280px; }
+.audio-attachment { border-radius: var(--radius); }
+.pill { border-radius: var(--radius-pill); }
+
+.message-note {
+  border-radius: 10px;
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+/* per-message action toolbar: hidden until hover/focus (huge declutter) */
+.message-actions {
+  display: none;
+  margin-top: 4px;
+  padding: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  border: 1px solid var(--line);
+}
+.message:hover .message-actions,
+.message.focused .message-actions,
+.message:focus-within .message-actions {
+  display: inline-flex;
+}
+.message-actions button,
+.message-actions select {
+  border-radius: var(--radius-pill);
+  border-color: transparent;
+  font-family: var(--sans);
+  font-size: 11px;
+}
+
+/* ---- Compose / tool sections ---------------------------------------- */
+.tool-section {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 14px;
+}
+.tool-section textarea,
+.tool-section input {
+  border-radius: var(--radius);
+  background: var(--panel-soft);
+}
+.attachment-drop { border-radius: var(--radius); background: var(--panel-soft); }
+.shortcut-help { border-radius: var(--radius-lg); }
+
+/* ---- Thread bubbles in contact inspector / search keep readable ----- */
+.search-result { border-radius: var(--radius); }
+.thread-person { border-radius: var(--radius); }
+.contact-item { border-radius: var(--radius); }
