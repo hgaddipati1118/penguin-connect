@@ -77,6 +77,12 @@ textarea {
   border-bottom: 1px solid var(--line);
 }
 
+.rail-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .eyebrow {
   margin: 0 0 4px;
   color: var(--muted);
@@ -3094,6 +3100,86 @@ textarea:focus,
   font-size: 12px;
 }
 
+.shortcut-help-backdrop[hidden] {
+  display: none;
+}
+
+.shortcut-help-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(22, 21, 18, 0.32);
+}
+
+.shortcut-help {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(920px, 100%);
+  max-height: min(760px, calc(100vh - 48px));
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.shortcut-help-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 72px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.shortcut-help-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 18px;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px;
+}
+
+.shortcut-help-section {
+  min-width: 0;
+}
+
+.shortcut-help-section h3 {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.shortcut-help-row {
+  display: grid;
+  grid-template-columns: minmax(88px, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+  border-top: 1px solid rgba(216, 209, 198, 0.7);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.shortcut-help-row kbd {
+  justify-self: start;
+  min-width: 70px;
+  padding: 3px 7px;
+  border: 1px solid var(--line);
+  background: var(--panel-alt);
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 650;
+  text-align: center;
+}
+
 @media (max-width: 1040px) {
   .shell {
     grid-template-columns: 280px 1fr;
@@ -3147,6 +3233,14 @@ textarea:focus,
   }
 
   .message-date-range {
+    grid-template-columns: 1fr;
+  }
+
+  .shortcut-help-backdrop {
+    padding: 12px;
+  }
+
+  .shortcut-help-body {
     grid-template-columns: 1fr;
   }
 }

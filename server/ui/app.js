@@ -116,10 +116,18 @@ const state = {
 };
 
 const attachmentPreviewUrls = new WeakMap();
+let shortcutSequencePrefix = "";
+let shortcutSequenceTimer = 0;
+let shortcutPendingDefinition = null;
+const shortcutSequenceDelayMs = 850;
 
 const el = {
   statusLine: document.querySelector("#statusLine"),
   refreshButton: document.querySelector("#refreshButton"),
+  shortcutsButton: document.querySelector("#shortcutsButton"),
+  shortcutHelp: document.querySelector("#shortcutHelp"),
+  shortcutHelpBody: document.querySelector("#shortcutHelpBody"),
+  closeShortcutsButton: document.querySelector("#closeShortcutsButton"),
   conversationSearch: document.querySelector("#conversationSearch"),
   conversationFilters: document.querySelector("#conversationFilters"),
   conversationSort: document.querySelector("#conversationSort"),
@@ -131,6 +139,9 @@ const el = {
   bulkState: document.querySelector("#bulkState"),
   selectVisibleButton: document.querySelector("#selectVisibleButton"),
   selectUnknownButton: document.querySelector("#selectUnknownButton"),
+  nextUnreadConversationButton: document.querySelector("#nextUnreadConversationButton"),
+  nextReplyConversationButton: document.querySelector("#nextReplyConversationButton"),
+  nextFollowUpConversationButton: document.querySelector("#nextFollowUpConversationButton"),
   bulkMarkReadButton: document.querySelector("#bulkMarkReadButton"),
   bulkPinButton: document.querySelector("#bulkPinButton"),
   bulkMuteButton: document.querySelector("#bulkMuteButton"),
@@ -2111,6 +2122,54 @@ async function navigateVisibleConversation(direction) {
   return true;
 }
 
+async function focusConversationAtIndex(rows, index, statusText) {
+  const conversation = rows[index];
+  if (!conversation) return false;
+  state.focusMessageId = "";
+  await selectConversation(conversation);
+  state.bulkMessage = statusText;
+  el.statusLine.textContent = statusText;
+  renderConversations();
+  scrollSelectedConversationIntoView();
+  return true;
+}
+
+async function focusNextVisibleConversationByPredicate(predicate, label, emptyText) {
+  const rows = visibleConversationRows();
+  const matches = rows
+    .map((conversation, index) => (predicate(conversation) ? index : -1))
+    .filter((index) => index >= 0);
+  if (!matches.length) {
+    state.bulkMessage = emptyText;
+    el.statusLine.textContent = emptyText;
+    renderConversations();
+    return false;
+  }
+
+  const currentIndex = selectedVisibleConversationIndex(rows);
+  const nextIndex = currentIndex >= 0
+    ? (matches.find((index) => index > currentIndex) ?? matches[0])
+    : matches[0];
+  const matchPosition = matches.indexOf(nextIndex) + 1;
+  return focusConversationAtIndex(
+    rows,
+    nextIndex,
+    `Selected ${label} thread ${matchPosition}/${matches.length}`
+  );
+}
+
+function focusNextUnreadConversation() {
+  return focusNextVisibleConversationByPredicate(conversationHasUnread, "unread", "No unread threads visible");
+}
+
+function focusNextNeedsReplyConversation() {
+  return focusNextVisibleConversationByPredicate(conversationNeedsReply, "needs-reply", "No needs-reply threads visible");
+}
+
+function focusNextFollowUpConversation() {
+  return focusNextVisibleConversationByPredicate(hasFollowUp, "follow-up", "No follow-up threads visible");
+}
+
 async function openVisibleConversationSearchResult() {
   const rows = visibleConversationRows();
   if (!rows.length) {
@@ -2158,83 +2217,459 @@ function focusControl(control) {
   }
 }
 
-function handleGlobalShortcuts(event) {
-  if (event.defaultPrevented || event.isComposing || isShortcutEditableTarget(event.target)) return;
-  if (event.altKey || event.ctrlKey || event.metaKey) return;
-  const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
-  if (key === "ArrowDown" || key === "j") {
-    event.preventDefault();
-    navigateVisibleConversation(1);
-    return;
+function selectVisibleConversationsShortcut() {
+  for (const conversation of visibleConversationRows()) {
+    state.selectedConversationIds.add(conversation.conversation_id);
   }
-  if (key === "ArrowUp" || key === "k") {
-    event.preventDefault();
-    navigateVisibleConversation(-1);
-    return;
+  state.bulkMessage = "Selected visible threads";
+  renderConversations();
+}
+
+function clearSelectedConversationsShortcut() {
+  state.selectedConversationIds.clear();
+  state.bulkMessage = "";
+  renderConversations();
+}
+
+async function focusFirstVisibleConversation() {
+  const rows = visibleConversationRows();
+  return focusConversationAtIndex(rows, 0, "Selected first visible thread");
+}
+
+async function focusLastVisibleConversation() {
+  const rows = visibleConversationRows();
+  return focusConversationAtIndex(rows, rows.length - 1, "Selected last visible thread");
+}
+
+async function selectAndNavigateVisibleConversation(direction) {
+  const rows = visibleConversationRows();
+  if (!rows.length) {
+    el.statusLine.textContent = "No visible threads";
+    return false;
   }
-  if (key === "/") {
-    event.preventDefault();
-    focusControl(el.conversationSearch);
-    return;
+  let index = selectedVisibleConversationIndex(rows);
+  if (index < 0) index = direction > 0 ? 0 : rows.length - 1;
+  state.selectedConversationIds.add(rows[index].conversation_id);
+  const nextIndex = (index + direction + rows.length) % rows.length;
+  state.selectedConversationIds.add(rows[nextIndex].conversation_id);
+  await selectConversation(rows[nextIndex]);
+  state.bulkMessage = `${state.selectedConversationIds.size} selected`;
+  renderConversations();
+  return true;
+}
+
+function setConversationViewShortcut(view) {
+  state.conversationView = knownConversationView(view);
+  state.conversationLabel = "";
+  state.activeConversationViewId = "";
+  renderConversations();
+  el.statusLine.textContent = `Conversation view · ${conversationViewDisplay(state.conversationView)}`;
+}
+
+function setConversationSortShortcut(sort) {
+  state.conversationSort = knownConversationSort(sort);
+  state.activeConversationViewId = "";
+  renderConversations();
+  el.statusLine.textContent = `Conversation sort · ${conversationSortLabels[state.conversationSort]}`;
+}
+
+async function ensureSelectedConversationForShortcut() {
+  if (state.selected) return true;
+  return openVisibleConversationSearchResult();
+}
+
+async function setSelectedConversationsManagementShortcut(fields, statusText) {
+  const targets = selectedConversationSnapshot();
+  if (!targets.length) {
+    if (!await ensureSelectedConversationForShortcut()) return false;
+    return setConversationManagement(fields);
   }
-  if (key === "f") {
-    event.preventDefault();
-    focusControl(el.globalMessageSearch);
-    return;
+  state.bulkBusy = true;
+  state.bulkMessage = "Updating selected";
+  renderConversations();
+  try {
+    for (const conversation of targets) {
+      await updateConversationManagement(conversation.conversation_id, fields);
+    }
+    state.selectedConversationIds.clear();
+    state.bulkMessage = `${statusText} ${targets.length}`;
+  } catch (error) {
+    state.bulkMessage = error.message;
+  } finally {
+    state.bulkBusy = false;
+    renderConversations();
+    renderThreadControls();
+    renderManagementFields();
+    buildCodexPrompt();
   }
-  if (key === "c") {
-    event.preventDefault();
-    focusControl(el.contactSearch);
-    return;
+  return true;
+}
+
+async function toggleSelectedConversationArchive() {
+  if (state.selectedConversationIds.size) return bulkArchiveSelected();
+  if (!await ensureSelectedConversationForShortcut()) return false;
+  return setConversationManagement({ archived: !Boolean(state.selected?.is_archived) });
+}
+
+async function restoreSelectedConversationArchive() {
+  return setSelectedConversationsManagementShortcut({ archived: false }, "Restored");
+}
+
+async function archiveSelectedConversationAndMove(direction) {
+  const rows = visibleConversationRows();
+  const currentIndex = Math.max(0, selectedVisibleConversationIndex(rows));
+  await toggleSelectedConversationArchive();
+  const nextRows = visibleConversationRows();
+  if (!nextRows.length) return true;
+  const offset = direction > 0 ? 0 : -1;
+  const nextIndex = Math.min(Math.max(currentIndex + offset, 0), nextRows.length - 1);
+  return focusConversationAtIndex(nextRows, nextIndex, "Archived and moved");
+}
+
+async function toggleSelectedConversationPin() {
+  if (state.selectedConversationIds.size) return bulkPinSelected();
+  if (!await ensureSelectedConversationForShortcut()) return false;
+  return setConversationManagement({ pinned: !Boolean(state.selected?.is_pinned) });
+}
+
+async function toggleSelectedConversationMute() {
+  if (state.selectedConversationIds.size) return bulkMuteSelected();
+  if (!await ensureSelectedConversationForShortcut()) return false;
+  return setConversationManagement({ muted: !Boolean(state.selected?.is_muted) });
+}
+
+async function toggleSelectedConversationRead() {
+  if (state.selectedConversationIds.size) return bulkMarkSelectedRead();
+  if (!await ensureSelectedConversationForShortcut()) return false;
+  return setReadState(!conversationHasUnread(state.selected));
+}
+
+function focusConversationFollowUpShortcut() {
+  focusControl(state.selectedConversationIds.size ? el.bulkFollowUpAt : el.threadFollowUpAt);
+}
+
+function focusConversationLabelsShortcut() {
+  focusControl(state.selectedConversationIds.size ? el.bulkLabelsInput : el.threadTags);
+}
+
+async function replyShortcut() {
+  if (focusedLoadedMessage()) {
+    replyToFocusedLoadedMessage();
+    return true;
   }
-  if (key === "n") {
-    event.preventDefault();
-    focusControl(el.draftRecipients);
-    return;
-  }
-  if (key === "y" && focusedLoadedMessage()) {
-    event.preventDefault();
-    copyFocusedLoadedMessage();
-    return;
-  }
-  if (key === "d" && focusedLoadedMessage()) {
-    event.preventDefault();
+  if (!await ensureSelectedConversationForShortcut()) return false;
+  focusControl(el.composer);
+  return true;
+}
+
+async function copySelectedConversationShortcut() {
+  if (focusedLoadedMessage()) return copyFocusedLoadedMessage();
+  if (state.selectedConversationIds.size) return copySelectedConversationSummaries();
+  if (!await ensureSelectedConversationForShortcut()) return false;
+  await copyText(threadText(40));
+  el.sendState.textContent = "Thread copied";
+  return true;
+}
+
+function draftFocusedMessageShortcut() {
+  if (focusedLoadedMessage()) {
     draftFocusedLoadedMessage();
     return;
   }
-  if (key === "s" && focusedLoadedMessage()) {
-    event.preventDefault();
+  focusControl(el.draftMessage);
+}
+
+function starFocusedMessageShortcut() {
+  if (focusedLoadedMessage()) {
     toggleFocusedLoadedMessageStar();
     return;
   }
-  if (key === "u" && focusedLoadedMessage()) {
-    event.preventDefault();
-    toggleFocusedLoadedMessageRead();
-    return;
-  }
-  if (key === "e" && focusedLoadedMessage()) {
-    event.preventDefault();
+  el.statusLine.textContent = "Focus a loaded message to star it";
+}
+
+function editFocusedMessageNoteShortcut() {
+  if (focusedLoadedMessage()) {
     editFocusedLoadedMessageNote();
     return;
   }
-  if (key === "m" && state.selected) {
-    event.preventDefault();
-    focusNextUnreadLoadedMessage();
+  el.statusLine.textContent = "Focus a loaded message to add a note";
+}
+
+async function openMessagesShortcut() {
+  if (!await ensureSelectedConversationForShortcut()) return false;
+  return openSelectedConversationInMessages();
+}
+
+function clearActiveShortcutSurface() {
+  if (el.shortcutHelp && !el.shortcutHelp.hidden) {
+    hideShortcutHelp();
     return;
   }
-  if (key === "." && state.selected) {
-    event.preventDefault();
-    focusLatestLoadedMessage();
+  clearShortcutSequence();
+  if (state.selectedConversationIds.size) {
+    clearSelectedConversationsShortcut();
     return;
   }
-  if (key === "r" && state.selected) {
-    event.preventDefault();
-    if (focusedLoadedMessage()) {
-      replyToFocusedLoadedMessage();
-    } else {
-      focusControl(el.composer);
+  if (state.focusMessageId) {
+    state.focusMessageId = "";
+    renderMessages();
+    el.sendState.textContent = "";
+    return;
+  }
+  if (el.conversationSearch.value.trim() || state.conversationLabel || state.activeConversationViewId) {
+    el.conversationSearch.value = "";
+    state.conversationLabel = "";
+    state.activeConversationViewId = "";
+    renderConversations();
+  }
+}
+
+function refreshLocalShortcut() {
+  loadStatus();
+  loadConversations();
+  loadContacts();
+}
+
+const shortcutDefinitions = [
+  { key: "shift+?", category: "Global", description: "Open keyboard shortcuts", run: toggleShortcutHelp },
+  { key: "escape", category: "Global", description: "Close help, clear focus, or clear selected threads", run: clearActiveShortcutSurface },
+  { key: "/", category: "Global", description: "Search conversations", run: () => focusControl(el.conversationSearch) },
+  { key: "f", category: "Global", description: "Search local Messages", run: () => focusControl(el.globalMessageSearch) },
+  { key: "d+/", category: "Global", description: "Search local Messages", run: () => focusControl(el.globalMessageSearch) },
+  { key: "i", category: "Global", description: "Search contacts", run: () => focusControl(el.contactSearch) },
+  { key: "d+i", category: "Global", description: "Search contacts", run: () => focusControl(el.contactSearch) },
+  { key: "mod+r", category: "Global", description: "Refresh Messages and Contacts", run: refreshLocalShortcut },
+
+  { key: "c", category: "Compose", description: "Compose a new Messages chat", run: () => focusControl(el.draftRecipients) },
+  { key: "n", category: "Compose", description: "Compose a new Messages chat", run: () => focusControl(el.draftRecipients) },
+  { key: "n+l", category: "Compose", description: "Add labels to selected thread(s)", run: focusConversationLabelsShortcut },
+
+  { key: "j", category: "Thread List", description: "Next visible thread", run: () => navigateVisibleConversation(1) },
+  { key: "down", category: "Thread List", description: "Next visible thread", run: () => navigateVisibleConversation(1) },
+  { key: "k", category: "Thread List", description: "Previous visible thread", run: () => navigateVisibleConversation(-1) },
+  { key: "up", category: "Thread List", description: "Previous visible thread", run: () => navigateVisibleConversation(-1) },
+  { key: "enter", category: "Thread List", description: "Open focused thread", run: openVisibleConversationSearchResult },
+  { key: "g+g", category: "Thread List", description: "Jump to first visible thread", run: focusFirstVisibleConversation },
+  { key: "shift+g", category: "Thread List", description: "Jump to last visible thread", run: focusLastVisibleConversation },
+  { key: "mod+up", category: "Thread List", description: "Jump to first visible thread", run: focusFirstVisibleConversation },
+  { key: "mod+down", category: "Thread List", description: "Jump to last visible thread", run: focusLastVisibleConversation },
+  { key: "shift+j", category: "Thread List", description: "Select focused thread and move down", run: () => selectAndNavigateVisibleConversation(1) },
+  { key: "shift+down", category: "Thread List", description: "Select focused thread and move down", run: () => selectAndNavigateVisibleConversation(1) },
+  { key: "shift+k", category: "Thread List", description: "Select focused thread and move up", run: () => selectAndNavigateVisibleConversation(-1) },
+  { key: "shift+up", category: "Thread List", description: "Select focused thread and move up", run: () => selectAndNavigateVisibleConversation(-1) },
+  { key: "mod+a", category: "Thread List", description: "Select all visible threads", run: selectVisibleConversationsShortcut },
+  { key: "mod+shift+a", category: "Thread List", description: "Clear selected threads", run: clearSelectedConversationsShortcut },
+
+  { key: "g+i", category: "Views", description: "Go to Inbox", run: () => setConversationViewShortcut("inbox") },
+  { key: "g+a", category: "Views", description: "Go to All", run: () => setConversationViewShortcut("all") },
+  { key: "g+r", category: "Views", description: "Go to Needs reply", run: () => setConversationViewShortcut("needsReply") },
+  { key: "g+h", category: "Views", description: "Go to Follow-up", run: () => setConversationViewShortcut("followup") },
+  { key: "g+u", category: "Views", description: "Go to Unread", run: () => setConversationViewShortcut("unread") },
+  { key: "g+d", category: "Views", description: "Go to Drafts", run: () => setConversationViewShortcut("drafts") },
+  { key: "g+l", category: "Views", description: "Go to Unlabeled", run: () => setConversationViewShortcut("unlabeled") },
+  { key: "g+s", category: "Views", description: "Go to Favorites", run: () => setConversationViewShortcut("favorites") },
+  { key: "g+e", category: "Views", description: "Go to Archived", run: () => setConversationViewShortcut("archived") },
+  { key: "g+o", category: "Views", description: "Go to Unknown", run: () => setConversationViewShortcut("unknown") },
+  { key: "g+p", category: "Views", description: "Go to Pinned", run: () => setConversationViewShortcut("pinned") },
+  { key: "g+m", category: "Views", description: "Go to Muted", run: () => setConversationViewShortcut("muted") },
+  { key: "shift+i", category: "Views", description: "Filter Inbox", run: () => setConversationViewShortcut("inbox") },
+  { key: "shift+u", category: "Views", description: "Filter Unread", run: () => setConversationViewShortcut("unread") },
+  { key: "shift+r", category: "Views", description: "Filter Needs reply", run: () => setConversationViewShortcut("needsReply") },
+  { key: "shift+h", category: "Views", description: "Filter Follow-up", run: () => setConversationViewShortcut("followup") },
+  { key: "shift+s", category: "Views", description: "Filter Favorites", run: () => setConversationViewShortcut("favorites") },
+  { key: "1", category: "Views", description: "Sort by recent activity", run: () => setConversationSortShortcut("recent") },
+  { key: "2", category: "Views", description: "Sort by priority", run: () => setConversationSortShortcut("priority") },
+  { key: "3", category: "Views", description: "Sort by unread", run: () => setConversationSortShortcut("unread") },
+
+  { key: "e", category: "Thread Actions", description: "Archive or restore selected thread(s)", run: toggleSelectedConversationArchive },
+  { key: "[", category: "Thread Actions", description: "Archive selected thread and move down", run: () => archiveSelectedConversationAndMove(1) },
+  { key: "]", category: "Thread Actions", description: "Archive selected thread and move up", run: () => archiveSelectedConversationAndMove(-1) },
+  { key: "shift+e", category: "Thread Actions", description: "Restore archived selected thread", run: restoreSelectedConversationArchive },
+  { key: "#", category: "Thread Actions", description: "Archive selected thread(s)", run: toggleSelectedConversationArchive },
+  { key: "u", category: "Thread Actions", description: "Toggle read/unread for focused message or thread", run: () => (focusedLoadedMessage() ? toggleFocusedLoadedMessageRead() : toggleSelectedConversationRead()) },
+  { key: "p", category: "Thread Actions", description: "Pin or unpin selected thread(s)", run: toggleSelectedConversationPin },
+  { key: "shift+m", category: "Thread Actions", description: "Mute or unmute selected thread(s)", run: toggleSelectedConversationMute },
+  { key: "h", category: "Thread Actions", description: "Set follow-up on selected thread(s)", run: focusConversationFollowUpShortcut },
+  { key: "mod+shift+h", category: "Thread Actions", description: "Set follow-up on selected thread(s)", run: focusConversationFollowUpShortcut },
+  { key: "l", category: "Thread Actions", description: "Add or remove thread labels", run: focusConversationLabelsShortcut },
+  { key: "v", category: "Thread Actions", description: "Add or remove thread labels", run: focusConversationLabelsShortcut },
+  { key: "r", category: "Thread Actions", description: "Reply to focused message or selected thread", run: replyShortcut },
+  { key: "o", category: "Thread Actions", description: "Open selected thread in Messages", run: openMessagesShortcut },
+  { key: "y", category: "Thread Actions", description: "Copy focused message or thread summary", run: copySelectedConversationShortcut },
+
+  { key: "m", category: "Loaded Messages", description: "Jump to next unread loaded message", run: focusNextUnreadLoadedMessage },
+  { key: ".", category: "Loaded Messages", description: "Jump to latest loaded message", run: focusLatestLoadedMessage },
+  { key: "d", category: "Loaded Messages", description: "Draft from focused message or focus new-chat body", run: draftFocusedMessageShortcut },
+  { key: "s", category: "Loaded Messages", description: "Star or unstar focused message", run: starFocusedMessageShortcut },
+  { key: "shift+n", category: "Loaded Messages", description: "Edit focused message note", run: editFocusedMessageNoteShortcut },
+];
+
+const shortcutHelpOnlyDefinitions = [
+  { key: "mod+enter", category: "Composer", description: "Send the active reply or new-chat composer" },
+];
+
+function shortcutKeyName(eventKey) {
+  const ignoredKeys = new Set(["Shift", "Control", "Meta", "Alt", "CapsLock"]);
+  if (ignoredKeys.has(eventKey)) return "";
+  const namedKeys = {
+    ArrowDown: "down",
+    ArrowUp: "up",
+    ArrowLeft: "left",
+    ArrowRight: "right",
+    Enter: "enter",
+    Escape: "escape",
+    " ": "space",
+  };
+  return namedKeys[eventKey] || (eventKey.length === 1 ? eventKey.toLowerCase() : eventKey.toLowerCase());
+}
+
+function eventShortcutKey(event) {
+  const key = shortcutKeyName(event.key);
+  if (!key) return "";
+  const modifiers = [];
+  if (event.metaKey || event.ctrlKey) modifiers.push("mod");
+  if (event.altKey) modifiers.push("alt");
+  if (event.shiftKey && (/^[a-z]$/.test(key) || ["up", "down", "left", "right", "?", "enter"].includes(key))) {
+    modifiers.push("shift");
+  }
+  return [...modifiers, key].join("+");
+}
+
+function shortcutDisplay(sequence) {
+  const isMac = /Mac|iPhone|iPad/.test(navigator.platform || "");
+  const labels = {
+    mod: isMac ? "⌘" : "Ctrl",
+    shift: "Shift",
+    alt: isMac ? "⌥" : "Alt",
+    enter: "Enter",
+    escape: "Esc",
+    up: "↑",
+    down: "↓",
+    left: "←",
+    right: "→",
+    space: "Space",
+  };
+  return sequence.split("+").map((part) => labels[part] || (part.length === 1 ? part.toUpperCase() : part)).join(" ");
+}
+
+function findShortcutDefinition(key) {
+  return shortcutDefinitions.find((definition) => definition.key === key && typeof definition.run === "function") || null;
+}
+
+function shortcutDefinitionHasPrefix(prefix) {
+  return shortcutDefinitions.some((definition) => (
+    typeof definition.run === "function" && definition.key.startsWith(`${prefix}+`)
+  ));
+}
+
+function clearShortcutSequence() {
+  if (shortcutSequenceTimer) window.clearTimeout(shortcutSequenceTimer);
+  shortcutSequenceTimer = 0;
+  shortcutSequencePrefix = "";
+  shortcutPendingDefinition = null;
+}
+
+function runKeyboardShortcut(definition) {
+  clearShortcutSequence();
+  try {
+    const result = definition.run();
+    if (result && typeof result.catch === "function") {
+      result.catch((error) => {
+        el.statusLine.textContent = error.message;
+      });
     }
+  } catch (error) {
+    el.statusLine.textContent = error.message;
   }
+}
+
+function setShortcutSequencePrefix(prefix, pendingDefinition = null) {
+  if (shortcutSequenceTimer) window.clearTimeout(shortcutSequenceTimer);
+  shortcutSequencePrefix = prefix;
+  shortcutPendingDefinition = pendingDefinition;
+  el.statusLine.textContent = pendingDefinition
+    ? `${shortcutDisplay(prefix)} …`
+    : `Shortcut ${shortcutDisplay(prefix)} …`;
+  shortcutSequenceTimer = window.setTimeout(() => {
+    const pending = shortcutPendingDefinition;
+    clearShortcutSequence();
+    if (pending) runKeyboardShortcut(pending);
+  }, shortcutSequenceDelayMs);
+}
+
+function renderShortcutHelp() {
+  if (!el.shortcutHelpBody) return;
+  el.shortcutHelpBody.replaceChildren();
+  const definitions = [...shortcutDefinitions, ...shortcutHelpOnlyDefinitions];
+  const categories = [...new Set(definitions.map((definition) => definition.category))];
+  for (const category of categories) {
+    const section = document.createElement("section");
+    section.className = "shortcut-help-section";
+    const heading = document.createElement("h3");
+    heading.textContent = category;
+    section.append(heading);
+    for (const definition of definitions.filter((item) => item.category === category)) {
+      const row = document.createElement("div");
+      row.className = "shortcut-help-row";
+      const key = document.createElement("kbd");
+      key.textContent = shortcutDisplay(definition.key);
+      const description = document.createElement("span");
+      description.textContent = definition.description;
+      row.append(key, description);
+      section.append(row);
+    }
+    el.shortcutHelpBody.append(section);
+  }
+}
+
+function showShortcutHelp() {
+  renderShortcutHelp();
+  el.shortcutHelp.hidden = false;
+  el.closeShortcutsButton?.focus();
+}
+
+function hideShortcutHelp() {
+  if (!el.shortcutHelp) return;
+  el.shortcutHelp.hidden = true;
+}
+
+function toggleShortcutHelp() {
+  if (!el.shortcutHelp || el.shortcutHelp.hidden) {
+    showShortcutHelp();
+  } else {
+    hideShortcutHelp();
+  }
+}
+
+function handleGlobalShortcuts(event) {
+  if (event.defaultPrevented || event.isComposing || isShortcutEditableTarget(event.target)) return;
+  const key = eventShortcutKey(event);
+  if (!key) return;
+  if (el.shortcutHelp && !el.shortcutHelp.hidden && key !== "escape" && key !== "shift+?") {
+    event.preventDefault();
+    return;
+  }
+
+  if (shortcutSequencePrefix) {
+    const sequenceKey = `${shortcutSequencePrefix}+${key}`;
+    const sequenceDefinition = findShortcutDefinition(sequenceKey);
+    if (sequenceDefinition) {
+      event.preventDefault();
+      runKeyboardShortcut(sequenceDefinition);
+      return;
+    }
+    clearShortcutSequence();
+  }
+
+  const definition = findShortcutDefinition(key);
+  if (shortcutDefinitionHasPrefix(key)) {
+    event.preventDefault();
+    setShortcutSequencePrefix(key, definition);
+    return;
+  }
+  if (!definition) return;
+  event.preventDefault();
+  runKeyboardShortcut(definition);
 }
 
 function isSubmitShortcut(event) {
@@ -2298,6 +2733,9 @@ function renderBulkActions(rows) {
   const allVisibleSelected = visibleCount > 0 && rows.every((conversation) => state.selectedConversationIds.has(conversation.conversation_id));
   const visibleUnknownRows = rows.filter(conversationHasUnknownParticipants);
   const visibleUnknownCount = visibleUnknownRows.length;
+  const visibleUnreadCount = rows.filter(conversationHasUnread).length;
+  const visibleNeedsReplyCount = rows.filter(conversationNeedsReply).length;
+  const visibleFollowUpCount = rows.filter(hasFollowUp).length;
   const allVisibleUnknownSelected = visibleUnknownCount > 0
     && visibleUnknownRows.every((conversation) => state.selectedConversationIds.has(conversation.conversation_id));
   const labelCount = cleanBulkLabels(el.bulkLabelsInput.value).length;
@@ -2315,6 +2753,12 @@ function renderBulkActions(rows) {
   el.selectVisibleButton.disabled = state.bulkBusy || !visibleCount || allVisibleSelected;
   el.selectUnknownButton.disabled = state.bulkBusy || !visibleUnknownCount || allVisibleUnknownSelected;
   el.selectUnknownButton.textContent = visibleUnknownCount ? `Select ${visibleUnknownCount} unknown` : "Select unknown";
+  el.nextUnreadConversationButton.disabled = state.bulkBusy || visibleUnreadCount === 0;
+  el.nextUnreadConversationButton.textContent = visibleUnreadCount ? `Next unread ${visibleUnreadCount}` : "Next unread";
+  el.nextReplyConversationButton.disabled = state.bulkBusy || visibleNeedsReplyCount === 0;
+  el.nextReplyConversationButton.textContent = visibleNeedsReplyCount ? `Next reply ${visibleNeedsReplyCount}` : "Next reply";
+  el.nextFollowUpConversationButton.disabled = state.bulkBusy || visibleFollowUpCount === 0;
+  el.nextFollowUpConversationButton.textContent = visibleFollowUpCount ? `Next follow-up ${visibleFollowUpCount}` : "Next follow-up";
   el.bulkMarkReadButton.textContent = markUnreadIntent ? "Mark unread" : "Mark read";
   el.bulkMarkReadButton.title = markUnreadIntent ? "Mark selected conversations unread" : "Mark selected conversations read";
   el.bulkMarkReadButton.setAttribute("aria-label", el.bulkMarkReadButton.title);
@@ -10463,6 +10907,11 @@ el.refreshButton.addEventListener("click", () => {
   loadConversations();
   loadContacts();
 });
+el.shortcutsButton.addEventListener("click", toggleShortcutHelp);
+el.closeShortcutsButton.addEventListener("click", hideShortcutHelp);
+el.shortcutHelp.addEventListener("click", (event) => {
+  if (event.target === el.shortcutHelp) hideShortcutHelp();
+});
 el.conversationSearch.addEventListener("input", () => {
   state.activeConversationViewId = "";
   renderConversations();
@@ -10830,6 +11279,9 @@ el.selectUnknownButton.addEventListener("click", () => {
     : "Unknown threads already selected";
   renderConversations();
 });
+el.nextUnreadConversationButton.addEventListener("click", focusNextUnreadConversation);
+el.nextReplyConversationButton.addEventListener("click", focusNextNeedsReplyConversation);
+el.nextFollowUpConversationButton.addEventListener("click", focusNextFollowUpConversation);
 el.clearSelectionButton.addEventListener("click", () => {
   state.selectedConversationIds.clear();
   state.bulkMessage = "";

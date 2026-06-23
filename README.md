@@ -165,7 +165,7 @@ shortcuts, visible-page auto-refresh with new-activity status for cached convers
 and the selected thread, message-level reply targets and copy actions, thread filtering and unknown-first sorting,
 needs-reply/unread/direct/groups/unknown-participant/favorite-participant/drafts/unlabeled/muted/pinned/archived and label-based conversation views, favorite-person and unknown-first sorting, visible unknown-thread selection, bulk
 mark-read/mark-unread/pin-unpin/mute-unmute/archive-restore/label add-remove, selected-thread summary copy, selected-people add/copy/save/star/unstar/create, and draft cleanup actions, latest-message previews in the conversation rail,
-highlighted conversation search with saved rail views and keyboard result navigation,
+highlighted conversation search with saved rail views, SlashyEmail-style keyboard shortcuts and help overlay for compose/search/view jumps/thread actions/loaded-message actions, and keyboard result navigation,
 global synced-message search with saved message-search views, keyboard result navigation, exact-hit thread opening that loads older message windows as needed, and highlighted note/attachment-aware results, recent-message browsing, open/copy/reply actions and filters for current thread, unread, sent,
 files and audio plus date ranges, highlighted loaded-message filters with keyboard result navigation, next-unread/latest-message jumps, and focused-message reply/copy/draft/star/read/note actions for sender/body/notes/attachments and unread/sent/files/audio,
 starred/noted-message filtering, local message starring and private
@@ -179,7 +179,7 @@ selected/visible contact bulk favorite and unfavorite actions,
 removable recipient chips, reusable saved recipient lists, selected-thread participant actions for contact
 search, thread filtering, local Messages search, new-chat, and contact creation, participant favoriting, bulk add-all, copy-all, and save-as-list actions, local thread titles, notes, tags and muted state,
 native Messages group-name context whenever a local title differs plus one-click local-title restore from the native group name,
-rail-level quick reply, pin/mute/archive/read-unread actions, follow-up scheduling/filtering with quick presets from threads or message rows, quick message-row labels plus bulk follow-up set/clear, read/unread management, local route
+rail-level quick reply, visible-thread next unread/needs-reply/follow-up jumps, pin/mute/archive/read-unread actions, follow-up scheduling/filtering with quick presets from threads or message rows, quick message-row labels plus bulk follow-up set/clear, read/unread management, local route
 disconnect/reconnect controls, persistent per-thread reply drafts, new chat
 draft staging with keyboard-navigable contact suggestions, live Messages-ready draft preview, Cmd/Ctrl+Enter keyboard submit, copy-recipients/copy-body/copy-draft actions,
 addressed Messages compose links, and a Codex prompt helper with

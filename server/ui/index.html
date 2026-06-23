@@ -15,7 +15,10 @@
             <p class="eyebrow">PenguinConnect</p>
             <h1>Messages</h1>
           </div>
-          <button class="icon-button" id="refreshButton" type="button" title="Refresh">↻</button>
+          <div class="rail-actions">
+            <button class="icon-button" id="shortcutsButton" type="button" title="Keyboard shortcuts" aria-label="Keyboard shortcuts">?</button>
+            <button class="icon-button" id="refreshButton" type="button" title="Refresh">↻</button>
+          </div>
         </header>
         <div class="status-line" id="statusLine">Checking Messages…</div>
         <label class="search-box">
@@ -62,6 +65,9 @@
           <span id="bulkState">0 selected</span>
           <button type="button" id="selectVisibleButton">Select visible</button>
           <button type="button" id="selectUnknownButton">Select unknown</button>
+          <button type="button" id="nextUnreadConversationButton">Next unread</button>
+          <button type="button" id="nextReplyConversationButton">Next reply</button>
+          <button type="button" id="nextFollowUpConversationButton">Next follow-up</button>
           <button type="button" id="bulkMarkReadButton">Mark read</button>
           <button type="button" id="bulkPinButton">Pin</button>
           <button type="button" id="bulkMuteButton">Mute</button>
@@ -402,6 +408,18 @@
         </section>
       </aside>
     </main>
+    <div class="shortcut-help-backdrop" id="shortcutHelp" hidden>
+      <section class="shortcut-help" role="dialog" aria-modal="true" aria-labelledby="shortcutHelpTitle">
+        <header class="shortcut-help-head">
+          <div>
+            <p class="eyebrow">Keyboard</p>
+            <h2 id="shortcutHelpTitle">Shortcuts</h2>
+          </div>
+          <button class="icon-button" id="closeShortcutsButton" type="button" title="Close shortcuts" aria-label="Close shortcuts">×</button>
+        </header>
+        <div class="shortcut-help-body" id="shortcutHelpBody"></div>
+      </section>
+    </div>
     <script src="/penguin-connect/ui/app.js"></script>
   </body>
 </html>
