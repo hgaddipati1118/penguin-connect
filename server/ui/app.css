@@ -3743,6 +3743,15 @@ body {
   display: none;
 }
 
+.conversation-filters,
+.contact-source-filters,
+.message-search-filters,
+.message-view-filters,
+.media-filters,
+.codex-modes {
+  flex-wrap: nowrap;
+}
+
 .conversation-filters button,
 .contact-source-filters button,
 .message-search-filters button,
@@ -3822,5 +3831,167 @@ body {
 
   .message-tools .message-date-range {
     grid-column: 1 / -1;
+  }
+}
+
+/* Keep the first screen focused on conversations and messages. */
+.rail {
+  display: flex;
+  flex-direction: column;
+}
+
+.rail > * {
+  flex-shrink: 0;
+}
+
+.rail-head { order: 0; }
+.status-line { order: 1; }
+.rail > .search-box { order: 2; }
+.conversation-filters { order: 3; }
+.conversation-sort { order: 4; }
+.label-filters { order: 5; }
+.conversation-list { order: 6; }
+.conversation-saved-views { order: 7; }
+.bulk-actions { order: 8; }
+.contacts-panel { order: 9; }
+
+.bulk-actions,
+.contact-bulk-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.bulk-actions::-webkit-scrollbar,
+.contact-bulk-actions::-webkit-scrollbar,
+.thread-actions::-webkit-scrollbar,
+.loaded-message-actions::-webkit-scrollbar,
+.message-search-actions::-webkit-scrollbar,
+.message-history-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.bulk-actions span {
+  grid-column: auto;
+  flex: 0 0 auto;
+  max-width: 132px;
+}
+
+.bulk-label-row,
+.bulk-followup-row,
+.bulk-draft-row {
+  display: contents;
+}
+
+.bulk-label-input,
+.bulk-followup-input {
+  flex: 0 0 150px;
+  border-radius: var(--radius-pill);
+}
+
+.bulk-actions button,
+.contact-bulk-actions button {
+  flex: 0 0 auto;
+}
+
+.thread-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+}
+
+.thread-actions,
+.loaded-message-actions,
+.message-search-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.thread-actions .quiet-button,
+.message-history-bar .quiet-button,
+.message-search-more .quiet-button,
+.message-search-filters button,
+.message-view-filters button {
+  flex: 0 0 auto;
+}
+
+.message-history-bar,
+.message-search-more {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.message-history-bar > span,
+.message-search-more > span {
+  flex: 0 0 auto;
+}
+
+.message-saved-view-list,
+.conversation-saved-view-list,
+.contact-saved-view-list {
+  min-height: 0;
+}
+
+.message-saved-view-empty,
+.conversation-saved-view-empty,
+.contact-saved-view-empty {
+  display: none;
+}
+
+@media (min-width: 901px) and (max-width: 1100px) {
+  .shell {
+    grid-template-columns: minmax(250px, 280px) minmax(330px, 1fr) minmax(250px, 300px);
+  }
+
+  .compose {
+    grid-column: auto;
+    grid-template-columns: 1fr;
+    height: 100vh;
+    max-height: 100vh;
+    overflow-y: auto;
+    border-top: 0;
+  }
+}
+
+@media (max-width: 900px) {
+  .shell {
+    height: auto;
+    max-height: none;
+    overflow: visible;
+    grid-template-columns: 1fr;
+  }
+
+  .rail,
+  .thread,
+  .compose {
+    height: auto;
+    max-height: none;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .compose {
+    grid-column: 1 / -1;
+    grid-template-columns: 1fr;
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+}
+
+@media (max-width: 520px) {
+  .thread-management,
+  .message-tools,
+  .message-date-range,
+  .management-actions {
+    grid-template-columns: 1fr;
   }
 }
