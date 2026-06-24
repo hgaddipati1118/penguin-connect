@@ -1084,6 +1084,11 @@ function digitsOnly(value) {
   return String(value || "").replace(/\D+/g, "");
 }
 
+function looksLikePhoneHandle(value) {
+  const text = String(value || "").trim();
+  return /^[\d\s+().-]+$/.test(text) && digitsOnly(text).length >= 7;
+}
+
 function highlightTerms(value) {
   const terms = String(value || "")
     .toLowerCase()
@@ -1342,8 +1347,7 @@ function contactManagementKeyForHandle(value) {
   const text = String(value || "").trim().toLowerCase();
   if (!text) return "";
   if (text.includes("@")) return `email:${text}`;
-  const digits = digitsOnly(text);
-  if (digits.length >= 7) return `phone:${digits}`;
+  if (looksLikePhoneHandle(text)) return `phone:${digitsOnly(text)}`;
   return `handle:${text}`;
 }
 
@@ -1356,7 +1360,7 @@ function handleType(value) {
   const text = String(value || "").trim();
   if (!text) return "";
   if (text.includes("@")) return "email";
-  if (digitsOnly(text).length >= 7) return "phone";
+  if (looksLikePhoneHandle(text)) return "phone";
   return "handle";
 }
 
@@ -1474,17 +1478,82 @@ function conversationHaystack(conversation) {
   return `${raw} ${digitsOnly(raw)}`;
 }
 
+function cleanConversationTitleCandidate(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function isOpaqueConversationIdentifier(value) {
+  const text = cleanConversationTitleCandidate(value);
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return /^[a-f0-9]{24,}$/.test(lower)
+    || /^chat\d{8,}$/.test(lower)
+    || (/^(imessage|sms|rcs)[;:_-]/.test(lower) && lower.length > 20);
+}
+
+function appendConversationNameCandidate(names, seen, value) {
+  const text = cleanConversationTitleCandidate(value);
+  const key = text.toLowerCase();
+  if (!text || key === "me" || key === "you" || seen.has(key) || isOpaqueConversationIdentifier(text)) return;
+  seen.add(key);
+  names.push(text);
+}
+
+function conversationContactNameCandidates(conversation) {
+  const names = [];
+  const seen = new Set();
+  for (const contact of conversationContactContextItems(conversation)) {
+    const displayName = cleanConversationTitleCandidate(contact.display_name);
+    const fullName = cleanConversationTitleCandidate([contact.first_name, contact.last_name].filter(Boolean).join(" "));
+    const organization = cleanConversationTitleCandidate(contact.organization);
+    const handle = cleanConversationTitleCandidate(contact.primary_handle || contact.handle);
+    const countBefore = names.length;
+    appendConversationNameCandidate(names, seen, displayName || fullName || organization);
+    if (names.length === countBefore) {
+      appendConversationNameCandidate(names, seen, handle);
+    }
+  }
+  return names;
+}
+
+function conversationFallbackName(conversation) {
+  const names = [];
+  const seen = new Set();
+  for (const name of conversationContactNameCandidates(conversation)) {
+    appendConversationNameCandidate(names, seen, name);
+  }
+  for (const participant of conversationParticipants(conversation)) {
+    appendConversationNameCandidate(names, seen, participant.handle);
+  }
+  appendConversationNameCandidate(names, seen, conversation?.last_message_sender);
+
+  if (isGroupConversation(conversation)) {
+    if (names.length >= 2) {
+      const extra = names.length - 3;
+      return `${names.slice(0, 3).join(", ")}${extra > 0 ? ` +${extra}` : ""}`;
+    }
+    if (names.length === 1) return `Group with ${names[0]}`;
+    return "Unnamed group";
+  }
+  return names[0] || "Conversation";
+}
+
 function conversationDisplayName(conversation) {
-  return String(conversation?.title || conversation?.display_name || conversation?.conversation_id || "Conversation").trim() || "Conversation";
+  const localTitle = cleanConversationTitleCandidate(conversation?.title);
+  if (localTitle) return localTitle;
+  const sourceTitle = cleanConversationTitleCandidate(conversation?.display_name);
+  if (sourceTitle && !isOpaqueConversationIdentifier(sourceTitle)) return sourceTitle;
+  return conversationFallbackName(conversation);
 }
 
 function sourceDisplayName(conversation) {
-  return String(conversation?.display_name || conversation?.conversation_id || "Conversation").trim() || "Conversation";
+  return cleanConversationTitleCandidate(conversation?.display_name);
 }
 
 function conversationSourceTitle(conversation) {
   const sourceTitle = sourceDisplayName(conversation);
-  return sourceTitle && sourceTitle !== conversationDisplayName(conversation) ? sourceTitle : "";
+  if (!sourceTitle || isOpaqueConversationIdentifier(sourceTitle)) return "";
+  return sourceTitle !== conversationDisplayName(conversation) ? sourceTitle : "";
 }
 
 function conversationSourceTitleText(conversation) {
@@ -2983,6 +3052,8 @@ function renderBulkActions(rows) {
   const pinIntent = shouldBulkPin();
   const muteIntent = shouldBulkMute();
   const archiveIntent = shouldBulkArchive();
+  el.bulkActions.classList.toggle("has-selection", selectedCount > 0);
+  el.bulkActions.classList.toggle("no-selection", selectedCount === 0);
   el.bulkState.textContent = state.bulkBusy ? "Updating selected" : (state.bulkMessage || `${selectedCount} selected`);
   el.selectVisibleButton.disabled = state.bulkBusy || !visibleCount || allVisibleSelected;
   el.selectUnknownButton.disabled = state.bulkBusy || !visibleUnknownCount || allVisibleUnknownSelected;
@@ -4337,8 +4408,7 @@ function findConversationsForContact(contact, limit = 4) {
 
 function recipientCompareKey(value) {
   const text = String(value || "").trim().toLowerCase();
-  const digits = digitsOnly(text);
-  return digits.length >= 7 && !text.includes("@") ? digits : text;
+  return looksLikePhoneHandle(text) && !text.includes("@") ? digitsOnly(text) : text;
 }
 
 function draftRecipientValues() {
@@ -5359,6 +5429,8 @@ function renderContactBulkActions() {
   const unreadContactCount = visible.filter(contactHasUnreadActivity).length;
   const needsReplyContactCount = visible.filter(contactNeedsReplyActivity).length;
   const followUpContactCount = visible.filter(contactHasFollowUpActivity).length;
+  el.contactBulkActions.classList.toggle("has-selection", selectedCount > 0);
+  el.contactBulkActions.classList.toggle("no-selection", selectedCount === 0);
   el.contactSelectVisibleButton.disabled = visibleCount === 0;
   el.contactNextUnreadButton.disabled = unreadContactCount === 0;
   el.contactNextReplyButton.disabled = needsReplyContactCount === 0;

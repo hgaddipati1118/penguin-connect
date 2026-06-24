@@ -1418,6 +1418,55 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(emails_body["contacts"][0]["display_name"], "Alex Dual")
         self.assertEqual(emails_body["contacts"][0]["primary_handle"], "alex.dual@example.test")
 
+    def test_opaque_group_identifier_is_not_treated_as_phone_contact(self):
+        opaque_identifier = "deadbeefdeadbeefdeadbeefdeadbeef"
+        self.assertEqual(app_module._contact_handle_type(opaque_identifier), "handle")
+
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """INSERT INTO penguin_connect_conversations
+                   (gmail_email, conversation_id, source_provider, source_chat_id, source_chat_identifier,
+                    source_service_name, display_name, chat_type, participants, alias_email, status)
+                   VALUES (?, ?, 'imessage', ?, ?, 'iMessage', ?, 'group', ?, ?, 'active')""",
+                (
+                    "owner@gmail.com",
+                    "amc_opaque_group",
+                    f"iMessage;-;{opaque_identifier}",
+                    opaque_identifier,
+                    opaque_identifier,
+                    "[]",
+                    "owner+opaque-group@gmail.com",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with TestClient(app_module.app) as client:
+            conversations_response = client.get("/penguin-connect/conversations")
+            contacts_response = client.get(
+                "/penguin-connect/contacts",
+                params={"source": "participants", "search": opaque_identifier[:8], "limit": 10},
+            )
+
+        self.assertEqual(conversations_response.status_code, 200)
+        conversation = next(
+            item for item in conversations_response.json()["conversations"]
+            if item["conversation_id"] == "amc_opaque_group"
+        )
+        self.assertEqual(conversation["participant_count"], 0)
+        self.assertEqual(conversation["contact_context"], [])
+
+        self.assertEqual(contacts_response.status_code, 200)
+        self.assertEqual(contacts_response.json()["participant_count"], 0)
+        self.assertFalse(
+            any(
+                contact["primary_handle"] == opaque_identifier
+                for contact in contacts_response.json()["contacts"]
+            )
+        )
+
     def test_contacts_endpoint_searches_unsaved_conversation_participants(self):
         conn = self._get_connection()
         try:

@@ -3648,3 +3648,179 @@ textarea:focus-visible {
 .search-result { border-radius: var(--radius); }
 .thread-person { border-radius: var(--radius); }
 .contact-item { border-radius: var(--radius); }
+
+/* =====================================================================
+   Cleaner console pass
+   Keeps operator controls available, but stops inactive controls from
+   dominating the first screen.
+   ===================================================================== */
+:root {
+  --bg: #f7f8fb;
+  --panel: #ffffff;
+  --panel-alt: #eef2f6;
+  --panel-soft: #f1f4f8;
+  --line: #dde3ea;
+  --line-strong: #c8d1dc;
+  --ink: #14171f;
+  --text: #14171f;
+  --muted: #6f7785;
+  --accent: #0a84ff;
+  --shadow: 0 18px 44px rgba(31, 41, 55, 0.10);
+}
+
+body {
+  background:
+    radial-gradient(circle at 18% -8%, rgba(10, 132, 255, 0.13), transparent 34rem),
+    linear-gradient(180deg, #fbfcff 0%, var(--bg) 42%);
+}
+
+.rail,
+.compose {
+  background: color-mix(in srgb, var(--panel-soft) 88%, white);
+}
+
+.thread {
+  background: linear-gradient(180deg, #fbfcff 0%, #f7f8fb 100%);
+}
+
+.rail-head,
+.thread-head {
+  box-shadow: 0 1px 0 rgba(20, 23, 31, 0.03);
+}
+
+.thread-head > div:first-child {
+  min-width: 0;
+}
+
+#threadTitle {
+  max-width: min(42rem, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-actions {
+  justify-content: flex-end;
+  max-width: 30rem;
+  gap: 6px;
+}
+
+.thread-actions .quiet-button {
+  min-height: 30px;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.thread-status,
+.message-search-status {
+  margin: 10px 18px 0;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--panel) 78%, transparent);
+}
+
+.conversation-filters,
+.contact-source-filters,
+.message-search-filters,
+.message-view-filters,
+.media-filters,
+.codex-modes {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  padding-bottom: 3px;
+  scrollbar-width: none;
+}
+
+.conversation-filters::-webkit-scrollbar,
+.contact-source-filters::-webkit-scrollbar,
+.message-search-filters::-webkit-scrollbar,
+.message-view-filters::-webkit-scrollbar,
+.media-filters::-webkit-scrollbar,
+.codex-modes::-webkit-scrollbar {
+  display: none;
+}
+
+.conversation-filters button,
+.contact-source-filters button,
+.message-search-filters button,
+.message-view-filters button,
+.media-filters button,
+.codex-modes button {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: max-content;
+  padding: 0 12px;
+}
+
+.bulk-actions,
+.contact-bulk-actions,
+.thread-management,
+.message-tools,
+.message-history-bar,
+.message-search-more,
+.conversation-saved-views,
+.contact-saved-views,
+.message-saved-views {
+  border: 1px solid color-mix(in srgb, var(--line) 82%, transparent);
+  background: color-mix(in srgb, var(--panel) 76%, transparent);
+  box-shadow: 0 1px 2px rgba(31, 41, 55, 0.04);
+}
+
+.bulk-actions,
+.contact-bulk-actions {
+  padding: 8px;
+}
+
+.bulk-actions.no-selection #bulkMarkReadButton,
+.bulk-actions.no-selection #bulkPinButton,
+.bulk-actions.no-selection #bulkMuteButton,
+.bulk-actions.no-selection #bulkArchiveButton,
+.bulk-actions.no-selection #clearSelectionButton,
+.bulk-actions.no-selection .bulk-label-row,
+.bulk-actions.no-selection .bulk-followup-row,
+.bulk-actions.no-selection .bulk-draft-row {
+  display: none;
+}
+
+.contact-bulk-actions.no-selection #contactClearSelectedButton {
+  display: none;
+}
+
+.thread-management,
+.message-tools {
+  padding: 10px;
+}
+
+.thread-management input,
+.thread-management textarea,
+.message-tools input {
+  background: color-mix(in srgb, var(--panel-soft) 72%, white);
+}
+
+.conversation-row.active .badge {
+  border-color: rgba(255, 255, 255, 0.42);
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+@media (max-width: 1040px) and (min-width: 761px) {
+  .thread-management {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .thread-management textarea,
+  .thread-management .management-actions {
+    grid-column: 1 / -1;
+  }
+
+  .message-tools {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .message-tools .message-date-range {
+    grid-column: 1 / -1;
+  }
+}

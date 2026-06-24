@@ -726,13 +726,22 @@ def _contact_phone_search_key(value: str) -> str:
     return re.sub(r"\D+", "", value or "")
 
 
+def _looks_like_phone_handle(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if not re.fullmatch(r"[\d\s+().-]+", text):
+        return False
+    return len(_contact_phone_search_key(text)) >= 7
+
+
 def _contact_handle_type(value: str) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
     if "@" in text:
         return "email"
-    if len(_contact_phone_search_key(text)) >= 7:
+    if _looks_like_phone_handle(text):
         return "phone"
     return "handle"
 
@@ -743,9 +752,8 @@ def _contact_compare_key(value: str) -> str:
         return ""
     if "@" in text:
         return f"email:{text}"
-    digits = _contact_phone_search_key(text)
-    if len(digits) >= 7:
-        return f"phone:{digits}"
+    if _looks_like_phone_handle(text):
+        return f"phone:{_contact_phone_search_key(text)}"
     return f"handle:{text}"
 
 
