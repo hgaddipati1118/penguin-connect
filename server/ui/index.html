@@ -41,118 +41,121 @@
           <button type="button" data-view="archived">Archived</button>
           <button type="button" data-view="all">All</button>
         </div>
-        <label class="conversation-sort">
-          <span>Sort</span>
-          <select id="conversationSort" aria-label="Sort conversations">
-            <option value="recent">Recent</option>
-            <option value="priority">Priority</option>
-            <option value="unread">Unread</option>
-            <option value="followup">Follow-up</option>
-            <option value="unknown">Unknown first</option>
-            <option value="favorites">Favorites first</option>
-            <option value="name">A-Z</option>
-          </select>
-        </label>
-        <div class="label-filters" id="labelFilters" aria-label="Label filters"></div>
-        <div class="conversation-saved-views" aria-label="Saved conversation views">
-          <div class="conversation-saved-view-tools">
-            <input id="conversationViewName" type="text" placeholder="Saved rail view name" autocomplete="off" aria-label="Saved conversation view name" />
-            <button type="button" id="saveConversationViewButton">Save view</button>
-          </div>
-          <div class="conversation-saved-view-list" id="conversationSavedViews" aria-live="polite"></div>
-        </div>
-        <div class="bulk-actions" id="bulkActions" aria-label="Bulk conversation actions">
-          <span id="bulkState">0 selected</span>
-          <button type="button" id="selectVisibleButton">Select visible</button>
-          <button type="button" id="selectUnknownButton">Select unknown</button>
-          <button type="button" id="nextUnreadConversationButton">Next unread</button>
-          <button type="button" id="nextReplyConversationButton">Next reply</button>
-          <button type="button" id="nextFollowUpConversationButton">Next follow-up</button>
-          <button type="button" id="bulkMarkReadButton">Mark read</button>
-          <button type="button" id="bulkPinButton">Pin</button>
-          <button type="button" id="bulkMuteButton">Mute</button>
-          <button type="button" id="bulkArchiveButton">Archive</button>
-          <button type="button" id="clearSelectionButton">Clear</button>
-          <div class="bulk-label-row">
-            <input class="bulk-label-input" id="bulkLabelsInput" type="text" placeholder="Labels to add/remove" autocomplete="off" />
-            <button type="button" id="bulkLabelButton">Apply labels</button>
-            <button type="button" id="bulkRemoveLabelButton">Remove labels</button>
-          </div>
-          <div class="bulk-followup-row">
-            <input class="bulk-followup-input" id="bulkFollowUpAt" type="datetime-local" title="Bulk follow-up at" aria-label="Bulk follow-up at" />
-            <button type="button" id="bulkSetFollowUpButton" title="Set follow-up" aria-label="Set follow-up">Set</button>
-            <button type="button" id="bulkClearFollowUpButton" title="Clear follow-up" aria-label="Clear follow-up">Clear</button>
-          </div>
-          <div class="bulk-draft-row">
-            <button type="button" id="bulkCopyThreadsButton">Copy threads</button>
-            <button type="button" id="bulkAddPeopleButton">Add people</button>
-            <button type="button" id="bulkCopyPeopleButton">Copy people</button>
-            <button type="button" id="bulkSavePeopleButton">Save people</button>
-            <button type="button" id="bulkStarPeopleButton">Star people</button>
-            <button type="button" id="bulkUnstarPeopleButton">Unstar people</button>
-            <button type="button" id="bulkCreatePeopleButton">Create people</button>
-            <button type="button" id="bulkClearDraftsButton">Clear drafts</button>
-          </div>
-        </div>
         <div class="conversation-list" id="conversationList" role="list"></div>
-        <section class="contacts-panel" aria-label="Contacts">
-          <header class="mini-head">
-            <h3>Contacts</h3>
-            <button class="icon-button small-button" id="contactRefreshButton" type="button" title="Refresh contacts">↻</button>
-          </header>
-          <label class="search-box compact-search">
-            <span>⌕</span>
-            <input id="contactSearch" type="search" placeholder="Search names, phones, email" autocomplete="off" aria-label="Search contacts" aria-controls="contactList" />
-          </label>
-          <div class="contact-source-filters" id="contactSourceFilters" aria-label="Contact source filters"></div>
-          <label class="contact-sort">
+        <details class="rail-drawer">
+          <summary>More</summary>
+          <label class="conversation-sort">
             <span>Sort</span>
-            <select id="contactSort" aria-label="Sort contacts">
-              <option value="default">Default</option>
-              <option value="name">Name</option>
-              <option value="favorite">Favorites first</option>
-              <option value="noted">Notes first</option>
-              <option value="threads">Threads first</option>
-              <option value="unread">Unread first</option>
-              <option value="needsReply">Needs reply first</option>
-              <option value="followup">Follow-ups first</option>
-              <option value="activity">Recent activity</option>
-              <option value="saved">Saved first</option>
-              <option value="unsaved">Unsaved first</option>
-              <option value="recent">Recently imported</option>
+            <select id="conversationSort" aria-label="Sort conversations">
+              <option value="recent">Recent</option>
+              <option value="priority">Priority</option>
+              <option value="unread">Unread</option>
+              <option value="followup">Follow-up</option>
+              <option value="unknown">Unknown first</option>
+              <option value="favorites">Favorites first</option>
+              <option value="name">A-Z</option>
             </select>
           </label>
-          <div class="contact-saved-views" aria-label="Saved contact searches">
-            <div class="contact-saved-view-tools">
-              <input id="contactViewName" type="text" placeholder="Saved search name" autocomplete="off" aria-label="Saved contact search name" />
-              <button type="button" id="saveContactViewButton">Save view</button>
+          <div class="label-filters" id="labelFilters" aria-label="Label filters"></div>
+          <div class="conversation-saved-views" aria-label="Saved conversation views">
+            <div class="conversation-saved-view-tools">
+              <input id="conversationViewName" type="text" placeholder="Saved rail view name" autocomplete="off" aria-label="Saved conversation view name" />
+              <button type="button" id="saveConversationViewButton">Save view</button>
             </div>
-            <div class="contact-saved-view-list" id="contactSavedViews" aria-live="polite"></div>
+            <div class="conversation-saved-view-list" id="conversationSavedViews" aria-live="polite"></div>
           </div>
-          <div class="contact-bulk-actions" id="contactBulkActions" aria-label="Visible contact actions">
-            <button type="button" id="contactSelectVisibleButton">Select visible</button>
-            <button type="button" id="contactNextUnreadButton">Next unread</button>
-            <button type="button" id="contactNextReplyButton">Next reply</button>
-            <button type="button" id="contactNextFollowUpButton">Next follow-up</button>
-            <button type="button" id="contactAddVisibleButton">Add visible</button>
-            <button type="button" id="contactFilterThreadsButton">Threads visible</button>
-            <button type="button" id="contactSearchMessagesButton">Find visible</button>
-            <button type="button" id="contactCopyVisibleButton">Copy visible</button>
-            <button type="button" id="contactCopyDetailsButton">Copy details</button>
-            <button type="button" id="contactSaveVisibleButton">Save visible</button>
-            <button type="button" id="contactFavoriteSelectedButton">Star selected</button>
-            <button type="button" id="contactUnfavoriteSelectedButton">Unstar selected</button>
-            <button type="button" id="contactCreateVisibleButton">Create unknown</button>
-            <button type="button" id="contactClearSelectedButton">Clear selected</button>
+          <div class="bulk-actions" id="bulkActions" aria-label="Bulk conversation actions">
+            <span id="bulkState">0 selected</span>
+            <button type="button" id="selectVisibleButton">Select visible</button>
+            <button type="button" id="selectUnknownButton">Select unknown</button>
+            <button type="button" id="nextUnreadConversationButton">Next unread</button>
+            <button type="button" id="nextReplyConversationButton">Next reply</button>
+            <button type="button" id="nextFollowUpConversationButton">Next follow-up</button>
+            <button type="button" id="bulkMarkReadButton">Mark read</button>
+            <button type="button" id="bulkPinButton">Pin</button>
+            <button type="button" id="bulkMuteButton">Mute</button>
+            <button type="button" id="bulkArchiveButton">Archive</button>
+            <button type="button" id="clearSelectionButton">Clear</button>
+            <div class="bulk-label-row">
+              <input class="bulk-label-input" id="bulkLabelsInput" type="text" placeholder="Labels to add/remove" autocomplete="off" />
+              <button type="button" id="bulkLabelButton">Apply labels</button>
+              <button type="button" id="bulkRemoveLabelButton">Remove labels</button>
+            </div>
+            <div class="bulk-followup-row">
+              <input class="bulk-followup-input" id="bulkFollowUpAt" type="datetime-local" title="Bulk follow-up at" aria-label="Bulk follow-up at" />
+              <button type="button" id="bulkSetFollowUpButton" title="Set follow-up" aria-label="Set follow-up">Set</button>
+              <button type="button" id="bulkClearFollowUpButton" title="Clear follow-up" aria-label="Clear follow-up">Clear</button>
+            </div>
+            <div class="bulk-draft-row">
+              <button type="button" id="bulkCopyThreadsButton">Copy threads</button>
+              <button type="button" id="bulkAddPeopleButton">Add people</button>
+              <button type="button" id="bulkCopyPeopleButton">Copy people</button>
+              <button type="button" id="bulkSavePeopleButton">Save people</button>
+              <button type="button" id="bulkStarPeopleButton">Star people</button>
+              <button type="button" id="bulkUnstarPeopleButton">Unstar people</button>
+              <button type="button" id="bulkCreatePeopleButton">Create people</button>
+              <button type="button" id="bulkClearDraftsButton">Clear drafts</button>
+            </div>
           </div>
-          <div class="contact-status" id="contactStatus">Type to search cached Contacts</div>
-          <div class="contact-inspector" id="contactInspector" hidden></div>
-          <div class="contact-more" id="contactMoreBar">
-            <span id="contactCount">No contacts loaded</span>
-            <button type="button" id="loadMoreContactsButton" disabled>Show more</button>
-          </div>
-          <div class="contact-list" id="contactList" role="list"></div>
-        </section>
+          <section class="contacts-panel" aria-label="Contacts">
+            <header class="mini-head">
+              <h3>Contacts</h3>
+              <button class="icon-button small-button" id="contactRefreshButton" type="button" title="Refresh contacts">↻</button>
+            </header>
+            <label class="search-box compact-search">
+              <span>⌕</span>
+              <input id="contactSearch" type="search" placeholder="Search names, phones, email" autocomplete="off" aria-label="Search contacts" aria-controls="contactList" />
+            </label>
+            <div class="contact-source-filters" id="contactSourceFilters" aria-label="Contact source filters"></div>
+            <label class="contact-sort">
+              <span>Sort</span>
+              <select id="contactSort" aria-label="Sort contacts">
+                <option value="default">Default</option>
+                <option value="name">Name</option>
+                <option value="favorite">Favorites first</option>
+                <option value="noted">Notes first</option>
+                <option value="threads">Threads first</option>
+                <option value="unread">Unread first</option>
+                <option value="needsReply">Needs reply first</option>
+                <option value="followup">Follow-ups first</option>
+                <option value="activity">Recent activity</option>
+                <option value="saved">Saved first</option>
+                <option value="unsaved">Unsaved first</option>
+                <option value="recent">Recently imported</option>
+              </select>
+            </label>
+            <div class="contact-saved-views" aria-label="Saved contact searches">
+              <div class="contact-saved-view-tools">
+                <input id="contactViewName" type="text" placeholder="Saved search name" autocomplete="off" aria-label="Saved contact search name" />
+                <button type="button" id="saveContactViewButton">Save view</button>
+              </div>
+              <div class="contact-saved-view-list" id="contactSavedViews" aria-live="polite"></div>
+            </div>
+            <div class="contact-bulk-actions" id="contactBulkActions" aria-label="Visible contact actions">
+              <button type="button" id="contactSelectVisibleButton">Select visible</button>
+              <button type="button" id="contactNextUnreadButton">Next unread</button>
+              <button type="button" id="contactNextReplyButton">Next reply</button>
+              <button type="button" id="contactNextFollowUpButton">Next follow-up</button>
+              <button type="button" id="contactAddVisibleButton">Add visible</button>
+              <button type="button" id="contactFilterThreadsButton">Threads visible</button>
+              <button type="button" id="contactSearchMessagesButton">Find visible</button>
+              <button type="button" id="contactCopyVisibleButton">Copy visible</button>
+              <button type="button" id="contactCopyDetailsButton">Copy details</button>
+              <button type="button" id="contactSaveVisibleButton">Save visible</button>
+              <button type="button" id="contactFavoriteSelectedButton">Star selected</button>
+              <button type="button" id="contactUnfavoriteSelectedButton">Unstar selected</button>
+              <button type="button" id="contactCreateVisibleButton">Create unknown</button>
+              <button type="button" id="contactClearSelectedButton">Clear selected</button>
+            </div>
+            <div class="contact-status" id="contactStatus">Type to search cached Contacts</div>
+            <div class="contact-inspector" id="contactInspector" hidden></div>
+            <div class="contact-more" id="contactMoreBar">
+              <span id="contactCount">No contacts loaded</span>
+              <button type="button" id="loadMoreContactsButton" disabled>Show more</button>
+            </div>
+            <div class="contact-list" id="contactList" role="list"></div>
+          </section>
+        </details>
       </aside>
 
       <section class="thread" aria-label="Conversation">
@@ -164,197 +167,112 @@
           <div class="thread-actions">
             <button class="quiet-button" id="syncButton" type="button">Refresh</button>
             <button class="quiet-button" id="openMessagesButton" type="button">Open Messages</button>
-            <button class="quiet-button" id="pinButton" type="button">Pin</button>
-            <button class="quiet-button" id="muteButton" type="button">Mute</button>
-            <button class="quiet-button" id="archiveButton" type="button">Archive</button>
-            <button class="quiet-button" id="markReadButton" type="button">Mark read</button>
-            <button class="quiet-button" id="markUnreadButton" type="button">Mark unread</button>
-            <button class="quiet-button" id="connectionButton" type="button">Disconnect</button>
-            <button class="quiet-button" id="copyThreadButton" type="button">Copy thread</button>
+            <details class="thread-more">
+              <summary aria-label="More thread actions">•••</summary>
+              <div class="thread-action-menu">
+                <button class="quiet-button" id="pinButton" type="button">Pin</button>
+                <button class="quiet-button" id="muteButton" type="button">Mute</button>
+                <button class="quiet-button" id="archiveButton" type="button">Archive</button>
+                <button class="quiet-button" id="markReadButton" type="button">Mark read</button>
+                <button class="quiet-button" id="markUnreadButton" type="button">Mark unread</button>
+                <button class="quiet-button" id="connectionButton" type="button">Disconnect</button>
+                <button class="quiet-button" id="copyThreadButton" type="button">Copy thread</button>
+              </div>
+            </details>
           </div>
         </header>
         <div class="thread-status" id="threadStatus">No conversation selected</div>
-        <div class="thread-management" id="threadManagement">
-          <input id="threadLocalTitle" type="text" placeholder="Local title" autocomplete="off" />
-          <div class="followup-control">
-            <input id="threadFollowUpAt" type="datetime-local" title="Follow up at" aria-label="Follow up at" />
-            <div class="followup-presets" id="threadFollowUpPresets" aria-label="Follow-up presets">
-              <button type="button" data-follow-up-preset="tomorrow">Tomorrow</button>
-              <button type="button" data-follow-up-preset="weekend">Weekend</button>
-              <button type="button" data-follow-up-preset="week">Next week</button>
-              <button type="button" data-follow-up-preset="clear">Clear</button>
-            </div>
-          </div>
-          <input id="threadTags" type="text" placeholder="Tags" autocomplete="off" />
-          <textarea id="threadNote" rows="2" placeholder="Private note"></textarea>
-          <div class="management-actions">
-            <button class="quiet-button" id="useSourceTitleButton" type="button">Use group name</button>
-            <button class="quiet-button" id="saveManagementButton" type="button">Save</button>
-            <span id="managementState">No thread</span>
-          </div>
-        </div>
-        <div class="message-tools">
-          <label class="message-search">
-            <span>Search local Messages</span>
-            <input id="globalMessageSearch" type="search" placeholder="Text, sender, contact, attachment" autocomplete="off" aria-label="Search local Messages" aria-controls="messageSearchResults" />
-          </label>
-          <label class="message-filter">
-            <span>Find in thread</span>
-            <input id="messageFilter" type="search" placeholder="Filter loaded messages" autocomplete="off" aria-label="Find in loaded thread" aria-controls="messageList" />
-          </label>
-          <div class="message-date-range" aria-label="Message search date range">
-            <label class="message-date-field">
-              <span>From</span>
-              <input id="messageDateFrom" type="date" />
-            </label>
-            <label class="message-date-field">
-              <span>To</span>
-              <input id="messageDateTo" type="date" />
-            </label>
-            <button class="quiet-button" id="clearMessageDatesButton" type="button">Clear dates</button>
-          </div>
-        </div>
-        <div class="message-search-filters" id="globalMessageSearchFilters" aria-label="Global message search filters"></div>
-        <div class="message-saved-views" aria-label="Saved message searches">
-          <div class="message-saved-view-tools">
-            <input id="messageSearchViewName" type="text" placeholder="Saved message search name" autocomplete="off" aria-label="Saved message search name" />
-            <button type="button" id="saveMessageSearchViewButton">Save search</button>
-          </div>
-          <div class="message-saved-view-list" id="messageSavedViews" aria-live="polite"></div>
-        </div>
-        <div class="message-view-filters" id="messageViewFilters" aria-label="Loaded message views"></div>
-        <div class="message-history-bar" id="messageHistoryBar">
-          <span id="loadedMessageCount">No thread loaded</span>
-          <span class="loaded-message-actions">
-            <button class="quiet-button" id="replyFocusedMessageButton" type="button" disabled>Reply focused</button>
-            <button class="quiet-button" id="copyFocusedMessageButton" type="button" disabled>Copy focused</button>
-            <button class="quiet-button" id="draftFocusedMessageButton" type="button" disabled>Draft focused</button>
-            <button class="quiet-button" id="starFocusedMessageButton" type="button" disabled>Star focused</button>
-            <button class="quiet-button" id="readFocusedMessageButton" type="button" disabled>Mark focused</button>
-            <button class="quiet-button" id="noteFocusedMessageButton" type="button" disabled>Note focused</button>
-            <button class="quiet-button" id="nextUnreadMessageButton" type="button" disabled>Next unread</button>
-            <button class="quiet-button" id="latestMessageButton" type="button" disabled>Latest</button>
-            <button class="quiet-button" id="copyVisibleMessagesButton" type="button" disabled>Copy visible</button>
-            <button class="quiet-button" id="starVisibleMessagesButton" type="button" disabled>Star visible</button>
-            <button class="quiet-button" id="markVisibleMessagesReadButton" type="button" disabled>Mark read</button>
-            <button class="quiet-button" id="markVisibleMessagesUnreadButton" type="button" disabled>Mark unread</button>
-            <button class="quiet-button" id="loadMoreMessagesButton" type="button" disabled>Load older</button>
-          </span>
-        </div>
-        <div class="message-search-status" id="messageSearchStatus">Type 2+ chars to search local cache</div>
-        <div class="message-search-more" id="messageSearchMoreBar">
-          <span id="messageSearchCount">No search loaded</span>
-          <span class="message-search-actions">
-            <button class="quiet-button" id="starSearchLoadedButton" type="button" disabled>Star loaded</button>
-            <button class="quiet-button" id="markSearchReadButton" type="button" disabled>Mark read</button>
-            <button class="quiet-button" id="markSearchUnreadButton" type="button" disabled>Mark unread</button>
-            <button class="quiet-button" id="addSearchSendersButton" type="button" disabled>Add senders</button>
-            <button class="quiet-button" id="addSearchParticipantsButton" type="button" disabled>Add participants</button>
-            <button class="quiet-button" id="saveSearchSendersButton" type="button" disabled>Save senders</button>
-            <button class="quiet-button" id="saveSearchParticipantsButton" type="button" disabled>Save participants</button>
-            <button class="quiet-button" id="createSearchSendersButton" type="button" disabled>Create contacts</button>
-            <button class="quiet-button" id="createSearchParticipantsButton" type="button" disabled>Create participants</button>
-            <button class="quiet-button" id="loadMoreSearchButton" type="button" disabled>Show more</button>
-          </span>
-        </div>
-        <div class="message-search-results" id="messageSearchResults" aria-live="polite" role="list"></div>
-        <div class="message-list" id="messageList" aria-live="polite" role="list"></div>
-      </section>
-
-      <aside class="compose" aria-label="Reply tools">
-        <section class="tool-section">
-          <header class="section-head">
-            <h3>Thread people</h3>
-            <span id="threadPeopleState">No thread</span>
-          </header>
-          <div class="thread-people-bulk" id="threadPeopleBulkActions" aria-label="Thread people actions">
-            <button type="button" id="threadPeopleAddAllButton">Add all</button>
-            <button type="button" id="threadPeopleCopyAllButton">Copy all</button>
-            <button type="button" id="threadPeopleSaveListButton">Save list</button>
-            <button type="button" id="threadPeopleCreateAllButton">Create unknown</button>
-          </div>
-          <div class="thread-people" id="threadPeople" aria-live="polite"></div>
-        </section>
-
-        <section class="tool-section">
-          <header class="section-head">
-            <h3>Media</h3>
-            <span id="threadMediaState">No thread</span>
-          </header>
-          <div class="media-filters" id="mediaFilters" aria-label="Thread media views"></div>
-          <div class="thread-media" id="threadMedia" aria-live="polite"></div>
-        </section>
-
-        <section class="tool-section">
-          <header class="section-head">
-            <h3>New chat</h3>
-            <span id="draftState">Idle</span>
-          </header>
-          <textarea id="draftRecipients" rows="3" placeholder="Phones or emails" aria-autocomplete="list" aria-controls="draftRecipientSuggestions"></textarea>
-          <div class="draft-recipient-suggestions" id="draftRecipientSuggestions" role="listbox" aria-live="polite" hidden></div>
-          <div class="draft-recipient-chips" id="draftRecipientChips" aria-live="polite"></div>
-          <div class="recipient-list-tools">
-            <input id="recipientListName" type="text" placeholder="List name" autocomplete="off" />
-            <button class="quiet-button" id="saveRecipientListButton" type="button">Save list</button>
-          </div>
-          <div class="recipient-lists" id="recipientLists" aria-live="polite"></div>
-          <textarea id="draftMessage" rows="4" placeholder="Draft message"></textarea>
-          <div class="emoji-row" id="draftEmojiRow" aria-label="New chat emoji shortcuts"></div>
-          <div class="draft-thread-match" id="draftThreadMatch" aria-live="polite" hidden></div>
-          <div class="voice-memo-row" id="draftVoiceMemoRow">
-            <button class="quiet-button" id="draftVoiceMemoButton" type="button" title="Record new chat voice memo">Record</button>
-            <span class="voice-memo-timer" id="draftVoiceMemoTimer">00:00</span>
-            <span class="voice-memo-status" id="draftVoiceMemoStatus">Mic ready</span>
-          </div>
-          <div class="attachment-drop" id="draftAttachmentDrop">
-            <input id="draftFileInput" type="file" multiple />
-            <label for="draftFileInput">Files & images for new chat</label>
-          </div>
-          <div class="attachment-list" id="draftAttachmentList"></div>
-          <div class="draft-preview" id="draftPreview" aria-live="polite">
-            <div class="draft-preview-head">
-              <span id="draftPreviewTitle">No recipients</span>
-              <div class="draft-preview-actions">
-                <button class="quiet-button" id="copyDraftRecipientsButton" type="button" disabled>Copy recipients</button>
-                <button class="quiet-button" id="copyDraftBodyButton" type="button" disabled>Copy body</button>
-                <button class="quiet-button" id="copyDraftPreviewButton" type="button" disabled>Copy draft</button>
-                <button class="quiet-button" id="draftCreateUnknownButton" type="button" disabled>Create unknown</button>
-                <button class="quiet-button" id="openAddressedDraftButton" type="button" disabled>Open addressed</button>
+        <details class="thread-tools">
+          <summary>Search</summary>
+          <div class="thread-tools-body">
+            <div class="thread-management" id="threadManagement">
+              <input id="threadLocalTitle" type="text" placeholder="Local title" autocomplete="off" />
+              <div class="followup-control">
+                <input id="threadFollowUpAt" type="datetime-local" title="Follow up at" aria-label="Follow up at" />
+                <div class="followup-presets" id="threadFollowUpPresets" aria-label="Follow-up presets">
+                  <button type="button" data-follow-up-preset="tomorrow">Tomorrow</button>
+                  <button type="button" data-follow-up-preset="weekend">Weekend</button>
+                  <button type="button" data-follow-up-preset="week">Next week</button>
+                  <button type="button" data-follow-up-preset="clear">Clear</button>
+                </div>
+              </div>
+              <input id="threadTags" type="text" placeholder="Tags" autocomplete="off" />
+              <textarea id="threadNote" rows="2" placeholder="Private note"></textarea>
+              <div class="management-actions">
+                <button class="quiet-button" id="useSourceTitleButton" type="button">Use group name</button>
+                <button class="quiet-button" id="saveManagementButton" type="button">Save</button>
+                <span id="managementState">No thread</span>
               </div>
             </div>
-            <pre id="draftPreviewText">Add recipients to preview the Messages draft.</pre>
+            <div class="message-tools">
+              <label class="message-search">
+                <span>Search local Messages</span>
+                <input id="globalMessageSearch" type="search" placeholder="Text, sender, contact, attachment" autocomplete="off" aria-label="Search local Messages" aria-controls="messageSearchResults" />
+              </label>
+              <label class="message-filter">
+                <span>Find in thread</span>
+                <input id="messageFilter" type="search" placeholder="Filter loaded messages" autocomplete="off" aria-label="Find in loaded thread" aria-controls="messageList" />
+              </label>
+              <div class="message-date-range" aria-label="Message search date range">
+                <label class="message-date-field">
+                  <span>From</span>
+                  <input id="messageDateFrom" type="date" />
+                </label>
+                <label class="message-date-field">
+                  <span>To</span>
+                  <input id="messageDateTo" type="date" />
+                </label>
+                <button class="quiet-button" id="clearMessageDatesButton" type="button">Clear dates</button>
+              </div>
+            </div>
+            <div class="message-search-filters" id="globalMessageSearchFilters" aria-label="Global message search filters"></div>
+            <div class="message-saved-views" aria-label="Saved message searches">
+              <div class="message-saved-view-tools">
+                <input id="messageSearchViewName" type="text" placeholder="Saved message search name" autocomplete="off" aria-label="Saved message search name" />
+                <button type="button" id="saveMessageSearchViewButton">Save search</button>
+              </div>
+              <div class="message-saved-view-list" id="messageSavedViews" aria-live="polite"></div>
+            </div>
+            <div class="message-view-filters" id="messageViewFilters" aria-label="Loaded message views"></div>
+            <div class="message-history-bar" id="messageHistoryBar">
+              <span id="loadedMessageCount">No thread loaded</span>
+              <span class="loaded-message-actions">
+                <button class="quiet-button" id="replyFocusedMessageButton" type="button" disabled>Reply focused</button>
+                <button class="quiet-button" id="copyFocusedMessageButton" type="button" disabled>Copy focused</button>
+                <button class="quiet-button" id="draftFocusedMessageButton" type="button" disabled>Draft focused</button>
+                <button class="quiet-button" id="starFocusedMessageButton" type="button" disabled>Star focused</button>
+                <button class="quiet-button" id="readFocusedMessageButton" type="button" disabled>Mark focused</button>
+                <button class="quiet-button" id="noteFocusedMessageButton" type="button" disabled>Note focused</button>
+                <button class="quiet-button" id="nextUnreadMessageButton" type="button" disabled>Next unread</button>
+                <button class="quiet-button" id="latestMessageButton" type="button" disabled>Latest</button>
+                <button class="quiet-button" id="copyVisibleMessagesButton" type="button" disabled>Copy visible</button>
+                <button class="quiet-button" id="starVisibleMessagesButton" type="button" disabled>Star visible</button>
+                <button class="quiet-button" id="markVisibleMessagesReadButton" type="button" disabled>Mark read</button>
+                <button class="quiet-button" id="markVisibleMessagesUnreadButton" type="button" disabled>Mark unread</button>
+                <button class="quiet-button" id="loadMoreMessagesButton" type="button" disabled>Load older</button>
+              </span>
+            </div>
+            <div class="message-search-status" id="messageSearchStatus">Type 2+ chars to search local cache</div>
+            <div class="message-search-more" id="messageSearchMoreBar">
+              <span id="messageSearchCount">No search loaded</span>
+              <span class="message-search-actions">
+                <button class="quiet-button" id="starSearchLoadedButton" type="button" disabled>Star loaded</button>
+                <button class="quiet-button" id="markSearchReadButton" type="button" disabled>Mark read</button>
+                <button class="quiet-button" id="markSearchUnreadButton" type="button" disabled>Mark unread</button>
+                <button class="quiet-button" id="addSearchSendersButton" type="button" disabled>Add senders</button>
+                <button class="quiet-button" id="addSearchParticipantsButton" type="button" disabled>Add participants</button>
+                <button class="quiet-button" id="saveSearchSendersButton" type="button" disabled>Save senders</button>
+                <button class="quiet-button" id="saveSearchParticipantsButton" type="button" disabled>Save participants</button>
+                <button class="quiet-button" id="createSearchSendersButton" type="button" disabled>Create contacts</button>
+                <button class="quiet-button" id="createSearchParticipantsButton" type="button" disabled>Create participants</button>
+                <button class="quiet-button" id="loadMoreSearchButton" type="button" disabled>Show more</button>
+              </span>
+            </div>
+            <div class="message-search-results" id="messageSearchResults" aria-live="polite" role="list"></div>
           </div>
-          <div class="toggle-row">
-            <label><input id="draftCopyToggle" type="checkbox" checked /> Copy</label>
-            <label><input id="draftOpenToggle" type="checkbox" checked /> Open addressed</label>
-            <label><input id="draftOpenAttachmentsToggle" type="checkbox" checked /> Open files</label>
-          </div>
-          <div class="send-row">
-            <button class="primary-button" id="sendDraftButton" type="button" title="Send if existing (Cmd+Enter)">Send if existing</button>
-            <button class="quiet-button" id="stageDraftButton" type="button">Stage draft</button>
-            <button class="quiet-button" id="clearDraftButton" type="button">Clear</button>
-          </div>
-        </section>
-
-        <section class="tool-section">
-          <header class="section-head">
-            <h3>Create contact</h3>
-            <span id="createContactState">Idle</span>
-          </header>
-          <div class="field-grid two-col">
-            <input id="newContactFirst" type="text" placeholder="First" autocomplete="given-name" />
-            <input id="newContactLast" type="text" placeholder="Last" autocomplete="family-name" />
-          </div>
-          <input id="newContactOrganization" type="text" placeholder="Organization" autocomplete="organization" />
-          <input id="newContactPhones" type="tel" placeholder="Phones" autocomplete="tel" />
-          <input id="newContactEmails" type="email" placeholder="Emails" autocomplete="email" />
-          <div class="send-row">
-            <button class="primary-button" id="createContactButton" type="button">Create</button>
-            <button class="quiet-button" id="clearContactButton" type="button">Clear</button>
-          </div>
-        </section>
-
-        <section class="tool-section">
+        </details>
+        <div class="message-list" id="messageList" aria-live="polite" role="list"></div>
+        <section class="tool-section primary-reply-section">
           <header class="section-head">
             <h3>Reply</h3>
             <span id="senderBadge">No sender</span>
@@ -382,36 +300,142 @@
           </div>
           <div class="send-state" id="sendState"></div>
         </section>
+      </section>
 
-        <section class="tool-section">
-          <header class="section-head">
-            <h3>Codex</h3>
-            <span id="codexCount">0 msgs</span>
-          </header>
-          <div class="codex-modes" id="codexModes" role="group" aria-label="Codex prompt mode">
-            <button type="button" data-codex-mode="reply">Reply</button>
-            <button type="button" data-codex-mode="summary">Summary</button>
-            <button type="button" data-codex-mode="followups">Follow-ups</button>
-            <button type="button" data-codex-mode="contacts">Contacts</button>
-          </div>
-          <textarea id="codexQuestion" rows="2" placeholder="Ask about this chat"></textarea>
-          <textarea id="codexPrompt" rows="10" readonly></textarea>
-          <textarea id="codexAnswer" rows="8" readonly placeholder="Codex answer"></textarea>
-          <div class="codex-auth-row" id="codexAuthRow" aria-live="polite">
-            <span id="codexAuthState">Checking Codex auth</span>
-            <button class="quiet-button" id="refreshCodexAuthButton" type="button">Check auth</button>
-            <button class="quiet-button" id="copyCodexLoginButton" type="button">Copy login</button>
-            <button class="quiet-button" id="copyCodexTokenLoginButton" type="button">Copy token login</button>
-          </div>
-          <div class="send-row">
-            <button class="quiet-button" id="buildPromptButton" type="button">Build prompt</button>
-            <button class="quiet-button" id="copyPromptButton" type="button">Copy prompt</button>
-            <button class="primary-button" id="askCodexButton" type="button">Ask Codex</button>
-            <button class="quiet-button" id="copyCodexAnswerButton" type="button">Copy answer</button>
-            <button class="quiet-button" id="useCodexDraftButton" type="button">Use as draft</button>
-            <button class="quiet-button" id="useCodexNewChatButton" type="button">Use in new chat</button>
-          </div>
-        </section>
+      <aside class="compose" aria-label="Reply tools">
+        <details class="compose-drawer">
+          <summary>Details</summary>
+          <section class="tool-section">
+            <header class="section-head">
+              <h3>Thread people</h3>
+              <span id="threadPeopleState">No thread</span>
+            </header>
+            <div class="thread-people-bulk" id="threadPeopleBulkActions" aria-label="Thread people actions">
+              <button type="button" id="threadPeopleAddAllButton">Add all</button>
+              <button type="button" id="threadPeopleCopyAllButton">Copy all</button>
+              <button type="button" id="threadPeopleSaveListButton">Save list</button>
+              <button type="button" id="threadPeopleCreateAllButton">Create unknown</button>
+            </div>
+            <div class="thread-people" id="threadPeople" aria-live="polite"></div>
+          </section>
+
+          <section class="tool-section">
+            <header class="section-head">
+              <h3>Media</h3>
+              <span id="threadMediaState">No thread</span>
+            </header>
+            <div class="media-filters" id="mediaFilters" aria-label="Thread media views"></div>
+            <div class="thread-media" id="threadMedia" aria-live="polite"></div>
+          </section>
+        </details>
+
+        <details class="compose-drawer">
+          <summary>New chat</summary>
+          <section class="tool-section">
+            <header class="section-head">
+              <h3>New chat</h3>
+              <span id="draftState">Idle</span>
+            </header>
+            <textarea id="draftRecipients" rows="3" placeholder="Phones or emails" aria-autocomplete="list" aria-controls="draftRecipientSuggestions"></textarea>
+            <div class="draft-recipient-suggestions" id="draftRecipientSuggestions" role="listbox" aria-live="polite" hidden></div>
+            <div class="draft-recipient-chips" id="draftRecipientChips" aria-live="polite"></div>
+            <div class="recipient-list-tools">
+              <input id="recipientListName" type="text" placeholder="List name" autocomplete="off" />
+              <button class="quiet-button" id="saveRecipientListButton" type="button">Save list</button>
+            </div>
+            <div class="recipient-lists" id="recipientLists" aria-live="polite"></div>
+            <textarea id="draftMessage" rows="4" placeholder="Draft message"></textarea>
+            <div class="emoji-row" id="draftEmojiRow" aria-label="New chat emoji shortcuts"></div>
+            <div class="draft-thread-match" id="draftThreadMatch" aria-live="polite" hidden></div>
+            <div class="voice-memo-row" id="draftVoiceMemoRow">
+              <button class="quiet-button" id="draftVoiceMemoButton" type="button" title="Record new chat voice memo">Record</button>
+              <span class="voice-memo-timer" id="draftVoiceMemoTimer">00:00</span>
+              <span class="voice-memo-status" id="draftVoiceMemoStatus">Mic ready</span>
+            </div>
+            <div class="attachment-drop" id="draftAttachmentDrop">
+              <input id="draftFileInput" type="file" multiple />
+              <label for="draftFileInput">Files & images for new chat</label>
+            </div>
+            <div class="attachment-list" id="draftAttachmentList"></div>
+            <div class="draft-preview" id="draftPreview" aria-live="polite">
+              <div class="draft-preview-head">
+                <span id="draftPreviewTitle">No recipients</span>
+                <div class="draft-preview-actions">
+                  <button class="quiet-button" id="copyDraftRecipientsButton" type="button" disabled>Copy recipients</button>
+                  <button class="quiet-button" id="copyDraftBodyButton" type="button" disabled>Copy body</button>
+                  <button class="quiet-button" id="copyDraftPreviewButton" type="button" disabled>Copy draft</button>
+                  <button class="quiet-button" id="draftCreateUnknownButton" type="button" disabled>Create unknown</button>
+                  <button class="quiet-button" id="openAddressedDraftButton" type="button" disabled>Open addressed</button>
+                </div>
+              </div>
+              <pre id="draftPreviewText">Add recipients to preview the Messages draft.</pre>
+            </div>
+            <div class="toggle-row">
+              <label><input id="draftCopyToggle" type="checkbox" checked /> Copy</label>
+              <label><input id="draftOpenToggle" type="checkbox" checked /> Open addressed</label>
+              <label><input id="draftOpenAttachmentsToggle" type="checkbox" checked /> Open files</label>
+            </div>
+            <div class="send-row">
+              <button class="primary-button" id="sendDraftButton" type="button" title="Send if existing (Cmd+Enter)">Send if existing</button>
+              <button class="quiet-button" id="stageDraftButton" type="button">Stage draft</button>
+              <button class="quiet-button" id="clearDraftButton" type="button">Clear</button>
+            </div>
+          </section>
+        </details>
+
+        <details class="compose-drawer">
+          <summary>Create contact</summary>
+          <section class="tool-section">
+            <header class="section-head">
+              <h3>Create contact</h3>
+              <span id="createContactState">Idle</span>
+            </header>
+            <div class="field-grid two-col">
+              <input id="newContactFirst" type="text" placeholder="First" autocomplete="given-name" />
+              <input id="newContactLast" type="text" placeholder="Last" autocomplete="family-name" />
+            </div>
+            <input id="newContactOrganization" type="text" placeholder="Organization" autocomplete="organization" />
+            <input id="newContactPhones" type="tel" placeholder="Phones" autocomplete="tel" />
+            <input id="newContactEmails" type="email" placeholder="Emails" autocomplete="email" />
+            <div class="send-row">
+              <button class="primary-button" id="createContactButton" type="button">Create</button>
+              <button class="quiet-button" id="clearContactButton" type="button">Clear</button>
+            </div>
+          </section>
+        </details>
+
+        <details class="compose-drawer">
+          <summary>Codex</summary>
+          <section class="tool-section">
+            <header class="section-head">
+              <h3>Codex</h3>
+              <span id="codexCount">0 msgs</span>
+            </header>
+            <div class="codex-modes" id="codexModes" role="group" aria-label="Codex prompt mode">
+              <button type="button" data-codex-mode="reply">Reply</button>
+              <button type="button" data-codex-mode="summary">Summary</button>
+              <button type="button" data-codex-mode="followups">Follow-ups</button>
+              <button type="button" data-codex-mode="contacts">Contacts</button>
+            </div>
+            <textarea id="codexQuestion" rows="2" placeholder="Ask about this chat"></textarea>
+            <textarea id="codexPrompt" rows="10" readonly></textarea>
+            <textarea id="codexAnswer" rows="8" readonly placeholder="Codex answer"></textarea>
+            <div class="codex-auth-row" id="codexAuthRow" aria-live="polite">
+              <span id="codexAuthState">Checking Codex auth</span>
+              <button class="quiet-button" id="refreshCodexAuthButton" type="button">Check auth</button>
+              <button class="quiet-button" id="copyCodexLoginButton" type="button">Copy login</button>
+              <button class="quiet-button" id="copyCodexTokenLoginButton" type="button">Copy token login</button>
+            </div>
+            <div class="send-row">
+              <button class="quiet-button" id="buildPromptButton" type="button">Build prompt</button>
+              <button class="quiet-button" id="copyPromptButton" type="button">Copy prompt</button>
+              <button class="primary-button" id="askCodexButton" type="button">Ask Codex</button>
+              <button class="quiet-button" id="copyCodexAnswerButton" type="button">Copy answer</button>
+              <button class="quiet-button" id="useCodexDraftButton" type="button">Use as draft</button>
+              <button class="quiet-button" id="useCodexNewChatButton" type="button">Use in new chat</button>
+            </div>
+          </section>
+        </details>
       </aside>
     </main>
     <div class="shortcut-help-backdrop" id="shortcutHelp" hidden>

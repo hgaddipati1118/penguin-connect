@@ -3995,3 +3995,440 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+/* =====================================================================
+   Simpler Messages pass
+   Primary path: search conversations, read the chat, reply at the bottom.
+   Secondary operator tools stay available behind disclosure controls.
+   ===================================================================== */
+.shell {
+  grid-template-columns: minmax(280px, 340px) minmax(420px, 1fr) minmax(220px, 300px);
+  background: var(--bg);
+}
+
+.rail,
+.thread,
+.compose {
+  height: 100vh;
+  max-height: 100vh;
+}
+
+.rail {
+  display: flex;
+  overflow: hidden;
+}
+
+.rail-head,
+.thread-head {
+  flex: 0 0 auto;
+}
+
+.status-line {
+  margin: 8px 16px 0;
+}
+
+.rail > .search-box {
+  flex: 0 0 auto;
+  margin: 10px 14px 8px;
+}
+
+.conversation-filters {
+  flex: 0 0 auto;
+  margin: 0 14px 8px;
+}
+
+.conversation-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 8px 10px;
+}
+
+.rail-drawer,
+.thread-tools,
+.compose-drawer {
+  border: 1px solid color-mix(in srgb, var(--line) 86%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel) 86%, transparent);
+  box-shadow: 0 1px 2px rgba(31, 41, 55, 0.04);
+}
+
+.rail-drawer {
+  flex: 0 0 auto;
+  max-height: 54vh;
+  margin: 0 12px 12px;
+  overflow: auto;
+}
+
+.rail-drawer > summary,
+.thread-tools > summary,
+.compose-drawer > summary,
+.thread-more > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 38px;
+  gap: 8px;
+  padding: 0 12px;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 650;
+  list-style: none;
+}
+
+.rail-drawer > summary::-webkit-details-marker,
+.thread-tools > summary::-webkit-details-marker,
+.compose-drawer > summary::-webkit-details-marker,
+.thread-more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.rail-drawer > summary::after,
+.thread-tools > summary::after,
+.compose-drawer > summary::after {
+  content: "⌄";
+  color: var(--muted);
+  font-size: 14px;
+  transition: transform 160ms ease;
+}
+
+.rail-drawer[open] > summary::after,
+.thread-tools[open] > summary::after,
+.compose-drawer[open] > summary::after {
+  transform: rotate(180deg);
+}
+
+.rail-drawer .conversation-sort,
+.rail-drawer .label-filters,
+.rail-drawer .conversation-saved-views,
+.rail-drawer .bulk-actions,
+.rail-drawer .contacts-panel {
+  margin-left: 10px;
+  margin-right: 10px;
+}
+
+.rail-drawer .contacts-panel {
+  margin-bottom: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.thread {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(247, 248, 251, 0.86), rgba(255, 255, 255, 0.98) 34%),
+    var(--panel);
+}
+
+.thread-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 62px;
+  padding: 12px 18px;
+}
+
+.thread-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  max-width: none;
+  gap: 8px;
+  overflow: visible;
+}
+
+.thread-actions .quiet-button {
+  min-height: 32px;
+}
+
+.thread-more {
+  position: relative;
+}
+
+.thread-more > summary {
+  display: grid;
+  width: 34px;
+  min-height: 34px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--panel);
+  color: var(--muted);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.thread-action-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 12;
+  display: grid;
+  width: 178px;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.thread-action-menu .quiet-button {
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 32px;
+  border-color: transparent;
+  text-align: left;
+}
+
+.thread-status {
+  flex: 0 0 auto;
+  margin: 8px 18px 0;
+  padding: 8px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+}
+
+.thread-tools {
+  flex: 0 0 auto;
+  margin: 8px 18px 0;
+  overflow: hidden;
+}
+
+.thread-tools-body {
+  display: grid;
+  gap: 8px;
+  padding: 0 10px 10px;
+}
+
+.thread-tools .thread-management,
+.thread-tools .message-tools,
+.thread-tools .message-saved-views,
+.thread-tools .message-history-bar,
+.thread-tools .message-search-more {
+  margin: 0;
+}
+
+.thread-tools .message-search-filters,
+.thread-tools .message-view-filters,
+.thread-tools .message-search-status,
+.thread-tools .message-search-results {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.message-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px clamp(18px, 4vw, 52px) 24px;
+}
+
+.message {
+  max-width: 100%;
+}
+
+.message-body {
+  max-width: min(72%, 620px);
+  padding: 9px 14px;
+  border-radius: 18px;
+}
+
+.message.mine .message-body {
+  border-bottom-right-radius: 7px;
+}
+
+.message:not(.mine) .message-body {
+  border-bottom-left-radius: 7px;
+}
+
+.message-head {
+  max-width: min(72%, 620px);
+}
+
+.message.mine .message-head {
+  align-self: flex-end;
+}
+
+.primary-reply-section {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 16px 14px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  box-shadow: 0 -10px 28px rgba(31, 41, 55, 0.06);
+}
+
+.primary-reply-section .section-head {
+  display: none;
+}
+
+.primary-reply-section #composer {
+  height: 44px;
+  min-height: 44px;
+  max-height: 132px;
+  padding: 12px 14px;
+  border-radius: 22px;
+  background: var(--panel);
+  resize: vertical;
+}
+
+.primary-reply-section:focus-within #composer {
+  height: 88px;
+}
+
+.primary-reply-section .reply-context {
+  border-radius: 12px;
+}
+
+.primary-reply-section .emoji-row,
+.primary-reply-section .voice-memo-row,
+.primary-reply-section .attachment-drop {
+  display: none;
+}
+
+.primary-reply-section:focus-within .emoji-row,
+.primary-reply-section:hover .emoji-row {
+  display: flex;
+}
+
+.primary-reply-section:focus-within .voice-memo-row,
+.primary-reply-section:hover .voice-memo-row {
+  display: grid;
+}
+
+.primary-reply-section:focus-within .attachment-drop,
+.primary-reply-section:hover .attachment-drop {
+  display: grid;
+  min-height: 46px;
+}
+
+.primary-reply-section .send-row {
+  justify-content: flex-end;
+}
+
+.primary-reply-section .send-row .primary-button {
+  min-width: 72px;
+}
+
+.primary-reply-section .attachment-list:empty,
+.primary-reply-section .send-state:empty {
+  display: none;
+}
+
+.compose {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+  padding: 12px;
+}
+
+.compose-drawer {
+  flex: 0 0 auto;
+  overflow: hidden;
+}
+
+.compose-drawer .tool-section {
+  gap: 10px;
+  margin: 0;
+  padding: 12px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.compose-drawer .tool-section + .tool-section {
+  border-top-style: dashed;
+}
+
+.compose-drawer #codexPrompt,
+.compose-drawer #codexAnswer {
+  min-height: 132px;
+}
+
+.compose-drawer #codexQuestion {
+  min-height: 58px;
+}
+
+.empty-state,
+.error-state {
+  border-radius: 14px;
+  box-shadow: none;
+}
+
+@media (max-width: 1100px) {
+  .shell {
+    grid-template-columns: minmax(270px, 320px) minmax(0, 1fr);
+  }
+
+  .compose {
+    grid-column: 1 / -1;
+    height: auto;
+    max-height: none;
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+}
+
+@media (max-width: 760px) {
+  .shell {
+    display: block;
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .rail,
+  .thread,
+  .compose {
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .conversation-list {
+    height: 42vh;
+    min-height: 260px;
+  }
+
+  .thread {
+    height: 88vh;
+    max-height: 88vh;
+    min-height: 560px;
+    overflow: hidden;
+  }
+
+  .thread-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .thread-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .message-list {
+    min-height: 0;
+    padding-inline: 14px;
+  }
+
+  .message-body,
+  .message-head {
+    max-width: 86%;
+  }
+}

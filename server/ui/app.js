@@ -170,6 +170,7 @@ const el = {
   contactViewName: document.querySelector("#contactViewName"),
   saveContactViewButton: document.querySelector("#saveContactViewButton"),
   contactSavedViews: document.querySelector("#contactSavedViews"),
+  contactBulkActions: document.querySelector("#contactBulkActions"),
   contactSelectVisibleButton: document.querySelector("#contactSelectVisibleButton"),
   contactNextUnreadButton: document.querySelector("#contactNextUnreadButton"),
   contactNextReplyButton: document.querySelector("#contactNextReplyButton"),
