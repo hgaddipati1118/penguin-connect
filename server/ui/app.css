@@ -4322,6 +4322,70 @@ body {
   min-width: 72px;
 }
 
+.primary-reply-section .schedule-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.primary-reply-section .schedule-row input {
+  width: min(210px, 100%);
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.scheduled-send-list {
+  display: grid;
+  gap: 6px;
+}
+
+.scheduled-send-list:empty {
+  display: none;
+}
+
+.scheduled-send {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--panel) 96%, var(--accent));
+}
+
+.scheduled-send-main {
+  min-width: 0;
+}
+
+.scheduled-send-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.scheduled-send-text {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scheduled-send.sent,
+.scheduled-send.cancelled {
+  opacity: 0.7;
+}
+
+.scheduled-send.failed {
+  border-color: color-mix(in srgb, #dc2626 42%, var(--line));
+}
+
 .primary-reply-section .attachment-list:empty,
 .primary-reply-section .send-state:empty {
   display: none;

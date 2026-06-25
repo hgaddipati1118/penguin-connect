@@ -298,6 +298,11 @@
             <button class="primary-button" id="sendButton" type="button" title="Send reply (Cmd+Enter)">Send</button>
             <button class="quiet-button" id="clearButton" type="button">Clear</button>
           </div>
+          <div class="schedule-row" aria-label="Schedule reply">
+            <input id="scheduleAt" type="datetime-local" title="Schedule send time" aria-label="Schedule send time" />
+            <button class="quiet-button" id="scheduleButton" type="button">Schedule</button>
+          </div>
+          <div class="scheduled-send-list" id="scheduledSendList" aria-live="polite"></div>
           <div class="send-state" id="sendState"></div>
         </section>
       </section>

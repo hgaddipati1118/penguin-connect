@@ -198,6 +198,23 @@ CREATE TABLE IF NOT EXISTS penguin_connect_jobs (
     finished_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS penguin_connect_scheduled_messages (
+    scheduled_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES penguin_connect_conversations(conversation_id) ON DELETE CASCADE,
+    sender_email TEXT NOT NULL DEFAULT '',
+    body_text TEXT NOT NULL,
+    attachment_paths TEXT NOT NULL DEFAULT '[]',
+    scheduled_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'scheduled',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    provider_message_id TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    sent_at TEXT,
+    cancelled_at TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_conv_status ON penguin_connect_conversations(gmail_email, source_provider, status);
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_alias_conv ON penguin_connect_aliases(conversation_id, status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_penguin_connect_alias_one_active
@@ -213,6 +230,10 @@ CREATE INDEX IF NOT EXISTS idx_penguin_connect_jobs_lease ON penguin_connect_job
 CREATE UNIQUE INDEX IF NOT EXISTS idx_penguin_connect_jobs_active_dedupe
 ON penguin_connect_jobs(dedupe_key)
 WHERE dedupe_key IS NOT NULL AND status IN ('queued', 'leased');
+CREATE INDEX IF NOT EXISTS idx_penguin_connect_scheduled_messages_due
+ON penguin_connect_scheduled_messages(status, scheduled_at);
+CREATE INDEX IF NOT EXISTS idx_penguin_connect_scheduled_messages_conversation
+ON penguin_connect_scheduled_messages(conversation_id, status, scheduled_at);
 """
 
 

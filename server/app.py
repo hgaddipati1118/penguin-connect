@@ -19,7 +19,7 @@ import time
 import urllib.parse
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
@@ -61,6 +61,9 @@ DEFAULT_UI_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 DEFAULT_UI_ATTACHMENT_TOTAL_MAX_BYTES = 50 * 1024 * 1024
 DEFAULT_CODEX_PROMPT_MAX_CHARS = 24_000
 DEFAULT_CODEX_TIMEOUT_SECONDS = 90
+_scheduled_send_worker_stop = threading.Event()
+_scheduled_send_worker_thread: threading.Thread | None = None
+_scheduled_send_worker_lock = threading.Lock()
 
 class PenguinConnectGmailConnectRequest(BaseModel):
     gmail_email: str
@@ -83,6 +86,12 @@ class PenguinConnectSendRequest(BaseModel):
     message: str = ""
     attachment_paths: list[str] | None = None
     attachments: list[PenguinConnectBrowserAttachment] | None = None
+
+class PenguinConnectScheduledSendRequest(BaseModel):
+    sender_email: str = ""
+    message: str = ""
+    scheduled_at: str
+    attachment_paths: list[str] | None = None
 
 class PenguinConnectContactCreateRequest(BaseModel):
     first_name: str = ""
@@ -155,10 +164,360 @@ def _poll_seconds() -> int:
     raw = os.environ.get("PENGUIN_CONNECT_POLL_SECONDS", "30")
     return int(raw)
 
+def _scheduled_send_poll_seconds() -> float:
+    raw = (os.environ.get("PENGUIN_CONNECT_SCHEDULED_SEND_POLL_SECONDS") or "").strip()
+    try:
+        value = float(raw) if raw else 15.0
+    except Exception:
+        value = 15.0
+    return max(1.0, min(value, 300.0))
+
+def _scheduled_sends_enabled() -> bool:
+    raw = (os.environ.get("PENGUIN_CONNECT_SCHEDULED_SENDS_ENABLED") or "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
 def _apply_runtime_sync_status(sync_status: dict) -> dict:
     runtime = penguinconnect_get_runtime_sync_status()
     sync_status.setdefault("penguin_connect", {}).update(runtime)
     return sync_status
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _utc_now_iso() -> str:
+    return _utc_now().isoformat()
+
+
+def _parse_scheduled_at(value: str) -> datetime:
+    raw = (value or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="scheduled_at_required")
+    try:
+        normalized = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+        parsed = datetime.fromisoformat(normalized)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="invalid_scheduled_at") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
+    return parsed.astimezone(timezone.utc)
+
+
+def _clean_attachment_paths(paths: list[str] | None) -> list[str]:
+    return [str(path).strip() for path in (paths or []) if str(path or "").strip()]
+
+
+def _scheduled_message_dict(row: sqlite3.Row) -> dict:
+    data = dict(row)
+    try:
+        attachment_paths = json.loads(data.get("attachment_paths") or "[]")
+    except Exception:
+        attachment_paths = []
+    if not isinstance(attachment_paths, list):
+        attachment_paths = []
+    return {
+        "scheduled_id": data.get("scheduled_id") or "",
+        "conversation_id": data.get("conversation_id") or "",
+        "source_provider": data.get("source_provider") or "",
+        "display_name": data.get("display_name") or "",
+        "sender_email": data.get("sender_email") or "",
+        "message": data.get("body_text") or "",
+        "attachment_count": len(attachment_paths),
+        "attachment_paths": attachment_paths,
+        "scheduled_at": data.get("scheduled_at") or "",
+        "status": data.get("status") or "",
+        "attempt_count": int(data.get("attempt_count") or 0),
+        "last_error": data.get("last_error") or "",
+        "provider_message_id": data.get("provider_message_id") or "",
+        "created_at": data.get("created_at") or "",
+        "updated_at": data.get("updated_at") or "",
+        "sent_at": data.get("sent_at") or "",
+        "cancelled_at": data.get("cancelled_at") or "",
+    }
+
+
+def _scheduled_message_select_sql(where_clause: str = "") -> str:
+    where_sql = f"WHERE {where_clause}" if where_clause else ""
+    return f"""
+        SELECT s.*, c.source_provider, c.display_name
+        FROM penguin_connect_scheduled_messages s
+        LEFT JOIN penguin_connect_conversations c ON c.conversation_id = s.conversation_id
+        {where_sql}
+    """
+
+
+def _get_scheduled_message(conn: sqlite3.Connection, scheduled_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        _scheduled_message_select_sql("s.scheduled_id = ?"),
+        (scheduled_id,),
+    ).fetchone()
+
+
+def _list_scheduled_messages(conn: sqlite3.Connection, conversation_id: str, limit: int = 100) -> list[dict]:
+    rows = conn.execute(
+        _scheduled_message_select_sql("s.conversation_id = ?")
+        + """
+          ORDER BY CASE s.status
+              WHEN 'scheduled' THEN 0
+              WHEN 'sending' THEN 1
+              WHEN 'failed' THEN 2
+              ELSE 3
+            END,
+            s.scheduled_at ASC
+          LIMIT ?
+        """,
+        (conversation_id, limit),
+    ).fetchall()
+    return [_scheduled_message_dict(row) for row in rows]
+
+
+def _require_existing_conversation(conn: sqlite3.Connection, conversation_id: str) -> sqlite3.Row:
+    row = conn.execute(
+        """SELECT conversation_id, source_provider, status, exclude_from_sync
+           FROM penguin_connect_conversations
+           WHERE conversation_id = ?""",
+        (conversation_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="conversation_not_found")
+    return row
+
+
+def _require_schedulable_conversation(conn: sqlite3.Connection, conversation_id: str) -> sqlite3.Row:
+    row = _require_existing_conversation(conn, conversation_id)
+    if row["status"] != "active":
+        raise HTTPException(status_code=400, detail="conversation_inactive")
+    if int(row["exclude_from_sync"] or 0):
+        raise HTTPException(status_code=400, detail="conversation_excluded")
+    return row
+
+
+def _create_scheduled_message(
+    conn: sqlite3.Connection,
+    conversation_id: str,
+    req: PenguinConnectScheduledSendRequest,
+) -> dict:
+    _require_schedulable_conversation(conn, conversation_id)
+    body_text = _messages_body_text(req.message)
+    attachment_paths = _clean_attachment_paths(req.attachment_paths)
+    if not body_text and not attachment_paths:
+        raise HTTPException(status_code=400, detail="empty_message")
+    scheduled_at_dt = _parse_scheduled_at(req.scheduled_at)
+    if scheduled_at_dt <= _utc_now():
+        raise HTTPException(status_code=400, detail="scheduled_at_must_be_future")
+    scheduled_id = f"scheduled_{uuid.uuid4().hex}"
+    now_iso = _utc_now_iso()
+    conn.execute(
+        """INSERT INTO penguin_connect_scheduled_messages
+           (scheduled_id, conversation_id, sender_email, body_text, attachment_paths,
+            scheduled_at, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)""",
+        (
+            scheduled_id,
+            conversation_id,
+            (req.sender_email or "").strip(),
+            body_text,
+            json.dumps(attachment_paths),
+            scheduled_at_dt.isoformat(),
+            now_iso,
+            now_iso,
+        ),
+    )
+    conn.commit()
+    row = _get_scheduled_message(conn, scheduled_id)
+    log_action(
+        "api_scheduled_send_create",
+        scheduled_id=scheduled_id,
+        conversation_id=conversation_id,
+        scheduled_at=scheduled_at_dt.isoformat(),
+        attachment_count=len(attachment_paths),
+    )
+    return {"success": True, "scheduled_message": _scheduled_message_dict(row)}
+
+
+def _cancel_scheduled_message(conn: sqlite3.Connection, scheduled_id: str) -> dict:
+    row = _get_scheduled_message(conn, scheduled_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="scheduled_message_not_found")
+    if row["status"] != "scheduled":
+        raise HTTPException(status_code=400, detail="scheduled_message_not_cancellable")
+    now_iso = _utc_now_iso()
+    conn.execute(
+        """UPDATE penguin_connect_scheduled_messages
+           SET status = 'cancelled', cancelled_at = ?, updated_at = ?
+           WHERE scheduled_id = ? AND status = 'scheduled'""",
+        (now_iso, now_iso, scheduled_id),
+    )
+    conn.commit()
+    updated = _get_scheduled_message(conn, scheduled_id)
+    log_action(
+        "api_scheduled_send_cancel",
+        scheduled_id=scheduled_id,
+        conversation_id=row["conversation_id"],
+    )
+    return {"success": True, "scheduled_message": _scheduled_message_dict(updated)}
+
+
+def run_due_scheduled_messages(limit: int = 25) -> dict:
+    conn = get_connection()
+    results: list[dict] = []
+    try:
+        rows = conn.execute(
+            _scheduled_message_select_sql("s.status = 'scheduled' AND s.scheduled_at <= ?")
+            + " ORDER BY s.scheduled_at ASC LIMIT ?",
+            (_utc_now_iso(), max(1, min(int(limit or 25), 100))),
+        ).fetchall()
+        for row in rows:
+            scheduled_id = row["scheduled_id"]
+            now_iso = _utc_now_iso()
+            updated = conn.execute(
+                """UPDATE penguin_connect_scheduled_messages
+                   SET status = 'sending',
+                       attempt_count = attempt_count + 1,
+                       updated_at = ?
+                   WHERE scheduled_id = ? AND status = 'scheduled'""",
+                (now_iso, scheduled_id),
+            ).rowcount
+            conn.commit()
+            if updated != 1:
+                continue
+
+            try:
+                attachment_paths = json.loads(row["attachment_paths"] or "[]")
+            except Exception:
+                attachment_paths = []
+            if not isinstance(attachment_paths, list):
+                attachment_paths = []
+            attachment_paths = _clean_attachment_paths(attachment_paths)
+
+            try:
+                send_result = penguinconnect_send_manual_message(
+                    conn,
+                    conversation_id=row["conversation_id"],
+                    sender_email=row["sender_email"] or "",
+                    body_text=row["body_text"] or "",
+                    attachment_paths=attachment_paths or None,
+                )
+            except Exception as exc:
+                conn.rollback()
+                error = str(exc).strip() or exc.__class__.__name__
+                send_result = {"success": False, "error": error}
+
+            now_iso = _utc_now_iso()
+            if send_result.get("success"):
+                conn.execute(
+                    """UPDATE penguin_connect_scheduled_messages
+                       SET status = 'sent',
+                           sent_at = ?,
+                           updated_at = ?,
+                           provider_message_id = ?,
+                           last_error = NULL
+                       WHERE scheduled_id = ?""",
+                    (
+                        now_iso,
+                        now_iso,
+                        str(send_result.get("provider_message_id") or ""),
+                        scheduled_id,
+                    ),
+                )
+                conn.commit()
+                status = "sent"
+                error = ""
+                log_action(
+                    "scheduled_send_sent",
+                    scheduled_id=scheduled_id,
+                    conversation_id=row["conversation_id"],
+                    source_provider=row["source_provider"] or None,
+                    attachment_count=len(attachment_paths),
+                )
+            else:
+                error = str(send_result.get("error") or "penguin_connect_send_failed")
+                conn.execute(
+                    """UPDATE penguin_connect_scheduled_messages
+                       SET status = 'failed',
+                           last_error = ?,
+                           updated_at = ?
+                       WHERE scheduled_id = ?""",
+                    (error, now_iso, scheduled_id),
+                )
+                conn.commit()
+                status = "failed"
+                log_action(
+                    "scheduled_send_failed",
+                    scheduled_id=scheduled_id,
+                    conversation_id=row["conversation_id"],
+                    source_provider=row["source_provider"] or None,
+                    error=error,
+                    attachment_count=len(attachment_paths),
+                )
+
+            results.append(
+                {
+                    "scheduled_id": scheduled_id,
+                    "conversation_id": row["conversation_id"],
+                    "status": status,
+                    "error": error,
+                }
+            )
+        return {"success": True, "processed": len(results), "results": results}
+    finally:
+        conn.close()
+
+
+def _recover_interrupted_scheduled_messages() -> None:
+    conn = get_connection()
+    try:
+        now_iso = _utc_now_iso()
+        conn.execute(
+            """UPDATE penguin_connect_scheduled_messages
+               SET status = 'scheduled',
+                   last_error = 'scheduler interrupted before completion',
+                   updated_at = ?
+               WHERE status = 'sending'""",
+            (now_iso,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _scheduled_send_worker_loop() -> None:
+    while not _scheduled_send_worker_stop.is_set():
+        try:
+            run_due_scheduled_messages()
+        except Exception as exc:
+            log_action("scheduled_send_worker_exception", error=str(exc).strip() or exc.__class__.__name__)
+        _scheduled_send_worker_stop.wait(_scheduled_send_poll_seconds())
+
+
+def start_scheduled_send_worker() -> None:
+    global _scheduled_send_worker_thread
+    if not _scheduled_sends_enabled():
+        return
+    with _scheduled_send_worker_lock:
+        if _scheduled_send_worker_thread and _scheduled_send_worker_thread.is_alive():
+            return
+        _recover_interrupted_scheduled_messages()
+        _scheduled_send_worker_stop.clear()
+        _scheduled_send_worker_thread = threading.Thread(
+            target=_scheduled_send_worker_loop,
+            daemon=True,
+            name="penguinconnect-scheduled-sends",
+        )
+        _scheduled_send_worker_thread.start()
+
+
+def stop_scheduled_send_worker() -> None:
+    global _scheduled_send_worker_thread
+    with _scheduled_send_worker_lock:
+        thread = _scheduled_send_worker_thread
+        _scheduled_send_worker_stop.set()
+    if thread and thread.is_alive():
+        thread.join(timeout=2.0)
+    with _scheduled_send_worker_lock:
+        if _scheduled_send_worker_thread is thread:
+            _scheduled_send_worker_thread = None
 
 
 def _ui_attachment_max_bytes() -> int:
@@ -2860,11 +3219,13 @@ async def lifespan(_app: FastAPI):
         print(f"[PenguinConnect] Contacts refresh failed: {exc}")
 
     start_watchers()
+    start_scheduled_send_worker()
     log_action(
         "server_start",
         db_path=str(DB_PATH),
         action_log_path=str(action_log_path()),
         poll_seconds=_poll_seconds(),
+        scheduled_send_poll_seconds=_scheduled_send_poll_seconds() if _scheduled_sends_enabled() else None,
     )
 
     def _run_startup_sync() -> None:
@@ -2910,6 +3271,11 @@ async def lifespan(_app: FastAPI):
 
     print(f"[PenguinConnect] API server running - DB at {DB_PATH}")
     yield
+
+    try:
+        stop_scheduled_send_worker()
+    except Exception:
+        pass
 
     try:
         stop_watchers()
@@ -3563,6 +3929,42 @@ def reconnect_penguinconnect_conversation(conversation_id: str):
         return result
     finally:
         conn.close()
+
+@app.get("/api/penguin-connect/conversations/{conversation_id}/scheduled-messages")
+@app.get("/penguin-connect/conversations/{conversation_id}/scheduled-messages")
+def list_penguinconnect_scheduled_messages(conversation_id: str):
+    conn = get_connection()
+    try:
+        _require_existing_conversation(conn, conversation_id)
+        return {
+            "success": True,
+            "scheduled_messages": _list_scheduled_messages(conn, conversation_id),
+        }
+    finally:
+        conn.close()
+
+@app.post("/api/penguin-connect/conversations/{conversation_id}/scheduled-messages")
+@app.post("/penguin-connect/conversations/{conversation_id}/scheduled-messages")
+def create_penguinconnect_scheduled_message(conversation_id: str, req: PenguinConnectScheduledSendRequest):
+    conn = get_connection()
+    try:
+        return _create_scheduled_message(conn, conversation_id, req)
+    finally:
+        conn.close()
+
+@app.post("/api/penguin-connect/scheduled-messages/{scheduled_id}/cancel")
+@app.post("/penguin-connect/scheduled-messages/{scheduled_id}/cancel")
+def cancel_penguinconnect_scheduled_message(scheduled_id: str):
+    conn = get_connection()
+    try:
+        return _cancel_scheduled_message(conn, scheduled_id)
+    finally:
+        conn.close()
+
+@app.post("/api/penguin-connect/scheduled-messages/run-due")
+@app.post("/penguin-connect/scheduled-messages/run-due")
+def run_due_penguinconnect_scheduled_messages(limit: int = Query(25, ge=1, le=100)):
+    return run_due_scheduled_messages(limit=limit)
 
 @app.post("/api/penguin-connect/conversations/{conversation_id}/send")
 @app.post("/penguin-connect/conversations/{conversation_id}/send")

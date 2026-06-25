@@ -52,6 +52,7 @@ Optional flags:
 - Reads sibling Apple Messages DM routes during source-to-Gmail sync so route changes between `iMessage`, `RCS`, and `SMS` do not silently drop messages.
 - Keeps Apple Messages group chats separate and uses the group title when one exists.
 - Polls Gmail for replies to alias addresses and sends those replies back to the source provider.
+- Schedules local sends for existing conversations through registered send adapters. Apple Messages, WhatsApp, and Telegram are registered today; Slack requires a Slack adapter before scheduled Slack delivery can run.
 - Mirrors Apple Messages read state back into Gmail `UNREAD` labels using the conversation unread count, so the latest synced inbound source messages clear once the conversation is read in Messages.
 - Only Gmail messages from `SENT` that still target the exact conversation alias are eligible for Gmail-to-source delivery; drafts are ignored.
 - Incremental Gmail reply detection keeps a per-conversation pending sent-activity marker until that conversation is actually synced, and it falls back to a recent sent-mail scan when the global Gmail history cursor has already moved past a valid alias reply.
@@ -318,6 +319,8 @@ Those recurring full verifications also refresh contact-derived display names, s
 ## Polling and Auto-Start
 
 - default polling: `PENGUIN_CONNECT_POLL_SECONDS=30`
+- scheduled send polling: `PENGUIN_CONNECT_SCHEDULED_SEND_POLL_SECONDS=15`
+- disable scheduled send worker: `PENGUIN_CONNECT_SCHEDULED_SENDS_ENABLED=0`
 - incremental sync batch cap: `PENGUIN_CONNECT_INCREMENTAL_CONVERSATIONS_PER_RUN`
   - leave unset to let incremental runs expand to all currently hot conversations up to the built-in cap
 - optional startup catch-up cap: `PENGUIN_CONNECT_STARTUP_CATCHUP_CONVERSATIONS_PER_RUN` (unset means all pending bootstrap conversations)
@@ -374,6 +377,10 @@ curl -s -X POST http://127.0.0.1:9000/penguin-connect/conversations/sync \
 curl -s -X POST http://127.0.0.1:9000/penguin-connect/conversations/<conversation_id>/send \
   -H 'Content-Type: application/json' \
   -d '{"message":"hello"}' | jq
+curl -s -X POST http://127.0.0.1:9000/penguin-connect/conversations/<conversation_id>/scheduled-messages \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"hello later","scheduled_at":"2026-07-01T16:30:00-07:00"}' | jq
+curl -s http://127.0.0.1:9000/penguin-connect/conversations/<conversation_id>/scheduled-messages | jq
 ```
 
 Operational note:

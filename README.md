@@ -22,7 +22,7 @@ flowchart LR
 
 ## Why PenguinConnect
 
-- **Use Messages like an operator console.** Search conversations, contacts, attachments, and local message history; then reply, stage group drafts, attach files, record voice memos, or open the exact Apple Messages route.
+- **Use Messages like an operator console.** Search conversations, contacts, attachments, and local message history; then reply, schedule sends, stage group drafts, attach files, record voice memos, or open the exact Apple Messages route.
 - **Manage threads locally.** Add private titles, notes, labels, muted/pinned/archived state, follow-up dates, saved views, and group-name context without changing the underlying Messages chat.
 - **Clean up contacts from the same surface.** Search cached Contacts and unsaved participants, create missing contact cards, favorite people, save recipient lists, and jump from a person to related threads or messages.
 - **Ask Codex with real thread context.** Build or run a local Codex prompt from recent messages, notes, tags, search results, contacts, and draft text.
@@ -42,6 +42,7 @@ Want to help add a new messaging adapter or improve the bridge? Reach out at [ha
 ## Highlights
 
 - Local Messages UI for conversations, message history, contacts, media, replies, new-chat drafts, attachments, voice memos, and Codex prompts
+- Scheduled sends for existing conversations through registered send adapters
 - Messages-only startup is allowed when Gmail is not connected
 - Optional two-way sync between Apple Messages conversations and Gmail threads
 - Optional active alias email per conversation
@@ -161,7 +162,7 @@ open http://127.0.0.1:9000/penguin-connect/ui
 The `send` command routes directly through an existing PenguinConnect conversation
 and keeps the normal Apple Messages route-safety checks; Gmail is not required
 for local manual sends. It can also attach local files, including audio voice
-memos. The local UI supports replies, file/image attachments from picker, drag/drop, or paste, in-composer
+memos. The local UI supports replies, scheduled sends for existing conversations, file/image attachments from picker, drag/drop, or paste, in-composer
 voice memo recording, emoji
 shortcuts, visible-page auto-refresh with new-activity status for cached conversations
 and the selected thread, message-level reply targets and copy actions, thread filtering and unknown-first sorting,

@@ -16,6 +16,8 @@ const state = {
   selected: null,
   messages: [],
   messagesLoading: false,
+  scheduledMessages: [],
+  scheduledMessagesLoading: false,
   messageLimit: 200,
   messageLimitStep: 200,
   messageLimitMax: 1000,
@@ -274,6 +276,9 @@ const el = {
   attachmentList: document.querySelector("#attachmentList"),
   sendButton: document.querySelector("#sendButton"),
   clearButton: document.querySelector("#clearButton"),
+  scheduleAt: document.querySelector("#scheduleAt"),
+  scheduleButton: document.querySelector("#scheduleButton"),
+  scheduledSendList: document.querySelector("#scheduledSendList"),
   sendState: document.querySelector("#sendState"),
   draftState: document.querySelector("#draftState"),
   draftRecipients: document.querySelector("#draftRecipients"),
@@ -9551,6 +9556,8 @@ async function selectConversation(conversation) {
   state.selected = conversation;
   state.messages = [];
   state.messagesLoading = true;
+  state.scheduledMessages = [];
+  state.scheduledMessagesLoading = true;
   state.messageLimit = 200;
   state.threadActionMessage = "";
   resetThreadContactMatches();
@@ -9565,10 +9572,12 @@ async function selectConversation(conversation) {
   scrollSelectedConversationIntoView();
   renderMessageSearchFilters();
   renderMessages();
+  renderScheduledMessages();
   loadThreadContactMatches(conversation);
   if (state.messageSearchView === "current") {
     loadMessageSearch();
   }
+  loadScheduledMessages();
   await loadMessages();
 }
 
@@ -9712,6 +9721,159 @@ async function filesAsBrowserAttachments(files) {
     });
   }
   return attachments;
+}
+
+function scheduledMessageStatusLabel(item) {
+  const status = String(item?.status || "").toLowerCase();
+  if (status === "scheduled") return "Scheduled";
+  if (status === "sending") return "Sending";
+  if (status === "sent") return "Sent";
+  if (status === "failed") return "Failed";
+  if (status === "cancelled") return "Cancelled";
+  return status || "Scheduled";
+}
+
+function renderScheduledMessages() {
+  if (!el.scheduledSendList) return;
+  el.scheduledSendList.replaceChildren();
+  if (!state.selected) return;
+  if (state.scheduledMessagesLoading) {
+    const loading = document.createElement("div");
+    loading.className = "scheduled-send loading";
+    loading.textContent = "Loading scheduled sends";
+    el.scheduledSendList.append(loading);
+    return;
+  }
+  const rows = state.scheduledMessages || [];
+  if (!rows.length) return;
+  for (const item of rows) {
+    const row = document.createElement("div");
+    row.className = `scheduled-send ${String(item.status || "").toLowerCase()}`;
+
+    const main = document.createElement("div");
+    main.className = "scheduled-send-main";
+
+    const meta = document.createElement("div");
+    meta.className = "scheduled-send-meta";
+    const attachmentText = Number(item.attachment_count || 0) > 0
+      ? ` · ${item.attachment_count} attachment${Number(item.attachment_count) === 1 ? "" : "s"}`
+      : "";
+    meta.textContent = `${scheduledMessageStatusLabel(item)} · ${formatTime(item.scheduled_at)}${attachmentText}`;
+
+    const text = document.createElement("div");
+    text.className = "scheduled-send-text";
+    text.textContent = trim(item.message || "", 160) || "(attachment only)";
+
+    main.append(meta, text);
+    row.append(main);
+
+    if (item.status === "scheduled") {
+      const cancel = document.createElement("button");
+      cancel.className = "quiet-button";
+      cancel.type = "button";
+      cancel.textContent = "Cancel";
+      cancel.addEventListener("click", () => cancelScheduledMessage(item.scheduled_id));
+      row.append(cancel);
+    }
+    el.scheduledSendList.append(row);
+  }
+}
+
+async function loadScheduledMessages() {
+  if (!state.selected) {
+    state.scheduledMessages = [];
+    state.scheduledMessagesLoading = false;
+    renderScheduledMessages();
+    return;
+  }
+  const conversationId = state.selected.conversation_id;
+  state.scheduledMessagesLoading = true;
+  renderScheduledMessages();
+  try {
+    const payload = await api(`/penguin-connect/conversations/${encodeURIComponent(conversationId)}/scheduled-messages`);
+    if (state.selected?.conversation_id !== conversationId) return;
+    state.scheduledMessages = payload.scheduled_messages || [];
+  } catch (error) {
+    if (state.selected?.conversation_id === conversationId) {
+      state.scheduledMessages = [];
+      el.sendState.textContent = error.message;
+    }
+  } finally {
+    if (state.selected?.conversation_id === conversationId) {
+      state.scheduledMessagesLoading = false;
+      renderScheduledMessages();
+    }
+  }
+}
+
+async function scheduleMessage() {
+  if (!state.selected) {
+    el.sendState.textContent = "Select a thread first";
+    return;
+  }
+  if (state.voiceMemoRecorder?.state === "recording") {
+    el.sendState.textContent = "Stop voice memo before scheduling";
+    return;
+  }
+  const conversationId = state.selected.conversation_id;
+  const outboundMessage = outgoingReplyText(el.composer.value);
+  const attachmentPaths = state.replyMediaAttachments.map((item) => item.path).filter(Boolean);
+  if (state.attachments.length) {
+    el.sendState.textContent = "Schedule supports local attachments only";
+    return;
+  }
+  if (!outboundMessage.trim() && !attachmentPaths.length) {
+    el.sendState.textContent = "Nothing to schedule";
+    return;
+  }
+  const date = new Date(el.scheduleAt.value);
+  if (!el.scheduleAt.value || Number.isNaN(date.getTime())) {
+    el.sendState.textContent = "Pick a schedule time";
+    return;
+  }
+  if (date.getTime() <= Date.now()) {
+    el.sendState.textContent = "Pick a future time";
+    return;
+  }
+  el.scheduleButton.disabled = true;
+  el.sendState.textContent = "Scheduling";
+  try {
+    await api(`/penguin-connect/conversations/${encodeURIComponent(conversationId)}/scheduled-messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        message: outboundMessage,
+        attachment_paths: attachmentPaths,
+        scheduled_at: date.toISOString(),
+      }),
+    });
+    el.composer.value = "";
+    clearReplyContext();
+    state.replyMediaAttachments = [];
+    renderAttachments();
+    clearTimeout(state.draftSaveTimer);
+    await saveLocalDraft(conversationId, "", { silent: true });
+    el.sendState.textContent = `Scheduled for ${formatTime(date.toISOString())}`;
+    await loadScheduledMessages();
+  } catch (error) {
+    el.sendState.textContent = error.message;
+  } finally {
+    el.scheduleButton.disabled = false;
+  }
+}
+
+async function cancelScheduledMessage(scheduledId) {
+  if (!scheduledId) return;
+  el.sendState.textContent = "Cancelling scheduled send";
+  try {
+    await api(`/penguin-connect/scheduled-messages/${encodeURIComponent(scheduledId)}/cancel`, {
+      method: "POST",
+      body: "{}",
+    });
+    el.sendState.textContent = "Scheduled send cancelled";
+    await loadScheduledMessages();
+  } catch (error) {
+    el.sendState.textContent = error.message;
+  }
 }
 
 async function sendMessage() {
@@ -11473,6 +11635,7 @@ el.draftCopyToggle.addEventListener("change", saveNewChatDraft);
 el.draftOpenToggle.addEventListener("change", saveNewChatDraft);
 el.draftOpenAttachmentsToggle.addEventListener("change", saveNewChatDraft);
 el.sendButton.addEventListener("click", sendMessage);
+el.scheduleButton.addEventListener("click", scheduleMessage);
 el.voiceMemoButton.addEventListener("click", () => toggleVoiceMemoRecording("reply"));
 el.draftVoiceMemoButton.addEventListener("click", () => toggleVoiceMemoRecording("draft"));
 el.pinButton.addEventListener("click", () => setConversationManagement({ pinned: !Boolean(state.selected?.is_pinned) }));
