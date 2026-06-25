@@ -118,6 +118,8 @@ _sync_metrics_cache: dict[str, Any] = {
     "refreshed_at_monotonic": 0.0,
     "refreshing": False,
 }
+_local_conversation_discovery_lock = threading.Lock()
+_local_conversation_discovery_last_run = 0.0
 _UNSET = object()
 _USE_DEFAULT_DISCOVERY_LIMIT = object()
 _IMESSAGE_CHANNEL = get_channel_adapter("imessage")
@@ -3917,6 +3919,34 @@ def _local_preview_hydrate_limit() -> int:
     return _env_int("PENGUIN_CONNECT_LOCAL_PREVIEW_HYDRATE_LIMIT", 25, 0, 100)
 
 
+def _local_conversation_discovery_interval_seconds() -> int:
+    return _env_int("PENGUIN_CONNECT_LOCAL_DISCOVERY_INTERVAL_SECONDS", 60, 0, 3600)
+
+
+def _maybe_discover_local_imessage_conversations(conn: sqlite3.Connection) -> int:
+    global _local_conversation_discovery_last_run
+
+    local_count = conn.execute(
+        "SELECT COUNT(*) FROM penguin_connect_conversations WHERE gmail_email = ?",
+        (LOCAL_MESSAGES_ACCOUNT_EMAIL,),
+    ).fetchone()[0]
+    force = int(local_count or 0) == 0
+    interval = _local_conversation_discovery_interval_seconds()
+    now = time.monotonic()
+    if not force and interval > 0 and _local_conversation_discovery_last_run:
+        if now - _local_conversation_discovery_last_run < interval:
+            return 0
+
+    with _local_conversation_discovery_lock:
+        now = time.monotonic()
+        if not force and interval > 0 and _local_conversation_discovery_last_run:
+            if now - _local_conversation_discovery_last_run < interval:
+                return 0
+        discovered = ensure_local_imessage_conversations_discovered(conn)
+        _local_conversation_discovery_last_run = time.monotonic()
+        return discovered
+
+
 def _hydrate_local_conversation_previews(conn: sqlite3.Connection, rows: list[sqlite3.Row]) -> int:
     limit = _local_preview_hydrate_limit()
     if limit <= 0:
@@ -3944,8 +3974,10 @@ def list_conversations(conn: sqlite3.Connection) -> dict[str, Any]:
     account = get_connected_account(conn)
     account_email = account["gmail_email"] if account else ""
 
-    # Avoid write-heavy discovery on every read request. Discover on-demand only
-    # when this account has no cached conversations yet.
+    # Avoid write-heavy discovery on every read request for Gmail-backed mode.
+    # Local Messages mode has no Gmail sync worker, so conversation listing is
+    # the live-discovery path that keeps the local console from getting stuck
+    # with a partial cache.
     if account_email:
         try:
             existing_count = conn.execute(
@@ -3964,9 +3996,7 @@ def list_conversations(conn: sqlite3.Connection) -> dict[str, Any]:
         refresh_conversation_exclusions(conn, account_email)
     else:
         try:
-            existing_count = conn.execute("SELECT COUNT(*) FROM penguin_connect_conversations").fetchone()[0]
-            if existing_count == 0:
-                ensure_local_imessage_conversations_discovered(conn)
+            _maybe_discover_local_imessage_conversations(conn)
         except sqlite3.OperationalError as exc:
             msg = str(exc).lower()
             if "locked" not in msg and "busy" not in msg:

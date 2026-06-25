@@ -17,6 +17,7 @@ from db import SCHEMA
 
 class AppHttpIntegrationTests(unittest.TestCase):
     def setUp(self):
+        penguin_connect._local_conversation_discovery_last_run = 0.0
         self.tmpdir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tmpdir.name) / "cache.db"
 
@@ -343,7 +344,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
         finally:
             conn.close()
 
-        with TestClient(app_module.app) as client:
+        with mock.patch(
+            "penguin_connect.browse_imessage_chats",
+            return_value={"available": True, "chats": []},
+        ), TestClient(app_module.app) as client:
             response = client.get("/penguin-connect/conversations")
 
         self.assertEqual(response.status_code, 200)

@@ -25,6 +25,7 @@ class PenguinConnectTests(unittest.TestCase):
             penguin_connect._sync_runtime = penguin_connect._new_sync_runtime_state()
         with penguin_connect._conversation_sync_state_lock:
             penguin_connect._active_conversation_syncs.clear()
+        penguin_connect._local_conversation_discovery_last_run = 0.0
         self.tmpdir = tempfile.TemporaryDirectory()
         self.signature_markers_patcher = mock.patch.dict(
             os.environ,
@@ -2088,11 +2089,17 @@ class PenguinConnectTests(unittest.TestCase):
 
     def test_list_conversations_returns_cached_rows_without_gmail_account(self):
         self.conn.execute("DELETE FROM penguin_connect_accounts")
-        with mock.patch("penguin_connect.ensure_conversations_discovered") as mock_discover, mock.patch(
+        with mock.patch(
+            "penguin_connect.ensure_local_imessage_conversations_discovered",
+            return_value=0,
+        ) as mock_local_discover, mock.patch(
+            "penguin_connect.ensure_conversations_discovered",
+        ) as mock_discover, mock.patch(
             "penguin_connect.refresh_conversation_exclusions"
         ) as mock_refresh:
             result = penguin_connect.list_conversations(self.conn)
 
+        mock_local_discover.assert_called_once_with(self.conn)
         mock_discover.assert_not_called()
         mock_refresh.assert_not_called()
         self.assertFalse(result["connected"])
@@ -2162,6 +2169,86 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(cached["provider_message_id"], "imessage:local-preview-1")
         self.assertEqual(cached["direction"], "imessage_local")
         self.assertEqual(cached["body_text"], "latest local preview")
+
+    def test_list_conversations_discovers_local_rows_when_cache_is_partial(self):
+        self.conn.execute("DELETE FROM penguin_connect_messages")
+        self.conn.execute("DELETE FROM penguin_connect_conversations")
+        self.conn.execute("DELETE FROM penguin_connect_accounts")
+        existing_conversation_id = penguin_connect.deterministic_conversation_id(
+            penguin_connect.LOCAL_MESSAGES_ACCOUNT_EMAIL,
+            "chat-local-existing",
+            "imessage",
+        )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_conversations
+               (gmail_email, conversation_id, source_provider, source_chat_id, source_chat_identifier,
+                source_service_name, display_name, chat_type, participants, alias_email, status)
+               VALUES (?, ?, 'imessage', 'chat-local-existing', 'chat-local-existing',
+                       'iMessage', 'Existing Local Group', 'group', '[]', NULL, 'active')""",
+            (penguin_connect.LOCAL_MESSAGES_ACCOUNT_EMAIL, existing_conversation_id),
+        )
+
+        with mock.patch(
+            "penguin_connect.browse_imessage_chats",
+            return_value={
+                "available": True,
+                "chats": [
+                    {
+                        "chat_id": "chat-local-existing",
+                        "chat_identifier": "chat-local-existing",
+                        "service": "iMessage",
+                        "name": "Existing Local Group",
+                        "chat_type": "group",
+                        "participants": ["+15551234567", "+15557654321"],
+                        "last_message_at": "2026-03-04T09:00:00+00:00",
+                    },
+                    {
+                        "chat_id": "chat-local-new",
+                        "chat_identifier": "chat-local-new",
+                        "service": "iMessage",
+                        "name": "New Local Group",
+                        "chat_type": "group",
+                        "participants": ["+15550001111", "+15550002222"],
+                        "last_message_at": "2026-03-04T09:05:00+00:00",
+                    },
+                ],
+            },
+        ), mock.patch("penguin_connect.fetch_imessage_messages", return_value=[]):
+            result = penguin_connect.list_conversations(self.conn)
+
+        self.assertFalse(result["connected"])
+        source_chat_ids = {conversation["source_chat_id"] for conversation in result["conversations"]}
+        self.assertIn("chat-local-existing", source_chat_ids)
+        self.assertIn("chat-local-new", source_chat_ids)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM penguin_connect_aliases").fetchone()[0], 0)
+        new_row = self.conn.execute(
+            """SELECT gmail_email, alias_email
+               FROM penguin_connect_conversations
+               WHERE source_chat_id = ?""",
+            ("chat-local-new",),
+        ).fetchone()
+        self.assertEqual(new_row["gmail_email"], penguin_connect.LOCAL_MESSAGES_ACCOUNT_EMAIL)
+        self.assertIsNone(new_row["alias_email"])
+
+    def test_list_conversations_throttles_local_discovery_after_refresh(self):
+        self.conn.execute("DELETE FROM penguin_connect_accounts")
+        self.conn.execute(
+            "UPDATE penguin_connect_conversations SET gmail_email = ?, alias_email = NULL WHERE conversation_id = ?",
+            (penguin_connect.LOCAL_MESSAGES_ACCOUNT_EMAIL, "amc_test"),
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {"PENGUIN_CONNECT_LOCAL_DISCOVERY_INTERVAL_SECONDS": "60"},
+            clear=False,
+        ), mock.patch(
+            "penguin_connect.ensure_local_imessage_conversations_discovered",
+            return_value=0,
+        ) as mock_local_discover:
+            penguin_connect.list_conversations(self.conn)
+            penguin_connect.list_conversations(self.conn)
+
+        mock_local_discover.assert_called_once_with(self.conn)
 
     def test_list_conversations_discovers_when_cache_empty(self):
         self.conn.execute("DELETE FROM penguin_connect_conversations WHERE gmail_email = ?", ("owner@gmail.com",))
