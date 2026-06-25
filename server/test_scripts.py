@@ -1,3 +1,4 @@
+import argparse
 import sqlite3
 import sys
 import tempfile
@@ -364,6 +365,103 @@ class ScriptTests(unittest.TestCase):
         self.assertTrue(resolved[0].endswith(".m4a"))
         with self.assertRaises(penguin_connect_tool.ToolError):
             penguin_connect_tool._resolve_attachment_paths(["/tmp/missing-voice-memo.m4a"])
+
+    def test_tool_schedule_posts_scheduled_message_payload(self):
+        calls = []
+
+        def fake_api(method, path, *, api_base, payload=None, timeout=20.0):
+            calls.append(
+                {
+                    "method": method,
+                    "path": path,
+                    "api_base": api_base,
+                    "payload": payload,
+                    "timeout": timeout,
+                }
+            )
+            return {
+                "success": True,
+                "scheduled_message": {
+                    "scheduled_id": "scheduled_123",
+                    "conversation_id": "amc_test",
+                    "scheduled_at": "2026-07-01T16:30:00-07:00",
+                    "status": "scheduled",
+                },
+            }
+
+        args = argparse.Namespace(
+            conversation_id="amc_test",
+            sender_email="ops@example.test",
+            message="Later",
+            message_file=None,
+            attachment_paths=[],
+            scheduled_at="2026-07-01T16:30:00-07:00",
+            api_base="http://127.0.0.1:9000",
+            timeout=3.0,
+            json=False,
+        )
+
+        with mock.patch.object(penguin_connect_tool, "_api_json", side_effect=fake_api), mock.patch("builtins.print"):
+            result = penguin_connect_tool.command_schedule(args)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(calls[0]["method"], "POST")
+        self.assertEqual(calls[0]["path"], "/penguin-connect/conversations/amc_test/scheduled-messages")
+        self.assertEqual(
+            calls[0]["payload"],
+            {
+                "sender_email": "ops@example.test",
+                "message": "Later",
+                "attachment_paths": None,
+                "scheduled_at": "2026-07-01T16:30:00-07:00",
+            },
+        )
+
+    def test_tool_scheduled_commands_call_expected_api_paths(self):
+        calls = []
+
+        def fake_api(method, path, *, api_base, payload=None, timeout=20.0):
+            calls.append((method, path, payload))
+            if path.endswith("/scheduled-messages"):
+                return {"success": True, "scheduled_messages": []}
+            if path.endswith("/cancel"):
+                return {
+                    "success": True,
+                    "scheduled_message": {"scheduled_id": "scheduled_123", "status": "cancelled"},
+                }
+            return {"success": True, "processed": 0, "results": []}
+
+        with mock.patch.object(penguin_connect_tool, "_api_json", side_effect=fake_api), mock.patch("builtins.print"):
+            penguin_connect_tool.command_scheduled_list(
+                argparse.Namespace(conversation_id="amc_test", api_base="http://127.0.0.1:9000", timeout=3.0, json=False)
+            )
+            penguin_connect_tool.command_scheduled_cancel(
+                argparse.Namespace(scheduled_id="scheduled_123", api_base="http://127.0.0.1:9000", timeout=3.0, json=False)
+            )
+            penguin_connect_tool.command_scheduled_run_due(
+                argparse.Namespace(limit=5, api_base="http://127.0.0.1:9000", timeout=3.0, json=False)
+            )
+
+        self.assertEqual(calls[0], ("GET", "/penguin-connect/conversations/amc_test/scheduled-messages", None))
+        self.assertEqual(calls[1], ("POST", "/penguin-connect/scheduled-messages/scheduled_123/cancel", {}))
+        self.assertEqual(calls[2], ("POST", "/penguin-connect/scheduled-messages/run-due?limit=5", {}))
+
+    def test_tool_formats_scheduled_message(self):
+        formatted = penguin_connect_tool._format_scheduled_message(
+            {
+                "scheduled_id": "scheduled_123",
+                "status": "scheduled",
+                "scheduled_at": "2026-07-01T16:30:00-07:00",
+                "source_provider": "whatsapp",
+                "message": "Later",
+                "attachment_count": 1,
+            }
+        )
+
+        self.assertIn("scheduled_123", formatted)
+        self.assertIn("whatsapp", formatted)
+        self.assertIn("Later", formatted)
+        self.assertIn("attachments: 1", formatted)
 
     def test_tool_formats_audio_attachment_summary(self):
         summary = penguin_connect_tool._format_message_attachment_summary(

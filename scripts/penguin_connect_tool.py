@@ -341,6 +341,120 @@ def command_send(args: argparse.Namespace) -> int:
     return 0
 
 
+def _format_scheduled_message(row: dict[str, Any]) -> str:
+    scheduled_id = row.get("scheduled_id") or "scheduled"
+    status = row.get("status") or "unknown"
+    scheduled_at = row.get("scheduled_at") or "n/a"
+    provider = row.get("source_provider") or row.get("provider") or "source"
+    body = _trim(row.get("message") or row.get("body_text") or "", 120)
+    attachment_count = int(row.get("attachment_count") or 0)
+    if attachment_count:
+        suffix = f" [attachments: {attachment_count}]"
+        body = f"{body}{suffix}".strip()
+    return f"{scheduled_id} | {status} | {scheduled_at} | {provider} | {body or '(attachment only)'}"
+
+
+def command_schedule(args: argparse.Namespace) -> int:
+    message = args.message
+    if args.message_file:
+        message = Path(args.message_file).expanduser().read_text(encoding="utf-8")
+    attachment_paths = _resolve_attachment_paths(args.attachment_paths)
+    if not (message or "").strip() and not attachment_paths:
+        raise ToolError("Message text or at least one attachment is required.")
+    sender_email = (args.sender_email or "").strip().lower()
+    scheduled_at = (args.scheduled_at or "").strip()
+    if not scheduled_at:
+        raise ToolError("Schedule time is required.")
+
+    payload = _api_json(
+        "POST",
+        f"/penguin-connect/conversations/{args.conversation_id}/scheduled-messages",
+        api_base=args.api_base,
+        payload={
+            "sender_email": sender_email,
+            "message": message,
+            "attachment_paths": attachment_paths or None,
+            "scheduled_at": scheduled_at,
+        },
+        timeout=args.timeout,
+    )
+    if args.json:
+        _print_json(payload)
+        return 0
+
+    row = payload.get("scheduled_message") or {}
+    print(f"scheduled: {bool(payload.get('success'))}")
+    print(f"scheduled_id: {row.get('scheduled_id') or ''}")
+    print(f"conversation_id: {row.get('conversation_id') or args.conversation_id}")
+    print(f"scheduled_at: {row.get('scheduled_at') or scheduled_at}")
+    if attachment_paths:
+        print(f"attachments: {len(attachment_paths)}")
+    return 0
+
+
+def command_scheduled_list(args: argparse.Namespace) -> int:
+    payload = _api_json(
+        "GET",
+        f"/penguin-connect/conversations/{args.conversation_id}/scheduled-messages",
+        api_base=args.api_base,
+        timeout=args.timeout,
+    )
+    if args.json:
+        _print_json(payload)
+        return 0
+
+    rows = payload.get("scheduled_messages") or []
+    print(f"{args.conversation_id} scheduled messages ({len(rows)}):")
+    for row in rows:
+        if isinstance(row, dict):
+            print(f"  {_format_scheduled_message(row)}")
+    return 0
+
+
+def command_scheduled_cancel(args: argparse.Namespace) -> int:
+    payload = _api_json(
+        "POST",
+        f"/penguin-connect/scheduled-messages/{args.scheduled_id}/cancel",
+        api_base=args.api_base,
+        payload={},
+        timeout=args.timeout,
+    )
+    if args.json:
+        _print_json(payload)
+        return 0
+
+    row = payload.get("scheduled_message") or {}
+    print(f"cancelled: {bool(payload.get('success'))}")
+    print(f"scheduled_id: {row.get('scheduled_id') or args.scheduled_id}")
+    print(f"status: {row.get('status') or 'cancelled'}")
+    return 0
+
+
+def command_scheduled_run_due(args: argparse.Namespace) -> int:
+    limit = max(1, min(args.limit, 100))
+    query = urllib.parse.urlencode({"limit": limit})
+    payload = _api_json(
+        "POST",
+        f"/penguin-connect/scheduled-messages/run-due?{query}",
+        api_base=args.api_base,
+        payload={},
+        timeout=args.timeout,
+    )
+    if args.json:
+        _print_json(payload)
+        return 0
+
+    results = payload.get("results") or []
+    print(f"processed: {payload.get('processed', len(results))}")
+    for row in results:
+        if not isinstance(row, dict):
+            continue
+        error = row.get("error")
+        suffix = f" | error={error}" if error else ""
+        print(f"  {row.get('scheduled_id')} | {row.get('status')}{suffix}")
+    return 0
+
+
 def _resolve_attachment_paths(paths: Iterable[str]) -> list[str]:
     resolved: list[str] = []
     for raw_path in paths:
@@ -628,6 +742,49 @@ def build_parser() -> argparse.ArgumentParser:
     )
     send.add_argument("--json", action="store_true", help="Print raw JSON")
     send.set_defaults(func=command_send)
+
+    schedule = sub.add_parser("schedule", help="Schedule a send through an existing PenguinConnect conversation")
+    schedule.add_argument("conversation_id")
+    schedule.add_argument(
+        "--at",
+        "--scheduled-at",
+        "--when",
+        dest="scheduled_at",
+        required=True,
+        help="When to send, as ISO datetime such as 2026-07-01T16:30:00-07:00",
+    )
+    schedule.add_argument("-f", "--from", dest="sender_email", default="", help="Optional local sender metadata")
+    schedule.add_argument("-m", "--message", default="", help="Message text")
+    schedule.add_argument("--message-file", help="Read message text from a UTF-8 file")
+    schedule.add_argument(
+        "-a",
+        "--attachment",
+        "--voice-memo",
+        action="append",
+        default=[],
+        dest="attachment_paths",
+        help="Attach a local file path; repeat for multiple files. Audio voice memos are supported.",
+    )
+    schedule.add_argument("--json", action="store_true", help="Print raw JSON")
+    schedule.set_defaults(func=command_schedule)
+
+    scheduled = sub.add_parser("scheduled", help="List, cancel, or run scheduled sends")
+    scheduled_sub = scheduled.add_subparsers(dest="scheduled_command", required=True)
+
+    scheduled_list = scheduled_sub.add_parser("list", help="List scheduled sends for a conversation")
+    scheduled_list.add_argument("conversation_id")
+    scheduled_list.add_argument("--json", action="store_true", help="Print raw JSON")
+    scheduled_list.set_defaults(func=command_scheduled_list)
+
+    scheduled_cancel = scheduled_sub.add_parser("cancel", help="Cancel a pending scheduled send")
+    scheduled_cancel.add_argument("scheduled_id")
+    scheduled_cancel.add_argument("--json", action="store_true", help="Print raw JSON")
+    scheduled_cancel.set_defaults(func=command_scheduled_cancel)
+
+    scheduled_run_due = scheduled_sub.add_parser("run-due", help="Run due scheduled sends now")
+    scheduled_run_due.add_argument("--limit", type=int, default=25)
+    scheduled_run_due.add_argument("--json", action="store_true", help="Print raw JSON")
+    scheduled_run_due.set_defaults(func=command_scheduled_run_due)
 
     contacts = sub.add_parser("contacts", help="Search, refresh, or create macOS Contacts")
     contacts_sub = contacts.add_subparsers(dest="contacts_command", required=True)

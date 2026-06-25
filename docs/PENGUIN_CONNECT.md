@@ -381,6 +381,11 @@ curl -s -X POST http://127.0.0.1:9000/penguin-connect/conversations/<conversatio
   -H 'Content-Type: application/json' \
   -d '{"message":"hello later","scheduled_at":"2026-07-01T16:30:00-07:00"}' | jq
 curl -s http://127.0.0.1:9000/penguin-connect/conversations/<conversation_id>/scheduled-messages | jq
+./scripts/penguin_connect_tool.py schedule <conversation_id> \
+  --at "2026-07-01T16:30:00-07:00" \
+  --message "hello later"
+./scripts/penguin_connect_tool.py scheduled list <conversation_id>
+./scripts/penguin_connect_tool.py scheduled cancel <scheduled_id>
 ```
 
 Operational note:
