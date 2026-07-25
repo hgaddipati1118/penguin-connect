@@ -210,32 +210,40 @@
             <div class="scheduled-queue" id="scheduledQueue" aria-label="Scheduled message queue" hidden></div>
             <div class="attachment-preview" id="attachmentPreview" hidden></div>
             <div class="composer" id="messageComposerShell">
-              <label class="attach-button" for="attachmentInput" title="Attach files" aria-label="Attach files">
-                <svg><use href="#i-paperclip"></use></svg>
-              </label>
-              <input id="attachmentInput" type="file" multiple hidden />
-              <button class="gif-button" id="gifButton" type="button" title="Find a GIF (⌘G)" aria-label="Find a GIF">GIF</button>
               <textarea id="messageComposer" rows="1" placeholder="Write a message" aria-label="Write a message"></textarea>
+              <div class="mention-suggestions" id="mentionSuggestions" role="listbox" aria-label="Mention a participant" hidden></div>
               <span class="composer-ai-state" id="composerAiState" aria-live="polite" hidden>
                 <svg><use href="#i-spark"></use></svg>
                 Rewriting…
               </span>
-              <button class="writing-button" id="writingButton" type="button" title="Write with Codex (⌘J)" aria-label="Write with Codex (⌘J)">
-                <svg><use href="#i-spark"></use></svg>
-              </button>
-              <button class="schedule-send-button" id="scheduleSendButton" type="button" title="Schedule message" aria-label="Schedule message" disabled>
-                <svg><use href="#i-clock"></use></svg>
-              </button>
-              <button class="send-button" id="sendButton" type="button" title="Send message" aria-label="Send message" disabled>
-                <svg><use href="#i-send"></use></svg>
-              </button>
+              <div class="composer-toolbar">
+                <div class="composer-tools">
+                  <label class="attach-button" for="attachmentInput" title="Attach files" aria-label="Attach files">
+                    <svg><use href="#i-paperclip"></use></svg>
+                  </label>
+                  <input id="attachmentInput" type="file" multiple hidden />
+                  <button class="gif-button" id="gifButton" type="button" title="Find a GIF (⌘G)" aria-label="Find a GIF">GIF</button>
+                  <button class="mention-button" id="mentionButton" type="button" title="Mention a participant (@)" aria-label="Mention a participant">@</button>
+                  <button class="writing-button" id="writingButton" type="button" title="Write with Codex (⌘J)" aria-label="Write with Codex (⌘J)">
+                    <svg><use href="#i-spark"></use></svg>
+                  </button>
+                </div>
+                <div class="composer-tools composer-tools-right">
+                  <label class="auto-translate-toggle" title="Automatically translate clearly non-English messages">
+                    <input id="autoTranslateToggle" type="checkbox" checked />
+                    Translate
+                  </label>
+                  <button class="schedule-send-button" id="scheduleSendButton" type="button" title="Schedule message (⌘⇧L)" aria-label="Schedule message" disabled>
+                    <svg><use href="#i-clock"></use></svg>
+                  </button>
+                  <button class="send-button" id="sendButton" type="button" title="Send message (Enter)" aria-label="Send message" disabled>
+                    <svg><use href="#i-send"></use></svg>
+                  </button>
+                </div>
+              </div>
             </div>
             <div class="composer-meta">
               <span id="composerStatus">Messages never leave this Mac except through their original service.</span>
-              <label class="auto-translate-toggle" title="Automatically translate clearly non-English messages">
-                <input id="autoTranslateToggle" type="checkbox" checked />
-                Auto-translate
-              </label>
               <span><kbd>↵</kbd> send · <kbd>⌘⇧↵</kbd> now · <kbd>⌘⇧L</kbd> later</span>
             </div>
           </div>
@@ -257,41 +265,44 @@
         </header>
 
         <div class="agent-body">
-          <div class="agent-context">
-            <span class="context-orbit"></span>
-            <span id="agentScopeSummary">Current chat first, then your inbox</span>
-          </div>
-          <label class="agent-workspace-mode">
-            <span>Workspace access</span>
-            <select id="agentModeSelect" aria-label="Penguin Agent workspace access">
-              <option value="read">Read</option>
-              <option value="ask">Ask</option>
-              <option value="yolo">YOLO</option>
-            </select>
-            <small id="agentModeHelp">Read-only · uses the Slashy coordination root</small>
-          </label>
+          <section class="agent-control-strip" aria-label="Agent context and workspace access">
+            <div class="agent-context">
+              <span class="context-orbit"></span>
+              <span id="agentScopeSummary">Current chat first, then your inbox</span>
+            </div>
+            <label class="agent-workspace-mode">
+              <span>Access</span>
+              <select id="agentModeSelect" aria-label="Penguin Agent workspace access">
+                <option value="read">Read</option>
+                <option value="ask">Ask first</option>
+                <option value="yolo">Full access</option>
+              </select>
+              <small id="agentModeHelp">Read-only · uses the Slashy coordination root</small>
+            </label>
+          </section>
 
           <div class="agent-welcome" id="agentWelcome">
-            <h3>How can I help?</h3>
-            <p>Ask about this chat, search your inbox, or draft what to say next.</p>
+            <p class="agent-eyebrow">Message intelligence</p>
+            <h3>What should we do next?</h3>
+            <p>Ask about this chat, search every conversation, or turn an answer into a draft.</p>
           </div>
 
           <div class="agent-quick-actions" id="agentQuickActions">
             <button type="button" data-agent-action="summary">
-              <span>Summarize</span>
-              <small>Catch me up on this conversation</small>
+              <span><svg><use href="#i-spark"></use></svg>Summarize</span>
+              <small>Catch me up</small>
             </button>
             <button type="button" data-agent-action="reply">
-              <span>Draft a reply</span>
-              <small>Match my tone and keep it concise</small>
+              <span><svg><use href="#i-compose"></use></svg>Draft a reply</span>
+              <small>Match my tone</small>
             </button>
             <button type="button" data-agent-action="commitments">
-              <span>Find commitments</span>
-              <small>Pull out promises and next steps</small>
+              <span><svg><use href="#i-clock"></use></svg>Commitments</span>
+              <small>Promises and next steps</small>
             </button>
             <button type="button" data-agent-action="contact">
-              <span>Add or update contact</span>
-              <small>Use the current conversation as a starting point</small>
+              <span><svg><use href="#i-people"></use></svg>Update contact</span>
+              <small>From this conversation</small>
             </button>
           </div>
 
@@ -331,11 +342,11 @@
         </div>
 
         <div class="agent-composer">
-          <textarea id="agentQuestion" rows="3" placeholder="Ask about this chat or search every conversation…" aria-label="Ask Penguin Agent"></textarea>
+          <textarea id="agentQuestion" rows="2" placeholder="Ask Penguin anything…" aria-label="Ask Penguin Agent"></textarea>
           <div>
             <span id="agentContextLabel">No chat selected</span>
             <button class="agent-send-button" id="askAgentButton" type="button" disabled>
-              Ask
+              Send
               <svg><use href="#i-arrow"></use></svg>
             </button>
           </div>

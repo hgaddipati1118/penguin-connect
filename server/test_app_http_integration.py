@@ -228,6 +228,128 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(older["offset"], 1)
         self.assertNotEqual(older["messages"][0]["provider_message_id"], "imsg-latest")
 
+    def test_attachment_library_returns_paginated_files_with_intelligence(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """UPDATE penguin_connect_messages
+                   SET metadata = ?
+                   WHERE conversation_id = 'amc_test'
+                     AND provider_message_id = 'imsg-latest'""",
+                (
+                    json.dumps({
+                        "attachments": [
+                            {
+                                "filename": "/tmp/synthetic-deck.pdf",
+                                "transfer_name": "synthetic-deck.pdf",
+                                "mime_type": "application/pdf",
+                            },
+                            {
+                                "filename": "/tmp/synthetic-image.jpg",
+                                "transfer_name": "synthetic-image.jpg",
+                                "mime_type": "image/jpeg",
+                            },
+                        ],
+                    }),
+                ),
+            )
+            conn.execute(
+                """INSERT INTO penguin_connect_attachment_intelligence
+                   (conversation_id, provider_message_id, attachment_index, filename,
+                    mime_type, summary, status)
+                   VALUES ('amc_test', 'imsg-latest', 0, 'synthetic-deck.pdf',
+                           'application/pdf', 'Synthetic launch plan and timeline.', 'summarized')"""
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with TestClient(app_module.app) as client:
+            first = client.get(
+                "/penguin-connect/attachment-library",
+                params={"limit": 1, "offset": 0},
+            )
+            second = client.get(
+                "/penguin-connect/attachment-library",
+                params={"limit": 1, "offset": 1},
+            )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json()["total"], 2)
+        self.assertEqual(first.json()["count"], 1)
+        self.assertTrue(first.json()["has_more"])
+        self.assertEqual(first.json()["items"][0]["attachment_index"], 0)
+        self.assertEqual(
+            first.json()["items"][0]["intelligence_summary"],
+            "Synthetic launch plan and timeline.",
+        )
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.json()["items"][0]["attachment_index"], 1)
+        self.assertFalse(second.json()["has_more"])
+        self.assertEqual(first.json()["intelligence"]["complete"], 1)
+
+    def test_attachment_intelligence_worker_drains_batches_before_refresh(self):
+        batches = [
+            {"attempted": 4, "processed": 4, "remaining": 3},
+            {"attempted": 3, "processed": 3, "remaining": 0},
+        ]
+        with mock.patch(
+            "app._run_attachment_intelligence_batch",
+            side_effect=batches,
+        ) as run_batch, mock.patch(
+            "app.refresh_message_search_index",
+        ) as refresh_index, mock.patch(
+            "app.time.sleep",
+        ) as sleep:
+            app_module._run_attachment_intelligence_worker()
+
+        self.assertEqual(run_batch.call_count, 2)
+        sleep.assert_called_once()
+        refresh_index.assert_called_once_with()
+
+    def test_attachment_intelligence_queue_reaches_older_missing_rows(self):
+        conn = self._get_connection()
+        attachment_metadata = json.dumps({
+            "attachments": [{
+                "filename": "/tmp/synthetic.txt",
+                "transfer_name": "synthetic.txt",
+                "mime_type": "text/plain",
+            }],
+        })
+        try:
+            conn.executemany(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction, body_text,
+                    message_timestamp, is_read, metadata)
+                   VALUES ('amc_test', 'imessage', ?, 'imessage_local', '', ?, 1, ?)""",
+                [
+                    ("queue-newer-covered", "2026-03-12T10:00:00+00:00", attachment_metadata),
+                    ("queue-older-missing", "2026-03-11T10:00:00+00:00", attachment_metadata),
+                ],
+            )
+            conn.execute(
+                """INSERT INTO penguin_connect_attachment_intelligence
+                   (conversation_id, provider_message_id, attachment_index, filename,
+                    mime_type, status, updated_at)
+                   VALUES ('amc_test', 'queue-newer-covered', 0, 'synthetic.txt',
+                           'text/plain', 'metadata_only', datetime('now'))"""
+            )
+            conn.commit()
+
+            queued = app_module._queue_attachment_intelligence(conn, limit=1)
+            queued_row = conn.execute(
+                """SELECT provider_message_id, status
+                   FROM penguin_connect_attachment_intelligence
+                   WHERE provider_message_id = 'queue-older-missing'"""
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertEqual(queued, 1)
+        self.assertIsNotNone(queued_row)
+        self.assertEqual(queued_row["provider_message_id"], "queue-older-missing")
+        self.assertEqual(queued_row["status"], "queued")
+
     def test_workspace_revision_is_small_private_and_changes_with_cached_messages(self):
         source_stamp = ((101, 202), (303, 404))
         with mock.patch("app._workspace_source_file_token", return_value=source_stamp), TestClient(
@@ -2589,16 +2711,27 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("openConversationMeta", inbox_js_response.text)
         self.assertIn("Primary context — currently selected conversation", inbox_js_response.text)
         self.assertIn("renderInlineAttachment", inbox_js_response.text)
+        self.assertIn("missingMediaPreview", inbox_js_response.text)
         self.assertIn("message-attachment-preview", inbox_js_response.text)
         self.assertIn("&inline=true", inbox_js_response.text)
         self.assertIn("renderFilesList", inbox_js_response.text)
         self.assertIn("loadFiles", inbox_js_response.text)
+        self.assertIn("loadFilePage", inbox_js_response.text)
+        self.assertIn("syncAttachmentHistory", inbox_js_response.text)
+        self.assertIn("/penguin-connect/attachment-library?limit=200", inbox_js_response.text)
+        self.assertIn("/penguin-connect/attachment-library/status", inbox_js_response.text)
+        self.assertIn("renderMentionSuggestions", inbox_js_response.text)
+        self.assertIn("event.stopPropagation()", inbox_js_response.text)
+        self.assertIn('id="mentionSuggestions"', inbox_response.text)
+        self.assertIn('id="mentionButton"', inbox_response.text)
+        self.assertIn(".label-filter-select", inbox_css_response.text)
         self.assertIn("renderLinksList", inbox_js_response.text)
         self.assertIn("loadLinks", inbox_js_response.text)
         self.assertIn("view=links", inbox_js_response.text)
         self.assertIn("renderLabelBar", inbox_js_response.text)
         self.assertIn("conversationLabels", inbox_js_response.text)
         self.assertIn("refreshSelectedMessages", inbox_js_response.text)
+        self.assertIn("renderMessages({ preserveScroll: !shouldFollowLatest })", inbox_js_response.text)
         self.assertIn("refreshWorkspaceIfChanged", inbox_js_response.text)
         self.assertIn("rememberWorkspaceRevision", inbox_js_response.text)
         self.assertIn("/penguin-connect/workspace-revision", inbox_js_response.text)
@@ -2671,9 +2804,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("Keyboard shortcuts", inbox_response.text)
         self.assertIn("Archive and move", inbox_response.text)
         self.assertIn("Current chat first, then your inbox", inbox_response.text)
-        self.assertIn("Workspace access", inbox_response.text)
-        self.assertIn('<option value="ask">Ask</option>', inbox_response.text)
-        self.assertIn('<option value="yolo">YOLO</option>', inbox_response.text)
+        self.assertIn('aria-label="Agent context and workspace access"', inbox_response.text)
+        self.assertIn("What should we do next?", inbox_response.text)
+        self.assertIn('<option value="ask">Ask first</option>', inbox_response.text)
+        self.assertIn('<option value="yolo">Full access</option>', inbox_response.text)
         self.assertIn("Sources used", inbox_response.text)
         self.assertIn("Live activity", inbox_response.text)
         self.assertIn('id="pinnedMessagesBar"', inbox_response.text)

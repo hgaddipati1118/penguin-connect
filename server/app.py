@@ -2768,12 +2768,35 @@ def _message_attachment_path(raw_path: str) -> Path:
     return candidate
 
 
-def _queue_attachment_intelligence(conn: sqlite3.Connection, *, limit: int = 2500) -> int:
+def _queue_attachment_intelligence(conn: sqlite3.Connection, *, limit: int = 10000) -> int:
+    conn.execute(
+        """UPDATE penguin_connect_attachment_intelligence
+           SET status = 'retry', updated_at = datetime('now')
+           WHERE status IN ('failed', 'processing')
+             AND updated_at <= datetime('now', '-10 minutes')"""
+    )
     rows = conn.execute(
-        """SELECT conversation_id, provider_message_id, metadata
-           FROM penguin_connect_messages
-           WHERE COALESCE(metadata, '') LIKE '%"attachments"%'
-           ORDER BY message_timestamp DESC, id DESC
+        """SELECT m.conversation_id, m.provider_message_id, m.metadata
+           FROM penguin_connect_messages m
+           WHERE COALESCE(m.metadata, '') LIKE '%"attachments"%'
+             AND EXISTS (
+                 SELECT 1
+                 FROM json_each(
+                     CASE
+                         WHEN json_valid(COALESCE(m.metadata, '')) THEN m.metadata
+                         ELSE '{"attachments":[]}'
+                     END,
+                     '$.attachments'
+                 ) attachment
+                 WHERE NOT EXISTS (
+                     SELECT 1
+                     FROM penguin_connect_attachment_intelligence ai
+                     WHERE ai.conversation_id = m.conversation_id
+                       AND ai.provider_message_id = m.provider_message_id
+                       AND ai.attachment_index = CAST(attachment.key AS INTEGER)
+                 )
+             )
+           ORDER BY m.message_timestamp DESC, m.id DESC
            LIMIT ?""",
         (max(1, min(limit, 10000)),),
     ).fetchall()
@@ -2815,9 +2838,114 @@ def _attachment_intelligence_batch_size() -> int:
     return max(1, min(value, 25))
 
 
-def _run_attachment_intelligence_batch() -> None:
+def _attachment_intelligence_status(conn: sqlite3.Connection) -> dict:
+    counts = {
+        str(row["status"] or "unknown"): int(row["count"] or 0)
+        for row in conn.execute(
+            """SELECT status, COUNT(*) AS count
+               FROM penguin_connect_attachment_intelligence
+               GROUP BY status"""
+        ).fetchall()
+    }
+    queued = sum(counts.get(status, 0) for status in ("queued", "retry", "processing"))
+    complete = sum(counts.get(status, 0) for status in ("summarized", "extracted", "metadata_only"))
+    return {
+        "total": sum(counts.values()),
+        "queued": queued,
+        "complete": complete,
+        "failed": counts.get("failed", 0),
+        "summarized": counts.get("summarized", 0),
+        "metadata_only": counts.get("metadata_only", 0),
+        "worker_running": bool(
+            _attachment_intelligence_thread
+            and _attachment_intelligence_thread.is_alive()
+        ),
+        "statuses": counts,
+    }
+
+
+def _attachment_library_page(
+    conn: sqlite3.Connection,
+    *,
+    limit: int,
+    offset: int,
+) -> dict:
+    metadata_json = """
+        CASE
+            WHEN json_valid(COALESCE(m.metadata, '')) THEN m.metadata
+            ELSE '{"attachments":[]}'
+        END
+    """
+    total_row = conn.execute(
+        f"""SELECT COUNT(*) AS count
+            FROM penguin_connect_messages m,
+                 json_each({metadata_json}, '$.attachments') attachment"""
+    ).fetchone()
+    total = int(total_row["count"] or 0) if total_row else 0
+    rows = conn.execute(
+        f"""
+        SELECT
+            m.conversation_id,
+            m.provider,
+            m.provider_message_id,
+            m.message_timestamp,
+            c.source_provider,
+            COALESCE(NULLIF(cm.title, ''), NULLIF(c.display_name, ''), 'Conversation')
+                AS conversation_name,
+            CAST(attachment.key AS INTEGER) AS attachment_index,
+            attachment.value AS attachment_json,
+            COALESCE(ai.summary, '') AS intelligence_summary,
+            COALESCE(ai.status, '') AS intelligence_status
+        FROM penguin_connect_messages m
+        JOIN penguin_connect_conversations c
+          ON c.conversation_id = m.conversation_id
+        LEFT JOIN penguin_connect_conversation_management cm
+          ON cm.conversation_id = m.conversation_id
+        JOIN json_each({metadata_json}, '$.attachments') attachment
+        LEFT JOIN penguin_connect_attachment_intelligence ai
+          ON ai.conversation_id = m.conversation_id
+         AND ai.provider_message_id = m.provider_message_id
+         AND ai.attachment_index = CAST(attachment.key AS INTEGER)
+        ORDER BY m.message_timestamp DESC, m.id DESC, attachment_index ASC
+        LIMIT ? OFFSET ?
+        """,
+        (limit, offset),
+    ).fetchall()
+    items = []
+    for row in rows:
+        try:
+            attachment = json.loads(row["attachment_json"] or "{}")
+        except Exception:
+            attachment = {}
+        if not isinstance(attachment, dict):
+            attachment = {}
+        items.append({
+            "conversation_id": row["conversation_id"],
+            "provider": row["provider"] or "",
+            "source_provider": row["source_provider"] or "",
+            "provider_message_id": row["provider_message_id"] or "",
+            "message_timestamp": row["message_timestamp"] or "",
+            "conversation_name": row["conversation_name"] or "Conversation",
+            "attachment_index": int(row["attachment_index"] or 0),
+            "attachment": attachment,
+            "intelligence_summary": row["intelligence_summary"] or "",
+            "intelligence_status": row["intelligence_status"] or "",
+        })
+    return {
+        "items": items,
+        "count": len(items),
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "has_more": offset + len(items) < total,
+        "intelligence": _attachment_intelligence_status(conn),
+    }
+
+
+def _run_attachment_intelligence_batch() -> dict:
     conn = get_connection()
     processed = 0
+    attempted = 0
     try:
         rows = conn.execute(
             """SELECT conversation_id, provider_message_id, attachment_index,
@@ -2828,6 +2956,7 @@ def _run_attachment_intelligence_batch() -> None:
                LIMIT ?""",
             (_attachment_intelligence_batch_size(),),
         ).fetchall()
+        attempted = len(rows)
         for row in rows:
             key = (row["conversation_id"], row["provider_message_id"], row["attachment_index"])
             conn.execute(
@@ -2892,9 +3021,45 @@ def _run_attachment_intelligence_batch() -> None:
                     (str(detail)[:1000], *key),
                 )
                 conn.commit()
+        remaining_row = conn.execute(
+            """SELECT COUNT(*) AS count
+               FROM penguin_connect_attachment_intelligence
+               WHERE status IN ('queued', 'retry', 'processing')"""
+        ).fetchone()
+        remaining = int(remaining_row["count"] or 0) if remaining_row else 0
+        return {
+            "attempted": attempted,
+            "processed": processed,
+            "remaining": remaining,
+        }
     finally:
         conn.close()
-    if processed:
+
+
+def _attachment_intelligence_pause_seconds() -> float:
+    raw = (os.environ.get("PENGUIN_CONNECT_ATTACHMENT_INTELLIGENCE_PAUSE_SECONDS") or "").strip()
+    try:
+        value = float(raw) if raw else 0.1
+    except Exception:
+        value = 0.1
+    return max(0.0, min(value, 5.0))
+
+
+def _run_attachment_intelligence_worker() -> None:
+    changed_since_refresh = 0
+    while True:
+        result = _run_attachment_intelligence_batch()
+        changed_since_refresh += int(result.get("processed") or 0)
+        if changed_since_refresh >= 50:
+            try:
+                refresh_message_search_index()
+            except Exception:
+                pass
+            changed_since_refresh = 0
+        if not int(result.get("attempted") or 0) or not int(result.get("remaining") or 0):
+            break
+        time.sleep(_attachment_intelligence_pause_seconds())
+    if changed_since_refresh:
         try:
             refresh_message_search_index()
         except Exception:
@@ -2907,7 +3072,7 @@ def _start_attachment_intelligence_worker() -> bool:
         if _attachment_intelligence_thread and _attachment_intelligence_thread.is_alive():
             return False
         _attachment_intelligence_thread = threading.Thread(
-            target=_run_attachment_intelligence_batch,
+            target=_run_attachment_intelligence_worker,
             name="penguin-attachment-intelligence",
             daemon=True,
         )
@@ -4334,6 +4499,30 @@ def sync_penguinconnect_attachment_library(
         }
     finally:
         conn.close()
+
+
+@app.get("/api/penguin-connect/attachment-library")
+@app.get("/penguin-connect/attachment-library")
+def list_penguinconnect_attachment_library(
+    limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0, le=1_000_000),
+):
+    conn = get_connection()
+    try:
+        return _attachment_library_page(conn, limit=limit, offset=offset)
+    finally:
+        conn.close()
+
+
+@app.get("/api/penguin-connect/attachment-library/status")
+@app.get("/penguin-connect/attachment-library/status")
+def get_penguinconnect_attachment_library_status():
+    conn = get_connection()
+    try:
+        return _attachment_intelligence_status(conn)
+    finally:
+        conn.close()
+
 
 @app.get("/api/penguin-connect/recipient-lists")
 @app.get("/penguin-connect/recipient-lists")

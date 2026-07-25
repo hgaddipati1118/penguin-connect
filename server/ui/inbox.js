@@ -11,7 +11,15 @@ const state = {
   files: [],
   filesVisible: 100,
   filesTotal: 0,
+  filesHasMore: false,
+  filesLoading: false,
   filesIndexing: false,
+  fileIntelligence: {
+    queued: 0,
+    complete: 0,
+    failed: 0,
+    workerRunning: false,
+  },
   links: [],
   linksVisible: 150,
   linksQuery: "",
@@ -119,6 +127,8 @@ const el = {
   attachmentInput: document.querySelector("#attachmentInput"),
   attachmentPreview: document.querySelector("#attachmentPreview"),
   gifButton: document.querySelector("#gifButton"),
+  mentionButton: document.querySelector("#mentionButton"),
+  mentionSuggestions: document.querySelector("#mentionSuggestions"),
   gifDialog: document.querySelector("#gifDialog"),
   gifSearch: document.querySelector("#gifSearch"),
   gifResults: document.querySelector("#gifResults"),
@@ -245,11 +255,13 @@ const WORKSPACE_CACHE_THREAD_LIMIT = 60;
 let selectionHydrationTimer = 0;
 let latestAnchorFrame = 0;
 let latestAnchorToken = 0;
+let mentionSelectionIndex = 0;
 let translationWorkerRunning = false;
 let shortcutPrefix = "";
 let shortcutPrefixTimer = 0;
 let workspaceCacheDatabasePromise = null;
 let workspaceCachePruneScheduled = false;
+let attachmentHistorySyncPromise = null;
 
 function apiErrorMessage(payload, response) {
   const detail = payload?.detail;
@@ -903,20 +915,28 @@ function renderLabelBar() {
     });
     el.labelBar.append(button);
   }
-  const options = labels.map((label) => ({ value: label, name: label }));
-  for (const option of options) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "label-filter";
-    button.classList.toggle("active", state.activeLabel === option.value);
-    button.textContent = option.name;
-    button.addEventListener("click", () => {
+  if (labels.length) {
+    const select = document.createElement("select");
+    select.className = "label-filter-select";
+    select.setAttribute("aria-label", "Filter conversations by label");
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "Choose label…";
+    select.append(placeholder);
+    for (const label of labels) {
+      const option = document.createElement("option");
+      option.value = label;
+      option.textContent = label;
+      select.append(option);
+    }
+    select.value = state.activeLabel;
+    select.addEventListener("change", () => {
       state.smartView = "all";
-      state.activeLabel = option.value;
+      state.activeLabel = select.value;
       state.conversationsVisible = 300;
       renderView();
     });
-    el.labelBar.append(button);
+    el.labelBar.append(select);
   }
   if (!labels.length) {
     const hint = document.createElement("span");
@@ -1172,12 +1192,13 @@ function renderFilesList() {
   const previousScrollTop = prepareInfiniteList(el.filesList);
   el.filesList.replaceChildren();
   const visible = state.files.slice(0, state.filesVisible);
-  const totalLabel = state.filesTotal > state.files.length
-    ? ` · ${state.filesTotal.toLocaleString()} discovered`
-    : "";
+  const intelligence = state.fileIntelligence;
+  const progress = intelligence.queued
+    ? ` · ${intelligence.queued.toLocaleString()} understanding`
+    : (intelligence.complete ? ` · ${intelligence.complete.toLocaleString()} understood` : "");
   el.listSummary.textContent = state.filesIndexing
-    ? `${visible.length} shown · indexing attachment history…`
-    : `${visible.length} shown · ${state.files.length} recent files loaded${totalLabel}`;
+    ? `${visible.length} shown · ${state.filesTotal.toLocaleString()} files · finding history${progress}`
+    : `${visible.length} shown · ${state.filesTotal.toLocaleString()} files${progress}`;
   if (!visible.length) {
     const empty = document.createElement("div");
     empty.className = "pane-empty";
@@ -1198,6 +1219,18 @@ function renderFilesList() {
     const context = document.createElement("span");
     context.textContent = `${file.conversationName} · ${timeLabel(file.message.message_timestamp)}`;
     info.append(name, context);
+    const summary = document.createElement("small");
+    summary.className = "file-summary";
+    if (file.intelligenceSummary) {
+      summary.textContent = file.intelligenceSummary;
+    } else if (["queued", "retry", "processing"].includes(file.intelligenceStatus)) {
+      summary.textContent = "Penguin is reading this attachment for semantic search.";
+      summary.classList.add("pending");
+    } else if (file.intelligenceStatus === "failed") {
+      summary.textContent = "Could not read this attachment yet; it will retry locally.";
+      summary.classList.add("failed");
+    }
+    if (summary.textContent) info.append(summary);
     info.addEventListener("click", () => {
       const conversation = state.conversations.find(
         (item) => item.conversation_id === file.message.conversation_id,
@@ -1207,10 +1240,16 @@ function renderFilesList() {
     row.append(preview, info);
     el.filesList.append(row);
   }
-  if (state.filesVisible < state.files.length) {
+  if (state.filesVisible < state.files.length || state.filesHasMore) {
     appendInfiniteSentinel(el.filesList, "Loading more files…", () => {
-      state.filesVisible += 100;
-      renderFilesList();
+      if (state.filesVisible < state.files.length) {
+        state.filesVisible += 100;
+        renderFilesList();
+      } else {
+        loadFilePage({ append: true }).catch((error) => {
+          toast(`Could not load more files: ${error.message}`, "error");
+        });
+      }
     });
   }
   restoreInfiniteListScroll(el.filesList, previousScrollTop);
@@ -1551,14 +1590,17 @@ function attachmentLabel(attachment) {
 function attachmentMimeType(attachment) {
   const explicit = String(attachment?.mime_type || "").toLowerCase();
   const filename = attachmentLabel(attachment).toLowerCase();
-  if (explicit.includes("/")) return explicit;
+  if (explicit.startsWith("image/")) return explicit;
   if (/\.(png|jpe?g|gif|webp|heic|heif)$/.test(filename)) return "image/unknown";
+  if (explicit.startsWith("video/")) return explicit;
   if (/\.(mp4|mov|m4v|webm)$/.test(filename)) return "video/unknown";
+  if (explicit.startsWith("audio/")) return explicit;
   if (/\.(mp3|m4a|aac|wav|ogg|opus)$/.test(filename)) return "audio/unknown";
-  if (filename.endsWith(".pdf")) return "application/pdf";
+  if (explicit === "application/pdf" || filename.endsWith(".pdf")) return "application/pdf";
   if (explicit === "image") return "image/unknown";
   if (explicit === "video") return "video/unknown";
   if (explicit === "audio") return "audio/unknown";
+  if (explicit.includes("/")) return explicit;
   return "application/octet-stream";
 }
 
@@ -1581,6 +1623,37 @@ function attachmentFileLink(message, attachment, index) {
   return item;
 }
 
+function missingMediaPreview(message, label, kind = "Media") {
+  const provider = providerLabel(message.source_provider || message.provider);
+  const preview = document.createElement("div");
+  preview.className = "missing-media-preview";
+  const icon = document.createElement("span");
+  icon.append(createIcon("i-paperclip"));
+  const copy = document.createElement("span");
+  const title = document.createElement("strong");
+  title.textContent = label;
+  const detail = document.createElement("small");
+  detail.textContent = `${kind} is not downloaded on this Mac`;
+  copy.append(title, detail);
+  const open = document.createElement("button");
+  open.type = "button";
+  open.textContent = "Open";
+  open.title = `Open ${provider} to download this ${kind.toLowerCase()}`;
+  open.addEventListener("click", async () => {
+    try {
+      await api(
+        `/penguin-connect/conversations/${encodeURIComponent(message.conversation_id)}/open-provider`,
+        { method: "POST", body: "{}" },
+      );
+      toast(`Opened ${provider} · download the media there`);
+    } catch (error) {
+      toast(`Could not open provider: ${error.message}`, "error");
+    }
+  });
+  preview.append(icon, copy, open);
+  return preview;
+}
+
 function renderInlineAttachment(message, attachment, index) {
   const mimeType = attachmentMimeType(attachment);
   const url = attachmentUrl(message, index);
@@ -1600,7 +1673,9 @@ function renderInlineAttachment(message, attachment, index) {
     image.addEventListener("load", () => {
       if (state.followLatest) scrollThreadToBottom();
     });
-    image.addEventListener("error", () => wrapper.replaceWith(attachmentFileLink(message, attachment, index)));
+    image.addEventListener("error", () => wrapper.replaceWith(
+      missingMediaPreview(message, label, "Image"),
+    ));
     link.append(image);
     wrapper.append(link);
     return wrapper;
@@ -1615,7 +1690,9 @@ function renderInlineAttachment(message, attachment, index) {
     video.addEventListener("loadedmetadata", () => {
       if (state.followLatest) scrollThreadToBottom();
     });
-    video.addEventListener("error", () => wrapper.replaceWith(attachmentFileLink(message, attachment, index)));
+    video.addEventListener("error", () => wrapper.replaceWith(
+      missingMediaPreview(message, label, "Video"),
+    ));
     wrapper.append(video);
     return wrapper;
   }
@@ -2159,6 +2236,7 @@ async function selectConversation(conversation, { focusMessageId = "" } = {}) {
     loadingOlder: false,
   };
   state.followLatest = true;
+  el.mentionSuggestions.hidden = true;
   state.scheduledMessages = [];
   renderScheduledQueue();
   el.shell.classList.add("thread-open");
@@ -2243,8 +2321,9 @@ async function refreshSelectedMessages({ incremental = true } = {}) {
   state.messagePagination.hasMore = nextMessages.length < state.messagePagination.total;
   rememberConversationMessages(conversationId, nextMessages, state.messagePagination);
   if (messagesFingerprint(nextMessages) === messagesFingerprint(state.messages)) return;
+  const shouldFollowLatest = state.followLatest;
   state.messages = nextMessages;
-  renderMessages({ preserveScroll: true });
+  renderMessages({ preserveScroll: !shouldFollowLatest });
 }
 
 async function preloadRecentMessages() {
@@ -2310,11 +2389,115 @@ function resizeComposer() {
   el.messageComposer.style.height = `${Math.min(el.messageComposer.scrollHeight, 140)}px`;
 }
 
+function mentionCandidates() {
+  if (!state.selected || state.selected.chat_type !== "group") return [];
+  const context = Array.isArray(state.selected.contact_context)
+    ? state.selected.contact_context
+    : [];
+  const seen = new Set();
+  return conversationParticipants(state.selected).map((participant) => {
+    const participantKey = normalizedHandle(participant);
+    const contact = context.find((item) => (
+      normalizedHandle(item.primary_handle) === participantKey
+      || (item.contact_keys || []).some((key) => normalizedHandle(key) === participantKey)
+    )) || state.contacts.find((item) => (
+      normalizedHandle(contactHandle(item)) === participantKey
+      || (item.contact_keys || []).some((key) => normalizedHandle(key) === participantKey)
+    ));
+    return {
+      label: String(contact?.display_name || participant).trim(),
+      handle: participant,
+    };
+  }).filter((candidate) => {
+    const key = `${candidate.label.toLowerCase()}:${normalizedHandle(candidate.handle)}`;
+    if (!candidate.label || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function composerMentionMatch() {
+  const cursor = el.messageComposer.selectionStart ?? el.messageComposer.value.length;
+  const beforeCursor = el.messageComposer.value.slice(0, cursor);
+  const match = beforeCursor.match(/(^|\s)@([^\s@]*)$/);
+  if (!match) return null;
+  return {
+    start: cursor - match[2].length - 1,
+    end: cursor,
+    query: match[2].toLowerCase(),
+  };
+}
+
+function insertMention(candidate) {
+  const match = composerMentionMatch();
+  if (!match) return;
+  const before = el.messageComposer.value.slice(0, match.start);
+  const after = el.messageComposer.value.slice(match.end);
+  const inserted = `@${candidate.label} `;
+  el.messageComposer.value = `${before}${inserted}${after}`;
+  const cursor = before.length + inserted.length;
+  el.messageComposer.setSelectionRange(cursor, cursor);
+  el.mentionSuggestions.hidden = true;
+  resizeComposer();
+  updateSendButton();
+  el.messageComposer.focus({ preventScroll: true });
+}
+
+function renderMentionSuggestions() {
+  const match = composerMentionMatch();
+  const candidates = mentionCandidates().filter((candidate) => (
+    !match?.query
+    || candidate.label.toLowerCase().includes(match.query)
+    || candidate.handle.toLowerCase().includes(match.query)
+  )).slice(0, 8);
+  el.mentionSuggestions.replaceChildren();
+  if (!match || !candidates.length) {
+    el.mentionSuggestions.hidden = true;
+    return;
+  }
+  mentionSelectionIndex = Math.min(mentionSelectionIndex, candidates.length - 1);
+  candidates.forEach((candidate, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.setAttribute("role", "option");
+    button.classList.toggle("active", index === mentionSelectionIndex);
+    const avatar = document.createElement("span");
+    avatar.textContent = initials(candidate.label);
+    const copy = document.createElement("span");
+    const name = document.createElement("strong");
+    name.textContent = candidate.label;
+    const handle = document.createElement("small");
+    handle.textContent = candidate.handle;
+    copy.append(name, handle);
+    button.append(avatar, copy);
+    button.addEventListener("mousedown", (event) => event.preventDefault());
+    button.addEventListener("click", () => insertMention(candidate));
+    el.mentionSuggestions.append(button);
+  });
+  el.mentionSuggestions.hidden = false;
+}
+
+function openMentionSuggestions() {
+  if (!state.selected || state.selected.chat_type !== "group") {
+    toast("Mentions are available in group conversations.", "error");
+    return;
+  }
+  const cursor = el.messageComposer.selectionStart ?? el.messageComposer.value.length;
+  const needsSpace = cursor > 0 && !/\s/.test(el.messageComposer.value[cursor - 1]);
+  el.messageComposer.setRangeText(needsSpace ? " @" : "@", cursor, cursor, "end");
+  mentionSelectionIndex = 0;
+  resizeComposer();
+  updateSendButton();
+  renderMentionSuggestions();
+  el.messageComposer.focus({ preventScroll: true });
+}
+
 function updateSendButton() {
   const hasContent = Boolean(el.messageComposer.value.trim() || state.attachments.length);
   el.sendButton.disabled = !state.selected || !hasContent;
   el.scheduleSendButton.disabled = !state.selected || !hasContent;
   el.gifButton.disabled = !state.selected;
+  el.mentionButton.disabled = !state.selected || state.selected.chat_type !== "group";
 }
 
 function renderScheduledQueue() {
@@ -2776,42 +2959,106 @@ async function loadContacts(query = "") {
   return payload.contacts || [];
 }
 
+function attachmentLibraryFile(item) {
+  return {
+    message: {
+      conversation_id: item.conversation_id,
+      provider: item.provider,
+      source_provider: item.source_provider,
+      provider_message_id: item.provider_message_id,
+      message_timestamp: item.message_timestamp,
+    },
+    attachment: item.attachment || {},
+    attachmentIndex: Number(item.attachment_index || 0),
+    conversationName: item.conversation_name || "Conversation",
+    intelligenceSummary: item.intelligence_summary || "",
+    intelligenceStatus: item.intelligence_status || "",
+  };
+}
+
+function updateFileIntelligence(payload) {
+  const intelligence = payload?.intelligence || payload || {};
+  state.fileIntelligence = {
+    queued: Number(intelligence.queued || 0),
+    complete: Number(intelligence.complete || 0),
+    failed: Number(intelligence.failed || 0),
+    workerRunning: Boolean(intelligence.worker_running),
+  };
+}
+
+async function loadFilePage({ append = false } = {}) {
+  if (state.filesLoading) return state.files;
+  state.filesLoading = true;
+  const previousVisible = state.filesVisible;
+  const offset = append ? state.files.length : 0;
+  try {
+    const payload = await api(
+      `/penguin-connect/attachment-library?limit=200&offset=${offset}`,
+    );
+    const files = (payload.items || []).map(attachmentLibraryFile);
+    state.files = append ? [...state.files, ...files] : files;
+    state.filesTotal = Number(payload.total || state.files.length);
+    state.filesHasMore = Boolean(payload.has_more);
+    updateFileIntelligence(payload);
+    state.filesVisible = append
+      ? state.files.length
+      : Math.min(state.files.length, Math.max(100, previousVisible));
+    renderFilesList();
+    return state.files;
+  } finally {
+    state.filesLoading = false;
+  }
+}
+
+async function syncAttachmentHistory({ full = true } = {}) {
+  if (attachmentHistorySyncPromise) return attachmentHistorySyncPromise;
+  attachmentHistorySyncPromise = (async () => {
+    state.filesIndexing = true;
+    renderFilesList();
+    const pageSize = 1500;
+    let offset = 0;
+    let maximumTotal = 0;
+    try {
+      do {
+        const sync = await api(
+          `/penguin-connect/attachment-library/sync?limit=${pageSize}&offset=${offset}`,
+          { method: "POST" },
+        );
+        const imessageTotal = Number(sync.imessage?.total || 0);
+        const whatsappTotal = Number(sync.whatsapp?.total || sync.whatsapp_total || 0);
+        maximumTotal = Math.max(imessageTotal, whatsappTotal);
+        offset += pageSize;
+      } while (full && offset < maximumTotal);
+      if (full || (state.view === "files" && !state.files.length)) {
+        await loadFilePage();
+      } else if (state.view === "files") {
+        await refreshFileIntelligenceStatus();
+      }
+    } finally {
+      state.filesIndexing = false;
+      attachmentHistorySyncPromise = null;
+      renderFilesList();
+    }
+  })();
+  return attachmentHistorySyncPromise;
+}
+
 async function loadFiles() {
   if (!state.files.length) skeletonRows(el.filesList, 7);
-  const hydrate = async () => {
-    const payload = await api("/penguin-connect/messages/search?query=&limit=500&view=files");
-    const files = [];
-    for (const message of payload.messages || []) {
-      const conversation = state.conversations.find(
-        (item) => item.conversation_id === message.conversation_id,
-      );
-      for (const [attachmentIndex, attachment] of messageAttachments(message).entries()) {
-        files.push({
-          message,
-          attachment,
-          attachmentIndex,
-          conversationName: conversation ? conversationName(conversation) : (message.title || message.display_name || "Conversation"),
-        });
-      }
-    }
-    state.files = files;
-    state.filesVisible = Math.max(100, Math.min(state.filesVisible, files.length));
-    renderFilesList();
-    return files;
-  };
-  await hydrate();
-  state.filesIndexing = true;
-  renderFilesList();
-  try {
-    const sync = await api("/penguin-connect/attachment-library/sync?limit=1500&offset=0", {
-      method: "POST",
-    });
-    state.filesTotal = Number(sync.total || 0);
-    return await hydrate();
-  } finally {
+  await loadFilePage();
+  syncAttachmentHistory().catch((error) => {
     state.filesIndexing = false;
     renderFilesList();
-  }
+    toast(`Could not finish attachment history: ${error.message}`, "error");
+  });
+  return state.files;
+}
+
+async function refreshFileIntelligenceStatus() {
+  if (state.view !== "files") return;
+  const status = await api("/penguin-connect/attachment-library/status");
+  updateFileIntelligence(status);
+  renderFilesList();
 }
 
 async function loadLinks() {
@@ -4128,11 +4375,13 @@ el.labelPickerDialog.addEventListener("keydown", (event) => {
     const label = labelOptionsByUsage()[Number(event.key) - 1];
     if (!label) return;
     event.preventDefault();
+    event.stopPropagation();
     if (state.labelDraft.has(label)) state.labelDraft.delete(label);
     else state.labelDraft.add(label);
     renderLabelPicker();
   } else if (event.key === "Enter" && !event.target?.closest?.("button")) {
     event.preventDefault();
+    event.stopPropagation();
     applyLabelDraft();
   }
 });
@@ -4140,6 +4389,8 @@ el.labelPickerDialog.addEventListener("keydown", (event) => {
 el.messageComposer.addEventListener("input", () => {
   resizeComposer();
   updateSendButton();
+  mentionSelectionIndex = 0;
+  renderMentionSuggestions();
 });
 el.autoTranslateToggle.addEventListener("change", () => {
   state.autoTranslate = el.autoTranslateToggle.checked;
@@ -4157,6 +4408,32 @@ el.messageList.addEventListener("scroll", (event) => {
   if (el.messageList.scrollTop < 180) loadOlderMessages();
 }, { passive: true });
 el.messageComposer.addEventListener("keydown", (event) => {
+  if (!el.mentionSuggestions.hidden) {
+    const options = [...el.mentionSuggestions.querySelectorAll("button")];
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      mentionSelectionIndex = (
+        mentionSelectionIndex
+        + (event.key === "ArrowDown" ? 1 : -1)
+        + options.length
+      ) % options.length;
+      options.forEach((option, index) => option.classList.toggle(
+        "active",
+        index === mentionSelectionIndex,
+      ));
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      el.mentionSuggestions.hidden = true;
+      return;
+    }
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      options[mentionSelectionIndex]?.click();
+      return;
+    }
+  }
   if (
     event.key === "Enter"
     && event.shiftKey
@@ -4183,6 +4460,7 @@ el.messageComposer.addEventListener("keydown", (event) => {
     sendMessage();
   }
 });
+el.mentionButton.addEventListener("click", openMentionSuggestions);
 el.writingButton.addEventListener("click", openWritingAssistant);
 el.writingDialog.addEventListener("click", (event) => {
   if (event.target === el.writingDialog) el.writingDialog.close();
@@ -4563,3 +4841,18 @@ window.setInterval(() => {
   if (document.visibilityState !== "visible") return;
   loadHealth();
 }, 30000);
+
+window.setInterval(() => {
+  if (document.visibilityState !== "visible") return;
+  refreshFileIntelligenceStatus().catch(() => {});
+}, 10000);
+
+window.setTimeout(() => {
+  if (document.visibilityState !== "visible") return;
+  syncAttachmentHistory({ full: false }).catch(() => {});
+}, 30000);
+
+window.setInterval(() => {
+  if (document.visibilityState !== "visible") return;
+  syncAttachmentHistory({ full: false }).catch(() => {});
+}, 300000);
