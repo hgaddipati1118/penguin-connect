@@ -28,6 +28,7 @@ SEARCH_DB_PATH = Path(
 ).expanduser()
 DEFAULT_EMBEDDING_MODEL = "nomic-embed-text"
 DEFAULT_EMBEDDING_DIMENSIONS = 768
+DEFAULT_EMBEDDING_INPUT_CHARS = 1_500
 TEXT_FILE_EXTENSIONS = {
     ".c",
     ".cc",
@@ -129,6 +130,7 @@ def _create_lexical_schema(conn: sqlite3.Connection) -> None:
 
 
 def _reset_index(conn: sqlite3.Connection, *, semantic: bool) -> bool:
+    vector_available = _load_sqlite_vec(conn)
     conn.executescript(
         """
         DROP TABLE IF EXISTS search_documents_fts;
@@ -138,7 +140,7 @@ def _reset_index(conn: sqlite3.Connection, *, semantic: bool) -> bool:
         """
     )
     _create_lexical_schema(conn)
-    vector_ready = semantic and _load_sqlite_vec(conn)
+    vector_ready = semantic and vector_available
     if vector_ready:
         conn.execute(
             f"""
@@ -393,6 +395,13 @@ def _ollama_embeddings(texts: list[str]) -> list[list[float]]:
     return embeddings
 
 
+def _embedding_document_text(title: str, body: str) -> str:
+    return _clean_text(
+        f"search_document: {title}\n{body}",
+        DEFAULT_EMBEDDING_INPUT_CHARS,
+    )
+
+
 def rebuild_search_index(
     *,
     include_messages: bool = True,
@@ -445,13 +454,16 @@ def rebuild_search_index(
             inserted += 1
 
         if vector_ready and documents:
-            batch_size = 32
+            batch_size = 16
             rows = conn.execute(
                 "SELECT id, title, body FROM search_documents ORDER BY id"
             ).fetchall()
             for start in range(0, len(rows), batch_size):
                 batch = rows[start : start + batch_size]
-                texts = [f"search_document: {row['title']}\n{row['body']}" for row in batch]
+                texts = [
+                    _embedding_document_text(row["title"], row["body"])
+                    for row in batch
+                ]
                 vectors = _ollama_embeddings(texts)
                 conn.executemany(
                     "INSERT INTO search_document_vectors(rowid, embedding) VALUES (?, ?)",

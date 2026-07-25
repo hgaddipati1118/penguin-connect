@@ -122,6 +122,41 @@ class SearchIndexTests(unittest.TestCase):
             "Synthetic launch checklist",
         )
 
+    def test_embedding_document_text_is_bounded(self):
+        text = search_index._embedding_document_text(
+            "Synthetic title",
+            "x" * (search_index.DEFAULT_EMBEDDING_INPUT_CHARS * 2),
+        )
+
+        self.assertEqual(
+            len(text),
+            search_index.DEFAULT_EMBEDDING_INPUT_CHARS,
+        )
+        self.assertTrue(text.startswith("search_document: Synthetic title"))
+
+    def test_semantic_index_can_be_rebuilt_when_vector_table_exists(self):
+        fake_vector = [0.0] * search_index.DEFAULT_EMBEDDING_DIMENSIONS
+        with mock.patch.object(
+            search_index,
+            "_ollama_embeddings",
+            side_effect=lambda texts: [fake_vector for _ in texts],
+        ):
+            first = search_index.rebuild_search_index(
+                include_messages=True,
+                include_files=False,
+                semantic=True,
+            )
+            second = search_index.rebuild_search_index(
+                include_messages=True,
+                include_files=False,
+                semantic=True,
+            )
+
+        self.assertTrue(first["semantic_enabled"])
+        self.assertEqual(first["vectors_indexed"], 1)
+        self.assertTrue(second["semantic_enabled"])
+        self.assertEqual(second["vectors_indexed"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
