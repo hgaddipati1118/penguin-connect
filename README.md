@@ -85,6 +85,19 @@ The workspace explicitly discovers WhatsApp whenever it refreshes. For a headles
 process that should also discover WhatsApp and Telegram before any UI or MCP request, set
 `PENGUIN_CONNECT_DISCOVER_SECONDARY_CHANNELS_DURING_SYNC=true`.
 
+### Native desktop app
+
+Build the lightweight macOS app bundle, install it in Applications, and open it:
+
+```bash
+./scripts/build_desktop_app.sh --install
+open -a Penguin
+```
+
+The app uses the same local-only workspace and starts the bridge when it is not already
+running. Its embedded repository path is recorded at build time, so rebuild the app after
+moving the checkout. Terminal Full Disk Access is still required for Apple Messages reads.
+
 ## Codex / MCP
 
 PenguinConnect includes a local stdio MCP server with tools for:
@@ -127,6 +140,12 @@ For the full Gmail bridge setup, run `./scripts/penguin_connect_setup.py --gmail
 Important: run setup and bridge commands from `Terminal.app` with Full Disk Access enabled, otherwise Apple Messages `chat.db` reads will fail.
 
 Codex helper auth is local to the same Mac. To use ChatGPT/Codex subscription access, install the Codex CLI and run `codex login`; PenguinConnect detects the local CLI session and does not read or store Codex tokens. Trusted Business/Enterprise workflows can also use `CODEX_ACCESS_TOKEN` or `codex login --with-access-token`.
+
+The workspace sidebar can also read the Slashy coordination root and configured tools such
+as Supabase. Read mode is sandboxed. Modes that edit repositories or prepare pull requests
+require explicit confirmation for every run, preserve existing dirty work, and instruct
+Codex to commit only its own changes so the result remains reversible. Override the
+coordination root with `PENGUIN_CONNECT_CODEX_WORKSPACE`.
 
 ## Useful Commands
 

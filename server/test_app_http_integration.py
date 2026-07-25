@@ -210,6 +210,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
     def test_messages_endpoint_respects_limit_and_returns_latest_first(self):
         with TestClient(app_module.app) as client:
             response = client.get("/penguin-connect/conversations/amc_test/messages", params={"limit": 1})
+            older_response = client.get(
+                "/penguin-connect/conversations/amc_test/messages",
+                params={"limit": 1, "offset": 1, "refresh": "false"},
+            )
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
@@ -217,6 +221,54 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(len(body["messages"]), 1)
         self.assertEqual(body["messages"][0]["provider_message_id"], "imsg-latest")
         self.assertEqual(body["messages"][0]["body_text"], "Latest message")
+        self.assertGreaterEqual(body["total"], 2)
+        self.assertTrue(body["has_more"])
+        self.assertEqual(older_response.status_code, 200)
+        older = older_response.json()
+        self.assertEqual(older["offset"], 1)
+        self.assertNotEqual(older["messages"][0]["provider_message_id"], "imsg-latest")
+
+    def test_codex_workspace_modes_require_explicit_write_confirmation(self):
+        self.assertEqual(app_module._codex_stream_mode("read", False), ("read", "read-only"))
+        self.assertEqual(app_module._codex_stream_mode("edit", True), ("edit", "danger-full-access"))
+        self.assertEqual(app_module._codex_stream_mode("pr", True), ("pr", "danger-full-access"))
+        with self.assertRaises(Exception) as edit_ctx:
+            app_module._codex_stream_mode("edit", False)
+        with self.assertRaises(Exception) as pr_ctx:
+            app_module._codex_stream_mode("pr", False)
+        self.assertEqual(edit_ctx.exception.status_code, 403)
+        self.assertEqual(pr_ctx.exception.status_code, 403)
+
+    def test_translation_uses_codex_for_non_english_text(self):
+        with mock.patch("app._detect_message_language", return_value=("el", 0.99)), mock.patch(
+            "app._run_codex_prompt",
+            return_value={"success": True, "answer": "Hello, I am running late 👋"},
+        ) as mock_codex, TestClient(app_module.app) as client:
+            response = client.post(
+                "/penguin-connect/translate",
+                json={"text": "Γεια σου, αργώ 👋"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["translated"])
+        self.assertEqual(body["language"], "el")
+        self.assertEqual(body["text"], "Hello, I am running late 👋")
+        self.assertIn("Preserve names, URLs, emojis", mock_codex.call_args.args[0])
+
+    def test_translation_skips_codex_for_confident_english(self):
+        with mock.patch("app._detect_message_language", return_value=("en", 0.99)), mock.patch(
+            "app._run_codex_prompt"
+        ) as mock_codex, TestClient(app_module.app) as client:
+            response = client.post(
+                "/penguin-connect/translate",
+                json={"text": "Meet me at the office at noon."},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["translated"])
+        self.assertEqual(response.json()["text"], "Meet me at the office at noon.")
+        mock_codex.assert_not_called()
 
     def test_conversations_endpoint_includes_unread_count(self):
         conn = self._get_connection()
@@ -256,6 +308,25 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(conversation["contact_context"][0]["primary_handle"], "+1 (512) 743-6385")
         self.assertTrue(conversation["contact_context"][0]["is_saved"])
         self.assertIn("Taylor Example", conversation["contact_context_text"])
+
+    def test_historical_unread_rows_before_latest_read_do_not_create_99_badge(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                "UPDATE penguin_connect_messages SET is_read = 0 WHERE provider_message_id = ?",
+                ("imsg-older",),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with TestClient(app_module.app) as client:
+            response = client.get("/penguin-connect/conversations")
+
+        self.assertEqual(response.status_code, 200)
+        conversation = response.json()["conversations"][0]
+        self.assertEqual(conversation["unread_count"], 0)
+        self.assertFalse(conversation["has_unread"])
 
     def test_conversations_endpoint_includes_participant_contact_notes_for_search(self):
         with TestClient(app_module.app) as client:
@@ -2444,10 +2515,17 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("openContactCard", inbox_js_response.text)
         self.assertIn("toggleConversationPane", inbox_js_response.text)
         self.assertIn("toggleAgentPane", inbox_js_response.text)
+        self.assertIn("streamAgentPrompt", inbox_js_response.text)
+        self.assertIn("loadOlderMessages", inbox_js_response.text)
+        self.assertIn("appendInfiniteSentinel", inbox_js_response.text)
+        self.assertIn("preloadAdjacentConversations", inbox_js_response.text)
+        self.assertIn("updateConversationSelectionUI", inbox_js_response.text)
         self.assertIn("openWritingAssistant", inbox_js_response.text)
         self.assertIn("runWritingAssistant", inbox_js_response.text)
         self.assertIn('event.key.toLowerCase() === "j"', inbox_js_response.text)
         self.assertIn("openGifDialog", inbox_js_response.text)
+        self.assertIn("queueMessageTranslation", inbox_js_response.text)
+        self.assertIn("togglePinnedMessage", inbox_js_response.text)
         self.assertIn("PENGUIN_CONTACT_ACTION", inbox_js_response.text)
         self.assertIn("/penguin-connect/search/hybrid", inbox_js_response.text)
         self.assertIn("/penguin-connect/attachment-library/sync", inbox_js_response.text)
@@ -2459,6 +2537,11 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn('id="contactDialog"', inbox_response.text)
         self.assertIn('id="conversationMetaDialog"', inbox_response.text)
         self.assertIn("Current chat first, then your inbox", inbox_response.text)
+        self.assertIn("Workspace access", inbox_response.text)
+        self.assertIn("Sources used", inbox_response.text)
+        self.assertIn("Live activity", inbox_response.text)
+        self.assertIn('id="pinnedMessagesBar"', inbox_response.text)
+        self.assertIn('id="autoTranslateToggle"', inbox_response.text)
         self.assertIn('id="conversationLabels"', inbox_response.text)
         self.assertIn('id="scheduleDialog"', inbox_response.text)
         self.assertIn('data-view="queue"', inbox_response.text)

@@ -65,6 +65,9 @@
       <symbol id="i-folder" viewBox="0 0 24 24">
         <path d="M3.5 6.5h6l2 2h9v10h-17z" />
       </symbol>
+      <symbol id="i-pin" viewBox="0 0 24 24">
+        <path d="M8 3.5h8M9 3.5l1 6-4 3v2h12v-2l-4-3 1-6M12 14.5v6" />
+      </symbol>
     </svg>
 
     <main class="app-shell">
@@ -196,6 +199,7 @@
               <svg><use href="#i-close"></use></svg>
             </button>
           </div>
+          <div class="pinned-messages-bar" id="pinnedMessagesBar" hidden aria-label="Pinned messages"></div>
 
           <div class="message-list" id="messageList" role="log" aria-live="polite"></div>
 
@@ -221,6 +225,10 @@
             </div>
             <div class="composer-meta">
               <span id="composerStatus">Messages never leave this Mac except through their original service.</span>
+              <label class="auto-translate-toggle" title="Automatically translate clearly non-English messages">
+                <input id="autoTranslateToggle" type="checkbox" checked />
+                Auto-translate
+              </label>
               <span><kbd>↵</kbd> send · <kbd>⇧</kbd><kbd>↵</kbd> new line</span>
             </div>
           </div>
@@ -243,6 +251,15 @@
             <span class="context-orbit"></span>
             <span id="agentScopeSummary">Current chat first, then your inbox</span>
           </div>
+          <label class="agent-workspace-mode">
+            <span>Workspace access</span>
+            <select id="agentModeSelect" aria-label="Penguin Agent workspace access">
+              <option value="read">Read messages, repos &amp; Supabase</option>
+              <option value="edit">Make committed local changes</option>
+              <option value="pr">Create commits &amp; pull requests</option>
+            </select>
+            <small id="agentModeHelp">Read-only · uses the Slashy coordination root</small>
+          </label>
 
           <div class="agent-welcome" id="agentWelcome">
             <h3>What do you want to know?</h3>
@@ -280,7 +297,20 @@
               </div>
             </div>
             <div class="agent-answer-content" id="agentAnswerContent"></div>
-            <div class="agent-references" id="agentReferences" hidden></div>
+            <details class="agent-activity" id="agentActivity" open hidden>
+              <summary>
+                <span>Live activity</span>
+                <small id="agentActivityStatus">Starting…</small>
+              </summary>
+              <div class="agent-activity-list" id="agentActivityList"></div>
+            </details>
+            <section class="agent-sources" id="agentSources" hidden aria-label="Sources used">
+              <div class="agent-sources-head">
+                <strong>Sources used</strong>
+                <small>Chats Penguin searched for this answer</small>
+              </div>
+              <div class="agent-references" id="agentReferences"></div>
+            </section>
             <button class="secondary-button full-width" id="agentContactActionButton" type="button" hidden>
               Review contact update
             </button>

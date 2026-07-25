@@ -4147,6 +4147,14 @@ def _cache_local_source_messages_for_view(
         if source_provider in {"imessage", "apple_messages", "sms", "rcs"}
         else 0
     )
+    unread_provider_ids: set[str] = set()
+    if unread_count:
+        for candidate in reversed(messages):
+            if candidate.get("is_from_me"):
+                continue
+            unread_provider_ids.add(_provider_message_id(source_provider, candidate))
+            if len(unread_provider_ids) >= unread_count:
+                break
     last_ts = state["last_source_ts"] if state else None
     last_native_message_id = since_native_message_id
     stored = 0
@@ -4176,9 +4184,7 @@ def _cache_local_source_messages_for_view(
             continue
 
         is_from_me = 1 if msg.get("is_from_me") else 0
-        unread = False
-        if not is_from_me:
-            unread = True if unread_count is None else unread_count > 0
+        unread = not is_from_me and provider_id in unread_provider_ids
 
         sender_name, subject_name = _resolve_sender_and_subject(conn, conv, msg)
         metadata = {
@@ -4219,6 +4225,25 @@ def _cache_local_source_messages_for_view(
             return 0
         if cursor.rowcount > 0:
             stored += 1
+
+    if unread_count is not None and source_provider in {"imessage", "apple_messages", "sms", "rcs"}:
+        conn.execute(
+            """UPDATE penguin_connect_messages
+               SET is_read = 1
+               WHERE conversation_id = ?
+                 AND provider = 'imessage'
+                 AND direction = 'imessage_local'""",
+            (conv["conversation_id"],),
+        )
+        if unread_provider_ids:
+            placeholders = ",".join("?" for _ in unread_provider_ids)
+            conn.execute(
+                f"""UPDATE penguin_connect_messages
+                    SET is_read = 0
+                    WHERE conversation_id = ?
+                      AND provider_message_id IN ({placeholders})""",
+                (conv["conversation_id"], *sorted(unread_provider_ids)),
+            )
 
     if last_ts:
         try:
@@ -4574,6 +4599,7 @@ def get_conversation_messages(
     conversation_id: str,
     limit: int = 200,
     *,
+    offset: int = 0,
     refresh_source: bool = True,
 ) -> dict[str, Any]:
     conv = conn.execute(
@@ -4585,8 +4611,15 @@ def get_conversation_messages(
     if not conv:
         return {"found": False, "messages": []}
 
+    page_limit = max(1, min(limit, 1000))
+    page_offset = max(0, min(offset, 100_000))
     if refresh_source:
-        _cache_local_source_messages_for_view(conn, conv, limit=limit, include_history=True)
+        _cache_local_source_messages_for_view(
+            conn,
+            conv,
+            limit=max(page_limit, min(page_limit + page_offset, 5000)),
+            include_history=True,
+        )
 
     account = conn.execute(
         "SELECT send_as_aliases FROM penguin_connect_accounts WHERE gmail_email = ? LIMIT 1",
@@ -4612,9 +4645,15 @@ def get_conversation_messages(
             AND mm.provider_message_id = m.provider_message_id
            WHERE m.conversation_id = ?
            ORDER BY m.message_timestamp DESC
-           LIMIT ?""",
-        (conversation_id, max(1, min(limit, 1000))),
+           LIMIT ? OFFSET ?""",
+        (conversation_id, page_limit, page_offset),
     ).fetchall()
+    total = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM penguin_connect_messages WHERE conversation_id = ?",
+            (conversation_id,),
+        ).fetchone()[0]
+    )
 
     messages = []
     for row in rows:
@@ -4662,6 +4701,10 @@ def get_conversation_messages(
         "status": conv["status"],
         "excluded": bool(conv["exclude_from_sync"]),
         "messages": messages,
+        "limit": page_limit,
+        "offset": page_offset,
+        "total": total,
+        "has_more": page_offset + len(messages) < total,
     }
 
 
