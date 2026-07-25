@@ -35,6 +35,7 @@ const state = {
     whatsapp: "",
   },
   workspaceRefreshBusy: false,
+  persistentCacheHydrated: false,
   attachments: [],
   pendingSends: [],
   scheduledMessages: [],
@@ -238,12 +239,17 @@ const writingActions = {
 
 const listObservers = new Map();
 const translationQueue = [];
+const WORKSPACE_CACHE_DB = "penguin-local-workspace";
+const WORKSPACE_CACHE_VERSION = 1;
+const WORKSPACE_CACHE_THREAD_LIMIT = 60;
 let selectionHydrationTimer = 0;
 let latestAnchorFrame = 0;
 let latestAnchorToken = 0;
 let translationWorkerRunning = false;
 let shortcutPrefix = "";
 let shortcutPrefixTimer = 0;
+let workspaceCacheDatabasePromise = null;
+let workspaceCachePruneScheduled = false;
 
 function apiErrorMessage(payload, response) {
   const detail = payload?.detail;
@@ -268,6 +274,160 @@ async function api(path, options = {}) {
   }
   if (!response.ok) throw new Error(apiErrorMessage(payload, response));
   return payload;
+}
+
+function openWorkspaceCache() {
+  if (!("indexedDB" in window)) return Promise.resolve(null);
+  if (workspaceCacheDatabasePromise) return workspaceCacheDatabasePromise;
+  workspaceCacheDatabasePromise = new Promise((resolve, reject) => {
+    const request = window.indexedDB.open(WORKSPACE_CACHE_DB, WORKSPACE_CACHE_VERSION);
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      if (!database.objectStoreNames.contains("snapshots")) {
+        database.createObjectStore("snapshots", { keyPath: "key" });
+      }
+      if (!database.objectStoreNames.contains("threads")) {
+        database.createObjectStore("threads", { keyPath: "conversationId" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("Local cache unavailable"));
+    request.onblocked = () => reject(new Error("Local cache upgrade blocked"));
+  }).catch(() => null);
+  return workspaceCacheDatabasePromise;
+}
+
+async function readWorkspaceCache(storeName, key) {
+  const database = await openWorkspaceCache();
+  if (!database) return null;
+  return new Promise((resolve) => {
+    const transaction = database.transaction(storeName, "readonly");
+    const request = transaction.objectStore(storeName).get(key);
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => resolve(null);
+  });
+}
+
+async function readAllWorkspaceCache(storeName) {
+  const database = await openWorkspaceCache();
+  if (!database) return [];
+  return new Promise((resolve) => {
+    const transaction = database.transaction(storeName, "readonly");
+    const request = transaction.objectStore(storeName).getAll();
+    request.onsuccess = () => resolve(request.result || []);
+    request.onerror = () => resolve([]);
+  });
+}
+
+async function writeWorkspaceCache(storeName, value) {
+  const database = await openWorkspaceCache();
+  if (!database) return;
+  await new Promise((resolve) => {
+    const transaction = database.transaction(storeName, "readwrite");
+    transaction.objectStore(storeName).put(value);
+    transaction.oncomplete = resolve;
+    transaction.onerror = resolve;
+    transaction.onabort = resolve;
+  });
+}
+
+async function pruneWorkspaceThreadCache() {
+  const database = await openWorkspaceCache();
+  if (!database) return;
+  const records = await readAllWorkspaceCache("threads");
+  const expired = records
+    .sort((left, right) => Number(right.updatedAt || 0) - Number(left.updatedAt || 0))
+    .slice(WORKSPACE_CACHE_THREAD_LIMIT);
+  if (!expired.length) return;
+  await new Promise((resolve) => {
+    const transaction = database.transaction("threads", "readwrite");
+    const store = transaction.objectStore("threads");
+    for (const record of expired) store.delete(record.conversationId);
+    transaction.oncomplete = resolve;
+    transaction.onerror = resolve;
+    transaction.onabort = resolve;
+  });
+}
+
+function scheduleWorkspaceCachePrune() {
+  if (workspaceCachePruneScheduled) return;
+  workspaceCachePruneScheduled = true;
+  const schedule = window.requestIdleCallback || ((callback) => window.setTimeout(callback, 500));
+  schedule(async () => {
+    workspaceCachePruneScheduled = false;
+    await pruneWorkspaceThreadCache();
+  });
+}
+
+function persistConversationSnapshot() {
+  return writeWorkspaceCache("snapshots", {
+    key: "conversations",
+    updatedAt: Date.now(),
+    conversations: state.conversations,
+  });
+}
+
+function persistThreadSnapshot(conversationId, messages, {
+  total = messages.length,
+  hasMore = false,
+} = {}) {
+  if (!conversationId) return Promise.resolve();
+  const durableMessages = messages
+    .filter((message) => !message?.metadata?.pending_send)
+    .slice(-300);
+  scheduleWorkspaceCachePrune();
+  return writeWorkspaceCache("threads", {
+    conversationId,
+    updatedAt: Date.now(),
+    messages: durableMessages,
+    total: Math.max(Number(total || 0), durableMessages.length),
+    hasMore: Boolean(hasMore),
+  });
+}
+
+function rememberConversationMessages(conversationId, messages, metadata = {}) {
+  state.messageCache.set(conversationId, messages);
+  persistThreadSnapshot(conversationId, messages, metadata).catch(() => {});
+}
+
+async function hydrateWorkspaceCache() {
+  const snapshot = await readWorkspaceCache("snapshots", "conversations");
+  if (!Array.isArray(snapshot?.conversations) || !snapshot.conversations.length) {
+    state.persistentCacheHydrated = true;
+    return false;
+  }
+  state.conversations = snapshot.conversations;
+  const recentIds = new Set(
+    sortedConversations(state.conversations)
+      .filter(hasCachedMessage)
+      .slice(0, WORKSPACE_CACHE_THREAD_LIMIT)
+      .map((conversation) => conversation.conversation_id),
+  );
+  const threads = await readAllWorkspaceCache("threads");
+  for (const thread of threads) {
+    if (
+      recentIds.has(thread.conversationId)
+      && Array.isArray(thread.messages)
+      && thread.messages.length
+    ) {
+      state.messageCache.set(thread.conversationId, thread.messages);
+    }
+  }
+  state.persistentCacheHydrated = true;
+  renderView();
+  let rememberedConversationId = "";
+  try {
+    rememberedConversationId = localStorage.getItem("penguin-last-conversation") || "";
+  } catch (_error) {
+    rememberedConversationId = "";
+  }
+  const remembered = state.conversations.find(
+    (conversation) => conversation.conversation_id === rememberedConversationId,
+  );
+  if (remembered && hasCachedMessage(remembered) && !remembered.is_archived) {
+    selectConversation(remembered);
+  }
+  return true;
 }
 
 function providerKey(value) {
@@ -1907,10 +2067,10 @@ async function loadOlderMessages() {
     const addedCount = Math.max(0, merged.size - state.messages.length);
     state.messages = [...merged.values()];
     state.messagesVisible += addedCount;
-    state.messageCache.set(conversationId, state.messages);
     state.messagePagination.total = Number(payload.total || state.messages.length);
     state.messagePagination.hasMore = Boolean(payload.has_more)
       && state.messages.length < state.messagePagination.total;
+    rememberConversationMessages(conversationId, state.messages, state.messagePagination);
     renderMessages({ preserveTopAnchor: true });
   } catch (error) {
     toast(`Could not load older messages: ${error.message}`, "error");
@@ -1959,7 +2119,10 @@ async function preloadConversationMessages(conversation) {
     const payload = await api(
       `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/messages?limit=300&offset=0&refresh=false`,
     );
-    state.messageCache.set(conversationId, payload.messages || []);
+    rememberConversationMessages(conversationId, payload.messages || [], {
+      total: Number(payload.total || 0),
+      hasMore: Boolean(payload.has_more),
+    });
   } catch (_error) {
     // Adjacent preloading is opportunistic.
   } finally {
@@ -1982,6 +2145,11 @@ async function selectConversation(conversation, { focusMessageId = "" } = {}) {
   const selectionToken = ++state.selectionToken;
   const previousConversationId = state.selected?.conversation_id || "";
   state.selected = conversation;
+  try {
+    localStorage.setItem("penguin-last-conversation", conversation.conversation_id);
+  } catch (_error) {
+    // Selection still works when persistent browser storage is unavailable.
+  }
   const cachedMessages = state.messageCache.get(conversation.conversation_id) || [];
   state.messages = cachedMessages;
   state.messagesVisible = 100;
@@ -2016,9 +2184,13 @@ async function selectConversation(conversation, { focusMessageId = "" } = {}) {
     );
     if (selectionToken !== state.selectionToken || state.selected?.conversation_id !== conversation.conversation_id) return;
     state.messages = payload.messages || [];
-    state.messageCache.set(conversation.conversation_id, state.messages);
     state.messagePagination.total = Number(payload.total || state.messages.length);
     state.messagePagination.hasMore = Boolean(payload.has_more);
+    rememberConversationMessages(
+      conversation.conversation_id,
+      state.messages,
+      state.messagePagination,
+    );
     renderMessages({ focusMessageId });
     await Promise.all([
       markConversationRead(conversation),
@@ -2067,9 +2239,9 @@ async function refreshSelectedMessages({ incremental = true } = {}) {
     for (const message of nextMessages) merged.set(message.provider_message_id, message);
     nextMessages = [...merged.values()];
   }
-  state.messageCache.set(conversationId, nextMessages);
   state.messagePagination.total = Number(payload.total || nextMessages.length);
   state.messagePagination.hasMore = nextMessages.length < state.messagePagination.total;
+  rememberConversationMessages(conversationId, nextMessages, state.messagePagination);
   if (messagesFingerprint(nextMessages) === messagesFingerprint(state.messages)) return;
   state.messages = nextMessages;
   renderMessages({ preserveScroll: true });
@@ -2352,7 +2524,7 @@ function addPendingOptimisticMessage(pending) {
   };
   pending.optimisticMessage = message;
   state.messages.push(message);
-  state.messageCache.set(pending.conversation.conversation_id, state.messages);
+  rememberConversationMessages(pending.conversation.conversation_id, state.messages);
   if (state.selected?.conversation_id === pending.conversation.conversation_id) renderMessages();
 }
 
@@ -2370,7 +2542,7 @@ function removePendingOptimisticMessage(pending) {
     (message) => message.provider_message_id !== pending.optimisticId,
   );
   const cached = state.messageCache.get(conversationId) || [];
-  state.messageCache.set(
+  rememberConversationMessages(
     conversationId,
     cached.filter((message) => message.provider_message_id !== pending.optimisticId),
   );
@@ -2495,6 +2667,7 @@ async function loadConversations({
   try {
     const previousFingerprint = conversationsFingerprint(state.conversations);
     const query = new URLSearchParams();
+    query.set("compact", "true");
     if (discoverWhatsApp) query.set("include_whatsapp", "true");
     if (discoverIMessages) query.set("include_imessage", "true");
     const queryString = query.toString();
@@ -2502,6 +2675,7 @@ async function loadConversations({
       `/penguin-connect/conversations${queryString ? `?${queryString}` : ""}`,
     );
     state.conversations = payload.conversations || [];
+    persistConversationSnapshot().catch(() => {});
     const changed = previousFingerprint !== conversationsFingerprint(state.conversations);
     if (keepSelection && state.selected) {
       state.selected = state.conversations.find(
@@ -2515,6 +2689,12 @@ async function loadConversations({
       schedule(() => preloadRecentMessages());
     }
   } catch (error) {
+    if (state.conversations.length) {
+      renderView();
+      el.listSummary.textContent = `${visibleConversations().length} conversations · offline cache`;
+      toast(`Using local cache: ${error.message}`, "error");
+      return;
+    }
     el.conversationList.replaceChildren();
     const empty = document.createElement("div");
     empty.className = "pane-empty";
@@ -4359,8 +4539,9 @@ async function start() {
   setAgentOpen(false);
   setSource("all");
   renderView();
+  await hydrateWorkspaceCache();
   await Promise.allSettled([
-    loadConversations({ keepSelection: false }),
+    loadConversations({ keepSelection: Boolean(state.selected) }),
     loadContacts().then((contacts) => { state.contacts = contacts; renderPeopleList(); }),
     loadHealth(),
     loadAgentStatus(),

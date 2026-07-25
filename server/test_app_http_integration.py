@@ -264,6 +264,33 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertNotIn(str(self.db_path), first.text)
         self.assertLess(len(first.content), 400)
 
+    def test_conversations_compact_mode_keeps_inbox_fields_and_drops_bridge_fields(self):
+        with TestClient(app_module.app) as client:
+            full_response = client.get("/penguin-connect/conversations")
+            compact_response = client.get(
+                "/penguin-connect/conversations",
+                params={"compact": True},
+            )
+
+        self.assertEqual(full_response.status_code, 200)
+        self.assertEqual(compact_response.status_code, 200)
+        full_row = full_response.json()["conversations"][0]
+        compact_row = compact_response.json()["conversations"][0]
+        self.assertEqual(compact_row["conversation_id"], full_row["conversation_id"])
+        self.assertEqual(compact_row["last_message_preview"], full_row["last_message_preview"])
+        self.assertIn("participants", compact_row)
+        self.assertIn("contact_context", compact_row)
+        self.assertIn("is_archived", compact_row)
+        self.assertNotIn("alias_email", compact_row)
+        self.assertNotIn("gmail_thread_id", compact_row)
+        self.assertNotIn("source_chat_id", compact_row)
+        for contact in compact_row["contact_context"]:
+            self.assertLessEqual(
+                set(contact),
+                set(app_module._COMPACT_CONTACT_CONTEXT_FIELDS),
+            )
+        self.assertLess(len(compact_response.content), len(full_response.content))
+
     def test_messages_endpoint_forwards_incremental_refresh_mode(self):
         with mock.patch(
             "app.penguinconnect_get_conversation_messages",
@@ -2593,6 +2620,11 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("&& !event.shiftKey", inbox_js_response.text)
         self.assertIn("&& !event.isComposing", inbox_js_response.text)
         self.assertIn("preloadRecentMessages", inbox_js_response.text)
+        self.assertIn("hydrateWorkspaceCache", inbox_js_response.text)
+        self.assertIn("persistConversationSnapshot", inbox_js_response.text)
+        self.assertIn("persistThreadSnapshot", inbox_js_response.text)
+        self.assertIn("penguin-local-workspace", inbox_js_response.text)
+        self.assertIn('query.set("compact", "true")', inbox_js_response.text)
         self.assertIn("openContactCard", inbox_js_response.text)
         self.assertIn("toggleConversationPane", inbox_js_response.text)
         self.assertIn("toggleAgentPane", inbox_js_response.text)

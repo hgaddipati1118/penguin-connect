@@ -4647,6 +4647,7 @@ def connect_penguinconnect_gmail(req: PenguinConnectGmailConnectRequest):
 def get_penguinconnect_conversations(
     include_whatsapp: bool = False,
     include_imessage: bool = False,
+    compact: bool = False,
 ):
     conn = get_connection()
     try:
@@ -4670,11 +4671,79 @@ def get_penguinconnect_conversations(
         result = _attach_conversation_management(conn, result)
         result = _attach_conversation_contact_context(conn, result)
         conn.commit()
-        return result
+        return _compact_conversation_result(result) if compact else result
     except sqlite3.OperationalError as exc:
         raise _map_sqlite_error(exc)
     finally:
         conn.close()
+
+
+_COMPACT_CONVERSATION_FIELDS = (
+    "conversation_id",
+    "source_provider",
+    "source_service_name",
+    "display_name",
+    "chat_type",
+    "participants",
+    "status",
+    "excluded",
+    "last_message_provider_id",
+    "last_message_ts",
+    "last_message_preview",
+    "last_message_has_attachments",
+    "unread_count",
+    "has_unread",
+    "is_pinned",
+    "is_archived",
+    "is_muted",
+    "title",
+    "note",
+    "labels",
+    "avatar_data_url",
+    "draft_text",
+    "follow_up_at",
+    "management_updated_at",
+    "contact_context",
+)
+
+_COMPACT_CONTACT_CONTEXT_FIELDS = (
+    "contact_key",
+    "contact_keys",
+    "primary_handle",
+    "display_name",
+    "organization",
+    "is_saved",
+)
+
+
+def _compact_conversation_result(result: dict) -> dict:
+    """Return only fields the keyboard inbox needs for its initial list render."""
+    compact_result = {
+        key: value
+        for key, value in result.items()
+        if key != "conversations"
+    }
+    compact_rows = []
+    for conversation in result.get("conversations") or []:
+        if not isinstance(conversation, dict):
+            continue
+        compact = {
+            key: conversation.get(key)
+            for key in _COMPACT_CONVERSATION_FIELDS
+            if key in conversation
+        }
+        compact["contact_context"] = [
+            {
+                key: contact.get(key)
+                for key in _COMPACT_CONTACT_CONTEXT_FIELDS
+                if key in contact
+            }
+            for contact in conversation.get("contact_context") or []
+            if isinstance(contact, dict)
+        ]
+        compact_rows.append(compact)
+    compact_result["conversations"] = compact_rows
+    return compact_result
 
 
 def _workspace_source_file_token(source_path: Path | str) -> tuple[tuple[int, int], ...]:
