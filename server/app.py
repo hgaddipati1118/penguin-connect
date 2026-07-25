@@ -4189,6 +4189,11 @@ def get_penguinconnect_console():
 def get_penguinconnect_inbox_css():
     return _ui_file_response("inbox.css", "text/css; charset=utf-8")
 
+@app.get("/api/penguin-connect/ui/penguin-logo.png")
+@app.get("/penguin-connect/ui/penguin-logo.png")
+def get_penguinconnect_logo():
+    return FileResponse(UI_DIR / "penguin-logo.png", media_type="image/png")
+
 @app.get("/api/penguin-connect/ui/inbox.js")
 @app.get("/penguin-connect/ui/inbox.js")
 def get_penguinconnect_inbox_js():

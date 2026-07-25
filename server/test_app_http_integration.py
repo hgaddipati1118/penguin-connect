@@ -2690,6 +2690,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         with TestClient(app_module.app) as client:
             inbox_response = client.get("/penguin-connect/ui")
             inbox_css_response = client.get("/penguin-connect/ui/inbox.css")
+            logo_response = client.get("/penguin-connect/ui/penguin-logo.png")
             inbox_js_response = client.get("/penguin-connect/ui/inbox.js")
             html_response = client.get("/penguin-connect/console")
             css_response = client.get("/penguin-connect/ui/app.css")
@@ -2701,6 +2702,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("Search messages and people", inbox_response.text)
         self.assertEqual(inbox_css_response.status_code, 200)
         self.assertIn(".app-shell", inbox_css_response.text)
+        self.assertEqual(logo_response.status_code, 200)
+        self.assertEqual(logo_response.headers["content-type"], "image/png")
+        self.assertGreater(len(logo_response.content), 10_000)
+        self.assertIn('src="/penguin-connect/ui/penguin-logo.png"', inbox_response.text)
         self.assertEqual(inbox_js_response.status_code, 200)
         self.assertIn("loadConversations", inbox_js_response.text)
         self.assertIn("hasCachedMessage", inbox_js_response.text)

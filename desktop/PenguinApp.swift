@@ -98,6 +98,11 @@ private func repoPort(at repoURL: URL) -> Int {
 }
 
 private func makeDockIcon() -> NSImage {
+    if let iconURL = Bundle.main.url(forResource: "PenguinIcon", withExtension: "png"),
+       let icon = NSImage(contentsOf: iconURL) {
+        return icon
+    }
+
     let image = NSImage(size: NSSize(width: 512, height: 512))
     image.lockFocus()
     NSColor(calibratedRed: 0.094, green: 0.133, blue: 0.116, alpha: 1).setFill()
@@ -247,7 +252,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         }
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
         process.arguments = [runner.path]
         process.currentDirectoryURL = repoURL
         let nullHandle = FileHandle.nullDevice

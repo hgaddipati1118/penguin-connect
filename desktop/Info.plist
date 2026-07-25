@@ -8,6 +8,8 @@
   <string>Penguin</string>
   <key>CFBundleExecutable</key>
   <string>Penguin</string>
+  <key>CFBundleIconFile</key>
+  <string>PenguinIcon</string>
   <key>CFBundleIdentifier</key>
   <string>com.penguinconnect.desktop</string>
   <key>CFBundleInfoDictionaryVersion</key>
