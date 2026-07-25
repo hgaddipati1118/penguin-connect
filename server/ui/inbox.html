@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Penguin</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/penguin-connect/ui/inbox.css" />
+  </head>
+  <body>
+    <svg class="icon-sprite" aria-hidden="true">
+      <symbol id="i-inbox" viewBox="0 0 24 24">
+        <path d="M4 4.75h16v13.5H4zM4 14h4l1.5 2h5l1.5-2h4" />
+      </symbol>
+      <symbol id="i-people" viewBox="0 0 24 24">
+        <circle cx="9" cy="8" r="3.25" />
+        <path d="M3.5 19c.45-3.35 2.25-5 5.5-5s5.05 1.65 5.5 5M15 6.25a3 3 0 0 1 0 5.5M16.5 14c2.35.35 3.68 2.02 4 5" />
+      </symbol>
+      <symbol id="i-search" viewBox="0 0 24 24">
+        <circle cx="10.5" cy="10.5" r="6" />
+        <path d="m15 15 4.25 4.25" />
+      </symbol>
+      <symbol id="i-spark" viewBox="0 0 24 24">
+        <path d="M12 2.75c.55 4.1 2.65 6.2 6.75 6.75-4.1.55-6.2 2.65-6.75 6.75-.55-4.1-2.65-6.2-6.75-6.75C9.35 8.95 11.45 6.85 12 2.75Z" />
+        <path d="M18.5 15.75c.23 1.7 1.05 2.52 2.75 2.75-1.7.23-2.52 1.05-2.75 2.75-.23-1.7-1.05-2.52-2.75-2.75 1.7-.23 2.52-1.05 2.75-2.75Z" />
+      </symbol>
+      <symbol id="i-compose" viewBox="0 0 24 24">
+        <path d="M12 20H4v-8l9.5-9.5a2.12 2.12 0 0 1 3 3L7 15v2h2l9.5-9.5" />
+      </symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24">
+        <path d="M19 8a8 8 0 1 0 .5 7M19 3v5h-5" />
+      </symbol>
+      <symbol id="i-panel" viewBox="0 0 24 24">
+        <rect x="3" y="4" width="18" height="16" rx="1" />
+        <path d="M15 4v16" />
+      </symbol>
+      <symbol id="i-paperclip" viewBox="0 0 24 24">
+        <path d="m8.5 12.5 6.75-6.75a3 3 0 1 1 4.25 4.25l-8.25 8.25a5 5 0 0 1-7.07-7.07l8.07-8.08M6.3 13.3l7.45-7.45" />
+      </symbol>
+      <symbol id="i-send" viewBox="0 0 24 24">
+        <path d="m3.5 4 17 8-17 8 3-8-3-8Z" />
+        <path d="M6.5 12h14" />
+      </symbol>
+      <symbol id="i-close" viewBox="0 0 24 24">
+        <path d="m6 6 12 12M18 6 6 18" />
+      </symbol>
+      <symbol id="i-copy" viewBox="0 0 24 24">
+        <rect x="8" y="8" width="11" height="11" rx="1" />
+        <path d="M16 8V5H5v11h3" />
+      </symbol>
+      <symbol id="i-arrow" viewBox="0 0 24 24">
+        <path d="m9 5 7 7-7 7" />
+      </symbol>
+    </svg>
+
+    <main class="app-shell">
+      <nav class="app-nav" aria-label="Penguin navigation">
+        <div class="brand-mark" aria-label="Penguin">P</div>
+        <div class="nav-stack">
+          <button class="nav-button active" type="button" data-view="inbox" title="Inbox" aria-label="Inbox">
+            <svg><use href="#i-inbox"></use></svg>
+          </button>
+          <button class="nav-button" type="button" data-view="people" title="People" aria-label="People">
+            <svg><use href="#i-people"></use></svg>
+          </button>
+        </div>
+        <div class="nav-spacer"></div>
+        <button class="nav-button" id="toggleAgentButton" type="button" title="Toggle Penguin Agent" aria-label="Toggle Penguin Agent" aria-pressed="true">
+          <svg><use href="#i-spark"></use></svg>
+        </button>
+        <div class="connection-orbit" id="connectionOrbit" title="Checking local bridge">
+          <span></span>
+        </div>
+      </nav>
+
+      <section class="conversation-pane" aria-label="Conversations and contacts">
+        <header class="pane-header">
+          <div>
+            <p class="overline">Penguin</p>
+            <h1 id="paneTitle">Inbox</h1>
+          </div>
+          <button class="icon-button" id="composeButton" type="button" title="New message" aria-label="New message">
+            <svg><use href="#i-compose"></use></svg>
+          </button>
+        </header>
+
+        <label class="global-search">
+          <svg><use href="#i-search"></use></svg>
+          <input id="globalSearch" type="search" placeholder="Search messages and people" autocomplete="off" />
+          <kbd>⌘K</kbd>
+        </label>
+
+        <div class="source-tabs" id="sourceTabs" role="group" aria-label="Message source">
+          <button class="active" type="button" data-source="all">All</button>
+          <button type="button" data-source="imessage"><span class="source-dot imessage"></span>iMessage</button>
+          <button type="button" data-source="whatsapp"><span class="source-dot whatsapp"></span>WhatsApp</button>
+        </div>
+
+        <div class="list-summary">
+          <span id="listSummary">Loading conversations</span>
+          <button class="text-button" id="refreshButton" type="button">
+            <svg><use href="#i-refresh"></use></svg>
+            Refresh
+          </button>
+        </div>
+
+        <div class="pane-list" id="conversationList" role="list" aria-live="polite"></div>
+        <div class="pane-list people-list" id="peopleList" role="list" aria-live="polite" hidden></div>
+        <div class="pane-list search-list" id="searchList" role="list" aria-live="polite" hidden></div>
+
+        <footer class="pane-footer">
+          <span id="syncStatus"><span class="status-dot"></span> Local only</span>
+          <a href="/penguin-connect/console">Open power console</a>
+        </footer>
+      </section>
+
+      <section class="thread-pane" aria-label="Selected conversation">
+        <div class="thread-empty" id="threadEmpty">
+          <div class="empty-emblem">
+            <span></span><span></span><span></span>
+          </div>
+          <p class="overline">One place for your people</p>
+          <h2>Choose a conversation</h2>
+          <p>iMessage and WhatsApp stay in one timeline, ordered by the latest activity.</p>
+          <button class="secondary-button" type="button" id="emptySearchButton">
+            <svg><use href="#i-search"></use></svg>
+            Search your messages
+          </button>
+        </div>
+
+        <div class="thread-content" id="threadContent" hidden>
+          <header class="thread-header">
+            <div class="person-avatar large" id="threadAvatar"></div>
+            <div class="thread-identity">
+              <div class="thread-name-row">
+                <h2 id="threadTitle">Conversation</h2>
+                <span class="provider-pill" id="threadProvider"></span>
+              </div>
+              <p id="threadSubtitle"></p>
+            </div>
+            <div class="thread-header-actions">
+              <button class="icon-button" id="threadSearchButton" type="button" title="Search this conversation" aria-label="Search this conversation">
+                <svg><use href="#i-search"></use></svg>
+              </button>
+              <button class="icon-button" id="threadAgentButton" type="button" title="Ask Penguin Agent" aria-label="Ask Penguin Agent">
+                <svg><use href="#i-spark"></use></svg>
+              </button>
+            </div>
+          </header>
+
+          <div class="thread-search-bar" id="threadSearchBar" hidden>
+            <label>
+              <svg><use href="#i-search"></use></svg>
+              <input id="threadSearch" type="search" placeholder="Find in this conversation" autocomplete="off" />
+            </label>
+            <span id="threadSearchCount"></span>
+            <button class="icon-button compact" id="closeThreadSearchButton" type="button" title="Close search" aria-label="Close search">
+              <svg><use href="#i-close"></use></svg>
+            </button>
+          </div>
+
+          <div class="message-list" id="messageList" role="log" aria-live="polite"></div>
+
+          <div class="composer-wrap">
+            <div class="attachment-preview" id="attachmentPreview" hidden></div>
+            <div class="composer">
+              <label class="attach-button" for="attachmentInput" title="Attach files" aria-label="Attach files">
+                <svg><use href="#i-paperclip"></use></svg>
+              </label>
+              <input id="attachmentInput" type="file" multiple hidden />
+              <textarea id="messageComposer" rows="1" placeholder="Write a message" aria-label="Write a message"></textarea>
+              <button class="send-button" id="sendButton" type="button" title="Send message" aria-label="Send message" disabled>
+                <svg><use href="#i-send"></use></svg>
+              </button>
+            </div>
+            <div class="composer-meta">
+              <span id="composerStatus">Messages never leave this Mac except through their original service.</span>
+              <span><kbd>⌘</kbd><kbd>↵</kbd> send</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="agent-pane" id="agentPane" aria-label="Penguin Agent">
+        <header class="agent-header">
+          <div class="agent-title">
+            <span class="agent-mark"><svg><use href="#i-spark"></use></svg></span>
+            <div>
+              <h2>Penguin Agent</h2>
+              <p id="agentStatus">Checking Codex</p>
+            </div>
+          </div>
+          <button class="icon-button compact" id="closeAgentButton" type="button" title="Close agent" aria-label="Close agent">
+            <svg><use href="#i-close"></use></svg>
+          </button>
+        </header>
+
+        <div class="agent-body">
+          <div class="agent-context">
+            <span>Context</span>
+            <button class="context-chip active" type="button" data-agent-scope="thread">This chat</button>
+            <button class="context-chip" type="button" data-agent-scope="inbox">Across inbox</button>
+          </div>
+
+          <div class="agent-welcome" id="agentWelcome">
+            <p class="overline">Local message intelligence</p>
+            <h3>Ask what happened, what matters, or what to say next.</h3>
+            <p>Codex receives only the local context included in your prompt.</p>
+          </div>
+
+          <div class="agent-quick-actions" id="agentQuickActions">
+            <button type="button" data-agent-action="summary">
+              <span>Summarize</span>
+              <small>Catch me up on this conversation</small>
+            </button>
+            <button type="button" data-agent-action="reply">
+              <span>Draft a reply</span>
+              <small>Match my tone and keep it concise</small>
+            </button>
+            <button type="button" data-agent-action="commitments">
+              <span>Find commitments</span>
+              <small>Pull out promises and next steps</small>
+            </button>
+          </div>
+
+          <div class="agent-answer" id="agentAnswer" hidden>
+            <div class="agent-answer-head">
+              <span>Agent response</span>
+              <button class="text-button" id="copyAgentAnswerButton" type="button">
+                <svg><use href="#i-copy"></use></svg>
+                Copy
+              </button>
+            </div>
+            <div class="agent-answer-content" id="agentAnswerContent"></div>
+            <button class="secondary-button full-width" id="useAgentAnswerButton" type="button">
+              Use as message draft
+            </button>
+          </div>
+        </div>
+
+        <div class="agent-composer">
+          <textarea id="agentQuestion" rows="3" placeholder="Ask about your messages" aria-label="Ask Penguin Agent"></textarea>
+          <div>
+            <span id="agentContextLabel">No chat selected</span>
+            <button class="agent-send-button" id="askAgentButton" type="button" disabled>
+              Ask
+              <svg><use href="#i-arrow"></use></svg>
+            </button>
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <dialog class="compose-dialog" id="composeDialog" aria-labelledby="composeDialogTitle">
+      <form method="dialog">
+        <header>
+          <div>
+            <p class="overline">Start from a person</p>
+            <h2 id="composeDialogTitle">New message</h2>
+          </div>
+          <button class="icon-button" value="cancel" title="Close" aria-label="Close">
+            <svg><use href="#i-close"></use></svg>
+          </button>
+        </header>
+        <label class="dialog-search">
+          <svg><use href="#i-search"></use></svg>
+          <input id="composeSearch" type="search" placeholder="Search contacts or existing chats" autocomplete="off" />
+        </label>
+        <div class="compose-results" id="composeResults" role="list"></div>
+        <p class="dialog-note">New outbound threads use an existing safe route. The power console can stage a brand-new Apple Messages draft.</p>
+      </form>
+    </dialog>
+
+    <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
+    <script src="/penguin-connect/ui/inbox.js"></script>
+  </body>
+</html>

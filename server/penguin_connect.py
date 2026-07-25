@@ -1300,6 +1300,13 @@ def _env_float(name: str, default: float, minimum: float, maximum: float) -> flo
     return max(minimum, min(value, maximum))
 
 
+def _env_enabled(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _gmail_backfill_write_pause_seconds() -> float:
     return _env_float(
         "PENGUIN_CONNECT_BACKFILL_WRITE_PAUSE_SECONDS",
@@ -3707,6 +3714,7 @@ def ensure_whatsapp_conversations_discovered(
     gmail_email: str,
     *,
     max_chats: int | None = 500,
+    provision_aliases: bool = True,
 ) -> int:
     """Discover WhatsApp conversations and persist them into the conversation table."""
     if _WHATSAPP_CHANNEL is None:
@@ -3765,7 +3773,7 @@ def ensure_whatsapp_conversations_discovered(
             ),
         )
 
-        if not excluded:
+        if provision_aliases and not excluded:
             alias_row = _ensure_active_alias(conn, gmail_email, conversation_id, fresh=False)
             conn.execute(
                 "UPDATE penguin_connect_conversations SET alias_email = ? WHERE conversation_id = ?",
@@ -8242,8 +8250,9 @@ def _sync_conversations_unlocked(
         ).fetchone()[0]
         if not existing:
             ensure_conversations_discovered(conn, gmail_email)
-            ensure_whatsapp_conversations_discovered(conn, gmail_email)
-            ensure_telegram_conversations_discovered(conn, gmail_email)
+            if _env_enabled("PENGUIN_CONNECT_DISCOVER_SECONDARY_CHANNELS_DURING_SYNC"):
+                ensure_whatsapp_conversations_discovered(conn, gmail_email)
+                ensure_telegram_conversations_discovered(conn, gmail_email)
             conn.commit()
         sweep_result = None
     exclusion_refresh = refresh_conversation_exclusions(conn, gmail_email)

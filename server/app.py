@@ -29,6 +29,7 @@ from pydantic import BaseModel
 
 from action_log import action_log_path, log_action
 from penguin_connect import (
+    LOCAL_MESSAGES_ACCOUNT_EMAIL,
     connect_gmail_account as penguinconnect_connect_gmail_account,
     get_cached_sync_metrics as penguinconnect_get_cached_sync_metrics,
     disconnect_conversation as penguinconnect_disconnect_conversation,
@@ -37,12 +38,15 @@ from penguin_connect import (
     get_gmail_connection_status as penguinconnect_get_gmail_connection_status,
     get_runtime_sync_status as penguinconnect_get_runtime_sync_status,
     import_local_imessage_search_results as penguinconnect_import_local_imessage_search_results,
+    ensure_whatsapp_conversations_discovered as penguinconnect_ensure_whatsapp_conversations_discovered,
     list_conversations as penguinconnect_list_conversations,
     reconnect_conversation as penguinconnect_reconnect_conversation,
     run_startup_catchup as penguinconnect_run_startup_catchup,
+    send_imessage as penguinconnect_send_imessage,
     send_manual_message as penguinconnect_send_manual_message,
     sync_conversations as penguinconnect_sync_conversations,
 )
+from browse_sources import resolve_apple_messages_chat
 from db import DB_PATH, get_connection, init_db
 from startup_checks import StartupReadinessError, assert_startup_ready
 from watcher import get_sync_status, refresh_contacts_now, start_watchers, stop_watchers
@@ -123,6 +127,11 @@ class PenguinConnectDraftSendRequest(PenguinConnectDraftCreateRequest):
 
 class PenguinConnectDraftResolveRequest(BaseModel):
     participants: list[str] | None = None
+
+class PenguinConnectImessageSendRequest(BaseModel):
+    to: str = ""  # a single phone / email / iMessage handle for a 1:1 DM
+    text: str = ""
+    attachment_paths: list[str] | None = None
 
 class PenguinConnectRecipientListRequest(BaseModel):
     list_id: str = ""
@@ -3304,7 +3313,22 @@ app.add_middleware(
 @app.get("/api/penguin-connect/ui", response_class=HTMLResponse)
 @app.get("/penguin-connect/ui", response_class=HTMLResponse)
 def get_penguinconnect_ui():
+    return HTMLResponse((UI_DIR / "inbox.html").read_text(encoding="utf-8"))
+
+@app.get("/api/penguin-connect/console", response_class=HTMLResponse)
+@app.get("/penguin-connect/console", response_class=HTMLResponse)
+def get_penguinconnect_console():
     return HTMLResponse((UI_DIR / "index.html").read_text(encoding="utf-8"))
+
+@app.get("/api/penguin-connect/ui/inbox.css")
+@app.get("/penguin-connect/ui/inbox.css")
+def get_penguinconnect_inbox_css():
+    return _ui_file_response("inbox.css", "text/css; charset=utf-8")
+
+@app.get("/api/penguin-connect/ui/inbox.js")
+@app.get("/penguin-connect/ui/inbox.js")
+def get_penguinconnect_inbox_js():
+    return _ui_file_response("inbox.js", "application/javascript; charset=utf-8")
 
 @app.get("/api/penguin-connect/ui/app.css")
 @app.get("/penguin-connect/ui/app.css")
@@ -3642,6 +3666,91 @@ def send_penguinconnect_messages_draft(req: PenguinConnectDraftSendRequest):
             shutil.rmtree(staged_dir, ignore_errors=True)
         conn.close()
 
+def _imessage_route_summary(route: dict | None) -> dict:
+    """Compact, JSON-safe view of a resolved Apple Messages route for API responses."""
+    if not route:
+        return {"resolved": False, "ambiguous": False}
+    return {
+        "resolved": True,
+        "ambiguous": bool(route.get("ambiguous")),
+        "guid": route.get("guid"),
+        "chat_identifier": route.get("chat_identifier"),
+        "service": route.get("service_name"),
+        "source_provider": route.get("source_provider"),
+        "display_name": route.get("display_name"),
+        "last_message_at": route.get("last_message_at"),
+    }
+
+
+@app.get("/api/penguin-connect/imessage/resolve")
+@app.get("/penguin-connect/imessage/resolve")
+def penguinconnect_imessage_resolve(to: str = Query("", description="phone / email / handle")):
+    """Preview whether `to` maps to a single existing Apple Messages conversation, without
+    sending. Lets a caller (e.g. the CRM) decide up front between a safe iMessage DM and
+    falling back to email. Never guesses: an ambiguous or missing thread is reported as such."""
+    recipient = (to or "").strip()
+    if not recipient:
+        raise HTTPException(status_code=400, detail="missing_recipient")
+    route = resolve_apple_messages_chat(recipient)
+    summary = _imessage_route_summary(route)
+    summary["to"] = recipient
+    # sendable == exactly one existing 1:1/thread we can address unambiguously
+    summary["sendable"] = bool(route) and not summary["ambiguous"]
+    return summary
+
+
+@app.post("/api/penguin-connect/imessage/send")
+@app.post("/penguin-connect/imessage/send")
+def penguinconnect_imessage_send(req: PenguinConnectImessageSendRequest):
+    """Send a 1:1 iMessage into an existing conversation, resolved route-safely and with NO
+    Gmail dependency (unlike the Gmail-bridged manual-send path). Fails closed: if `to` has no
+    existing conversation, or resolves to more than one, we do NOT guess a recipient — the
+    caller should fall back to email. This is the safe way to re-enable CRM iMessage DMs."""
+    recipient = (req.to or "").strip()
+    body_text = (req.text or "").strip()
+    attachments = [str(p).strip() for p in (req.attachment_paths or []) if str(p or "").strip()]
+    if not recipient:
+        raise HTTPException(status_code=400, detail="missing_recipient")
+    if not body_text and not attachments:
+        raise HTTPException(status_code=400, detail="empty_message")
+
+    route = resolve_apple_messages_chat(recipient)
+    summary = _imessage_route_summary(route)
+    summary["to"] = recipient
+    recipient_fingerprint = hashlib.sha256(
+        recipient.lower().encode("utf-8", errors="replace")
+    ).hexdigest()[:12]
+
+    if not route:
+        log_action(
+            "api_imessage_send",
+            recipient_fingerprint=recipient_fingerprint,
+            success=False,
+            error="no_existing_conversation",
+        )
+        return {"success": False, "error": "no_existing_conversation", **summary}
+    if summary["ambiguous"]:
+        log_action(
+            "api_imessage_send",
+            recipient_fingerprint=recipient_fingerprint,
+            success=False,
+            error="ambiguous_route",
+        )
+        return {"success": False, "error": "ambiguous_route", **summary}
+
+    ok, err = penguinconnect_send_imessage(recipient, body_text, attachment_paths=attachments or None)
+    log_action(
+        "api_imessage_send",
+        recipient_fingerprint=recipient_fingerprint,
+        success=bool(ok),
+        error=err,
+        attachment_count=len(attachments),
+    )
+    if not ok:
+        return {"success": False, "error": err or "send_failed", **summary}
+    return {"success": True, **summary}
+
+
 @app.get("/api/penguin-connect/codex/status")
 @app.get("/penguin-connect/codex/status")
 def penguinconnect_codex_status():
@@ -3673,10 +3782,17 @@ def connect_penguinconnect_gmail(req: PenguinConnectGmailConnectRequest):
 
 @app.get("/api/penguin-connect/conversations")
 @app.get("/penguin-connect/conversations")
-def get_penguinconnect_conversations():
+def get_penguinconnect_conversations(include_whatsapp: bool = False):
     conn = get_connection()
     try:
         result = penguinconnect_list_conversations(conn)
+        if include_whatsapp:
+            penguinconnect_ensure_whatsapp_conversations_discovered(
+                conn,
+                result.get("gmail_email") or LOCAL_MESSAGES_ACCOUNT_EMAIL,
+                provision_aliases=False,
+            )
+            result = penguinconnect_list_conversations(conn)
         result = _attach_conversation_unread_counts(conn, result)
         result = _attach_conversation_previews(conn, result)
         result = _attach_conversation_management(conn, result)

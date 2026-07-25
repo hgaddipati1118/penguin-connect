@@ -5,15 +5,16 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB)](./server/requirements.txt)
 [![MIT License](https://img.shields.io/badge/license-MIT-16a34a)](./LICENSE)
 
-PenguinConnect is a local Apple Messages console for searching, replying to, managing, and drafting `iMessage`, `SMS`, and `RCS` conversations from your Mac. The runtime is macOS-only, binds to `127.0.0.1`, and can run in local Messages-only mode without Gmail.
+PenguinConnect is a local messaging workspace for searching, replying to, and managing Apple Messages and WhatsApp conversations from your Mac. The runtime is macOS-only, binds to `127.0.0.1`, and can run without Gmail.
 
 It also keeps the older Gmail bridge available for Slashy/email workflows, but the operator UI and CLI are designed to work directly against the local Messages cache and Apple Messages route-safety checks.
 
 ```mermaid
 flowchart LR
-    Messages["Apple Messages<br/>iMessage / SMS / RCS"] -->|read local chat.db| Console["PenguinConnect<br/>local Messages console"]
-    Console -->|search, manage, draft, send safely| Messages
-    Console -->|optional bridge mode| Gmail["Gmail aliases<br/>legacy email workflow"]
+    Messages["Apple Messages<br/>iMessage / SMS / RCS"] <-->|local chat.db + safe routes| Workspace["PenguinConnect<br/>local messaging workspace"]
+    WhatsApp["WhatsApp<br/>local bridge"] <-->|local DB + bridge API| Workspace
+    Workspace <-->|local context| Codex["Codex agent"]
+    Workspace -->|optional bridge mode| Gmail["Gmail aliases<br/>legacy email workflow"]
 ```
 
 ## Demo
@@ -22,7 +23,7 @@ flowchart LR
 
 ## Why PenguinConnect
 
-- **Use Messages like an operator console.** Search conversations, contacts, attachments, and local message history; then reply, schedule sends, stage group drafts, attach files, record voice memos, or open the exact Apple Messages route.
+- **Keep iMessage and WhatsApp in one recency-sorted inbox.** Search conversations, contacts, attachments, and local message history, then reply through the original provider.
 - **Manage threads locally.** Add private titles, notes, labels, muted/pinned/archived state, follow-up dates, saved views, and group-name context without changing the underlying Messages chat.
 - **Clean up contacts from the same surface.** Search cached Contacts and unsaved participants, create missing contact cards, favorite people, save recipient lists, and jump from a person to related threads or messages.
 - **Ask Codex with real thread context.** Build or run a local Codex prompt from recent messages, notes, tags, search results, contacts, and draft text.
@@ -31,10 +32,10 @@ flowchart LR
 
 ## Current Status
 
-- Shipping source adapter: **Apple Messages** (`iMessage`, `SMS`, `RCS`)
-- Primary operator surfaces: **local web UI** and **local CLI**
+- Shipping source adapters: **Apple Messages** (`iMessage`, `SMS`, `RCS`) and **WhatsApp**
+- Primary operator surfaces: **local messaging workspace**, **power console**, **local CLI**, and **MCP server**
 - Optional legacy bridge surface: **Gmail aliases**
-- Planned next adapters: **WhatsApp**, **Telegram**, and more
+- Additional adapter available: **Telegram**; Slack is intentionally outside the current inbox
 - Runtime: macOS 13+, Python 3.11+, `Terminal.app` with Full Disk Access
 
 Want to help add a new messaging adapter or improve the bridge? Reach out at [harsha@slashy.com](mailto:harsha@slashy.com) or open an issue.
@@ -59,7 +60,7 @@ Want to help add a new messaging adapter or improve the bridge? Reach out at [ha
 1. Copy `.env.example` to `.env`.
 2. Install backend dependencies.
 3. Start the local server.
-4. Open the local Messages UI.
+4. Open the local messaging workspace.
 5. Run verification.
 
 ```bash
@@ -76,6 +77,50 @@ cd ..
 open http://127.0.0.1:9000/penguin-connect/ui
 ./scripts/check.sh
 ```
+
+The default `/penguin-connect/ui` route is the focused iMessage + WhatsApp workspace. The existing
+operator surface remains available at `/penguin-connect/console`.
+
+The workspace explicitly discovers WhatsApp whenever it refreshes. For a headless Gmail sync
+process that should also discover WhatsApp and Telegram before any UI or MCP request, set
+`PENGUIN_CONNECT_DISCOVER_SECONDARY_CHANNELS_DURING_SYNC=true`.
+
+## Codex / MCP
+
+PenguinConnect includes a local stdio MCP server with tools for:
+
+- searching Mac Contacts, unsaved participants, cached messages, and native chats that are not yet in Penguin's rail
+- Spotlight file search over configurable local folders
+- optional hybrid semantic search using SQLite FTS5, `sqlite-vec`, and a local Ollama embedding model
+- previewing and confirming sends through existing iMessage or WhatsApp routes
+- sending WhatsApp messages to a new phone/JID, or staging a new addressed Apple Messages draft for human review
+
+Register it with Codex after installing the backend dependencies:
+
+```bash
+codex mcp add penguin-connect -- \
+  /absolute/path/to/penguin-connect/server/venv/bin/python \
+  /absolute/path/to/penguin-connect/scripts/penguin_connect_mcp.py
+```
+
+Then run `codex mcp list` or use `/mcp` in Codex to verify the tools. Send tools use a
+two-call preview/confirm flow. A new Apple Messages recipient is opened as an addressed draft
+instead of being auto-sent because PenguinConnect does not guess an unverified Apple route.
+
+File search uses the macOS Spotlight index and returns paths plus metadata, not file contents.
+By default it searches Desktop, Documents, and Downloads. Override the roots with a
+path-separated `PENGUIN_CONNECT_FILE_SEARCH_ROOTS` value.
+
+For optional semantic search:
+
+```bash
+brew install ollama
+ollama pull nomic-embed-text
+```
+
+Call the MCP `rebuild_local_search_index` tool with `semantic=true` and `confirm=true`.
+Without Ollama or `sqlite-vec`, PenguinConnect continues to provide exact contact/message
+search, Spotlight file search, and SQLite FTS5 search.
 
 For the full Gmail bridge setup, run `./scripts/penguin_connect_setup.py --gmail you@gmail.com`. During guided setup, the wizard also offers an interactive Apple Messages chat exclusion step and saves selections in `./.penguin_connect_excluded_chats.json` by default.
 

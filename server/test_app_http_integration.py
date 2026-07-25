@@ -358,6 +358,20 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(body["conversations"][0]["conversation_id"], "amc_test")
         self.assertEqual(body["conversations"][0]["last_message_preview"], "Latest message")
 
+    def test_conversations_endpoint_discovers_whatsapp_only_when_requested(self):
+        with mock.patch.object(
+            app_module,
+            "penguinconnect_ensure_whatsapp_conversations_discovered",
+            return_value=0,
+        ) as discover_whatsapp, TestClient(app_module.app) as client:
+            response = client.get(
+                "/penguin-connect/conversations?include_whatsapp=true"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        discover_whatsapp.assert_called_once()
+        self.assertFalse(discover_whatsapp.call_args.kwargs["provision_aliases"])
+
     def test_conversations_endpoint_discovers_local_threads_without_gmail_account(self):
         conn = self._get_connection()
         try:
@@ -2292,10 +2306,21 @@ class AppHttpIntegrationTests(unittest.TestCase):
 
     def test_ui_endpoint_serves_console_assets(self):
         with TestClient(app_module.app) as client:
-            html_response = client.get("/penguin-connect/ui")
+            inbox_response = client.get("/penguin-connect/ui")
+            inbox_css_response = client.get("/penguin-connect/ui/inbox.css")
+            inbox_js_response = client.get("/penguin-connect/ui/inbox.js")
+            html_response = client.get("/penguin-connect/console")
             css_response = client.get("/penguin-connect/ui/app.css")
             js_response = client.get("/penguin-connect/ui/app.js")
 
+        self.assertEqual(inbox_response.status_code, 200)
+        self.assertIn("<title>Penguin</title>", inbox_response.text)
+        self.assertIn("Penguin Agent", inbox_response.text)
+        self.assertIn("Search messages and people", inbox_response.text)
+        self.assertEqual(inbox_css_response.status_code, 200)
+        self.assertIn(".app-shell", inbox_css_response.text)
+        self.assertEqual(inbox_js_response.status_code, 200)
+        self.assertIn("loadConversations", inbox_js_response.text)
         self.assertEqual(html_response.status_code, 200)
         self.assertIn("PenguinConnect Console", html_response.text)
         self.assertIn('rel="icon"', html_response.text)

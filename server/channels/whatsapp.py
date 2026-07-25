@@ -21,7 +21,7 @@ def _whatsapp_db_path() -> Path:
 
 
 def _whatsapp_api_url() -> str:
-    return os.environ.get("PENGUIN_CONNECT__whatsapp_api_url()", "http://localhost:8080/api")
+    return os.environ.get("PENGUIN_CONNECT_WHATSAPP_API_URL", "http://localhost:8080/api")
 
 
 def _whatsapp_db_available() -> bool:

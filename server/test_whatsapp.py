@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from channels import whatsapp
 from channels.whatsapp import WhatsAppChannelAdapter, _jid_to_phone, _is_group_jid
 
 
@@ -23,6 +24,16 @@ class WhatsAppHelperTests(unittest.TestCase):
 
     def test_is_group_jid_detects_individual(self):
         self.assertFalse(_is_group_jid("14155551234@s.whatsapp.net"))
+
+    def test_api_url_uses_documented_environment_variable(self):
+        with mock.patch.dict(
+            os.environ,
+            {"PENGUIN_CONNECT_WHATSAPP_API_URL": "http://127.0.0.1:9191/api"},
+        ):
+            self.assertEqual(
+                whatsapp._whatsapp_api_url(),
+                "http://127.0.0.1:9191/api",
+            )
 
 
 class WhatsAppAdapterTests(unittest.TestCase):
