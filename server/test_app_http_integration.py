@@ -228,6 +228,62 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(older["offset"], 1)
         self.assertNotEqual(older["messages"][0]["provider_message_id"], "imsg-latest")
 
+    def test_workspace_revision_is_small_private_and_changes_with_cached_messages(self):
+        source_stamp = ((101, 202), (303, 404))
+        with mock.patch("app._workspace_source_file_token", return_value=source_stamp), TestClient(
+            app_module.app
+        ) as client:
+            first = client.get("/penguin-connect/workspace-revision")
+            conn = self._get_connection()
+            try:
+                conn.execute(
+                    """INSERT INTO penguin_connect_messages
+                       (conversation_id, provider, provider_message_id, direction, body_text,
+                        message_timestamp, is_read, metadata)
+                       VALUES (?, 'imessage', ?, 'imessage_local', ?, ?, 1, '{}')""",
+                    (
+                        "amc_test",
+                        "synthetic-revision-message",
+                        "Synthetic revision probe",
+                        "2026-03-10T10:01:00+00:00",
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            second = client.get("/penguin-connect/workspace-revision")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(len(first.json()["revision"]), 64)
+        self.assertEqual(len(first.json()["local_revision"]), 64)
+        self.assertEqual(len(first.json()["imessage_revision"]), 64)
+        self.assertEqual(len(first.json()["whatsapp_revision"]), 64)
+        self.assertNotEqual(first.json()["revision"], second.json()["revision"])
+        self.assertEqual(first.json()["poll_after_ms"], 5000)
+        self.assertNotIn(str(self.db_path), first.text)
+        self.assertLess(len(first.content), 400)
+
+    def test_messages_endpoint_forwards_incremental_refresh_mode(self):
+        with mock.patch(
+            "app.penguinconnect_get_conversation_messages",
+            return_value={"found": True, "messages": [], "total": 0, "has_more": False},
+        ) as get_messages, TestClient(app_module.app) as client:
+            response = client.get(
+                "/penguin-connect/conversations/amc_test/messages",
+                params={"limit": 25, "refresh": True, "incremental": True},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        get_messages.assert_called_once_with(
+            mock.ANY,
+            "amc_test",
+            limit=25,
+            offset=0,
+            refresh_source=True,
+            incremental_refresh=True,
+        )
+
     def test_codex_workspace_modes_require_explicit_write_confirmation(self):
         self.assertEqual(app_module._codex_stream_mode("read", False), ("read", "read-only"))
         self.assertEqual(app_module._codex_stream_mode("ask", True), ("ask", "danger-full-access"))
@@ -442,6 +498,25 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         discover_whatsapp.assert_called_once()
         self.assertFalse(discover_whatsapp.call_args.kwargs["provision_aliases"])
+
+    def test_conversations_endpoint_refreshes_imessage_only_when_requested(self):
+        with mock.patch.object(
+            app_module,
+            "penguinconnect_ensure_conversations_discovered",
+            return_value=0,
+        ) as discover_imessage, TestClient(app_module.app) as client:
+            ordinary = client.get("/penguin-connect/conversations")
+            refreshed = client.get(
+                "/penguin-connect/conversations?include_imessage=true"
+            )
+
+        self.assertEqual(ordinary.status_code, 200)
+        self.assertEqual(refreshed.status_code, 200)
+        discover_imessage.assert_called_once_with(
+            mock.ANY,
+            "owner@gmail.com",
+            provision_aliases=False,
+        )
 
     def test_conversations_endpoint_discovers_local_threads_without_gmail_account(self):
         conn = self._get_connection()
@@ -2497,6 +2572,11 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("renderLabelBar", inbox_js_response.text)
         self.assertIn("conversationLabels", inbox_js_response.text)
         self.assertIn("refreshSelectedMessages", inbox_js_response.text)
+        self.assertIn("refreshWorkspaceIfChanged", inbox_js_response.text)
+        self.assertIn("rememberWorkspaceRevision", inbox_js_response.text)
+        self.assertIn("/penguin-connect/workspace-revision", inbox_js_response.text)
+        self.assertIn("conversationsFingerprint", inbox_js_response.text)
+        self.assertIn('incremental=${incremental ? "true" : "false"}', inbox_js_response.text)
         self.assertIn("}, 5000);", inbox_js_response.text)
         self.assertIn("undoPendingSend", inbox_js_response.text)
         self.assertIn("Message queued for 15 seconds", inbox_js_response.text)
@@ -2516,6 +2596,11 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("openContactCard", inbox_js_response.text)
         self.assertIn("toggleConversationPane", inbox_js_response.text)
         self.assertIn("toggleAgentPane", inbox_js_response.text)
+        self.assertIn("setInboxSmartView", inbox_js_response.text)
+        self.assertIn("runGoShortcut", inbox_js_response.text)
+        self.assertIn("setConversationPinned", inbox_js_response.text)
+        self.assertIn("setConversationUnread", inbox_js_response.text)
+        self.assertIn("openShortcutGuide", inbox_js_response.text)
         self.assertIn("streamAgentPrompt", inbox_js_response.text)
         self.assertIn("loadOlderMessages", inbox_js_response.text)
         self.assertIn("appendInfiniteSentinel", inbox_js_response.text)
@@ -2550,6 +2635,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn('id="contactDialog"', inbox_response.text)
         self.assertIn('id="conversationMetaDialog"', inbox_response.text)
         self.assertIn('id="labelPickerDialog"', inbox_response.text)
+        self.assertIn('id="shortcutDialog"', inbox_response.text)
+        self.assertIn("Keyboard shortcuts", inbox_response.text)
+        self.assertIn("Archive and move", inbox_response.text)
         self.assertIn("Current chat first, then your inbox", inbox_response.text)
         self.assertIn("Workspace access", inbox_response.text)
         self.assertIn('<option value="ask">Ask</option>', inbox_response.text)

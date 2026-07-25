@@ -4668,6 +4668,7 @@ def get_conversation_messages(
     *,
     offset: int = 0,
     refresh_source: bool = True,
+    incremental_refresh: bool = False,
 ) -> dict[str, Any]:
     conv = conn.execute(
         """SELECT *
@@ -4681,12 +4682,37 @@ def get_conversation_messages(
     page_limit = max(1, min(limit, 1000))
     page_offset = max(0, min(offset, 100_000))
     if refresh_source:
-        _cache_local_source_messages_for_view(
-            conn,
-            conv,
-            limit=max(page_limit, min(page_limit + page_offset, 5000)),
-            include_history=True,
-        )
+        refresh_limit = max(page_limit, min(page_limit + page_offset, 5000))
+        if incremental_refresh:
+            _cache_local_source_messages_for_view(
+                conn,
+                conv,
+                limit=refresh_limit,
+                include_history=False,
+            )
+            if _conversation_source_provider(conv) in {
+                "imessage",
+                "apple_messages",
+                "sms",
+                "rcs",
+            }:
+                # Delivery/read state mutates existing Apple message rows without
+                # advancing the per-conversation source cursor. Re-read only a
+                # small recent window so receipts stay live without rescanning
+                # hundreds of historical messages on every visible refresh.
+                _cache_local_source_messages_for_view(
+                    conn,
+                    conv,
+                    limit=min(30, refresh_limit),
+                    include_history=True,
+                )
+        else:
+            _cache_local_source_messages_for_view(
+                conn,
+                conv,
+                limit=refresh_limit,
+                include_history=True,
+            )
 
     account = conn.execute(
         "SELECT send_as_aliases FROM penguin_connect_accounts WHERE gmail_email = ? LIMIT 1",

@@ -91,6 +91,9 @@
           </button>
         </div>
         <div class="nav-spacer"></div>
+        <button class="nav-button nav-help-button" id="shortcutHelpButton" type="button" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
+          <span>?</span>
+        </button>
         <div class="connection-orbit" id="connectionOrbit" title="Checking local bridge">
           <span></span>
         </div>
@@ -248,6 +251,9 @@
               <p id="agentStatus">Checking Codex</p>
             </div>
           </div>
+          <button class="icon-button agent-close-button" id="closeAgentButton" type="button" title="Close agent (⌘/)" aria-label="Close Penguin Agent">
+            <svg><use href="#i-panel"></use></svg>
+          </button>
         </header>
 
         <div class="agent-body">
@@ -266,8 +272,8 @@
           </label>
 
           <div class="agent-welcome" id="agentWelcome">
-            <h3>What do you want to know?</h3>
-            <p>Ask about this conversation or anything across your messages.</p>
+            <h3>How can I help?</h3>
+            <p>Ask about this chat, search your inbox, or draft what to say next.</p>
           </div>
 
           <div class="agent-quick-actions" id="agentQuickActions">
@@ -325,7 +331,7 @@
         </div>
 
         <div class="agent-composer">
-          <textarea id="agentQuestion" rows="3" placeholder="Ask about your messages" aria-label="Ask Penguin Agent"></textarea>
+          <textarea id="agentQuestion" rows="3" placeholder="Ask about this chat or search every conversation…" aria-label="Ask Penguin Agent"></textarea>
           <div>
             <span id="agentContextLabel">No chat selected</span>
             <button class="agent-send-button" id="askAgentButton" type="button" disabled>
@@ -562,6 +568,71 @@
         <div class="conversation-meta-actions">
           <button class="secondary-button" type="button" id="cancelWritingButton">Cancel</button>
           <button class="agent-send-button" type="button" id="replaceDraftButton" disabled>Replace draft</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog class="compose-dialog shortcut-dialog" id="shortcutDialog" aria-labelledby="shortcutDialogTitle">
+      <div class="shortcut-sheet">
+        <header>
+          <div>
+            <p class="overline">Keyboard first</p>
+            <h2 id="shortcutDialogTitle">Keyboard shortcuts</h2>
+          </div>
+          <button class="icon-button" type="button" id="closeShortcutButton" title="Close" aria-label="Close keyboard shortcuts">
+            <svg><use href="#i-close"></use></svg>
+          </button>
+        </header>
+        <div class="shortcut-groups">
+          <section>
+            <h3>Inbox</h3>
+            <dl>
+              <div><dt><kbd>J</kbd> <kbd>K</kbd></dt><dd>Next / previous chat</dd></div>
+              <div><dt><kbd>E</kbd></dt><dd>Done / archive</dd></div>
+              <div><dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>Archive and move</dd></div>
+              <div><dt><kbd>S</kbd></dt><dd>Star / unstar</dd></div>
+              <div><dt><kbd>U</kbd></dt><dd>Read / unread</dd></div>
+              <div><dt><kbd>H</kbd></dt><dd>Set reminder</dd></div>
+              <div><dt><kbd>L</kbd> <kbd>V</kbd></dt><dd>Add labels</dd></div>
+            </dl>
+          </section>
+          <section>
+            <h3>Views</h3>
+            <dl>
+              <div><dt><kbd>⇧U</kbd></dt><dd>Unread</dd></div>
+              <div><dt><kbd>⇧S</kbd></dt><dd>Starred</dd></div>
+              <div><dt><kbd>⇧H</kbd></dt><dd>Reminders</dd></div>
+              <div><dt><kbd>G</kbd> then <kbd>A</kbd></dt><dd>All chats</dd></div>
+              <div><dt><kbd>G</kbd> then <kbd>S</kbd></dt><dd>Starred</dd></div>
+              <div><dt><kbd>G</kbd> then <kbd>E</kbd></dt><dd>Done</dd></div>
+              <div><dt><kbd>G</kbd> then <kbd>H</kbd></dt><dd>Reminders</dd></div>
+              <div><dt><kbd>G</kbd> then <kbd>L</kbd></dt><dd>Send queue</dd></div>
+            </dl>
+          </section>
+          <section>
+            <h3>Thread</h3>
+            <dl>
+              <div><dt><kbd>↵</kbd> <kbd>R</kbd> <kbd>A</kbd></dt><dd>Write a reply</dd></div>
+              <div><dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Scroll messages</dd></div>
+              <div><dt><kbd>Space</kbd></dt><dd>Page down</dd></div>
+              <div><dt><kbd>⇧Space</kbd></dt><dd>Page up</dd></div>
+              <div><dt><kbd>⇧G</kbd></dt><dd>Jump to newest</dd></div>
+              <div><dt><kbd>C</kbd></dt><dd>New message</dd></div>
+            </dl>
+          </section>
+          <section>
+            <h3>Compose & panels</h3>
+            <dl>
+              <div><dt><kbd>⌘J</kbd></dt><dd>Rewrite draft inline</dd></div>
+              <div><dt><kbd>⌘⇧↵</kbd></dt><dd>Send immediately</dd></div>
+              <div><dt><kbd>⌘⇧L</kbd></dt><dd>Send later</dd></div>
+              <div><dt><kbd>⌘K</kbd> <kbd>/</kbd></dt><dd>Search</dd></div>
+              <div><dt><kbd>⌘B</kbd></dt><dd>Toggle inbox</dd></div>
+              <div><dt><kbd>⌘/</kbd></dt><dd>Toggle agent</dd></div>
+              <div><dt><kbd>⌘G</kbd></dt><dd>Find a GIF</dd></div>
+              <div><dt><kbd>?</kbd></dt><dd>Show this guide</dd></div>
+            </dl>
+          </section>
         </div>
       </div>
     </dialog>

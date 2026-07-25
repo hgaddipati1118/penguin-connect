@@ -25,6 +25,11 @@ def _whatsapp_metadata_db_path() -> Path:
     return Path(configured) if configured else _whatsapp_db_path().with_name("whatsapp.db")
 
 
+def whatsapp_source_paths() -> tuple[Path, Path]:
+    """Return local WhatsApp databases whose changes can affect the workspace."""
+    return _whatsapp_db_path(), _whatsapp_metadata_db_path()
+
+
 def _whatsapp_api_url() -> str:
     return os.environ.get("PENGUIN_CONNECT_WHATSAPP_API_URL", "http://localhost:8080/api")
 

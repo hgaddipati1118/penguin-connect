@@ -2349,6 +2349,52 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(state["last_source_ts"], "2026-03-04T09:01:00+00:00")
         self.assertEqual(state["last_source_native_message_id"], "local-2")
 
+    def test_incremental_message_refresh_uses_cursor_and_small_receipt_window(self):
+        self.conn.execute("DELETE FROM penguin_connect_accounts")
+        self.conn.execute(
+            "UPDATE penguin_connect_conversations SET gmail_email = ?, alias_email = NULL WHERE conversation_id = ?",
+            (penguin_connect.LOCAL_MESSAGES_ACCOUNT_EMAIL, "amc_test"),
+        )
+        penguin_connect._upsert_sync_state(
+            self.conn,
+            "amc_test",
+            "2026-03-04T09:00:00+00:00",
+            "42",
+            None,
+            None,
+        )
+
+        with mock.patch(
+            "penguin_connect.fetch_imessage_messages",
+            side_effect=[[], []],
+        ) as fetch_messages:
+            result = penguin_connect.get_conversation_messages(
+                self.conn,
+                "amc_test",
+                limit=50,
+                incremental_refresh=True,
+            )
+
+        self.assertTrue(result["found"])
+        self.assertEqual(fetch_messages.call_count, 2)
+        self.assertEqual(
+            fetch_messages.call_args_list,
+            [
+                mock.call(
+                    "chat-123",
+                    limit=50,
+                    since="2026-03-04T09:00:00+00:00",
+                    since_native_message_id="42",
+                ),
+                mock.call(
+                    "chat-123",
+                    limit=30,
+                    since=None,
+                    since_native_message_id=None,
+                ),
+            ],
+        )
+
     def test_get_conversation_messages_caches_local_whatsapp_rows_without_gmail_account(self):
         self.conn.execute("DELETE FROM penguin_connect_messages")
         self.conn.execute("DELETE FROM penguin_connect_accounts")

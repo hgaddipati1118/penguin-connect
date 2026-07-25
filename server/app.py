@@ -41,6 +41,7 @@ from penguin_connect import (
     import_local_imessage_search_results as penguinconnect_import_local_imessage_search_results,
     import_local_imessage_attachment_messages as penguinconnect_import_local_imessage_attachment_messages,
     import_local_whatsapp_attachment_messages as penguinconnect_import_local_whatsapp_attachment_messages,
+    ensure_conversations_discovered as penguinconnect_ensure_conversations_discovered,
     ensure_whatsapp_conversations_discovered as penguinconnect_ensure_whatsapp_conversations_discovered,
     list_conversations as penguinconnect_list_conversations,
     reconnect_conversation as penguinconnect_reconnect_conversation,
@@ -51,7 +52,7 @@ from penguin_connect import (
 )
 from browse_sources import IMESSAGE_DB, resolve_apple_messages_chat
 from channels import get_channel_adapter
-from channels.whatsapp import whatsapp_attachment_count
+from channels.whatsapp import whatsapp_attachment_count, whatsapp_source_paths
 from db import DB_PATH, get_connection, init_db
 from startup_checks import StartupReadinessError, assert_startup_ready
 from search_index import (
@@ -4643,10 +4644,20 @@ def connect_penguinconnect_gmail(req: PenguinConnectGmailConnectRequest):
 
 @app.get("/api/penguin-connect/conversations")
 @app.get("/penguin-connect/conversations")
-def get_penguinconnect_conversations(include_whatsapp: bool = False):
+def get_penguinconnect_conversations(
+    include_whatsapp: bool = False,
+    include_imessage: bool = False,
+):
     conn = get_connection()
     try:
         result = penguinconnect_list_conversations(conn)
+        if include_imessage:
+            penguinconnect_ensure_conversations_discovered(
+                conn,
+                result.get("gmail_email") or LOCAL_MESSAGES_ACCOUNT_EMAIL,
+                provision_aliases=False,
+            )
+            result = penguinconnect_list_conversations(conn)
         if include_whatsapp:
             penguinconnect_ensure_whatsapp_conversations_discovered(
                 conn,
@@ -4665,6 +4676,64 @@ def get_penguinconnect_conversations(include_whatsapp: bool = False):
     finally:
         conn.close()
 
+
+def _workspace_source_file_token(source_path: Path | str) -> tuple[tuple[int, int], ...]:
+    """Return metadata-only change stamps for a SQLite source and its WAL."""
+    path = Path(source_path).expanduser()
+    stamps: list[tuple[int, int]] = []
+    for candidate in (path, Path(f"{path}-wal")):
+        try:
+            stat = candidate.stat()
+            stamps.append((int(stat.st_mtime_ns), int(stat.st_size)))
+        except OSError:
+            stamps.append((0, 0))
+    return tuple(stamps)
+
+
+def _workspace_revisions(conn: sqlite3.Connection) -> dict[str, str]:
+    """Build cheap privacy-safe cursors for local and provider workspace state."""
+    local_state = conn.execute(
+        """
+        SELECT
+          (SELECT COALESCE(MAX(id), 0) FROM penguin_connect_messages) AS message_id,
+          (SELECT COUNT(*) FROM penguin_connect_messages) AS message_count,
+          (SELECT COALESCE(MAX(updated_at), '') FROM penguin_connect_message_management) AS message_management,
+          (SELECT COALESCE(MAX(updated_at), '') FROM penguin_connect_conversation_management) AS conversation_management,
+          (SELECT COALESCE(MAX(updated_at), '') FROM penguin_connect_scheduled_messages) AS scheduled_messages,
+          (SELECT COALESCE(MAX(updated_at), '') FROM penguin_connect_contact_management) AS contact_management,
+          (SELECT COUNT(*) FROM contacts) AS contact_count,
+          (SELECT COALESCE(MAX(imported_at), '') FROM contacts) AS contacts_imported
+        """
+    ).fetchone()
+    imessage_token = _workspace_source_file_token(IMESSAGE_DB)
+    whatsapp_tokens = [
+        _workspace_source_file_token(source_path)
+        for source_path in whatsapp_source_paths()
+    ]
+
+    def revision(value: object) -> str:
+        encoded = json.dumps(value, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    revisions = {
+        "local_revision": revision(list(local_state) if local_state else []),
+        "imessage_revision": revision(imessage_token),
+        "whatsapp_revision": revision(whatsapp_tokens),
+    }
+    revisions["revision"] = revision(revisions)
+    return revisions
+
+
+@app.get("/api/penguin-connect/workspace-revision")
+@app.get("/penguin-connect/workspace-revision")
+def get_penguinconnect_workspace_revision():
+    conn = get_connection()
+    try:
+        return {**_workspace_revisions(conn), "poll_after_ms": 5000}
+    finally:
+        conn.close()
+
+
 @app.get("/api/penguin-connect/conversations/{conversation_id}/messages")
 @app.get("/penguin-connect/conversations/{conversation_id}/messages")
 def get_penguinconnect_conversation_messages(
@@ -4672,6 +4741,7 @@ def get_penguinconnect_conversation_messages(
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0, le=100_000),
     refresh: bool = True,
+    incremental: bool = False,
 ):
     conn = get_connection()
     try:
@@ -4681,6 +4751,7 @@ def get_penguinconnect_conversation_messages(
             limit=limit,
             offset=offset,
             refresh_source=refresh,
+            incremental_refresh=incremental,
         )
         if not result.get("found"):
             raise HTTPException(status_code=404, detail="conversation_not_found")

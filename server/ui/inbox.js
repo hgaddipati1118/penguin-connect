@@ -1,6 +1,7 @@
 const state = {
   view: "inbox",
   source: "all",
+  smartView: "all",
   activeLabel: "",
   conversations: [],
   conversationsVisible: 300,
@@ -27,6 +28,13 @@ const state = {
   },
   selectionToken: 0,
   preloadStarted: false,
+  workspaceRevision: {
+    revision: "",
+    local: "",
+    imessage: "",
+    whatsapp: "",
+  },
+  workspaceRefreshBusy: false,
   attachments: [],
   pendingSends: [],
   scheduledMessages: [],
@@ -126,6 +134,7 @@ const el = {
   runWritingButton: document.querySelector("#runWritingButton"),
   replaceDraftButton: document.querySelector("#replaceDraftButton"),
   agentPane: document.querySelector("#agentPane"),
+  closeAgentButton: document.querySelector("#closeAgentButton"),
   threadAgentButton: document.querySelector("#threadAgentButton"),
   agentStatus: document.querySelector("#agentStatus"),
   agentQuestion: document.querySelector("#agentQuestion"),
@@ -148,6 +157,9 @@ const el = {
   agentContactActionButton: document.querySelector("#agentContactActionButton"),
   composeButton: document.querySelector("#composeButton"),
   addContactButton: document.querySelector("#addContactButton"),
+  shortcutHelpButton: document.querySelector("#shortcutHelpButton"),
+  shortcutDialog: document.querySelector("#shortcutDialog"),
+  closeShortcutButton: document.querySelector("#closeShortcutButton"),
   composeDialog: document.querySelector("#composeDialog"),
   composeSearch: document.querySelector("#composeSearch"),
   composeResults: document.querySelector("#composeResults"),
@@ -230,6 +242,8 @@ let selectionHydrationTimer = 0;
 let latestAnchorFrame = 0;
 let latestAnchorToken = 0;
 let translationWorkerRunning = false;
+let shortcutPrefix = "";
+let shortcutPrefixTimer = 0;
 
 function apiErrorMessage(payload, response) {
   const detail = payload?.detail;
@@ -312,6 +326,28 @@ function sortedConversations(rows = state.conversations) {
   ));
 }
 
+function conversationsFingerprint(conversations) {
+  return (conversations || []).map((conversation) => [
+    conversation.conversation_id,
+    conversation.last_message_provider_id,
+    conversation.last_message_ts,
+    conversation.last_message_preview,
+    conversation.last_message_has_attachments ? 1 : 0,
+    Number(conversation.unread_count || 0),
+    conversation.title,
+    conversation.draft_text,
+    conversation.is_archived ? 1 : 0,
+    conversation.is_pinned ? 1 : 0,
+    conversation.is_muted ? 1 : 0,
+    conversation.follow_up_at,
+    (conversation.labels || []).join(","),
+    `${String(conversation.avatar_data_url || "").length}:${String(conversation.avatar_data_url || "").slice(-16)}`,
+    (conversation.contact_context || []).map((contact) => (
+      `${contact.primary_handle || ""}:${contact.display_name || ""}:${contact.is_saved === false ? 0 : 1}`
+    )).join(","),
+  ].join("\u001f")).join("\u001e");
+}
+
 function hasCachedMessage(conversation) {
   return Boolean(
     conversation?.last_message_provider_id
@@ -328,7 +364,10 @@ function visibleConversations() {
     sourceMatches(conversation)
     && hasCachedMessage(conversation)
     && (!state.activeLabel || (conversation.labels || []).includes(state.activeLabel))
-    && !conversation.is_archived
+    && (state.smartView === "archived" ? conversation.is_archived : !conversation.is_archived)
+    && (state.smartView !== "unread" || Number(conversation.unread_count || 0) > 0)
+    && (state.smartView !== "starred" || conversation.is_pinned)
+    && (state.smartView !== "reminders" || Boolean(conversation.follow_up_at))
     && conversation.status !== "disconnected"
     && !conversation.excluded
   )));
@@ -517,13 +556,22 @@ function renderView() {
   el.searchList.hidden = !searching;
   el.sourceTabs.hidden = ["people", "files", "links", "queue"].includes(state.view) && !searching;
   el.labelBar.hidden = searching || state.view !== "inbox";
-  renderLabelBar();
-  renderConversationList();
-  renderPeopleList();
-  renderFilesList();
-  renderLinksList();
-  renderQueueList();
-  renderSearchResults();
+  if (searching) {
+    renderSearchResults();
+    return;
+  }
+  if (state.view === "inbox") {
+    renderLabelBar();
+    renderConversationList();
+  } else if (state.view === "people") {
+    renderPeopleList();
+  } else if (state.view === "files") {
+    renderFilesList();
+  } else if (state.view === "links") {
+    renderLinksList();
+  } else if (state.view === "queue") {
+    renderQueueList();
+  }
 }
 
 function allConversationLabels() {
@@ -671,7 +719,31 @@ function renderLabelBar() {
   folderMark.innerHTML = '<svg><use href="#i-folder"></use></svg><span>Folders</span>';
   el.labelBar.append(folderMark);
 
-  const options = [{ value: "", name: "All" }, ...labels.map((label) => ({ value: label, name: label }))];
+  const smartOptions = [
+    { value: "all", name: "All" },
+    { value: "unread", name: "Unread" },
+    { value: "starred", name: "Starred" },
+    { value: "reminders", name: "Reminders" },
+    { value: "archived", name: "Done" },
+  ];
+  for (const option of smartOptions) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "label-filter";
+    button.classList.toggle(
+      "active",
+      !state.activeLabel && state.smartView === option.value,
+    );
+    button.textContent = option.name;
+    button.addEventListener("click", () => {
+      state.smartView = option.value;
+      state.activeLabel = "";
+      state.conversationsVisible = 300;
+      renderView();
+    });
+    el.labelBar.append(button);
+  }
+  const options = labels.map((label) => ({ value: label, name: label }));
   for (const option of options) {
     const button = document.createElement("button");
     button.type = "button";
@@ -679,6 +751,7 @@ function renderLabelBar() {
     button.classList.toggle("active", state.activeLabel === option.value);
     button.textContent = option.name;
     button.addEventListener("click", () => {
+      state.smartView = "all";
       state.activeLabel = option.value;
       state.conversationsVisible = 300;
       renderView();
@@ -1965,15 +2038,25 @@ function messagesFingerprint(messages) {
     message.message_timestamp,
     message.body_text,
     message.is_read,
+    message.is_starred,
     messageAttachments(message).length,
+    message.metadata?.native_guid,
+    message.metadata?.is_delivered,
+    message.metadata?.date_delivered,
+    message.metadata?.date_read,
+    message.metadata?.delivery_status,
+    message.metadata?.pending_status,
+    message.metadata?.reaction?.target_guid,
+    message.metadata?.reaction?.type,
+    message.metadata?.reaction?.removed,
   ].join(":")).join("|");
 }
 
-async function refreshSelectedMessages() {
+async function refreshSelectedMessages({ incremental = true } = {}) {
   const conversationId = state.selected?.conversation_id;
   if (!conversationId) return;
   const payload = await api(
-    `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/messages?limit=300&offset=0&refresh=true`,
+    `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/messages?limit=300&offset=0&refresh=true&incremental=${incremental ? "true" : "false"}`,
   );
   if (state.selected?.conversation_id !== conversationId) return;
   let nextMessages = payload.messages || [];
@@ -2400,21 +2483,32 @@ function sendMessage({ instant = false } = {}) {
   actionToast("Message queued for 15 seconds", "Undo", () => undoPendingSend(pending), 15000);
 }
 
-async function loadConversations({ keepSelection = true, discoverWhatsApp = false } = {}) {
+async function loadConversations({
+  keepSelection = true,
+  discoverWhatsApp = false,
+  discoverIMessages = false,
+} = {}) {
   if (!state.conversations.length) {
     el.listSummary.textContent = "Loading conversations";
     skeletonRows(el.conversationList, 7);
   }
   try {
-    const suffix = discoverWhatsApp ? "?include_whatsapp=true" : "";
-    const payload = await api(`/penguin-connect/conversations${suffix}`);
+    const previousFingerprint = conversationsFingerprint(state.conversations);
+    const query = new URLSearchParams();
+    if (discoverWhatsApp) query.set("include_whatsapp", "true");
+    if (discoverIMessages) query.set("include_imessage", "true");
+    const queryString = query.toString();
+    const payload = await api(
+      `/penguin-connect/conversations${queryString ? `?${queryString}` : ""}`,
+    );
     state.conversations = payload.conversations || [];
+    const changed = previousFingerprint !== conversationsFingerprint(state.conversations);
     if (keepSelection && state.selected) {
       state.selected = state.conversations.find(
         (conversation) => conversation.conversation_id === state.selected.conversation_id,
       ) || state.selected;
     }
-    renderView();
+    if (changed || !previousFingerprint) renderView();
     renderThreadHeader();
     if (!state.preloadStarted) {
       const schedule = window.requestIdleCallback || ((callback) => window.setTimeout(callback, 250));
@@ -2428,6 +2522,63 @@ async function loadConversations({ keepSelection = true, discoverWhatsApp = fals
     el.conversationList.append(empty);
     el.listSummary.textContent = "Bridge unavailable";
     throw error;
+  }
+}
+
+async function loadWorkspaceRevision() {
+  return api("/penguin-connect/workspace-revision");
+}
+
+function rememberWorkspaceRevision(payload) {
+  state.workspaceRevision = {
+    revision: String(payload?.revision || ""),
+    local: String(payload?.local_revision || ""),
+    imessage: String(payload?.imessage_revision || ""),
+    whatsapp: String(payload?.whatsapp_revision || ""),
+  };
+}
+
+async function refreshWorkspaceIfChanged() {
+  if (document.visibilityState !== "visible" || state.workspaceRefreshBusy) return;
+  state.workspaceRefreshBusy = true;
+  try {
+    const revision = await loadWorkspaceRevision();
+    const nextRevision = String(revision.revision || "");
+    if (!nextRevision) return;
+    if (!state.workspaceRevision.revision) {
+      rememberWorkspaceRevision(revision);
+      return;
+    }
+    if (nextRevision === state.workspaceRevision.revision) return;
+    const localChanged = String(revision.local_revision || "") !== state.workspaceRevision.local;
+    const imessageChanged = String(revision.imessage_revision || "") !== state.workspaceRevision.imessage;
+    const whatsappChanged = String(revision.whatsapp_revision || "") !== state.workspaceRevision.whatsapp;
+    const selectedProvider = state.selected ? providerKey(state.selected.source_provider) : "";
+    const selectedChanged = localChanged
+      || (selectedProvider === "imessage" && imessageChanged)
+      || (selectedProvider === "whatsapp" && whatsappChanged);
+    await Promise.all([
+      loadConversations({
+        keepSelection: true,
+        discoverWhatsApp: whatsappChanged,
+        discoverIMessages: imessageChanged,
+      }),
+      selectedChanged
+        ? refreshSelectedMessages({ incremental: true })
+        : Promise.resolve(),
+      loadScheduledMessages(),
+      state.view === "queue" ? loadQueue() : Promise.resolve(),
+    ]);
+    const settledRevision = await loadWorkspaceRevision().catch(() => revision);
+    const sourcesStayedStable = (
+      String(settledRevision.imessage_revision || "") === String(revision.imessage_revision || "")
+      && String(settledRevision.whatsapp_revision || "") === String(revision.whatsapp_revision || "")
+    );
+    rememberWorkspaceRevision(sourcesStayedStable ? settledRevision : revision);
+  } catch (_error) {
+    // Keep the last good local view and retry on the next revision probe.
+  } finally {
+    state.workspaceRefreshBusy = false;
   }
 }
 
@@ -2610,6 +2761,19 @@ function setView(view) {
   if (state.view === "queue") {
     loadQueue().then(renderQueueList).catch((error) => toast(error.message, "error"));
   }
+  renderView();
+}
+
+function setInboxSmartView(view = "all") {
+  state.view = "inbox";
+  state.smartView = ["all", "unread", "starred", "reminders", "archived"].includes(view)
+    ? view
+    : "all";
+  state.activeLabel = "";
+  state.search.query = "";
+  state.linksQuery = "";
+  el.globalSearch.value = "";
+  state.conversationsVisible = 300;
   renderView();
 }
 
@@ -3296,12 +3460,63 @@ async function setConversationArchived(
   }
 }
 
-function archiveSelectedConversation() {
+async function setConversationPinned(conversation, pinned = !conversation.is_pinned) {
+  if (!conversation) return;
+  const previous = Boolean(conversation.is_pinned);
+  conversation.is_pinned = pinned;
+  renderConversationList();
+  try {
+    const result = await api(
+      `/penguin-connect/conversations/${encodeURIComponent(conversation.conversation_id)}/management`,
+      {
+        method: "POST",
+        body: JSON.stringify({ pinned }),
+      },
+    );
+    Object.assign(conversation, result);
+    renderConversationList();
+    toast(pinned ? "Conversation starred" : "Conversation unstarred");
+  } catch (error) {
+    conversation.is_pinned = previous;
+    renderConversationList();
+    toast(`Could not update star: ${error.message}`, "error");
+  }
+}
+
+async function setConversationUnread(conversation, unread) {
+  if (!conversation) return;
+  const previousCount = Number(conversation.unread_count || 0);
+  conversation.unread_count = unread ? Math.max(1, previousCount) : 0;
+  conversation.has_unread = unread;
+  renderConversationList();
+  try {
+    const result = await api(
+      `/penguin-connect/conversations/${encodeURIComponent(conversation.conversation_id)}/read-state`,
+      {
+        method: "POST",
+        body: JSON.stringify({ unread }),
+      },
+    );
+    conversation.unread_count = Number(result.unread_count || 0);
+    conversation.has_unread = Boolean(result.has_unread);
+    renderConversationList();
+    toast(unread ? "Marked unread" : "Marked read");
+  } catch (error) {
+    conversation.unread_count = previousCount;
+    conversation.has_unread = previousCount > 0;
+    renderConversationList();
+    toast(`Could not update read state: ${error.message}`, "error");
+  }
+}
+
+function archiveSelectedConversation(direction = 1) {
   if (!state.selected) return;
   const conversation = state.selected;
   const rows = visibleConversations();
   const index = rows.findIndex((item) => item.conversation_id === conversation.conversation_id);
-  const next = rows[index + 1] || rows[index - 1] || null;
+  const preferred = direction < 0 ? rows[index - 1] : rows[index + 1];
+  const fallback = direction < 0 ? rows[index + 1] : rows[index - 1];
+  const next = preferred || fallback || null;
   conversation.is_archived = true;
   renderConversationList();
   if (next) selectConversation(next);
@@ -3370,6 +3585,55 @@ function moveConversationSelection(offset) {
     ? (offset > 0 ? 0 : rows.length - 1)
     : Math.max(0, Math.min(rows.length - 1, currentIndex + offset));
   selectConversation(rows[nextIndex]);
+}
+
+function jumpConversationSelection(edge) {
+  const rows = visibleConversations();
+  if (!rows.length) return;
+  selectConversation(edge === "bottom" ? rows[rows.length - 1] : rows[0]);
+}
+
+function jumpThreadToNewest() {
+  if (!state.selected || el.threadContent.hidden) return;
+  state.followLatest = true;
+  el.messageList.scrollTop = el.messageList.scrollHeight;
+}
+
+function cycleSource(direction = 1) {
+  const sources = ["all", "imessage", "whatsapp"];
+  const index = sources.indexOf(state.source);
+  setSource(sources[(index + direction + sources.length) % sources.length]);
+}
+
+function openShortcutGuide() {
+  if (!el.shortcutDialog.open) el.shortcutDialog.showModal();
+}
+
+function clearShortcutPrefix() {
+  shortcutPrefix = "";
+  window.clearTimeout(shortcutPrefixTimer);
+}
+
+function armShortcutPrefix(prefix) {
+  clearShortcutPrefix();
+  shortcutPrefix = prefix;
+  shortcutPrefixTimer = window.setTimeout(clearShortcutPrefix, 1200);
+}
+
+function runGoShortcut(key) {
+  const routes = {
+    a: () => setInboxSmartView("all"),
+    s: () => setInboxSmartView("starred"),
+    e: () => setInboxSmartView("archived"),
+    h: () => setInboxSmartView("reminders"),
+    l: () => setView("queue"),
+    g: () => jumpConversationSelection("top"),
+  };
+  const action = routes[key];
+  clearShortcutPrefix();
+  if (!action) return false;
+  action();
+  return true;
 }
 
 async function copyText(value) {
@@ -3642,6 +3906,7 @@ el.threadSearchButton.addEventListener("click", showThreadSearch);
 el.closeThreadSearchButton.addEventListener("click", closeThreadSearch);
 el.threadSearch.addEventListener("input", applyThreadSearch);
 el.threadAgentButton.addEventListener("click", () => setAgentOpen(true));
+el.closeAgentButton.addEventListener("click", toggleAgentPane);
 el.threadNoteButton.addEventListener("click", () => openConversationMeta({ focus: "note" }));
 el.threadLabelButton.addEventListener("click", openLabelPicker);
 el.threadReminderButton.addEventListener("click", () => openConversationMeta({ focus: "reminder" }));
@@ -3884,6 +4149,11 @@ el.agentContactActionButton.addEventListener("click", async () => {
 
 el.composeButton.addEventListener("click", openComposeDialog);
 el.addContactButton.addEventListener("click", () => openContactDialog());
+el.shortcutHelpButton.addEventListener("click", openShortcutGuide);
+el.closeShortcutButton.addEventListener("click", () => el.shortcutDialog.close());
+el.shortcutDialog.addEventListener("click", (event) => {
+  if (event.target === el.shortcutDialog) el.shortcutDialog.close();
+});
 el.contactForm.addEventListener("submit", saveContact);
 el.closeContactDialogButton.addEventListener("click", () => el.contactDialog.close());
 el.cancelContactButton.addEventListener("click", () => el.contactDialog.close());
@@ -3935,7 +4205,11 @@ document.addEventListener("keydown", (event) => {
     toggleConversationPane();
     return;
   }
-  if ((event.metaKey || event.ctrlKey) && event.key === ".") {
+  if (
+    (event.metaKey || event.ctrlKey)
+    && !event.shiftKey
+    && (event.key === "." || event.key === "/")
+  ) {
     event.preventDefault();
     toggleAgentPane();
     return;
@@ -3946,7 +4220,72 @@ document.addEventListener("keydown", (event) => {
     el.globalSearch.select();
     return;
   }
+  if (
+    (event.metaKey || event.ctrlKey)
+    && !shortcutTargetIsEditable(event.target)
+    && (event.key === "ArrowUp" || event.key === "ArrowDown")
+  ) {
+    event.preventDefault();
+    jumpConversationSelection(event.key === "ArrowDown" ? "bottom" : "top");
+    return;
+  }
   if (event.metaKey || event.ctrlKey || event.altKey || shortcutTargetIsEditable(event.target)) return;
+  if (event.key === "Escape") {
+    clearShortcutPrefix();
+    if (window.innerWidth <= 800 && el.shell.classList.contains("thread-open")) {
+      el.shell.classList.remove("thread-open");
+    }
+    return;
+  }
+  if (document.querySelector("dialog[open]")) return;
+  const key = event.key.toLowerCase();
+  if (shortcutPrefix === "g") {
+    event.preventDefault();
+    runGoShortcut(key);
+    return;
+  }
+  if (event.key === "?") {
+    event.preventDefault();
+    openShortcutGuide();
+    return;
+  }
+  if (event.shiftKey && key === "u") {
+    event.preventDefault();
+    setInboxSmartView("unread");
+    return;
+  }
+  if (event.shiftKey && key === "s") {
+    event.preventDefault();
+    setInboxSmartView("starred");
+    return;
+  }
+  if (event.shiftKey && key === "h") {
+    event.preventDefault();
+    setInboxSmartView("reminders");
+    return;
+  }
+  if (event.shiftKey && key === "g") {
+    event.preventDefault();
+    jumpThreadToNewest();
+    return;
+  }
+  if (event.shiftKey && key === "e") {
+    if (state.selected?.is_archived) {
+      event.preventDefault();
+      setConversationArchived(state.selected, false);
+    }
+    return;
+  }
+  if (event.key === "Tab") {
+    event.preventDefault();
+    cycleSource(event.shiftKey ? -1 : 1);
+    return;
+  }
+  if (key === "g") {
+    event.preventDefault();
+    armShortcutPrefix("g");
+    return;
+  }
   if (
     event.key === "Enter"
     && state.selected
@@ -3961,24 +4300,46 @@ document.addEventListener("keydown", (event) => {
   } else if (event.key === "ArrowDown" && state.selected) {
     event.preventDefault();
     scrollCurrentThread(1);
-  } else if (event.key.toLowerCase() === "j") {
+  } else if (event.key === " " && state.selected) {
+    event.preventDefault();
+    scrollCurrentThread(event.shiftKey ? -1 : 1);
+  } else if (key === "j") {
     event.preventDefault();
     moveConversationSelection(1);
-  } else if (event.key.toLowerCase() === "k") {
+  } else if (key === "k") {
     event.preventDefault();
     moveConversationSelection(-1);
-  } else if (event.key.toLowerCase() === "e") {
+  } else if (key === "e") {
     event.preventDefault();
     archiveSelectedConversation();
-  } else if (event.key.toLowerCase() === "h") {
+  } else if (event.key === "[") {
+    event.preventDefault();
+    archiveSelectedConversation(1);
+  } else if (event.key === "]") {
+    event.preventDefault();
+    archiveSelectedConversation(-1);
+  } else if (key === "s") {
+    event.preventDefault();
+    setConversationPinned(state.selected);
+  } else if (key === "u") {
+    event.preventDefault();
+    setConversationUnread(state.selected, !Number(state.selected?.unread_count || 0));
+  } else if (key === "h") {
     event.preventDefault();
     openConversationMeta({ focus: "reminder" });
-  } else if (event.key.toLowerCase() === "l") {
+  } else if (key === "l" || key === "v") {
     event.preventDefault();
     openLabelPicker();
-  }
-  if (event.key === "Escape" && window.innerWidth <= 800 && el.shell.classList.contains("thread-open")) {
-    el.shell.classList.remove("thread-open");
+  } else if (key === "r" || key === "a") {
+    event.preventDefault();
+    focusMessageComposer();
+  } else if (key === "c") {
+    event.preventDefault();
+    openComposeDialog();
+  } else if (event.key === "/") {
+    event.preventDefault();
+    el.globalSearch.focus();
+    el.globalSearch.select();
   }
 });
 
@@ -4004,27 +4365,17 @@ async function start() {
     loadHealth(),
     loadAgentStatus(),
   ]);
+  try {
+    rememberWorkspaceRevision(await loadWorkspaceRevision());
+  } catch (_error) {
+    rememberWorkspaceRevision(null);
+  }
 }
 
 start();
 
-let autoRefreshBusy = false;
 window.setInterval(async () => {
-  if (document.visibilityState !== "visible") return;
-  if (autoRefreshBusy) return;
-  autoRefreshBusy = true;
-  try {
-    await Promise.all([
-      loadConversations({ keepSelection: true }),
-      refreshSelectedMessages(),
-      loadScheduledMessages(),
-      state.view === "queue" ? loadQueue() : Promise.resolve(),
-    ]);
-  } catch (_error) {
-    // Keep the last good local view and retry on the next tick.
-  } finally {
-    autoRefreshBusy = false;
-  }
+  await refreshWorkspaceIfChanged();
 }, 5000);
 
 window.setInterval(() => {
