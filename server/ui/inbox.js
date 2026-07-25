@@ -9,16 +9,22 @@ const state = {
   peopleVisible: 200,
   files: [],
   filesVisible: 100,
+  filesTotal: 0,
+  filesIndexing: false,
   links: [],
   linksVisible: 150,
   linksQuery: "",
   queue: [],
   selected: null,
   messages: [],
+  messageCache: new Map(),
+  preloadStarted: false,
   attachments: [],
   pendingSends: [],
   scheduledMessages: [],
   conversationAvatarDraft: "",
+  followLatest: true,
+  gifs: [],
   search: {
     query: "",
     conversations: [],
@@ -32,6 +38,13 @@ const state = {
     answer: "",
     lastQuestion: "",
     history: [],
+    references: [],
+    contactAction: null,
+    busy: false,
+  },
+  writing: {
+    original: "",
+    result: "",
     busy: false,
   },
 };
@@ -76,8 +89,23 @@ const el = {
   scheduledQueue: document.querySelector("#scheduledQueue"),
   attachmentInput: document.querySelector("#attachmentInput"),
   attachmentPreview: document.querySelector("#attachmentPreview"),
+  gifButton: document.querySelector("#gifButton"),
+  gifDialog: document.querySelector("#gifDialog"),
+  gifSearch: document.querySelector("#gifSearch"),
+  gifResults: document.querySelector("#gifResults"),
+  gifStatus: document.querySelector("#gifStatus"),
+  closeGifButton: document.querySelector("#closeGifButton"),
+  writingButton: document.querySelector("#writingButton"),
+  writingDialog: document.querySelector("#writingDialog"),
+  writingSource: document.querySelector("#writingSource"),
+  writingInstruction: document.querySelector("#writingInstruction"),
+  writingStatus: document.querySelector("#writingStatus"),
+  writingResult: document.querySelector("#writingResult"),
+  closeWritingButton: document.querySelector("#closeWritingButton"),
+  cancelWritingButton: document.querySelector("#cancelWritingButton"),
+  runWritingButton: document.querySelector("#runWritingButton"),
+  replaceDraftButton: document.querySelector("#replaceDraftButton"),
   agentPane: document.querySelector("#agentPane"),
-  toggleAgentButton: document.querySelector("#toggleAgentButton"),
   threadAgentButton: document.querySelector("#threadAgentButton"),
   agentStatus: document.querySelector("#agentStatus"),
   agentQuestion: document.querySelector("#agentQuestion"),
@@ -90,6 +118,8 @@ const el = {
   copyAgentAnswerButton: document.querySelector("#copyAgentAnswerButton"),
   retryAgentAnswerButton: document.querySelector("#retryAgentAnswerButton"),
   useAgentAnswerButton: document.querySelector("#useAgentAnswerButton"),
+  agentReferences: document.querySelector("#agentReferences"),
+  agentContactActionButton: document.querySelector("#agentContactActionButton"),
   composeButton: document.querySelector("#composeButton"),
   addContactButton: document.querySelector("#addContactButton"),
   composeDialog: document.querySelector("#composeDialog"),
@@ -104,6 +134,9 @@ const el = {
   conversationAvatarInput: document.querySelector("#conversationAvatarInput"),
   conversationAvatarPreview: document.querySelector("#conversationAvatarPreview"),
   removeConversationAvatarButton: document.querySelector("#removeConversationAvatarButton"),
+  conversationParticipantsField: document.querySelector("#conversationParticipantsField"),
+  conversationParticipantList: document.querySelector("#conversationParticipantList"),
+  manageParticipantsButton: document.querySelector("#manageParticipantsButton"),
   conversationFollowUp: document.querySelector("#conversationFollowUp"),
   conversationLabels: document.querySelector("#conversationLabels"),
   clearConversationFollowUpButton: document.querySelector("#clearConversationFollowUpButton"),
@@ -115,6 +148,15 @@ const el = {
   cancelScheduleButton: document.querySelector("#cancelScheduleButton"),
   confirmScheduleButton: document.querySelector("#confirmScheduleButton"),
   contactDialog: document.querySelector("#contactDialog"),
+  contactCardDialog: document.querySelector("#contactCardDialog"),
+  contactCardTitle: document.querySelector("#contactCardTitle"),
+  contactCardSubtitle: document.querySelector("#contactCardSubtitle"),
+  contactCardDetails: document.querySelector("#contactCardDetails"),
+  contactCardConversations: document.querySelector("#contactCardConversations"),
+  contactCardConversationCount: document.querySelector("#contactCardConversationCount"),
+  closeContactCardButton: document.querySelector("#closeContactCardButton"),
+  editContactCardButton: document.querySelector("#editContactCardButton"),
+  doneContactCardButton: document.querySelector("#doneContactCardButton"),
   contactForm: document.querySelector("#contactForm"),
   closeContactDialogButton: document.querySelector("#closeContactDialogButton"),
   cancelContactButton: document.querySelector("#cancelContactButton"),
@@ -141,6 +183,13 @@ const quickAgentActions = {
     question: "What commitments and next steps are in these messages?",
     instruction: "List each commitment, who owns it, and any date mentioned. Flag uncertainty.",
   },
+};
+
+const writingActions = {
+  grammar: "Correct grammar, spelling, and punctuation. Preserve the meaning, voice, and level of formality.",
+  concise: "Make this shorter and clearer without losing any important information or changing the meaning.",
+  warm: "Make this feel warmer and more natural while preserving the meaning and avoiding fake enthusiasm.",
+  reply: "Draft a natural, concise reply to the latest messages. Do not add any facts that are not in the conversation.",
 };
 
 function apiErrorMessage(payload, response) {
@@ -471,7 +520,7 @@ function renderConversationList() {
 
     const provider = providerKey(conversation.source_provider);
     const name = conversationName(conversation);
-    row.append(avatarFor(name, provider, { imageUrl: conversation.avatar_data_url || "" }));
+    row.append(conversationAvatarFor(conversation));
 
     const copy = document.createElement("span");
     copy.className = "conversation-copy";
@@ -536,6 +585,40 @@ function contactHandle(contact) {
   return contact?.primary_handle || contact?.email || contact?.phone || "";
 }
 
+function participantDisplayName(handle) {
+  const normalized = normalizedHandle(handle);
+  const contact = state.contacts.find((item) => (
+    normalizedHandle(contactHandle(item)) === normalized
+    || (item.contact_keys || []).some((key) => normalizedHandle(key) === normalized)
+  ));
+  return contact?.display_name || handle;
+}
+
+function conversationAvatarFor(conversation, { large = false } = {}) {
+  const name = conversationName(conversation);
+  const provider = providerKey(conversation.source_provider);
+  if (conversation.avatar_data_url || conversation.chat_type !== "group") {
+    return avatarFor(name, provider, {
+      large,
+      imageUrl: conversation.avatar_data_url || "",
+    });
+  }
+  const avatar = document.createElement("span");
+  avatar.className = `person-avatar group-avatar ${provider}${large ? " large" : ""}`;
+  avatar.setAttribute("aria-label", `${name} group`);
+  const participants = conversationParticipants(conversation).slice(0, 3);
+  for (const [index, participant] of participants.entries()) {
+    const member = document.createElement("span");
+    member.className = "group-avatar-member";
+    member.style.setProperty("--member-index", String(index));
+    member.textContent = initials(participantDisplayName(participant));
+    member.title = participantDisplayName(participant);
+    avatar.append(member);
+  }
+  if (!participants.length) avatar.textContent = initials(name);
+  return avatar;
+}
+
 function renderPersonRow(contact, target, { closeDialog = false } = {}) {
   const row = document.createElement("button");
   row.type = "button";
@@ -559,19 +642,73 @@ function renderPersonRow(contact, target, { closeDialog = false } = {}) {
   count.textContent = threads ? `${threads} thread${threads === 1 ? "" : "s"}` : "No thread";
   row.append(copy, count);
   row.addEventListener("click", () => {
-    const match = conversationsForContact(contact)[0];
-    if (match) {
-      if (closeDialog) el.composeDialog.close();
+    if (closeDialog) el.composeDialog.close();
+    openContactCard(contact);
+  });
+  target.append(row);
+}
+
+let activeContactCard = null;
+
+function openContactCard(contact) {
+  activeContactCard = contact;
+  const name = contact.display_name || contactHandle(contact) || "Unknown person";
+  const conversations = conversationsForContact(contact);
+  el.contactCardTitle.textContent = name;
+  el.contactCardSubtitle.textContent = [
+    contact.organization,
+    contact.is_saved === false ? "Not saved in Apple Contacts" : "Apple Contacts",
+  ].filter(Boolean).join(" · ");
+  el.contactCardDetails.replaceChildren();
+  for (const [label, value] of [
+    ["Phone", contact.phone],
+    ["Email", contact.email],
+    ["Notes", contact.contact_note],
+  ]) {
+    if (!value) continue;
+    const item = document.createElement("div");
+    const term = document.createElement("span");
+    term.textContent = label;
+    const content = document.createElement("strong");
+    content.textContent = value;
+    item.append(term, content);
+    el.contactCardDetails.append(item);
+  }
+  if (!el.contactCardDetails.childElementCount) {
+    const empty = document.createElement("p");
+    empty.textContent = contactHandle(contact) || "No saved contact details.";
+    el.contactCardDetails.append(empty);
+  }
+  el.contactCardConversationCount.textContent = String(conversations.length);
+  el.contactCardConversations.replaceChildren();
+  for (const conversation of conversations) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "contact-thread-option";
+    const nameNode = document.createElement("strong");
+    nameNode.textContent = conversationName(conversation);
+    const meta = document.createElement("span");
+    meta.textContent = `${providerLabel(conversation.source_provider)} · ${timeLabel(conversation.last_message_ts)}`;
+    const preview = document.createElement("small");
+    preview.textContent = truncate(conversation.last_message_preview || "Open conversation", 95);
+    row.append(nameNode, meta, preview);
+    row.addEventListener("click", () => {
+      el.contactCardDialog.close();
       state.view = "inbox";
       state.search.query = "";
       el.globalSearch.value = "";
-      selectConversation(match);
       renderView();
-      return;
-    }
-    toast("No existing safe conversation route for this contact.", "error");
-  });
-  target.append(row);
+      selectConversation(conversation);
+    });
+    el.contactCardConversations.append(row);
+  }
+  if (!conversations.length) {
+    const empty = document.createElement("div");
+    empty.className = "pane-empty compact";
+    empty.textContent = "No existing iMessage or WhatsApp conversation matched this contact.";
+    el.contactCardConversations.append(empty);
+  }
+  el.contactCardDialog.showModal();
 }
 
 function renderPeopleList() {
@@ -605,7 +742,12 @@ function renderFilesList() {
   if (state.view !== "files" || state.search.query) return;
   el.filesList.replaceChildren();
   const visible = state.files.slice(0, state.filesVisible);
-  el.listSummary.textContent = `${visible.length} shown · ${state.files.length} files loaded`;
+  const totalLabel = state.filesTotal > state.files.length
+    ? ` · ${state.filesTotal.toLocaleString()} discovered`
+    : "";
+  el.listSummary.textContent = state.filesIndexing
+    ? `${visible.length} shown · indexing attachment history…`
+    : `${visible.length} shown · ${state.files.length} recent files loaded${totalLabel}`;
   if (!visible.length) {
     const empty = document.createElement("div");
     empty.className = "pane-empty";
@@ -948,10 +1090,7 @@ function renderThreadHeader() {
   el.threadContent.hidden = false;
   const name = conversationName(conversation);
   const provider = providerKey(conversation.source_provider);
-  el.threadAvatar.replaceWith(avatarFor(name, provider, {
-    large: true,
-    imageUrl: conversation.avatar_data_url || "",
-  }));
+  el.threadAvatar.replaceWith(conversationAvatarFor(conversation, { large: true }));
   el.threadAvatar = document.querySelector(".thread-header .person-avatar");
   el.threadAvatar.id = "threadAvatar";
   el.threadTitle.textContent = name;
@@ -1035,6 +1174,9 @@ function renderInlineAttachment(message, attachment, index) {
     image.src = url;
     image.alt = label;
     image.loading = "lazy";
+    image.addEventListener("load", () => {
+      if (state.followLatest) scrollThreadToBottom();
+    });
     image.addEventListener("error", () => wrapper.replaceWith(attachmentFileLink(message, attachment, index)));
     link.append(image);
     wrapper.append(link);
@@ -1047,6 +1189,9 @@ function renderInlineAttachment(message, attachment, index) {
     video.preload = "metadata";
     video.setAttribute("playsinline", "");
     video.setAttribute("aria-label", label);
+    video.addEventListener("loadedmetadata", () => {
+      if (state.followLatest) scrollThreadToBottom();
+    });
     video.addEventListener("error", () => wrapper.replaceWith(attachmentFileLink(message, attachment, index)));
     wrapper.append(video);
     return wrapper;
@@ -1066,10 +1211,17 @@ function renderInlineAttachment(message, attachment, index) {
     frame.src = `${url}#toolbar=0&navpanes=0`;
     frame.title = label;
     frame.loading = "lazy";
+    frame.addEventListener("load", () => {
+      if (state.followLatest) scrollThreadToBottom();
+    });
     wrapper.append(frame, attachmentFileLink(message, attachment, index));
     return wrapper;
   }
   return attachmentFileLink(message, attachment, index);
+}
+
+function scrollThreadToBottom() {
+  el.messageList.scrollTop = el.messageList.scrollHeight;
 }
 
 function renderMessages({ focusMessageId = "", preserveScroll = false } = {}) {
@@ -1155,32 +1307,41 @@ function renderMessages({ focusMessageId = "", preserveScroll = false } = {}) {
     ? el.messageList.querySelector(`[data-message-id="${CSS.escape(focusMessageId)}"]`)
     : null;
   if (preserveScroll && previousBottomDistance > 80 && !focused) {
+    state.followLatest = false;
     el.messageList.scrollTop = previousScrollTop;
   } else {
-    (focused || el.messageList.lastElementChild)?.scrollIntoView({ block: focused ? "center" : "end" });
+    state.followLatest = !focused;
+    if (focused) focused.scrollIntoView({ block: "center", behavior: "auto" });
+    else scrollThreadToBottom();
+    if (!focused) requestAnimationFrame(scrollThreadToBottom);
   }
 }
 
 async function selectConversation(conversation, { focusMessageId = "" } = {}) {
   state.selected = conversation;
-  state.messages = [];
+  const cachedMessages = state.messageCache.get(conversation.conversation_id) || [];
+  state.messages = cachedMessages;
+  state.followLatest = true;
   state.scheduledMessages = [];
   renderScheduledQueue();
   el.shell.classList.add("thread-open");
   renderConversationList();
   renderThreadHeader();
-  el.messageList.innerHTML = `<div class="message-loading"><span></span><span></span><span></span><span></span></div>`;
+  if (cachedMessages.length) renderMessages({ focusMessageId });
+  else el.messageList.innerHTML = `<div class="message-loading"><span></span><span></span><span></span><span></span></div>`;
   try {
     const payload = await api(
-      `/penguin-connect/conversations/${encodeURIComponent(conversation.conversation_id)}/messages?limit=300`,
+      `/penguin-connect/conversations/${encodeURIComponent(conversation.conversation_id)}/messages?limit=300&refresh=false`,
     );
     if (state.selected?.conversation_id !== conversation.conversation_id) return;
     state.messages = payload.messages || [];
+    state.messageCache.set(conversation.conversation_id, state.messages);
     renderMessages({ focusMessageId });
     await Promise.all([
       markConversationRead(conversation),
       loadScheduledMessages(conversation.conversation_id),
     ]);
+    window.setTimeout(() => refreshSelectedMessages(), 50);
   } catch (error) {
     el.messageList.innerHTML = `<div class="pane-empty"></div>`;
     el.messageList.firstElementChild.textContent = error.message;
@@ -1201,13 +1362,39 @@ async function refreshSelectedMessages() {
   const conversationId = state.selected?.conversation_id;
   if (!conversationId) return;
   const payload = await api(
-    `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/messages?limit=300`,
+    `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/messages?limit=300&refresh=true`,
   );
   if (state.selected?.conversation_id !== conversationId) return;
   const nextMessages = payload.messages || [];
+  state.messageCache.set(conversationId, nextMessages);
   if (messagesFingerprint(nextMessages) === messagesFingerprint(state.messages)) return;
   state.messages = nextMessages;
   renderMessages({ preserveScroll: true });
+}
+
+async function preloadRecentMessages() {
+  if (state.preloadStarted) return;
+  state.preloadStarted = true;
+  const queue = sortedConversations(state.conversations)
+    .filter(hasCachedMessage)
+    .slice(0, 18);
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < queue.length) {
+      const conversation = queue[nextIndex];
+      nextIndex += 1;
+      if (state.messageCache.has(conversation.conversation_id)) continue;
+      try {
+        const payload = await api(
+          `/penguin-connect/conversations/${encodeURIComponent(conversation.conversation_id)}/messages?limit=300&refresh=false`,
+        );
+        state.messageCache.set(conversation.conversation_id, payload.messages || []);
+      } catch (_error) {
+        // Preloading is opportunistic; normal selection still handles errors.
+      }
+    }
+  };
+  await Promise.all([worker(), worker(), worker()]);
 }
 
 async function markConversationRead(conversation) {
@@ -1257,6 +1444,7 @@ function updateSendButton() {
   const hasContent = Boolean(el.messageComposer.value.trim() || state.attachments.length);
   el.sendButton.disabled = !state.selected || !hasContent;
   el.scheduleSendButton.disabled = !state.selected || !hasContent;
+  el.gifButton.disabled = !state.selected;
 }
 
 function renderScheduledQueue() {
@@ -1531,6 +1719,10 @@ async function loadConversations({ keepSelection = true, discoverWhatsApp = fals
     }
     renderView();
     renderThreadHeader();
+    if (!state.preloadStarted) {
+      const schedule = window.requestIdleCallback || ((callback) => window.setTimeout(callback, 250));
+      schedule(() => preloadRecentMessages());
+    }
   } catch (error) {
     el.conversationList.replaceChildren();
     const empty = document.createElement("div");
@@ -1558,24 +1750,40 @@ async function loadContacts(query = "") {
 
 async function loadFiles() {
   if (!state.files.length) skeletonRows(el.filesList, 7);
-  const payload = await api("/penguin-connect/messages/search?query=&limit=500&view=files");
-  const files = [];
-  for (const message of payload.messages || []) {
-    const conversation = state.conversations.find(
-      (item) => item.conversation_id === message.conversation_id,
-    );
-    for (const [attachmentIndex, attachment] of messageAttachments(message).entries()) {
-      files.push({
-        message,
-        attachment,
-        attachmentIndex,
-        conversationName: conversation ? conversationName(conversation) : (message.title || message.display_name || "Conversation"),
-      });
+  const hydrate = async () => {
+    const payload = await api("/penguin-connect/messages/search?query=&limit=500&view=files");
+    const files = [];
+    for (const message of payload.messages || []) {
+      const conversation = state.conversations.find(
+        (item) => item.conversation_id === message.conversation_id,
+      );
+      for (const [attachmentIndex, attachment] of messageAttachments(message).entries()) {
+        files.push({
+          message,
+          attachment,
+          attachmentIndex,
+          conversationName: conversation ? conversationName(conversation) : (message.title || message.display_name || "Conversation"),
+        });
+      }
     }
+    state.files = files;
+    state.filesVisible = Math.max(100, Math.min(state.filesVisible, files.length));
+    renderFilesList();
+    return files;
+  };
+  await hydrate();
+  state.filesIndexing = true;
+  renderFilesList();
+  try {
+    const sync = await api("/penguin-connect/attachment-library/sync?limit=1500&offset=0", {
+      method: "POST",
+    });
+    state.filesTotal = Number(sync.total || 0);
+    return await hydrate();
+  } finally {
+    state.filesIndexing = false;
+    renderFilesList();
   }
-  state.files = files;
-  state.filesVisible = 100;
-  return files;
 }
 
 async function loadLinks() {
@@ -1722,8 +1930,17 @@ function setSource(source) {
 
 function setAgentOpen(focus = false) {
   el.shell.classList.remove("agent-closed");
-  el.toggleAgentButton.setAttribute("aria-pressed", "true");
   if (focus) el.agentQuestion.focus();
+}
+
+function toggleAgentPane() {
+  const opening = el.shell.classList.contains("agent-closed");
+  el.shell.classList.toggle("agent-closed", !opening);
+  if (opening) window.setTimeout(() => el.agentQuestion.focus(), 0);
+}
+
+function toggleConversationPane() {
+  el.shell.classList.toggle("list-closed");
 }
 
 function updateAgentButton() {
@@ -1758,16 +1975,75 @@ function selectedConversationPromptContext() {
   ].join("\n");
 }
 
+function agentSearchTerms(query) {
+  const ignored = new Set([
+    "about", "could", "find", "from", "have", "into", "message", "messages",
+    "please", "that", "the", "their", "them", "this", "what", "when", "where",
+    "with", "would", "your",
+  ]);
+  return [...new Set(
+    query.toLowerCase().match(/[a-z0-9@.+_-]{3,}/g)?.filter((term) => !ignored.has(term)) || [],
+  )].slice(0, 8);
+}
+
 async function inboxAgentContext(query) {
-  const payload = await api(
-    `/penguin-connect/messages/search?query=${encodeURIComponent(query)}&limit=40&view=all`,
-  );
-  return (payload.messages || []).map((message) => {
+  const terms = agentSearchTerms(query);
+  const messageQuery = terms.join(" | ") || query;
+  const [payload, hybridPayload, ...contactPayloads] = await Promise.all([
+    api(`/penguin-connect/messages/search?query=${encodeURIComponent(messageQuery)}&limit=40&view=all`),
+    api(`/penguin-connect/search/hybrid?query=${encodeURIComponent(query)}&limit=20`),
+    ...terms.slice(0, 3).map((term) => (
+      api(`/penguin-connect/contacts?search=${encodeURIComponent(term)}&limit=12&source=all`)
+    )),
+  ]);
+  const references = [];
+  const messageLines = (payload.messages || []).map((message) => {
     const conversation = state.conversations.find((item) => item.conversation_id === message.conversation_id);
     const name = conversation ? conversationName(conversation) : (message.title || message.display_name || "Conversation");
     const sender = isOwnMessage(message) ? "Me" : (message.sender_name || message.sender_email || "Unknown");
+    if (conversation && !references.some((item) => item.conversationId === conversation.conversation_id)) {
+      references.push({
+        conversationId: conversation.conversation_id,
+        label: name,
+        provider: providerLabel(conversation.source_provider),
+      });
+    }
     return `${message.message_timestamp || ""} | ${providerLabel(message.source_provider)} | ${name} | ${sender}: ${truncate(message.body_text, 500)}`;
-  }).join("\n");
+  });
+  const contactLines = [];
+  const seenContacts = new Set();
+  for (const contactPayload of contactPayloads) {
+    for (const contact of contactPayload.contacts || []) {
+      const key = contact.contact_key || contactHandle(contact);
+      if (!key || seenContacts.has(key)) continue;
+      seenContacts.add(key);
+      contactLines.push(
+        `${contact.display_name || contactHandle(contact)} | ${contact.organization || ""} | ${contactHandle(contact)}`,
+      );
+    }
+  }
+  const indexedLines = (hybridPayload.results || []).map((item) => (
+    `${item.kind.toUpperCase()} | ${item.title} | ${item.path || item.provider || ""} | ${truncate(item.snippet, 550)}`
+  ));
+  const spotlightLines = (hybridPayload.spotlight_results || []).map((item) => (
+    `FILE | ${item.name} | ${item.path} | ${item.kind || item.content_type || ""}`
+  ));
+  return {
+    text: [
+      "Relevant messages:",
+      messageLines.join("\n") || "No lexical message matches.",
+      "",
+      "Relevant contacts:",
+      contactLines.join("\n") || "No contact matches.",
+      "",
+      "Indexed message/file matches:",
+      indexedLines.join("\n") || "No indexed matches.",
+      "",
+      "Live Spotlight file matches:",
+      spotlightLines.join("\n") || "No Spotlight matches.",
+    ].join("\n"),
+    references: references.slice(0, 8),
+  };
 }
 
 function renderAgentHistory() {
@@ -1787,7 +2063,41 @@ function renderAgentHistory() {
   el.agentAnswerContent.scrollTop = el.agentAnswerContent.scrollHeight;
   el.copyAgentAnswerButton.disabled = !state.agent.answer;
   el.retryAgentAnswerButton.disabled = state.agent.busy || !state.agent.lastQuestion;
-  el.useAgentAnswerButton.disabled = !state.agent.answer || !state.selected;
+  el.useAgentAnswerButton.disabled = !state.agent.answer
+    || (!state.selected && !state.agent.references.length);
+  el.agentReferences.replaceChildren();
+  for (const reference of state.agent.references) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "agent-reference";
+    button.textContent = `${reference.label} · ${reference.provider}`;
+    button.addEventListener("click", () => {
+      const conversation = state.conversations.find(
+        (item) => item.conversation_id === reference.conversationId,
+      );
+      if (!conversation) return;
+      state.view = "inbox";
+      renderView();
+      selectConversation(conversation);
+    });
+    el.agentReferences.append(button);
+  }
+  el.agentReferences.hidden = !state.agent.references.length;
+  el.agentContactActionButton.hidden = !state.agent.contactAction;
+}
+
+function extractAgentContactAction(answer) {
+  const marker = /(?:^|\n)PENGUIN_CONTACT_ACTION:\s*(\{[^\n]+\})\s*$/i;
+  const match = answer.match(marker);
+  if (!match) return { answer: answer.trim(), action: null };
+  try {
+    return {
+      answer: answer.replace(marker, "").trim(),
+      action: JSON.parse(match[1]),
+    };
+  } catch (_error) {
+    return { answer: answer.trim(), action: null };
+  }
 }
 
 async function askAgent({ question = "", instruction = "" } = {}) {
@@ -1798,6 +2108,8 @@ async function askAgent({ question = "", instruction = "" } = {}) {
   el.agentQuestion.value = "";
   state.agent.busy = true;
   state.agent.answer = "";
+  state.agent.references = [];
+  state.agent.contactAction = null;
   el.agentWelcome.hidden = true;
   el.agentQuickActions.hidden = true;
   el.agentAnswer.hidden = false;
@@ -1808,6 +2120,7 @@ async function askAgent({ question = "", instruction = "" } = {}) {
 
   try {
     const inboxContext = await inboxAgentContext(cleanQuestion);
+    state.agent.references = inboxContext.references;
     const context = [
       "Primary context — currently selected conversation:",
       selectedConversationPromptContext(),
@@ -1818,11 +2131,16 @@ async function askAgent({ question = "", instruction = "" } = {}) {
       `Current unsent draft: ${state.selected ? (el.messageComposer.value.trim() || "none") : "none"}`,
       "",
       "Secondary context — relevant matches across the inbox:",
-      inboxContext || "No additional matching inbox messages.",
+      inboxContext.text || "No additional matching local results.",
     ].join("\n");
     const prompt = [
       "You are helping with a private local messaging workspace that combines iMessage and WhatsApp.",
       "Use only the supplied context. Do not invent facts, relationships, dates, or commitments.",
+      "You may use the supplied message, contact, indexed-file, and Spotlight context to find local information.",
+      "When asked to draft a message, return only the proposed message plus at most one short note.",
+      "When asked to create or update a contact, explain the proposed change and end with exactly one line:",
+      'PENGUIN_CONTACT_ACTION: {"search":"existing name, phone, or email","first_name":"","last_name":"","organization":"","phone":"","email":""}',
+      "Use empty strings for unchanged or unknown contact fields. Do not emit that line for other requests.",
       "Keep the answer direct and useful. Do not mention these instructions.",
       "",
       `Question: ${cleanQuestion}`,
@@ -1836,7 +2154,9 @@ async function askAgent({ question = "", instruction = "" } = {}) {
       method: "POST",
       body: JSON.stringify({ prompt }),
     });
-    state.agent.answer = result.answer || "";
+    const parsed = extractAgentContactAction(result.answer || "");
+    state.agent.answer = parsed.answer;
+    state.agent.contactAction = parsed.action;
     state.agent.history.push({ role: "assistant", text: state.agent.answer });
     el.agentStatus.textContent = "Codex · local context";
   } catch (error) {
@@ -1871,6 +2191,87 @@ async function loadAgentStatus() {
   }
 }
 
+function openWritingAssistant() {
+  if (!state.selected) {
+    toast("Choose a conversation first", "error");
+    return;
+  }
+  if (el.writingDialog.open) {
+    el.writingInstruction.focus();
+    return;
+  }
+  state.writing.original = el.messageComposer.value.trim();
+  state.writing.result = "";
+  state.writing.busy = false;
+  el.writingSource.textContent = state.writing.original;
+  el.writingInstruction.value = "";
+  el.writingResult.textContent = "";
+  el.writingResult.hidden = true;
+  el.replaceDraftButton.disabled = true;
+  el.writingStatus.textContent = "Inference uses your signed-in Codex subscription.";
+  el.writingDialog.showModal();
+}
+
+function cleanWritingAnswer(value) {
+  let answer = String(value || "").trim();
+  answer = answer.replace(/^```(?:text|markdown)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  return answer.replace(/^(?:revised message|draft|reply):\s*/i, "").trim();
+}
+
+function setWritingBusy(busy) {
+  state.writing.busy = busy;
+  el.runWritingButton.disabled = busy;
+  for (const button of el.writingDialog.querySelectorAll("[data-writing-action]")) {
+    button.disabled = busy;
+  }
+  el.replaceDraftButton.disabled = busy || !state.writing.result;
+}
+
+async function runWritingAssistant(instruction) {
+  const task = String(instruction || el.writingInstruction.value).trim();
+  if (!task || state.writing.busy) return;
+  if (!state.writing.original && task !== writingActions.reply) {
+    el.writingStatus.textContent = "Write a draft first, or choose “Draft a reply.”";
+    return;
+  }
+  setWritingBusy(true);
+  el.writingStatus.textContent = "Codex is writing…";
+  el.writingResult.hidden = true;
+  try {
+    const prompt = [
+      "You are a writing assistant inside a private local messaging app.",
+      "Return only the final message text: no heading, explanation, quotation marks, or markdown fence.",
+      "Never invent facts, commitments, names, dates, or links.",
+      "Preserve the user's natural voice unless the instruction explicitly asks for a tone change.",
+      `Task: ${task}`,
+      "",
+      "Current draft:",
+      state.writing.original || "(empty — draft a reply from the conversation)",
+      "",
+      "Current conversation:",
+      selectedConversationPromptContext(),
+      "",
+      "Recent messages:",
+      agentThreadText() || "No cached messages.",
+    ].join("\n");
+    const result = await api("/penguin-connect/codex/ask", {
+      method: "POST",
+      body: JSON.stringify({ prompt }),
+    });
+    state.writing.result = cleanWritingAnswer(result.answer);
+    if (!state.writing.result) throw new Error("Codex returned an empty draft");
+    el.writingResult.textContent = state.writing.result;
+    el.writingResult.hidden = false;
+    el.writingStatus.textContent = "Ready · generated with your Codex session";
+  } catch (error) {
+    state.writing.result = "";
+    el.writingStatus.textContent = error.message;
+    toast(`Writing assistant: ${error.message}`, "error");
+  } finally {
+    setWritingBusy(false);
+  }
+}
+
 function localDateTimeValue(value) {
   if (!value) return "";
   const date = new Date(value);
@@ -1890,6 +2291,20 @@ function openConversationMeta({ focus = "note" } = {}) {
   el.conversationLabels.value = (state.selected.labels || []).join(", ");
   state.conversationAvatarDraft = state.selected.avatar_data_url || "";
   renderConversationAvatarDraft();
+  const participants = conversationParticipants(state.selected);
+  const isGroup = state.selected.chat_type === "group";
+  el.conversationParticipantsField.hidden = !isGroup;
+  el.conversationParticipantList.replaceChildren();
+  for (const participant of participants) {
+    const chip = document.createElement("span");
+    const contact = state.contacts.find((item) => (
+      normalizedHandle(contactHandle(item)) === normalizedHandle(participant)
+      || (item.contact_keys || []).some((key) => normalizedHandle(key) === normalizedHandle(participant))
+    ));
+    chip.textContent = contact?.display_name || participant;
+    el.conversationParticipantList.append(chip);
+  }
+  el.manageParticipantsButton.textContent = `Manage in ${providerLabel(state.selected.source_provider)}`;
   el.conversationMetaDialog.showModal();
   window.setTimeout(() => {
     if (focus === "reminder") el.conversationFollowUp.focus();
@@ -2019,6 +2434,94 @@ function openComposeDialog() {
   el.composeDialog.showModal();
   window.setTimeout(() => el.composeSearch.focus(), 0);
 }
+
+function renderGifResults() {
+  el.gifResults.replaceChildren();
+  for (const [index, gif] of state.gifs.entries()) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "gif-result";
+    button.dataset.gifIndex = String(index);
+    button.setAttribute("role", "option");
+    button.title = gif.title || "GIF";
+    const image = document.createElement("img");
+    image.src = gif.preview_url;
+    image.alt = gif.title || "GIF result";
+    image.loading = "lazy";
+    button.append(image);
+    button.addEventListener("click", () => addGifToMessage(gif));
+    el.gifResults.append(button);
+  }
+  if (!state.gifs.length) {
+    const empty = document.createElement("div");
+    empty.className = "pane-empty compact";
+    empty.textContent = "No GIFs found.";
+    el.gifResults.append(empty);
+  }
+}
+
+async function searchGifs(query = "") {
+  el.gifStatus.firstChild.textContent = "Loading GIFs… ";
+  try {
+    const payload = await api(
+      `/penguin-connect/gifs/search?query=${encodeURIComponent(query.trim())}&limit=24`,
+    );
+    state.gifs = payload.results || [];
+    renderGifResults();
+    el.gifStatus.firstChild.textContent = "Arrow keys move · Enter adds to your message · ";
+  } catch (error) {
+    state.gifs = [];
+    renderGifResults();
+    el.gifStatus.firstChild.textContent = error.message === "giphy api key required"
+      ? "Add PENGUIN_CONNECT_GIPHY_API_KEY to enable search · "
+      : `GIF search unavailable: ${error.message} · `;
+  }
+}
+
+async function openGifDialog() {
+  if (!state.selected) {
+    toast("Choose a conversation before adding a GIF.", "error");
+    return;
+  }
+  el.gifSearch.value = "";
+  state.gifs = [];
+  el.gifDialog.showModal();
+  await searchGifs("");
+  window.setTimeout(() => el.gifSearch.focus(), 0);
+}
+
+async function addGifToMessage(gif) {
+  if (!gif?.gif_url) return;
+  el.gifStatus.firstChild.textContent = "Adding GIF to your draft… ";
+  try {
+    const response = await fetch("/penguin-connect/gifs/download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: gif.gif_url }),
+    });
+    if (!response.ok) {
+      let payload = {};
+      try {
+        payload = await response.json();
+      } catch (_error) {
+        payload = {};
+      }
+      throw new Error(apiErrorMessage(payload, response));
+    }
+    const blob = await response.blob();
+    const filename = `giphy-${gif.id || Date.now()}.gif`;
+    state.attachments.push(new File([blob], filename, { type: blob.type || "image/gif" }));
+    renderAttachmentPreview();
+    updateSendButton();
+    el.gifDialog.close();
+    el.messageComposer.focus();
+    toast("GIF added to your message");
+  } catch (error) {
+    el.gifStatus.firstChild.textContent = `Couldn't add GIF: ${error.message} · `;
+  }
+}
+
+let gifSearchTimer = 0;
 
 function openContactDialog(contact = null) {
   const source = contact || null;
@@ -2186,7 +2689,6 @@ el.threadSearchButton.addEventListener("click", showThreadSearch);
 el.closeThreadSearchButton.addEventListener("click", closeThreadSearch);
 el.threadSearch.addEventListener("input", applyThreadSearch);
 el.threadAgentButton.addEventListener("click", () => setAgentOpen(true));
-el.toggleAgentButton.addEventListener("click", () => setAgentOpen(true));
 el.threadNoteButton.addEventListener("click", () => openConversationMeta({ focus: "note" }));
 el.threadLabelButton.addEventListener("click", () => openConversationMeta({ focus: "labels" }));
 el.threadReminderButton.addEventListener("click", () => openConversationMeta({ focus: "reminder" }));
@@ -2195,6 +2697,18 @@ el.conversationAvatarInput.addEventListener("change", updateConversationAvatarDr
 el.removeConversationAvatarButton.addEventListener("click", () => {
   state.conversationAvatarDraft = "";
   renderConversationAvatarDraft();
+});
+el.manageParticipantsButton.addEventListener("click", async () => {
+  if (!state.selected) return;
+  try {
+    await api(
+      `/penguin-connect/conversations/${encodeURIComponent(state.selected.conversation_id)}/open-provider`,
+      { method: "POST" },
+    );
+    toast(`Opened ${providerLabel(state.selected.source_provider)} group settings`);
+  } catch (error) {
+    toast(error.message, "error");
+  }
 });
 el.closeConversationMetaButton.addEventListener("click", () => el.conversationMetaDialog.close());
 el.clearConversationFollowUpButton.addEventListener("click", () => {
@@ -2209,11 +2723,43 @@ el.messageComposer.addEventListener("input", () => {
   resizeComposer();
   updateSendButton();
 });
+el.messageList.addEventListener("scroll", (event) => {
+  if (!event.isTrusted) return;
+  const bottomDistance = el.messageList.scrollHeight - el.messageList.clientHeight - el.messageList.scrollTop;
+  state.followLatest = bottomDistance < 100;
+}, { passive: true });
 el.messageComposer.addEventListener("keydown", (event) => {
-  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
     sendMessage();
   }
+});
+el.writingButton.addEventListener("click", openWritingAssistant);
+el.writingDialog.addEventListener("click", (event) => {
+  if (event.target === el.writingDialog) el.writingDialog.close();
+});
+el.closeWritingButton.addEventListener("click", () => el.writingDialog.close());
+el.cancelWritingButton.addEventListener("click", () => el.writingDialog.close());
+el.writingDialog.querySelector(".writing-actions").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-writing-action]");
+  if (!button) return;
+  runWritingAssistant(writingActions[button.dataset.writingAction]);
+});
+el.runWritingButton.addEventListener("click", () => runWritingAssistant());
+el.writingInstruction.addEventListener("keydown", (event) => {
+  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+    event.preventDefault();
+    runWritingAssistant();
+  }
+});
+el.replaceDraftButton.addEventListener("click", () => {
+  if (!state.writing.result) return;
+  el.messageComposer.value = state.writing.result;
+  resizeComposer();
+  updateSendButton();
+  el.writingDialog.close();
+  el.messageComposer.focus();
+  toast("Codex draft applied");
 });
 el.sendButton.addEventListener("click", sendMessage);
 el.scheduleSendButton.addEventListener("click", openScheduleDialog);
@@ -2228,6 +2774,27 @@ el.attachmentInput.addEventListener("change", () => {
   el.attachmentInput.value = "";
   renderAttachmentPreview();
   updateSendButton();
+});
+el.gifButton.addEventListener("click", openGifDialog);
+el.closeGifButton.addEventListener("click", () => el.gifDialog.close());
+el.gifDialog.addEventListener("click", (event) => {
+  if (event.target === el.gifDialog) el.gifDialog.close();
+});
+el.gifSearch.addEventListener("input", () => {
+  window.clearTimeout(gifSearchTimer);
+  gifSearchTimer = window.setTimeout(() => searchGifs(el.gifSearch.value), 250);
+});
+el.gifDialog.addEventListener("keydown", (event) => {
+  const options = [...el.gifResults.querySelectorAll(".gif-result")];
+  if (!options.length) return;
+  const current = options.indexOf(document.activeElement);
+  if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+    event.preventDefault();
+    options[(current + 1 + options.length) % options.length].focus();
+  } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
+    event.preventDefault();
+    options[(current - 1 + options.length) % options.length].focus();
+  }
 });
 
 el.agentQuestion.addEventListener("input", updateAgentButton);
@@ -2256,12 +2823,43 @@ el.retryAgentAnswerButton.addEventListener("click", () => {
   if (state.agent.lastQuestion) askAgent({ question: state.agent.lastQuestion });
 });
 el.useAgentAnswerButton.addEventListener("click", () => {
-  if (!state.agent.answer || !state.selected) return;
+  if (!state.agent.answer) return;
+  if (!state.selected && state.agent.references.length) {
+    const reference = state.agent.references[0];
+    const conversation = state.conversations.find(
+      (item) => item.conversation_id === reference.conversationId,
+    );
+    if (conversation) selectConversation(conversation);
+  }
+  if (!state.selected) return;
   el.messageComposer.value = state.agent.answer;
   resizeComposer();
   updateSendButton();
   el.messageComposer.focus();
   toast("Agent response moved to your draft");
+});
+el.agentContactActionButton.addEventListener("click", async () => {
+  const action = state.agent.contactAction;
+  if (!action) return;
+  let contact = null;
+  const search = String(action.search || "").trim();
+  if (search) {
+    try {
+      const matches = await loadContacts(search);
+      contact = matches.find((item) => (
+        String(item.display_name || "").toLowerCase() === search.toLowerCase()
+        || normalizedHandle(contactHandle(item)) === normalizedHandle(search)
+      )) || matches[0] || null;
+    } catch (_error) {
+      contact = null;
+    }
+  }
+  openContactDialog(contact);
+  if (action.first_name) el.contactFirstName.value = action.first_name;
+  if (action.last_name) el.contactLastName.value = action.last_name;
+  if (action.organization) el.contactOrganization.value = action.organization;
+  if (action.phone) el.contactPhone.value = action.phone;
+  if (action.email) el.contactEmail.value = action.email;
 });
 
 el.composeButton.addEventListener("click", openComposeDialog);
@@ -2272,12 +2870,42 @@ el.cancelContactButton.addEventListener("click", () => el.contactDialog.close())
 el.contactDialog.addEventListener("click", (event) => {
   if (event.target === el.contactDialog) el.contactDialog.close();
 });
+el.closeContactCardButton.addEventListener("click", () => el.contactCardDialog.close());
+el.doneContactCardButton.addEventListener("click", () => el.contactCardDialog.close());
+el.editContactCardButton.addEventListener("click", () => {
+  const contact = activeContactCard;
+  el.contactCardDialog.close();
+  openContactDialog(contact);
+});
+el.contactCardDialog.addEventListener("click", (event) => {
+  if (event.target === el.contactCardDialog) el.contactCardDialog.close();
+});
 el.composeSearch.addEventListener("input", renderComposeResults);
 el.composeDialog.addEventListener("click", (event) => {
   if (event.target === el.composeDialog) el.composeDialog.close();
 });
 
 document.addEventListener("keydown", (event) => {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "j") {
+    event.preventDefault();
+    openWritingAssistant();
+    return;
+  }
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "g") {
+    event.preventDefault();
+    openGifDialog();
+    return;
+  }
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "b") {
+    event.preventDefault();
+    toggleConversationPane();
+    return;
+  }
+  if ((event.metaKey || event.ctrlKey) && event.key === ".") {
+    event.preventDefault();
+    toggleAgentPane();
+    return;
+  }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
     event.preventDefault();
     el.globalSearch.focus();
@@ -2297,6 +2925,9 @@ document.addEventListener("keydown", (event) => {
   } else if (event.key.toLowerCase() === "h") {
     event.preventDefault();
     openConversationMeta({ focus: "reminder" });
+  } else if (event.key.toLowerCase() === "l") {
+    event.preventDefault();
+    openConversationMeta({ focus: "labels" });
   }
   if (event.key === "Escape" && window.innerWidth <= 800 && el.shell.classList.contains("thread-open")) {
     el.shell.classList.remove("thread-open");

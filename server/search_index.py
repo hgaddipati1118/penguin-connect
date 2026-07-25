@@ -185,13 +185,50 @@ def _message_documents(limit: int) -> Iterable[dict[str, Any]]:
             JOIN penguin_connect_conversations c
               ON c.conversation_id = m.conversation_id
             WHERE TRIM(COALESCE(m.body_text, '')) <> ''
+               OR COALESCE(m.metadata, '') LIKE '%"attachments"%'
             ORDER BY m.message_timestamp DESC, m.id DESC
             LIMIT ?
             """,
             (max(1, min(limit, 100_000)),),
         ).fetchall()
-        return [
-            {
+        intelligence_table = conn.execute(
+            """SELECT 1 FROM sqlite_master
+               WHERE type = 'table' AND name = 'penguin_connect_attachment_intelligence'"""
+        ).fetchone()
+        intelligence_rows = (
+            conn.execute(
+                """SELECT conversation_id, provider_message_id, attachment_index,
+                          filename, mime_type, extracted_text, summary, status
+                   FROM penguin_connect_attachment_intelligence
+                   WHERE status IN ('summarized', 'extracted', 'metadata_only')"""
+            ).fetchall()
+            if intelligence_table
+            else []
+        )
+        intelligence: dict[tuple[str, str], list[sqlite3.Row]] = {}
+        for item in intelligence_rows:
+            intelligence.setdefault(
+                (item["conversation_id"], item["provider_message_id"]),
+                [],
+            ).append(item)
+        documents = []
+        for row in rows:
+            attachment_parts = []
+            try:
+                message_metadata = json.loads(row["metadata"] or "{}")
+            except Exception:
+                message_metadata = {}
+            for attachment in message_metadata.get("attachments") or []:
+                if not isinstance(attachment, dict):
+                    continue
+                name = attachment.get("transfer_name") or attachment.get("filename") or "attachment"
+                attachment_parts.append(f"Attachment: {Path(str(name)).name}")
+            for item in intelligence.get((row["conversation_id"], row["provider_message_id"]), []):
+                if item["summary"]:
+                    attachment_parts.append(f"Attachment summary: {item['summary']}")
+                if item["extracted_text"]:
+                    attachment_parts.append(f"Attachment text: {_clean_text(item['extracted_text'], 8_000)}")
+            documents.append({
                 "document_key": f"message:{row['id']}",
                 "kind": "message",
                 "source_id": row["provider_message_id"] or str(row["id"]),
@@ -201,6 +238,7 @@ def _message_documents(limit: int) -> Iterable[dict[str, Any]]:
                     for part in (
                         row["sender_name"] or row["sender_email"] or "",
                         row["body_text"] or "",
+                        *attachment_parts,
                     )
                     if part
                 ),
@@ -210,10 +248,10 @@ def _message_documents(limit: int) -> Iterable[dict[str, Any]]:
                 "metadata": {
                     "conversation_id": row["conversation_id"],
                     "provider_message_id": row["provider_message_id"],
+                    "attachment_count": len(message_metadata.get("attachments") or []),
                 },
-            }
-            for row in rows
-        ]
+            })
+        return documents
     finally:
         conn.close()
 
@@ -344,6 +382,10 @@ def _extract_file_text(path: Path) -> str:
     except (OSError, subprocess.TimeoutExpired):
         return ""
     return _clean_text(result.stdout if result.returncode == 0 else "", 40_000)
+
+
+def extract_file_text(path: str | Path) -> str:
+    return _extract_file_text(Path(path).expanduser())
 
 
 def _file_documents(roots: list[str] | None, limit: int) -> Iterable[dict[str, Any]]:
@@ -482,6 +524,112 @@ def rebuild_search_index(
             "vectors_indexed": embedded,
             "semantic_enabled": vector_ready,
             "search_db_path": str(SEARCH_DB_PATH),
+        }
+    finally:
+        conn.close()
+
+
+def refresh_message_search_index(*, message_limit: int = 100_000) -> dict[str, Any]:
+    """Incrementally refresh cached-message documents without rebuilding file documents."""
+    documents = list(_message_documents(message_limit))
+    conn = _search_connection()
+    try:
+        _create_lexical_schema(conn)
+        vector_ready = bool(
+            _load_sqlite_vec(conn)
+            and conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name = 'search_document_vectors'"
+            ).fetchone()
+        )
+        existing = {
+            row["document_key"]: row
+            for row in conn.execute(
+                "SELECT id, document_key, content_hash FROM search_documents WHERE kind = 'message'"
+            ).fetchall()
+        }
+        seen = set()
+        changed_rows = []
+        for document in documents:
+            title = _clean_text(document.get("title"), 1_000)
+            body = _clean_text(document.get("body"))
+            metadata = json.dumps(document.get("metadata") or {}, sort_keys=True)
+            content_hash = _content_hash(title, body, metadata)
+            key = document["document_key"]
+            seen.add(key)
+            current = existing.get(key)
+            if current and current["content_hash"] == content_hash:
+                continue
+            if current:
+                document_id = int(current["id"])
+                conn.execute(
+                    """UPDATE search_documents
+                       SET source_id = ?, title = ?, body = ?, provider = ?, timestamp = ?,
+                           content_hash = ?, metadata = ?
+                       WHERE id = ?""",
+                    (
+                        document["source_id"],
+                        title,
+                        body,
+                        document.get("provider") or "",
+                        document.get("timestamp") or "",
+                        content_hash,
+                        metadata,
+                        document_id,
+                    ),
+                )
+                conn.execute("DELETE FROM search_documents_fts WHERE rowid = ?", (document_id,))
+            else:
+                cursor = conn.execute(
+                    """INSERT INTO search_documents
+                       (document_key, kind, source_id, title, body, path, provider, timestamp, content_hash, metadata)
+                       VALUES (?, 'message', ?, ?, ?, '', ?, ?, ?, ?)""",
+                    (
+                        key,
+                        document["source_id"],
+                        title,
+                        body,
+                        document.get("provider") or "",
+                        document.get("timestamp") or "",
+                        content_hash,
+                        metadata,
+                    ),
+                )
+                document_id = int(cursor.lastrowid)
+            conn.execute(
+                "INSERT INTO search_documents_fts(rowid, document_key, title, body) VALUES (?, ?, ?, ?)",
+                (document_id, key, title, body),
+            )
+            changed_rows.append((document_id, title, body))
+
+        stale = [row for key, row in existing.items() if key not in seen]
+        for row in stale:
+            document_id = int(row["id"])
+            conn.execute("DELETE FROM search_documents_fts WHERE rowid = ?", (document_id,))
+            if vector_ready:
+                conn.execute("DELETE FROM search_document_vectors WHERE rowid = ?", (document_id,))
+            conn.execute("DELETE FROM search_documents WHERE id = ?", (document_id,))
+
+        embedded = 0
+        if vector_ready:
+            for start in range(0, len(changed_rows), 16):
+                batch = changed_rows[start : start + 16]
+                vectors = _ollama_embeddings([
+                    _embedding_document_text(title, body) for _, title, body in batch
+                ])
+                for (document_id, _title, _body), vector in zip(batch, vectors):
+                    conn.execute("DELETE FROM search_document_vectors WHERE rowid = ?", (document_id,))
+                    conn.execute(
+                        "INSERT INTO search_document_vectors(rowid, embedding) VALUES (?, ?)",
+                        (document_id, json.dumps(vector)),
+                    )
+                    embedded += 1
+        conn.commit()
+        return {
+            "success": True,
+            "messages_indexed": len(documents),
+            "messages_changed": len(changed_rows),
+            "vectors_refreshed": embedded,
+            "semantic_enabled": vector_ready,
         }
     finally:
         conn.close()

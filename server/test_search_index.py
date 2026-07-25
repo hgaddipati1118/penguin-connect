@@ -122,6 +122,40 @@ class SearchIndexTests(unittest.TestCase):
             "Synthetic launch checklist",
         )
 
+    def test_attachment_summary_is_included_in_message_document(self):
+        conn = sqlite3.connect(self.cache_db)
+        conn.execute(
+            """CREATE TABLE penguin_connect_attachment_intelligence (
+                   conversation_id TEXT,
+                   provider_message_id TEXT,
+                   attachment_index INTEGER,
+                   filename TEXT,
+                   mime_type TEXT,
+                   extracted_text TEXT,
+                   summary TEXT,
+                   status TEXT
+               )"""
+        )
+        conn.execute(
+            """INSERT INTO penguin_connect_attachment_intelligence
+               VALUES (?, ?, 0, ?, ?, ?, ?, 'summarized')""",
+            (
+                "conversation-1",
+                "message-1",
+                "brief.pdf",
+                "application/pdf",
+                "Project Cedar launches Friday.",
+                "A launch brief for Project Cedar.",
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        document = list(search_index._message_documents(100))[0]
+
+        self.assertIn("Project Cedar", document["body"])
+        self.assertIn("Attachment summary", document["body"])
+
     def test_embedding_document_text_is_bounded(self):
         text = search_index._embedding_document_text(
             "Synthetic title",

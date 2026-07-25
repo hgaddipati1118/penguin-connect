@@ -29,6 +29,7 @@ from typing import Any, Optional
 
 from action_log import log_action, message_fingerprint
 from browse_sources import (
+    list_imessage_attachment_messages,
     list_apple_messages_chat_routes as _list_apple_messages_chat_routes,
     resolve_apple_messages_chat as _resolve_apple_messages_chat_route,
     search_imessage_messages,
@@ -4343,13 +4344,27 @@ def _cache_local_search_message(conn: sqlite3.Connection, conv: sqlite3.Row, msg
 
     provider_id = _provider_message_id(source_provider, msg)
     existing = conn.execute(
-        """SELECT 1
+        """SELECT metadata
            FROM penguin_connect_messages
            WHERE conversation_id = ? AND provider_message_id = ?
            LIMIT 1""",
         (conv["conversation_id"], provider_id),
     ).fetchone()
     if existing:
+        try:
+            existing_metadata = json.loads(existing["metadata"] or "{}")
+        except Exception:
+            existing_metadata = {}
+        if attachments and not existing_metadata.get("attachments"):
+            existing_metadata["attachments"] = attachments
+            existing_metadata["local_attachment_imported"] = True
+            conn.execute(
+                """UPDATE penguin_connect_messages
+                   SET metadata = ?
+                   WHERE conversation_id = ? AND provider_message_id = ?""",
+                (json.dumps(existing_metadata), conv["conversation_id"], provider_id),
+            )
+            return True
         return False
 
     is_from_me = 1 if msg.get("is_from_me") else 0
@@ -4412,7 +4427,155 @@ def import_local_imessage_search_results(
     return {"available": True, "imported": imported, "messages": result.get("messages") or []}
 
 
-def get_conversation_messages(conn: sqlite3.Connection, conversation_id: str, limit: int = 200) -> dict[str, Any]:
+def import_local_imessage_attachment_messages(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 1000,
+    offset: int = 0,
+) -> dict[str, Any]:
+    if get_connected_account(conn):
+        return {"available": True, "imported": 0, "messages": [], "total": 0}
+    result = list_imessage_attachment_messages(limit=limit, offset=offset)
+    if not result.get("available"):
+        return {
+            "available": False,
+            "imported": 0,
+            "messages": [],
+            "total": 0,
+            "reason": result.get("reason") or "not_available",
+        }
+    imported = 0
+    before_changes = conn.total_changes
+    for msg in result.get("messages") or []:
+        if not isinstance(msg, dict):
+            continue
+        conv = _ensure_local_conversation_for_search_message(conn, msg)
+        if not conv:
+            continue
+        if _cache_local_search_message(conn, conv, msg):
+            imported += 1
+    if conn.total_changes != before_changes:
+        conn.commit()
+    return {
+        "available": True,
+        "imported": imported,
+        "messages": result.get("messages") or [],
+        "total": int(result.get("total") or 0),
+        "limit": int(result.get("limit") or limit),
+        "offset": int(result.get("offset") or offset),
+    }
+
+
+def import_local_whatsapp_attachment_messages(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 1000,
+    offset: int = 0,
+) -> dict[str, Any]:
+    adapter = get_channel_adapter("whatsapp")
+    if not hasattr(adapter, "list_attachment_messages"):
+        return {"available": False, "imported": 0, "messages": [], "total": 0}
+    result = adapter.list_attachment_messages(limit=limit, offset=offset)
+    if not result.get("available"):
+        return {
+            "available": False,
+            "imported": 0,
+            "messages": [],
+            "total": 0,
+            "reason": result.get("reason") or "not_available",
+        }
+    imported = 0
+    before_changes = conn.total_changes
+    for msg in result.get("messages") or []:
+        chat_id = str(msg.get("chat_id") or "").strip()
+        if not chat_id:
+            continue
+        conv = conn.execute(
+            """SELECT *
+               FROM penguin_connect_conversations
+               WHERE source_provider = 'whatsapp'
+                 AND (source_chat_id = ? OR source_chat_identifier = ?)
+               ORDER BY CASE WHEN source_chat_id = ? THEN 0 ELSE 1 END
+               LIMIT 1""",
+            (chat_id, chat_id, chat_id),
+        ).fetchone()
+        if not conv:
+            continue
+        ts = msg.get("timestamp")
+        attachments = msg.get("attachments") or []
+        if not ts or not attachments:
+            continue
+        provider_id = _provider_message_id("whatsapp", msg)
+        existing = conn.execute(
+            """SELECT metadata
+               FROM penguin_connect_messages
+               WHERE conversation_id = ? AND provider_message_id = ?
+               LIMIT 1""",
+            (conv["conversation_id"], provider_id),
+        ).fetchone()
+        if existing:
+            try:
+                metadata = json.loads(existing["metadata"] or "{}")
+            except Exception:
+                metadata = {}
+            if not metadata.get("attachments"):
+                metadata["attachments"] = attachments
+                metadata["local_attachment_imported"] = True
+                conn.execute(
+                    """UPDATE penguin_connect_messages
+                       SET metadata = ?
+                       WHERE conversation_id = ? AND provider_message_id = ?""",
+                    (json.dumps(metadata), conv["conversation_id"], provider_id),
+                )
+                imported += 1
+            continue
+        sender_name, subject_name = _resolve_sender_and_subject(conn, conv, msg)
+        metadata = {
+            "source_chat_id": chat_id,
+            "native_message_id": msg.get("native_message_id"),
+            "is_from_me": bool(msg.get("is_from_me")),
+            "attachments": attachments,
+            "local_cache_only": True,
+            "local_attachment_imported": True,
+        }
+        cursor = conn.execute(
+            """INSERT OR IGNORE INTO penguin_connect_messages
+               (conversation_id, provider, provider_message_id, direction,
+                sender_email, sender_name, subject, body_text, message_timestamp,
+                is_read, metadata)
+               VALUES (?, 'whatsapp', ?, 'whatsapp_local', NULL, ?, ?, ?, ?, 1, ?)""",
+            (
+                conv["conversation_id"],
+                provider_id,
+                sender_name,
+                _provider_subject("whatsapp", subject_name),
+                str(msg.get("text") or "")[:20000],
+                ts,
+                json.dumps(metadata),
+            ),
+        )
+        if cursor.rowcount > 0:
+            imported += 1
+        _record_conversation_activity_hint(conn, conv["conversation_id"], ts)
+    if conn.total_changes != before_changes:
+        conn.commit()
+    return {
+        "available": True,
+        "imported": imported,
+        "messages": result.get("messages") or [],
+        "total": int(result.get("total") or 0),
+        "limit": int(result.get("limit") or limit),
+        "offset": int(result.get("offset") or offset),
+    }
+
+
+def get_conversation_messages(
+    conn: sqlite3.Connection,
+    conversation_id: str,
+    limit: int = 200,
+    *,
+    refresh_source: bool = True,
+) -> dict[str, Any]:
     conv = conn.execute(
         """SELECT *
            FROM penguin_connect_conversations
@@ -4422,7 +4585,8 @@ def get_conversation_messages(conn: sqlite3.Connection, conversation_id: str, li
     if not conv:
         return {"found": False, "messages": []}
 
-    _cache_local_source_messages_for_view(conn, conv, limit=limit, include_history=True)
+    if refresh_source:
+        _cache_local_source_messages_for_view(conn, conv, limit=limit, include_history=True)
 
     account = conn.execute(
         "SELECT send_as_aliases FROM penguin_connect_accounts WHERE gmail_email = ? LIMIT 1",

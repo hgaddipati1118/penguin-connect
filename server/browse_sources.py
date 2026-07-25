@@ -463,6 +463,135 @@ def search_imessage_messages(query, limit=50):
         conn.close()
 
 
+def list_imessage_attachment_messages(limit=1000, offset=0):
+    """Return recent iMessage/SMS/RCS messages with attachment metadata."""
+    if not os.path.exists(IMESSAGE_DB):
+        return {"available": False, "reason": "chat.db not found", "messages": [], "total": 0}
+
+    conn = sqlite3.connect(f"file:{IMESSAGE_DB}?mode=ro", uri=True)
+    try:
+        cur = conn.cursor()
+        room_name_expr = _chat_room_name_expr(conn)
+        safe_limit = max(1, min(int(limit or 1000), 5000))
+        safe_offset = max(0, int(offset or 0))
+        total = cur.execute(
+            """SELECT COUNT(DISTINCT maj.message_id)
+               FROM message_attachment_join maj
+               JOIN attachment a ON a.ROWID = maj.attachment_id
+               WHERE a.filename IS NOT NULL"""
+        ).fetchone()[0]
+        cur.execute(
+            f"""
+            WITH recent AS (
+                SELECT DISTINCT
+                    m.ROWID,
+                    m.text,
+                    m.date,
+                    m.is_from_me,
+                    m.service,
+                    m.handle_id,
+                    m.attributedBody
+                FROM message m
+                JOIN message_attachment_join maj ON maj.message_id = m.ROWID
+                JOIN attachment a ON a.ROWID = maj.attachment_id
+                WHERE a.filename IS NOT NULL
+                ORDER BY m.date DESC, m.ROWID DESC
+                LIMIT ? OFFSET ?
+            )
+            SELECT
+                r.ROWID,
+                r.text,
+                r.date,
+                r.is_from_me,
+                r.service,
+                h.id,
+                r.attributedBody,
+                c.guid,
+                c.chat_identifier,
+                c.display_name,
+                {room_name_expr},
+                c.service_name,
+                a.filename,
+                a.mime_type,
+                a.total_bytes,
+                a.transfer_name
+            FROM recent r
+            JOIN chat_message_join cmj ON cmj.message_id = r.ROWID
+            JOIN chat c ON c.ROWID = cmj.chat_id
+            LEFT JOIN handle h ON r.handle_id = h.ROWID
+            JOIN message_attachment_join maj ON maj.message_id = r.ROWID
+            JOIN attachment a ON a.ROWID = maj.attachment_id
+            WHERE c.guid IS NOT NULL
+              AND c.service_name IN ('iMessage', 'SMS', 'RCS')
+              AND a.filename IS NOT NULL
+            ORDER BY r.date DESC, r.ROWID DESC, a.ROWID
+            """,
+            (safe_limit, safe_offset),
+        )
+        messages_by_key = {}
+        for row in cur.fetchall():
+            (
+                msg_rowid,
+                text,
+                date,
+                is_from_me,
+                service,
+                handle_id,
+                attributed_body,
+                chat_guid,
+                chat_identifier,
+                display_name,
+                room_name,
+                chat_service,
+                filename,
+                mime_type,
+                size,
+                transfer_name,
+            ) = row
+            key = (str(msg_rowid), chat_guid)
+            message = messages_by_key.get(key)
+            if message is None:
+                if not text and attributed_body:
+                    text = _extract_text_from_attributed_body(attributed_body)
+                message = {
+                    "chat_id": chat_guid,
+                    "chat_identifier": chat_identifier or "",
+                    "chat_name": _preferred_source_chat_title(
+                        display_name, room_name, chat_identifier, chat_guid
+                    ),
+                    "source_provider": _service_to_provider(chat_service),
+                    "service": service or chat_service or "iMessage",
+                    "native_message_id": str(msg_rowid),
+                    "timestamp": _apple_ts_to_iso(date),
+                    "is_from_me": bool(is_from_me),
+                    "handle": handle_id or "",
+                    "text": text or "",
+                    "attachments": [],
+                }
+                messages_by_key[key] = message
+            if _is_supported_attachment(filename, mime_type, transfer_name):
+                message["attachments"].append(
+                    {
+                        "filename": filename,
+                        "mime_type": mime_type or "",
+                        "size": size or 0,
+                        "transfer_name": transfer_name or "",
+                    }
+                )
+        messages = [item for item in messages_by_key.values() if item["attachments"]]
+        return {
+            "available": True,
+            "messages": messages,
+            "total": int(total or 0),
+            "limit": safe_limit,
+            "offset": safe_offset,
+        }
+    except Exception as exc:
+        return {"available": False, "reason": str(exc), "messages": [], "total": 0}
+    finally:
+        conn.close()
+
+
 def list_recent_imessage_chat_activity(since, limit=500):
     if not os.path.exists(IMESSAGE_DB):
         return {"available": False, "reason": "chat.db not found"}

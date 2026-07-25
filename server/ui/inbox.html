@@ -74,8 +74,17 @@
           <button class="nav-button active" type="button" data-view="inbox" title="Inbox" aria-label="Inbox">
             <svg><use href="#i-inbox"></use></svg>
           </button>
-          <button class="nav-button" id="toggleAgentButton" type="button" title="Penguin Agent" aria-label="Penguin Agent" aria-pressed="true">
-            <svg><use href="#i-spark"></use></svg>
+          <button class="nav-button" type="button" data-view="files" title="Files" aria-label="Files">
+            <svg><use href="#i-paperclip"></use></svg>
+          </button>
+          <button class="nav-button" type="button" data-view="links" title="Links" aria-label="Links">
+            <svg><use href="#i-link"></use></svg>
+          </button>
+          <button class="nav-button" type="button" data-view="queue" title="Queue" aria-label="Queue">
+            <svg><use href="#i-clock"></use></svg>
+          </button>
+          <button class="nav-button" type="button" data-view="people" title="People" aria-label="People">
+            <svg><use href="#i-people"></use></svg>
           </button>
         </div>
         <div class="nav-spacer"></div>
@@ -105,14 +114,6 @@
           <input id="globalSearch" type="search" placeholder="Search messages and people" autocomplete="off" />
           <kbd>⌘K</kbd>
         </label>
-
-        <div class="resource-tabs" id="resourceTabs" role="tablist" aria-label="Workspace views">
-          <button class="active" type="button" data-view-tab="inbox" role="tab">Messages</button>
-          <button type="button" data-view-tab="files" role="tab">Files</button>
-          <button type="button" data-view-tab="links" role="tab">Links</button>
-          <button type="button" data-view-tab="queue" role="tab">Queue</button>
-          <button type="button" data-view-tab="people" role="tab">People</button>
-        </div>
 
         <div class="source-tabs" id="sourceTabs" role="group" aria-label="Message source">
           <button class="active" type="button" data-source="all">All</button>
@@ -170,7 +171,7 @@
               <button class="icon-button" id="threadNoteButton" type="button" title="Conversation note (E)" aria-label="Edit conversation note">
                 <svg><use href="#i-note"></use></svg>
               </button>
-              <button class="icon-button" id="threadLabelButton" type="button" title="Organize with labels" aria-label="Organize conversation with labels">
+              <button class="icon-button" id="threadLabelButton" type="button" title="Organize with labels (L)" aria-label="Organize conversation with labels (L)">
                 <svg><use href="#i-folder"></use></svg>
               </button>
               <button class="icon-button" id="threadReminderButton" type="button" title="Follow-up reminder (H)" aria-label="Set follow-up reminder">
@@ -206,7 +207,11 @@
                 <svg><use href="#i-paperclip"></use></svg>
               </label>
               <input id="attachmentInput" type="file" multiple hidden />
+              <button class="gif-button" id="gifButton" type="button" title="Find a GIF (⌘G)" aria-label="Find a GIF">GIF</button>
               <textarea id="messageComposer" rows="1" placeholder="Write a message" aria-label="Write a message"></textarea>
+              <button class="writing-button" id="writingButton" type="button" title="Write with Codex (⌘J)" aria-label="Write with Codex (⌘J)">
+                <svg><use href="#i-spark"></use></svg>
+              </button>
               <button class="schedule-send-button" id="scheduleSendButton" type="button" title="Schedule message" aria-label="Schedule message" disabled>
                 <svg><use href="#i-clock"></use></svg>
               </button>
@@ -216,7 +221,7 @@
             </div>
             <div class="composer-meta">
               <span id="composerStatus">Messages never leave this Mac except through their original service.</span>
-              <span><kbd>⌘</kbd><kbd>↵</kbd> send</span>
+              <span><kbd>↵</kbd> send · <kbd>⇧</kbd><kbd>↵</kbd> new line</span>
             </div>
           </div>
         </div>
@@ -275,6 +280,10 @@
               </div>
             </div>
             <div class="agent-answer-content" id="agentAnswerContent"></div>
+            <div class="agent-references" id="agentReferences" hidden></div>
+            <button class="secondary-button full-width" id="agentContactActionButton" type="button" hidden>
+              Review contact update
+            </button>
             <button class="secondary-button full-width" id="useAgentAnswerButton" type="button">
               Use as message draft
             </button>
@@ -312,6 +321,52 @@
         <div class="compose-results" id="composeResults" role="list"></div>
         <p class="dialog-note">New outbound threads use an existing safe route. The power console can stage a brand-new Apple Messages draft.</p>
       </form>
+    </dialog>
+
+    <dialog class="compose-dialog gif-dialog" id="gifDialog" aria-labelledby="gifDialogTitle">
+      <div class="gif-picker">
+        <header>
+          <div>
+            <p class="overline">Powered by GIPHY</p>
+            <h2 id="gifDialogTitle">Find a GIF</h2>
+          </div>
+          <button class="icon-button" type="button" id="closeGifButton" title="Close" aria-label="Close GIF picker">
+            <svg><use href="#i-close"></use></svg>
+          </button>
+        </header>
+        <label class="dialog-search">
+          <svg><use href="#i-search"></use></svg>
+          <input id="gifSearch" type="search" placeholder="Search reactions and GIFs" autocomplete="off" />
+        </label>
+        <div class="gif-results" id="gifResults" role="listbox" aria-label="GIF results"></div>
+        <p class="dialog-note" id="gifStatus">
+          Arrow keys move · Enter adds to your message · <a href="https://giphy.com/" target="_blank" rel="noreferrer">GIPHY</a>
+        </p>
+      </div>
+    </dialog>
+
+    <dialog class="compose-dialog contact-card-dialog" id="contactCardDialog" aria-labelledby="contactCardTitle">
+      <div class="contact-card">
+        <header>
+          <div>
+            <p class="overline">Contact</p>
+            <h2 id="contactCardTitle">Person</h2>
+            <p class="contact-card-subtitle" id="contactCardSubtitle"></p>
+          </div>
+          <button class="icon-button" type="button" id="closeContactCardButton" title="Close" aria-label="Close contact card">
+            <svg><use href="#i-close"></use></svg>
+          </button>
+        </header>
+        <div class="contact-card-details" id="contactCardDetails"></div>
+        <div class="contact-card-section">
+          <span class="search-section-title"><span>Conversations</span><span id="contactCardConversationCount">0</span></span>
+          <div class="contact-card-conversations" id="contactCardConversations"></div>
+        </div>
+        <div class="conversation-meta-actions">
+          <button class="secondary-button" type="button" id="editContactCardButton">Edit contact</button>
+          <button class="agent-send-button" type="button" id="doneContactCardButton">Done</button>
+        </div>
+      </div>
     </dialog>
 
     <dialog class="compose-dialog contact-dialog" id="contactDialog" aria-labelledby="contactDialogTitle">
@@ -367,6 +422,12 @@
             <input id="conversationAvatarInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
             <button class="text-button" id="removeConversationAvatarButton" type="button">Remove</button>
           </div>
+          <div class="conversation-participants-field" id="conversationParticipantsField" hidden>
+            <span>Participants</span>
+            <div class="conversation-participant-list" id="conversationParticipantList"></div>
+            <button class="secondary-button" id="manageParticipantsButton" type="button">Manage in provider</button>
+            <small>Participant membership is changed in the native iMessage or WhatsApp group.</small>
+          </div>
           <label>
             <span>Private note</span>
             <textarea id="conversationNote" rows="6" placeholder="Add context, decisions, or anything to remember"></textarea>
@@ -412,6 +473,40 @@
           <button class="agent-send-button" type="submit" id="confirmScheduleButton">Add to queue</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog class="compose-dialog writing-dialog" id="writingDialog" aria-labelledby="writingDialogTitle">
+      <div>
+        <header>
+          <div>
+            <p class="overline">Your signed-in Codex session</p>
+            <h2 id="writingDialogTitle">Write with Codex</h2>
+          </div>
+          <button class="icon-button" type="button" id="closeWritingButton" title="Close" aria-label="Close writing assistant">
+            <svg><use href="#i-close"></use></svg>
+          </button>
+        </header>
+        <div class="writing-dialog-body">
+          <div class="writing-source" id="writingSource"></div>
+          <div class="writing-actions" aria-label="Writing actions">
+            <button type="button" data-writing-action="grammar">Fix grammar</button>
+            <button type="button" data-writing-action="concise">Make concise</button>
+            <button type="button" data-writing-action="warm">Make warmer</button>
+            <button type="button" data-writing-action="reply">Draft a reply</button>
+          </div>
+          <label class="writing-custom">
+            <span>Or tell Codex what to change</span>
+            <textarea id="writingInstruction" rows="2" placeholder="Make this clearer and keep my casual tone"></textarea>
+          </label>
+          <button class="secondary-button full-width" type="button" id="runWritingButton">Apply instruction</button>
+          <p class="writing-status" id="writingStatus">Inference uses your Codex subscription.</p>
+          <div class="writing-result" id="writingResult" hidden></div>
+        </div>
+        <div class="conversation-meta-actions">
+          <button class="secondary-button" type="button" id="cancelWritingButton">Cancel</button>
+          <button class="agent-send-button" type="button" id="replaceDraftButton" disabled>Replace draft</button>
+        </div>
+      </div>
     </dialog>
 
     <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>

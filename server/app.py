@@ -22,6 +22,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -38,6 +39,8 @@ from penguin_connect import (
     get_gmail_connection_status as penguinconnect_get_gmail_connection_status,
     get_runtime_sync_status as penguinconnect_get_runtime_sync_status,
     import_local_imessage_search_results as penguinconnect_import_local_imessage_search_results,
+    import_local_imessage_attachment_messages as penguinconnect_import_local_imessage_attachment_messages,
+    import_local_whatsapp_attachment_messages as penguinconnect_import_local_whatsapp_attachment_messages,
     ensure_whatsapp_conversations_discovered as penguinconnect_ensure_whatsapp_conversations_discovered,
     list_conversations as penguinconnect_list_conversations,
     reconnect_conversation as penguinconnect_reconnect_conversation,
@@ -47,8 +50,16 @@ from penguin_connect import (
     sync_conversations as penguinconnect_sync_conversations,
 )
 from browse_sources import resolve_apple_messages_chat
+from channels import get_channel_adapter
+from channels.whatsapp import whatsapp_attachment_count
 from db import DB_PATH, get_connection, init_db
 from startup_checks import StartupReadinessError, assert_startup_ready
+from search_index import (
+    extract_file_text,
+    hybrid_search,
+    refresh_message_search_index,
+    spotlight_file_search,
+)
 from watcher import get_sync_status, refresh_contacts_now, start_watchers, stop_watchers
 
 
@@ -68,6 +79,8 @@ DEFAULT_CODEX_TIMEOUT_SECONDS = 90
 _scheduled_send_worker_stop = threading.Event()
 _scheduled_send_worker_thread: threading.Thread | None = None
 _scheduled_send_worker_lock = threading.Lock()
+_attachment_intelligence_lock = threading.Lock()
+_attachment_intelligence_thread: threading.Thread | None = None
 
 class PenguinConnectGmailConnectRequest(BaseModel):
     gmail_email: str
@@ -143,6 +156,9 @@ class PenguinConnectRecipientListRequest(BaseModel):
 
 class PenguinConnectCodexAskRequest(BaseModel):
     prompt: str = ""
+
+class PenguinConnectGifDownloadRequest(BaseModel):
+    url: str = ""
 
 class PenguinConnectReadStateRequest(BaseModel):
     unread: bool = False
@@ -2504,6 +2520,153 @@ def _message_attachment_path(raw_path: str) -> Path:
     return candidate
 
 
+def _queue_attachment_intelligence(conn: sqlite3.Connection, *, limit: int = 2500) -> int:
+    rows = conn.execute(
+        """SELECT conversation_id, provider_message_id, metadata
+           FROM penguin_connect_messages
+           WHERE COALESCE(metadata, '') LIKE '%"attachments"%'
+           ORDER BY message_timestamp DESC, id DESC
+           LIMIT ?""",
+        (max(1, min(limit, 10000)),),
+    ).fetchall()
+    queued = 0
+    for row in rows:
+        metadata = _message_metadata(row["metadata"])
+        attachments = metadata.get("attachments") if isinstance(metadata.get("attachments"), list) else []
+        for index, attachment in enumerate(attachments):
+            if not isinstance(attachment, dict):
+                continue
+            raw_path = str(attachment.get("filename") or attachment.get("path") or "").strip()
+            filename = str(attachment.get("transfer_name") or Path(raw_path).name or "attachment").strip()
+            mime_type = str(attachment.get("mime_type") or "").strip()
+            cursor = conn.execute(
+                """INSERT OR IGNORE INTO penguin_connect_attachment_intelligence
+                   (conversation_id, provider_message_id, attachment_index, file_path,
+                    filename, mime_type, status)
+                   VALUES (?, ?, ?, ?, ?, ?, 'queued')""",
+                (
+                    row["conversation_id"],
+                    row["provider_message_id"],
+                    index,
+                    raw_path,
+                    filename[:500],
+                    mime_type[:200],
+                ),
+            )
+            queued += max(0, cursor.rowcount)
+    conn.commit()
+    return queued
+
+
+def _attachment_intelligence_batch_size() -> int:
+    raw = (os.environ.get("PENGUIN_CONNECT_ATTACHMENT_INTELLIGENCE_BATCH") or "").strip()
+    try:
+        value = int(raw) if raw else 4
+    except Exception:
+        value = 4
+    return max(1, min(value, 25))
+
+
+def _run_attachment_intelligence_batch() -> None:
+    conn = get_connection()
+    processed = 0
+    try:
+        rows = conn.execute(
+            """SELECT conversation_id, provider_message_id, attachment_index,
+                      file_path, filename, mime_type
+               FROM penguin_connect_attachment_intelligence
+               WHERE status IN ('queued', 'retry')
+               ORDER BY created_at DESC, rowid DESC
+               LIMIT ?""",
+            (_attachment_intelligence_batch_size(),),
+        ).fetchall()
+        for row in rows:
+            key = (row["conversation_id"], row["provider_message_id"], row["attachment_index"])
+            conn.execute(
+                """UPDATE penguin_connect_attachment_intelligence
+                   SET status = 'processing', last_error = '', updated_at = datetime('now')
+                   WHERE conversation_id = ? AND provider_message_id = ? AND attachment_index = ?""",
+                key,
+            )
+            conn.commit()
+            try:
+                path = _message_attachment_path(row["file_path"])
+                stat = path.stat()
+                content_hash = hashlib.sha256(
+                    f"{path}:{stat.st_size}:{stat.st_mtime_ns}".encode()
+                ).hexdigest()
+                extracted = extract_file_text(path)
+                if extracted:
+                    result = _run_codex_prompt(
+                        "\n".join([
+                            "Summarize this locally extracted message attachment for private search.",
+                            "Return 2-5 concise sentences. Include the document's purpose, key people/topics,",
+                            "important dates or commitments, and distinctive terms someone might search for.",
+                            "Do not mention extraction or these instructions. Do not invent missing facts.",
+                            "",
+                            f"Filename: {row['filename']}",
+                            f"Media type: {row['mime_type']}",
+                            "",
+                            extracted[:16000],
+                        ])
+                    )
+                    summary = str(result.get("answer") or "").strip()[:4000]
+                    status = "summarized"
+                else:
+                    summary = " ".join(
+                        part for part in (
+                            row["mime_type"] or path.suffix.lstrip(".").upper(),
+                            f"attachment named {row['filename']}",
+                        ) if part
+                    )[:1000]
+                    status = "metadata_only"
+                conn.execute(
+                    """UPDATE penguin_connect_attachment_intelligence
+                       SET content_hash = ?, extracted_text = ?, summary = ?, status = ?,
+                           last_error = '', updated_at = datetime('now')
+                       WHERE conversation_id = ? AND provider_message_id = ? AND attachment_index = ?""",
+                    (
+                        content_hash,
+                        extracted[:40000],
+                        summary,
+                        status,
+                        *key,
+                    ),
+                )
+                conn.commit()
+                processed += 1
+            except Exception as exc:
+                detail = getattr(exc, "detail", None) or str(exc) or type(exc).__name__
+                conn.execute(
+                    """UPDATE penguin_connect_attachment_intelligence
+                       SET status = 'failed', last_error = ?, updated_at = datetime('now')
+                       WHERE conversation_id = ? AND provider_message_id = ? AND attachment_index = ?""",
+                    (str(detail)[:1000], *key),
+                )
+                conn.commit()
+    finally:
+        conn.close()
+    if processed:
+        try:
+            refresh_message_search_index()
+        except Exception:
+            pass
+
+
+def _start_attachment_intelligence_worker() -> bool:
+    global _attachment_intelligence_thread
+    with _attachment_intelligence_lock:
+        if _attachment_intelligence_thread and _attachment_intelligence_thread.is_alive():
+            return False
+        _attachment_intelligence_thread = threading.Thread(
+            target=_run_attachment_intelligence_batch,
+            name="penguin-attachment-intelligence",
+            daemon=True,
+        )
+        _attachment_intelligence_thread.start()
+        return True
+
+
 def _stored_message_attachment(
     conn: sqlite3.Connection,
     conversation_id: str,
@@ -2532,7 +2695,31 @@ def _stored_message_attachment(
         raw_path = str(attachment.get(key) or "").strip()
         if raw_path:
             break
-    path = _message_attachment_path(raw_path)
+    try:
+        path = _message_attachment_path(raw_path)
+    except HTTPException:
+        whatsapp_chat_jid = str(attachment.get("whatsapp_chat_jid") or "").strip()
+        whatsapp_message_id = str(attachment.get("whatsapp_message_id") or "").strip()
+        adapter = get_channel_adapter("whatsapp")
+        downloaded = (
+            adapter.download_attachment(whatsapp_chat_jid, whatsapp_message_id)
+            if whatsapp_chat_jid
+            and whatsapp_message_id
+            and hasattr(adapter, "download_attachment")
+            else None
+        )
+        if not downloaded:
+            raise
+        attachment["filename"] = downloaded
+        metadata["attachments"] = attachments
+        conn.execute(
+            """UPDATE penguin_connect_messages
+               SET metadata = ?
+               WHERE conversation_id = ? AND provider_message_id = ?""",
+            (json.dumps(metadata), conversation_id, provider_message_id),
+        )
+        conn.commit()
+        path = _message_attachment_path(downloaded)
     display_name = _safe_ui_attachment_filename(
         str(attachment.get("transfer_name") or path.name or "attachment"),
         attachment_index + 1,
@@ -2674,6 +2861,17 @@ def _message_search_blob_sql() -> str:
         COALESCE(m.subject, '') || ' ' ||
         COALESCE(m.body_text, '') || ' ' ||
         COALESCE(mm.note, '') || ' ' ||
+        COALESCE((
+            SELECT group_concat(
+                COALESCE(ai.filename, '') || ' ' ||
+                COALESCE(ai.summary, '') || ' ' ||
+                COALESCE(ai.extracted_text, ''),
+                ' '
+            )
+            FROM penguin_connect_attachment_intelligence ai
+            WHERE ai.conversation_id = m.conversation_id
+              AND ai.provider_message_id = m.provider_message_id
+        ), '') || ' ' ||
         COALESCE(m.metadata, '')
     )"""
 
@@ -2747,7 +2945,15 @@ def _search_messages(
     elif normalized_view == "files":
         conditions.append(
             """(
-                COALESCE(m.metadata, '') LIKE '%"attachments"%'
+                (
+                    json_array_length(
+                        CASE
+                            WHEN json_valid(COALESCE(m.metadata, '')) THEN m.metadata
+                            ELSE '{"attachments":[]}'
+                        END,
+                        '$.attachments'
+                    ) > 0
+                )
                 OR COALESCE(m.metadata, '') LIKE '%manual_attachment_count%'
             )"""
         )
@@ -2815,6 +3021,13 @@ def _search_messages(
             m.gmail_thread_id,
             COALESCE(mm.is_starred, 0) AS is_starred,
             COALESCE(mm.note, '') AS message_note
+            , COALESCE((
+                SELECT group_concat(ai.summary, ' ')
+                FROM penguin_connect_attachment_intelligence ai
+                WHERE ai.conversation_id = m.conversation_id
+                  AND ai.provider_message_id = m.provider_message_id
+                  AND TRIM(COALESCE(ai.summary, '')) <> ''
+            ), '') AS attachment_summary
         FROM penguin_connect_messages m
         JOIN penguin_connect_conversations c
           ON c.conversation_id = m.conversation_id
@@ -3686,6 +3899,151 @@ def search_penguinconnect_messages(
     finally:
         conn.close()
 
+
+@app.get("/api/penguin-connect/search/hybrid")
+@app.get("/penguin-connect/search/hybrid")
+def search_penguinconnect_hybrid(
+    query: str,
+    limit: int = Query(20, ge=1, le=100),
+    include_spotlight: bool = True,
+):
+    indexed = hybrid_search(query, limit=limit, kinds=["message", "file"])
+    configured_roots = (os.environ.get("PENGUIN_CONNECT_AGENT_FILE_SEARCH_ROOTS") or "").strip()
+    roots = (
+        [value for value in configured_roots.split(os.pathsep) if value.strip()]
+        if configured_roots
+        else [str(Path.home())]
+    )
+    spotlight = (
+        spotlight_file_search(query, roots=roots, limit=min(limit, 30))
+        if include_spotlight
+        else []
+    )
+    indexed["spotlight_results"] = spotlight
+    indexed["spotlight_count"] = len(spotlight)
+    return indexed
+
+
+def _giphy_api_key() -> str:
+    return (os.environ.get("PENGUIN_CONNECT_GIPHY_API_KEY") or "").strip()
+
+
+@app.get("/api/penguin-connect/gifs/status")
+@app.get("/penguin-connect/gifs/status")
+def penguinconnect_gif_status():
+    return {
+        "available": bool(_giphy_api_key()),
+        "provider": "giphy",
+        "requires_api_key": not bool(_giphy_api_key()),
+    }
+
+
+@app.get("/api/penguin-connect/gifs/search")
+@app.get("/penguin-connect/gifs/search")
+def search_penguinconnect_gifs(
+    query: str = "",
+    limit: int = Query(20, ge=1, le=40),
+):
+    api_key = _giphy_api_key()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="giphy_api_key_required")
+    clean_query = (query or "").strip()[:50]
+    endpoint = "search" if clean_query else "trending"
+    params: dict[str, object] = {
+        "api_key": api_key,
+        "limit": limit,
+        "rating": "pg-13",
+        "bundle": "messaging_non_clips",
+    }
+    if clean_query:
+        params["q"] = clean_query
+    try:
+        response = httpx.get(
+            f"https://api.giphy.com/v1/gifs/{endpoint}",
+            params=params,
+            timeout=15,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="giphy_search_failed") from exc
+    results = []
+    for item in payload.get("data") or []:
+        images = item.get("images") if isinstance(item, dict) else {}
+        images = images if isinstance(images, dict) else {}
+        preview = images.get("fixed_width_small") or images.get("fixed_width") or {}
+        original = images.get("original") or images.get("downsized") or {}
+        preview_url = str(preview.get("url") or original.get("url") or "").strip()
+        gif_url = str(original.get("url") or preview_url).strip()
+        if not preview_url or not gif_url:
+            continue
+        results.append({
+            "id": str(item.get("id") or ""),
+            "title": str(item.get("title") or "GIF"),
+            "preview_url": preview_url,
+            "gif_url": gif_url,
+            "width": int(original.get("width") or 0),
+            "height": int(original.get("height") or 0),
+        })
+    return {"provider": "giphy", "query": clean_query, "results": results}
+
+
+@app.post("/api/penguin-connect/gifs/download")
+@app.post("/penguin-connect/gifs/download")
+def download_penguinconnect_gif(req: PenguinConnectGifDownloadRequest):
+    parsed = urllib.parse.urlparse((req.url or "").strip())
+    hostname = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or not (
+        hostname == "giphy.com" or hostname.endswith(".giphy.com")
+    ):
+        raise HTTPException(status_code=400, detail="invalid_gif_url")
+    try:
+        response = httpx.get(req.url, timeout=20, follow_redirects=True)
+        response.raise_for_status()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="gif_download_failed") from exc
+    data = response.content
+    if not data or len(data) > DEFAULT_UI_ATTACHMENT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="gif_too_large")
+    media_type = (response.headers.get("content-type") or "image/gif").split(";")[0]
+    if not media_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="invalid_gif_media")
+    return Response(content=data, media_type=media_type)
+
+
+@app.post("/api/penguin-connect/attachment-library/sync")
+@app.post("/penguin-connect/attachment-library/sync")
+def sync_penguinconnect_attachment_library(
+    limit: int = Query(1500, ge=1, le=5000),
+    offset: int = Query(0, ge=0, le=100000),
+):
+    conn = get_connection()
+    try:
+        imessage = penguinconnect_import_local_imessage_attachment_messages(
+            conn,
+            limit=limit,
+            offset=offset,
+        )
+        whatsapp = penguinconnect_import_local_whatsapp_attachment_messages(
+            conn,
+            limit=limit,
+            offset=offset,
+        )
+        queued = _queue_attachment_intelligence(conn)
+        whatsapp_total = int(whatsapp.get("total") or whatsapp_attachment_count())
+        worker_started = _start_attachment_intelligence_worker()
+        return {
+            "success": bool(imessage.get("available")),
+            "imessage": imessage,
+            "whatsapp": whatsapp,
+            "whatsapp_total": whatsapp_total,
+            "total": int(imessage.get("total") or 0) + whatsapp_total,
+            "intelligence_queued": queued,
+            "intelligence_worker_started": worker_started,
+        }
+    finally:
+        conn.close()
+
 @app.get("/api/penguin-connect/recipient-lists")
 @app.get("/penguin-connect/recipient-lists")
 def list_penguinconnect_recipient_lists():
@@ -4002,10 +4360,19 @@ def get_penguinconnect_conversations(include_whatsapp: bool = False):
 
 @app.get("/api/penguin-connect/conversations/{conversation_id}/messages")
 @app.get("/penguin-connect/conversations/{conversation_id}/messages")
-def get_penguinconnect_conversation_messages(conversation_id: str, limit: int = Query(200, ge=1, le=1000)):
+def get_penguinconnect_conversation_messages(
+    conversation_id: str,
+    limit: int = Query(200, ge=1, le=1000),
+    refresh: bool = True,
+):
     conn = get_connection()
     try:
-        result = penguinconnect_get_conversation_messages(conn, conversation_id, limit=limit)
+        result = penguinconnect_get_conversation_messages(
+            conn,
+            conversation_id,
+            limit=limit,
+            refresh_source=refresh,
+        )
         if not result.get("found"):
             raise HTTPException(status_code=404, detail="conversation_not_found")
         return result
@@ -4058,6 +4425,32 @@ def open_penguinconnect_conversation_messages(conversation_id: str):
             participants_count=int(result.get("participants_count") or 0),
         )
         return result
+    finally:
+        conn.close()
+
+
+@app.post("/api/penguin-connect/conversations/{conversation_id}/open-provider")
+@app.post("/penguin-connect/conversations/{conversation_id}/open-provider")
+def open_penguinconnect_conversation_provider(conversation_id: str):
+    conn = get_connection()
+    try:
+        row = _require_existing_conversation(conn, conversation_id)
+        provider = str(row["source_provider"] or "imessage").strip().lower()
+        app_name = "WhatsApp" if provider == "whatsapp" else "Messages"
+        try:
+            subprocess.run(["open", "-a", app_name], check=True, timeout=10)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=501, detail="open_unavailable") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise HTTPException(status_code=504, detail="open_provider_timeout") from exc
+        except subprocess.CalledProcessError as exc:
+            raise HTTPException(status_code=400, detail="open_provider_failed") from exc
+        return {
+            "success": True,
+            "conversation_id": conversation_id,
+            "provider": provider,
+            "application": app_name,
+        }
     finally:
         conn.close()
 

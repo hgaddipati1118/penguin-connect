@@ -33,6 +33,21 @@ def _whatsapp_db_available() -> bool:
     return _whatsapp_db_path().exists()
 
 
+def whatsapp_attachment_count() -> int:
+    conn = _open_whatsapp_db()
+    if conn is None:
+        return 0
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS count FROM messages WHERE TRIM(COALESCE(media_type, '')) <> ''"
+        ).fetchone()
+        return int(row["count"] or 0) if row else 0
+    except sqlite3.Error:
+        return 0
+    finally:
+        conn.close()
+
+
 def _open_whatsapp_db() -> Optional[sqlite3.Connection]:
     db_path = _whatsapp_db_path()
     if not db_path.exists():
@@ -230,6 +245,67 @@ class WhatsAppChannelAdapter:
         finally:
             conn.close()
 
+    def list_attachment_messages(self, limit: int = 1000, offset: int = 0) -> dict[str, Any]:
+        conn = _open_whatsapp_db()
+        if conn is None:
+            return {"available": False, "reason": "WhatsApp messages.db not found", "messages": [], "total": 0}
+        metadata_conn = _open_whatsapp_metadata_db()
+        try:
+            safe_limit = max(1, min(int(limit or 1000), 5000))
+            safe_offset = max(0, int(offset or 0))
+            total_row = conn.execute(
+                "SELECT COUNT(*) AS count FROM messages WHERE TRIM(COALESCE(media_type, '')) <> ''"
+            ).fetchone()
+            rows = conn.execute(
+                """SELECT m.id, m.chat_jid, m.content, m.timestamp, m.is_from_me,
+                          m.sender, m.media_type, m.filename, c.name AS chat_name
+                   FROM messages m
+                   LEFT JOIN chats c ON c.jid = m.chat_jid
+                   WHERE TRIM(COALESCE(m.media_type, '')) <> ''
+                   ORDER BY m.timestamp DESC, m.id DESC
+                   LIMIT ? OFFSET ?""",
+                (safe_limit, safe_offset),
+            ).fetchall()
+            messages = []
+            for row in rows:
+                sender_jid = row["sender"] or ""
+                identity = _whatsapp_identity(metadata_conn, sender_jid)
+                filename = str(row["filename"] or "").strip()
+                messages.append({
+                    "chat_id": row["chat_jid"],
+                    "chat_identifier": row["chat_jid"],
+                    "chat_name": row["chat_name"] or row["chat_jid"],
+                    "source_provider": "whatsapp",
+                    "text": row["content"] or "",
+                    "timestamp": row["timestamp"],
+                    "is_from_me": bool(row["is_from_me"]),
+                    "service": "WhatsApp",
+                    "handle": sender_jid,
+                    "push_name": identity["name"] or _jid_to_phone(sender_jid),
+                    "attachments": [{
+                        "filename": filename,
+                        "mime_type": row["media_type"] or "",
+                        "size": 0,
+                        "transfer_name": Path(filename).name if filename else f"whatsapp-{row['id']}",
+                        "whatsapp_chat_jid": row["chat_jid"],
+                        "whatsapp_message_id": str(row["id"]),
+                    }],
+                    "native_message_id": str(row["id"]),
+                })
+            return {
+                "available": True,
+                "messages": messages,
+                "total": int(total_row["count"] or 0) if total_row else 0,
+                "limit": safe_limit,
+                "offset": safe_offset,
+            }
+        except Exception as exc:
+            return {"available": False, "reason": str(exc), "messages": [], "total": 0}
+        finally:
+            conn.close()
+            if metadata_conn is not None:
+                metadata_conn.close()
+
     def fetch_messages(
         self,
         chat_id: str,
@@ -340,6 +416,9 @@ class WhatsAppChannelAdapter:
         except Exception:
             pass
         return None
+
+    def download_attachment(self, chat_jid: str, message_id: str) -> Optional[str]:
+        return self._download_media(chat_jid, message_id)
 
     def send_message(
         self,

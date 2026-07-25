@@ -132,6 +132,23 @@ CREATE TABLE IF NOT EXISTS penguin_connect_message_management (
     PRIMARY KEY (conversation_id, provider_message_id)
 );
 
+CREATE TABLE IF NOT EXISTS penguin_connect_attachment_intelligence (
+    conversation_id TEXT NOT NULL REFERENCES penguin_connect_conversations(conversation_id) ON DELETE CASCADE,
+    provider_message_id TEXT NOT NULL,
+    attachment_index INTEGER NOT NULL,
+    file_path TEXT NOT NULL DEFAULT '',
+    filename TEXT NOT NULL DEFAULT '',
+    mime_type TEXT NOT NULL DEFAULT '',
+    content_hash TEXT NOT NULL DEFAULT '',
+    extracted_text TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'queued',
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (conversation_id, provider_message_id, attachment_index)
+);
+
 CREATE TABLE IF NOT EXISTS penguin_connect_sync_state (
     conversation_id TEXT PRIMARY KEY REFERENCES penguin_connect_conversations(conversation_id) ON DELETE CASCADE,
     last_source_ts TEXT,
@@ -224,6 +241,8 @@ CREATE INDEX IF NOT EXISTS idx_penguin_connect_msg_conv_ts ON penguin_connect_me
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_msg_gmail ON penguin_connect_messages(gmail_message_id);
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_message_management_starred
 ON penguin_connect_message_management(conversation_id, is_starred, updated_at);
+CREATE INDEX IF NOT EXISTS idx_penguin_connect_attachment_intelligence_status
+ON penguin_connect_attachment_intelligence(status, updated_at);
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_conversation_management_flags
 ON penguin_connect_conversation_management(is_archived, is_pinned, updated_at);
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_jobs_ready ON penguin_connect_jobs(job_type, status, next_run_at, id);
