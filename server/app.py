@@ -96,8 +96,10 @@ class PenguinConnectScheduledSendRequest(BaseModel):
     message: str = ""
     scheduled_at: str
     attachment_paths: list[str] | None = None
+    attachments: list[PenguinConnectBrowserAttachment] | None = None
 
 class PenguinConnectContactCreateRequest(BaseModel):
+    match_handle: str = ""
     first_name: str = ""
     last_name: str = ""
     organization: str = ""
@@ -152,6 +154,7 @@ class PenguinConnectConversationManagementRequest(BaseModel):
     title: str | None = None
     note: str | None = None
     labels: list[str] | None = None
+    avatar_data_url: str | None = None
     draft_text: str | None = None
     follow_up_at: str | None = None
 
@@ -281,6 +284,23 @@ def _list_scheduled_messages(conn: sqlite3.Connection, conversation_id: str, lim
     return [_scheduled_message_dict(row) for row in rows]
 
 
+def _list_all_scheduled_messages(conn: sqlite3.Connection, limit: int = 500) -> list[dict]:
+    rows = conn.execute(
+        _scheduled_message_select_sql("s.status IN ('scheduled', 'sending', 'failed')")
+        + """
+          ORDER BY CASE s.status
+              WHEN 'sending' THEN 0
+              WHEN 'scheduled' THEN 1
+              ELSE 2
+            END,
+            s.scheduled_at ASC
+          LIMIT ?
+        """,
+        (max(1, min(int(limit or 500), 1000)),),
+    ).fetchall()
+    return [_scheduled_message_dict(row) for row in rows]
+
+
 def _require_existing_conversation(conn: sqlite3.Connection, conversation_id: str) -> sqlite3.Row:
     row = conn.execute(
         """SELECT conversation_id, source_provider, status, exclude_from_sync
@@ -309,31 +329,44 @@ def _create_scheduled_message(
 ) -> dict:
     _require_schedulable_conversation(conn, conversation_id)
     body_text = _messages_body_text(req.message)
-    attachment_paths = _clean_attachment_paths(req.attachment_paths)
-    if not body_text and not attachment_paths:
-        raise HTTPException(status_code=400, detail="empty_message")
     scheduled_at_dt = _parse_scheduled_at(req.scheduled_at)
     if scheduled_at_dt <= _utc_now():
         raise HTTPException(status_code=400, detail="scheduled_at_must_be_future")
+    if not body_text and not req.attachment_paths and not req.attachments:
+        raise HTTPException(status_code=400, detail="empty_message")
+    staged_paths: list[str] = []
+    staged_dir: Path | None = None
+    staged_paths, staged_dir = _stage_sent_message_attachments(req.attachments)
+    attachment_paths = [
+        *_clean_attachment_paths(req.attachment_paths),
+        *staged_paths,
+    ]
+    if not body_text and not attachment_paths:
+        raise HTTPException(status_code=400, detail="empty_message")
     scheduled_id = f"scheduled_{uuid.uuid4().hex}"
     now_iso = _utc_now_iso()
-    conn.execute(
-        """INSERT INTO penguin_connect_scheduled_messages
-           (scheduled_id, conversation_id, sender_email, body_text, attachment_paths,
-            scheduled_at, status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)""",
-        (
-            scheduled_id,
-            conversation_id,
-            (req.sender_email or "").strip(),
-            body_text,
-            json.dumps(attachment_paths),
-            scheduled_at_dt.isoformat(),
-            now_iso,
-            now_iso,
-        ),
-    )
-    conn.commit()
+    try:
+        conn.execute(
+            """INSERT INTO penguin_connect_scheduled_messages
+               (scheduled_id, conversation_id, sender_email, body_text, attachment_paths,
+                scheduled_at, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)""",
+            (
+                scheduled_id,
+                conversation_id,
+                (req.sender_email or "").strip(),
+                body_text,
+                json.dumps(attachment_paths),
+                scheduled_at_dt.isoformat(),
+                now_iso,
+                now_iso,
+            ),
+        )
+        conn.commit()
+    except Exception:
+        if staged_dir is not None:
+            shutil.rmtree(staged_dir, ignore_errors=True)
+        raise
     row = _get_scheduled_message(conn, scheduled_id)
     log_action(
         "api_scheduled_send_create",
@@ -359,6 +392,11 @@ def _cancel_scheduled_message(conn: sqlite3.Connection, scheduled_id: str) -> di
         (now_iso, now_iso, scheduled_id),
     )
     conn.commit()
+    try:
+        attachment_paths = json.loads(row["attachment_paths"] or "[]")
+    except Exception:
+        attachment_paths = []
+    _cleanup_scheduled_staged_attachments(attachment_paths)
     updated = _get_scheduled_message(conn, scheduled_id)
     log_action(
         "api_scheduled_send_cancel",
@@ -431,6 +469,7 @@ def run_due_scheduled_messages(limit: int = 25) -> dict:
                     ),
                 )
                 conn.commit()
+                _cleanup_scheduled_staged_attachments(attachment_paths)
                 status = "sent"
                 error = ""
                 log_action(
@@ -442,23 +481,37 @@ def run_due_scheduled_messages(limit: int = 25) -> dict:
                 )
             else:
                 error = str(send_result.get("error") or "penguin_connect_send_failed")
+                attempt_count = int(row["attempt_count"] or 0) + 1
+                retryable = attempt_count < 20
+                retry_delay = min(5 * (2 ** max(0, attempt_count - 1)), 300)
+                next_scheduled_at = (
+                    _utc_now() + timedelta(seconds=retry_delay)
+                ).isoformat()
                 conn.execute(
                     """UPDATE penguin_connect_scheduled_messages
-                       SET status = 'failed',
+                       SET status = ?,
                            last_error = ?,
+                           scheduled_at = ?,
                            updated_at = ?
                        WHERE scheduled_id = ?""",
-                    (error, now_iso, scheduled_id),
+                    (
+                        "scheduled" if retryable else "failed",
+                        error,
+                        next_scheduled_at,
+                        now_iso,
+                        scheduled_id,
+                    ),
                 )
                 conn.commit()
-                status = "failed"
+                status = "scheduled" if retryable else "failed"
                 log_action(
-                    "scheduled_send_failed",
+                    "scheduled_send_retry" if retryable else "scheduled_send_failed",
                     scheduled_id=scheduled_id,
                     conversation_id=row["conversation_id"],
                     source_provider=row["source_provider"] or None,
                     error=error,
                     attachment_count=len(attachment_paths),
+                    retry_after_seconds=retry_delay if retryable else None,
                 )
 
             results.append(
@@ -644,6 +697,23 @@ def _sent_attachment_root() -> Path:
     return DB_PATH.parent / "sent-message-attachments"
 
 
+def _cleanup_scheduled_staged_attachments(paths: list[str] | None) -> None:
+    root = _sent_attachment_root().resolve()
+    staged_dirs: set[Path] = set()
+    for raw_path in paths or []:
+        try:
+            path = Path(str(raw_path)).expanduser().resolve()
+        except Exception:
+            continue
+        if root not in path.parents:
+            continue
+        candidate = path.parent
+        if candidate.parent == root:
+            staged_dirs.add(candidate)
+    for staged_dir in staged_dirs:
+        shutil.rmtree(staged_dir, ignore_errors=True)
+
+
 def _cleanup_old_draft_attachment_dirs(max_age_seconds: int = 24 * 60 * 60) -> None:
     root = _draft_attachment_root()
     if not root.exists():
@@ -800,6 +870,81 @@ def _build_contact_create_script(
     return "\n".join(lines)
 
 
+def _build_contact_update_script(
+    *,
+    match_handle: str,
+    first_name: str = "",
+    last_name: str = "",
+    organization: str = "",
+    phones: list[str] | None = None,
+    emails: list[str] | None = None,
+    phone_label: str = "mobile",
+    email_label: str = "home",
+) -> str:
+    match_text = _as_applescript_text(match_handle)
+    match_digits = _as_applescript_text(_contact_phone_search_key(match_handle))
+    lines = [
+        "on digitsOnly(inputText)",
+        '    set outputText to ""',
+        "    repeat with currentCharacter in characters of (inputText as text)",
+        '        if currentCharacter is in "0123456789" then set outputText to outputText & currentCharacter',
+        "    end repeat",
+        "    return outputText",
+        "end digitsOnly",
+        'set matchedId to "__NOT_FOUND__"',
+        'tell application "Contacts"',
+        "    repeat with candidatePerson in people",
+        "        set isMatch to false",
+        "        repeat with candidatePhone in phones of candidatePerson",
+        f"            if my digitsOnly(value of candidatePhone) is {match_digits} then set isMatch to true",
+        "        end repeat",
+        "        repeat with candidateEmail in emails of candidatePerson",
+        f"            if (value of candidateEmail as text) is equal to {match_text} ignoring case then set isMatch to true",
+        "        end repeat",
+        "        if isMatch then",
+    ]
+    if first_name:
+        lines.append(f"            set first name of candidatePerson to {_as_applescript_text(first_name)}")
+    if last_name:
+        lines.append(f"            set last name of candidatePerson to {_as_applescript_text(last_name)}")
+    if organization:
+        lines.append(f"            set organization of candidatePerson to {_as_applescript_text(organization)}")
+    for phone in phones or []:
+        lines.extend(
+            [
+                "            set hasPhone to false",
+                "            repeat with existingPhone in phones of candidatePerson",
+                f"                if my digitsOnly(value of existingPhone) is {_as_applescript_text(_contact_phone_search_key(phone))} then set hasPhone to true",
+                "            end repeat",
+                "            if not hasPhone then make new phone at end of phones of candidatePerson with properties "
+                f"{{label:{_as_applescript_text(phone_label)}, value:{_as_applescript_text(phone)}}}",
+            ]
+        )
+    for email in emails or []:
+        lines.extend(
+            [
+                "            set hasEmail to false",
+                "            repeat with existingEmail in emails of candidatePerson",
+                f"                if (value of existingEmail as text) is equal to {_as_applescript_text(email)} ignoring case then set hasEmail to true",
+                "            end repeat",
+                "            if not hasEmail then make new email at end of emails of candidatePerson with properties "
+                f"{{label:{_as_applescript_text(email_label)}, value:{_as_applescript_text(email)}}}",
+            ]
+        )
+    lines.extend(
+        [
+            "            save",
+            "            set matchedId to id of candidatePerson",
+            "            exit repeat",
+            "        end if",
+            "    end repeat",
+            "end tell",
+            "return matchedId",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _create_contact(req: PenguinConnectContactCreateRequest) -> str:
     first_name = _clean_text(req.first_name, max_chars=160)
     last_name = _clean_text(req.last_name, max_chars=160)
@@ -812,6 +957,22 @@ def _create_contact(req: PenguinConnectContactCreateRequest) -> str:
     if not any([first_name, last_name, organization, phones, emails]):
         raise HTTPException(status_code=400, detail="contact_requires_identity")
 
+    match_handle = _clean_text(req.match_handle, max_chars=240)
+    if match_handle:
+        script = _build_contact_update_script(
+            match_handle=match_handle,
+            first_name=first_name,
+            last_name=last_name,
+            organization=organization,
+            phones=phones,
+            emails=emails,
+            phone_label=phone_label,
+            email_label=email_label,
+        )
+        result = _run_osascript(script, timeout=30.0)
+        if result == "__NOT_FOUND__":
+            raise HTTPException(status_code=404, detail="contact_to_update_not_found")
+        return result or "unknown"
     script = _build_contact_create_script(
         first_name=first_name,
         last_name=last_name,
@@ -1043,8 +1204,6 @@ def _run_codex_prompt(prompt: str) -> dict:
             "--ignore-rules",
             "--sandbox",
             "read-only",
-            "--ask-for-approval",
-            "never",
             "--cd",
             str(tmp_path),
             "--color",
@@ -2185,7 +2344,7 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
         where = """
             WHERE ({conditions})
         """.format(conditions=" OR ".join(conditions))
-    limit_value = max(1, min(limit, 100))
+    limit_value = max(1, min(limit, 5000))
     rows = []
     if normalized_source in thread_sources:
         rows = _contact_rows_for_keys(conn, thread_filter_keys)
@@ -2379,8 +2538,16 @@ def _stored_message_attachment(
         attachment_index + 1,
     )
     media_type = str(attachment.get("mime_type") or "").strip()
-    if not media_type:
-        media_type = mimetypes.guess_type(display_name)[0] or "application/octet-stream"
+    if not media_type or "/" not in media_type:
+        guessed_type = (
+            mimetypes.guess_type(display_name)[0]
+            or mimetypes.guess_type(path.name)[0]
+        )
+        media_type = guessed_type or {
+            "image": "image/jpeg",
+            "video": "video/mp4",
+            "audio": "audio/mpeg",
+        }.get(media_type.lower(), "application/octet-stream")
     return path, display_name, media_type
 
 
@@ -2523,7 +2690,7 @@ def _search_messages(
 ) -> dict:
     search = (query or "").strip()
     normalized_view = (view or "all").strip().lower()
-    if normalized_view not in {"all", "recent", "current", "unread", "starred", "noted", "files", "audio", "mine"}:
+    if normalized_view not in {"all", "recent", "current", "unread", "starred", "noted", "files", "links", "audio", "mine"}:
         normalized_view = "all"
     target_conversation_id = (conversation_id or "").strip()
     start_bound = _message_search_date_bound(date_from, end=False)
@@ -2584,6 +2751,16 @@ def _search_messages(
                 OR COALESCE(m.metadata, '') LIKE '%manual_attachment_count%'
             )"""
         )
+    elif normalized_view == "links":
+        conditions.append(
+            """(
+                lower(COALESCE(m.body_text, '')) LIKE '%http://%'
+                OR lower(COALESCE(m.body_text, '')) LIKE '%https://%'
+                OR lower(COALESCE(m.body_text, '')) LIKE '%www.%'
+                OR lower(COALESCE(m.metadata, '')) LIKE '%http://%'
+                OR lower(COALESCE(m.metadata, '')) LIKE '%https://%'
+            )"""
+        )
     elif normalized_view == "audio":
         conditions.append(
             """(
@@ -2610,7 +2787,7 @@ def _search_messages(
         )
 
     where_clause = " AND ".join(f"({condition})" for condition in conditions) or "1 = 1"
-    params.append(max(1, min(limit, 100)))
+    params.append(max(1, min(limit, 500)))
 
     rows = conn.execute(
         f"""
@@ -2794,7 +2971,7 @@ def _conversation_management_rows(conn: sqlite3.Connection, conversation_ids: li
         return {}
     placeholders = ",".join("?" for _ in ids)
     rows = conn.execute(
-        f"""SELECT conversation_id, is_pinned, is_archived, is_muted, title, note, labels, draft_text, follow_up_at, updated_at
+        f"""SELECT conversation_id, is_pinned, is_archived, is_muted, title, note, labels, avatar_data_url, draft_text, follow_up_at, updated_at
             FROM penguin_connect_conversation_management
             WHERE conversation_id IN ({placeholders})""",
         ids,
@@ -2807,6 +2984,7 @@ def _conversation_management_rows(conn: sqlite3.Connection, conversation_ids: li
             "title": row["title"] or "",
             "note": row["note"] or "",
             "labels": _parse_management_labels(row["labels"]),
+            "avatar_data_url": row["avatar_data_url"] or "",
             "draft_text": row["draft_text"] or "",
             "follow_up_at": row["follow_up_at"] or "",
             "management_updated_at": row["updated_at"],
@@ -2826,6 +3004,7 @@ def _attach_conversation_management(conn: sqlite3.Connection, result: dict) -> d
         conversation["title"] = state.get("title") or ""
         conversation["note"] = state.get("note") or ""
         conversation["labels"] = state.get("labels") or []
+        conversation["avatar_data_url"] = state.get("avatar_data_url") or ""
         conversation["draft_text"] = state.get("draft_text") or ""
         conversation["follow_up_at"] = state.get("follow_up_at") or ""
         conversation["management_updated_at"] = state.get("management_updated_at")
@@ -2988,6 +3167,17 @@ def _clean_management_note(value: str | None) -> str:
     return note[:4000]
 
 
+def _clean_management_avatar(value: str | None) -> str:
+    avatar = str(value or "").strip()
+    if not avatar:
+        return ""
+    if len(avatar) > 750_000:
+        raise HTTPException(status_code=413, detail="conversation_avatar_too_large")
+    if not re.match(r"^data:image/(?:png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=\\s]+$", avatar):
+        raise HTTPException(status_code=400, detail="invalid_conversation_avatar")
+    return avatar
+
+
 def _clean_management_draft(value: str | None) -> str:
     return str(value or "").replace("\r\n", "\n").replace("\r", "\n")[:20000]
 
@@ -3001,7 +3191,7 @@ def _clean_management_follow_up(value: str | None) -> str:
 
 def _get_conversation_management(conn: sqlite3.Connection, conversation_id: str) -> dict:
     row = conn.execute(
-        """SELECT c.conversation_id, m.is_pinned, m.is_archived, m.is_muted, m.title, m.note, m.labels, m.draft_text, m.follow_up_at, m.updated_at
+        """SELECT c.conversation_id, m.is_pinned, m.is_archived, m.is_muted, m.title, m.note, m.labels, m.avatar_data_url, m.draft_text, m.follow_up_at, m.updated_at
            FROM penguin_connect_conversations c
            LEFT JOIN penguin_connect_conversation_management m
              ON m.conversation_id = c.conversation_id
@@ -3019,6 +3209,7 @@ def _get_conversation_management(conn: sqlite3.Connection, conversation_id: str)
         "title": row["title"] or "",
         "note": row["note"] or "",
         "labels": _parse_management_labels(row["labels"]),
+        "avatar_data_url": row["avatar_data_url"] or "",
         "draft_text": row["draft_text"] or "",
         "follow_up_at": row["follow_up_at"] or "",
         "management_updated_at": row["updated_at"],
@@ -3035,6 +3226,7 @@ def _set_conversation_management(
     title: str | None,
     note: str | None,
     labels: list[str] | None,
+    avatar_data_url: str | None,
     draft_text: str | None,
     follow_up_at: str | None,
 ) -> dict:
@@ -3045,6 +3237,7 @@ def _set_conversation_management(
     clean_title = current["title"] if title is None else _clean_management_title(title)
     clean_note = current["note"] if note is None else _clean_management_note(note)
     clean_labels = current["labels"] if labels is None else _clean_management_labels(labels)
+    clean_avatar = current["avatar_data_url"] if avatar_data_url is None else _clean_management_avatar(avatar_data_url)
     clean_draft = current["draft_text"] if draft_text is None else _clean_management_draft(draft_text)
     clean_follow_up = current["follow_up_at"] if follow_up_at is None else _clean_management_follow_up(follow_up_at)
     if archived is True:
@@ -3054,8 +3247,8 @@ def _set_conversation_management(
 
     conn.execute(
         """INSERT INTO penguin_connect_conversation_management
-           (conversation_id, is_pinned, is_archived, is_muted, title, note, labels, draft_text, follow_up_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+           (conversation_id, is_pinned, is_archived, is_muted, title, note, labels, avatar_data_url, draft_text, follow_up_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
            ON CONFLICT(conversation_id) DO UPDATE SET
              is_pinned = excluded.is_pinned,
              is_archived = excluded.is_archived,
@@ -3063,6 +3256,7 @@ def _set_conversation_management(
              title = excluded.title,
              note = excluded.note,
              labels = excluded.labels,
+             avatar_data_url = excluded.avatar_data_url,
              draft_text = excluded.draft_text,
              follow_up_at = excluded.follow_up_at,
              updated_at = datetime('now')""",
@@ -3074,6 +3268,7 @@ def _set_conversation_management(
             clean_title,
             clean_note,
             json.dumps(clean_labels),
+            clean_avatar,
             clean_draft,
             clean_follow_up,
         ),
@@ -3410,7 +3605,7 @@ def get_penguinconnect_health():
 
 @app.get("/api/penguin-connect/contacts")
 @app.get("/penguin-connect/contacts")
-def search_penguinconnect_contacts(search: str = "", limit: int = Query(25, ge=1, le=100), source: str = "all"):
+def search_penguinconnect_contacts(search: str = "", limit: int = Query(25, ge=1, le=5000), source: str = "all"):
     conn = get_connection()
     try:
         return _search_contacts(conn, search, limit=limit, source=source)
@@ -3427,6 +3622,7 @@ def create_penguinconnect_contact(req: PenguinConnectContactCreateRequest):
     return {
         "success": True,
         "contact_id": contact_id,
+        "updated": bool((req.match_handle or "").strip()),
         "refresh": refresh_result,
     }
 
@@ -3470,7 +3666,7 @@ def refresh_penguinconnect_contacts():
 @app.get("/penguin-connect/messages/search")
 def search_penguinconnect_messages(
     query: str = "",
-    limit: int = Query(25, ge=1, le=100),
+    limit: int = Query(25, ge=1, le=500),
     view: str = "all",
     conversation_id: str = "",
     date_from: str = "",
@@ -3824,6 +4020,7 @@ def get_penguinconnect_conversation_attachment(
     attachment_index: int,
     provider_message_id: str = Query(...),
     original: bool = Query(False),
+    inline: bool = Query(False),
 ):
     conn = get_connection()
     try:
@@ -3836,6 +4033,12 @@ def get_penguinconnect_conversation_attachment(
         if not original:
             path, display_name, media_type = _browser_safe_image_attachment(
                 path, display_name, media_type
+            )
+        if inline:
+            return FileResponse(
+                path,
+                media_type=media_type,
+                headers={"Content-Disposition": "inline"},
             )
         return FileResponse(path, media_type=media_type, filename=display_name)
     finally:
@@ -3876,6 +4079,7 @@ def set_penguinconnect_conversation_management(
             title=req.title,
             note=req.note,
             labels=req.labels,
+            avatar_data_url=req.avatar_data_url,
             draft_text=req.draft_text,
             follow_up_at=req.follow_up_at,
         )
@@ -4055,6 +4259,18 @@ def list_penguinconnect_scheduled_messages(conversation_id: str):
         return {
             "success": True,
             "scheduled_messages": _list_scheduled_messages(conn, conversation_id),
+        }
+    finally:
+        conn.close()
+
+@app.get("/api/penguin-connect/scheduled-messages")
+@app.get("/penguin-connect/scheduled-messages")
+def list_all_penguinconnect_scheduled_messages(limit: int = Query(500, ge=1, le=1000)):
+    conn = get_connection()
+    try:
+        return {
+            "success": True,
+            "scheduled_messages": _list_all_scheduled_messages(conn, limit=limit),
         }
     finally:
         conn.close()

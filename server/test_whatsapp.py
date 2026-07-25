@@ -118,6 +118,43 @@ class WhatsAppAdapterTests(unittest.TestCase):
         self.assertEqual(chats_by_jid["14155551234@s.whatsapp.net"]["name"], "Alice")
         self.assertEqual(chats_by_jid["120363047891234567@g.us"]["name"], "Family Group")
 
+    def test_list_conversations_resolves_lid_to_contact_name_and_phone(self):
+        lid = "137276097073316"
+        phone = "14047294874"
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("INSERT INTO chats VALUES (?, ?, ?)", (f"{lid}@lid", "", "2026-03-15T12:00:00"))
+        conn.execute(
+            "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("lid-msg", f"{lid}@lid", f"{lid}@lid", "Hello from a LID", "2026-03-15T12:00:00", 0, None, None),
+        )
+        conn.commit()
+        conn.close()
+        with tempfile.NamedTemporaryFile(suffix=".db") as metadata_file:
+            metadata = sqlite3.connect(metadata_file.name)
+            metadata.execute("CREATE TABLE whatsmeow_lid_map (lid TEXT PRIMARY KEY, pn TEXT UNIQUE NOT NULL)")
+            metadata.execute(
+                """CREATE TABLE whatsmeow_contacts (
+                    our_jid TEXT, their_jid TEXT, first_name TEXT, full_name TEXT,
+                    push_name TEXT, business_name TEXT, redacted_phone TEXT
+                )"""
+            )
+            metadata.execute("INSERT INTO whatsmeow_lid_map VALUES (?, ?)", (lid, phone))
+            metadata.execute(
+                "INSERT INTO whatsmeow_contacts VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("me@s.whatsapp.net", f"{phone}@s.whatsapp.net", "", "Dhruv Example", "Dhruv", None, None),
+            )
+            metadata.commit()
+            metadata.close()
+            with mock.patch.dict(
+                os.environ,
+                {"PENGUIN_CONNECT_WHATSAPP_METADATA_DB_PATH": metadata_file.name},
+            ):
+                result = self.adapter.list_conversations()
+
+        chat = next(item for item in result["chats"] if item["chat_id"] == f"{lid}@lid")
+        self.assertEqual(chat["name"], "Dhruv Example")
+        self.assertEqual(chat["participants"], [phone])
+
     def test_list_conversations_source_provider(self):
         result = self.adapter.list_conversations()
         for chat in result["chats"]:

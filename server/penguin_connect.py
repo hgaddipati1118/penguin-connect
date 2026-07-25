@@ -3924,7 +3924,7 @@ def _record_conversation_activity_hint(
 
 
 def _local_preview_hydrate_limit() -> int:
-    return _env_int("PENGUIN_CONNECT_LOCAL_PREVIEW_HYDRATE_LIMIT", 25, 0, 100)
+    return _env_int("PENGUIN_CONNECT_LOCAL_PREVIEW_HYDRATE_LIMIT", 100, 0, 100)
 
 
 def _local_conversation_discovery_interval_seconds() -> int:
@@ -3960,12 +3960,25 @@ def _hydrate_local_conversation_previews(conn: sqlite3.Connection, rows: list[sq
     if limit <= 0:
         return 0
 
+    local_rows = [
+        row
+        for row in rows
+        if (row["gmail_email"] or "").strip().lower() == LOCAL_MESSAGES_ACCOUNT_EMAIL
+    ]
+    unseen_rows = [
+        row for row in local_rows
+        if not row["last_source_ts"] and not row["last_synced_at"]
+    ]
+    refresh_rows = [row for row in local_rows if row["last_source_ts"]][:10]
+    attempted_empty_rows = [
+        row for row in local_rows
+        if not row["last_source_ts"] and row["last_synced_at"]
+    ][:5]
+    prioritized_rows = [*unseen_rows, *refresh_rows, *attempted_empty_rows]
     hydrated = 0
-    for row in rows:
+    for row in prioritized_rows:
         if hydrated >= limit:
             break
-        if (row["gmail_email"] or "").strip().lower() != LOCAL_MESSAGES_ACCOUNT_EMAIL:
-            continue
 
         try:
             _cache_local_source_messages_for_view(conn, row, limit=1)
@@ -4091,9 +4104,10 @@ def _cache_local_source_messages_for_view(
     conv: sqlite3.Row,
     *,
     limit: int = 200,
+    include_history: bool = False,
 ) -> int:
     source_provider = _conversation_source_provider(conv)
-    if source_provider not in {"imessage", "apple_messages", "sms", "rcs"}:
+    if source_provider not in {"imessage", "apple_messages", "sms", "rcs", "whatsapp"}:
         return 0
     if (conv["gmail_email"] or "").strip().lower() != LOCAL_MESSAGES_ACCOUNT_EMAIL:
         return 0
@@ -4104,8 +4118,8 @@ def _cache_local_source_messages_for_view(
         "SELECT * FROM penguin_connect_sync_state WHERE conversation_id = ?",
         (conv["conversation_id"],),
     ).fetchone()
-    since = state["last_source_ts"] if state else None
-    since_native_message_id = state["last_source_native_message_id"] if state else None
+    since = None if include_history else (state["last_source_ts"] if state else None)
+    since_native_message_id = None if include_history else (state["last_source_native_message_id"] if state else None)
     messages = _fetch_source_messages_for_conversation(
         conv,
         limit=max(1, min(int(limit or 200), 1000)),
@@ -4113,6 +4127,11 @@ def _cache_local_source_messages_for_view(
         since_native_message_id=since_native_message_id,
     )
     if not messages:
+        conn.execute(
+            "UPDATE penguin_connect_conversations SET last_synced_at = datetime('now') WHERE conversation_id = ?",
+            (conv["conversation_id"],),
+        )
+        conn.commit()
         return 0
 
     messages = sorted(
@@ -4122,7 +4141,11 @@ def _cache_local_source_messages_for_view(
             _imessage_native_message_sort_value(msg.get("native_message_id")),
         ),
     )
-    unread_count = _get_apple_messages_unread_count_for_conversation(conv)
+    unread_count = (
+        _get_apple_messages_unread_count_for_conversation(conv)
+        if source_provider in {"imessage", "apple_messages", "sms", "rcs"}
+        else 0
+    )
     last_ts = state["last_source_ts"] if state else None
     last_native_message_id = since_native_message_id
     stored = 0
@@ -4164,28 +4187,46 @@ def _cache_local_source_messages_for_view(
             "attachments": attachments,
             "local_cache_only": True,
         }
-        cursor = conn.execute(
-            """INSERT OR IGNORE INTO penguin_connect_messages
-               (conversation_id, provider, provider_message_id, direction,
-                sender_email, sender_name, subject, body_text, message_timestamp,
-                is_read, metadata)
-               VALUES (?, 'imessage', ?, 'imessage_local', NULL, ?, ?, ?, ?, ?, ?)""",
-            (
-                conv["conversation_id"],
-                provider_id,
-                sender_name,
-                _provider_subject(source_provider, subject_name),
-                text[:20000],
-                ts,
-                0 if unread else 1,
-                json.dumps(metadata),
-            ),
-        )
+        stored_provider = "whatsapp" if source_provider == "whatsapp" else "imessage"
+        stored_direction = "whatsapp_local" if source_provider == "whatsapp" else "imessage_local"
+        try:
+            cursor = conn.execute(
+                """INSERT OR IGNORE INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction,
+                    sender_email, sender_name, subject, body_text, message_timestamp,
+                    is_read, metadata)
+                   VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)""",
+                (
+                    conv["conversation_id"],
+                    stored_provider,
+                    provider_id,
+                    stored_direction,
+                    sender_name,
+                    _provider_subject(source_provider, subject_name),
+                    text[:20000],
+                    ts,
+                    0 if unread else 1,
+                    json.dumps(metadata),
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            if "foreign key" not in str(exc).lower():
+                raise
+            # Discovery may replace a route while this opportunistic preview
+            # cache still holds the old row. Drop only this view-cache work.
+            conn.rollback()
+            return 0
         if cursor.rowcount > 0:
             stored += 1
 
     if last_ts:
-        _upsert_sync_state(conn, conv["conversation_id"], last_ts, last_native_message_id, None, None)
+        try:
+            _upsert_sync_state(conn, conv["conversation_id"], last_ts, last_native_message_id, None, None)
+        except sqlite3.IntegrityError as exc:
+            if "foreign key" not in str(exc).lower():
+                raise
+            conn.rollback()
+            return 0
         conn.execute(
             "UPDATE penguin_connect_conversations SET last_synced_at = datetime('now'), updated_at = datetime('now') WHERE conversation_id = ?",
             (conv["conversation_id"],),
@@ -4381,7 +4422,7 @@ def get_conversation_messages(conn: sqlite3.Connection, conversation_id: str, li
     if not conv:
         return {"found": False, "messages": []}
 
-    _cache_local_source_messages_for_view(conn, conv, limit=limit)
+    _cache_local_source_messages_for_view(conn, conv, limit=limit, include_history=True)
 
     account = conn.execute(
         "SELECT send_as_aliases FROM penguin_connect_accounts WHERE gmail_email = ? LIMIT 1",

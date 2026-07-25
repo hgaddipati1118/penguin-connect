@@ -452,6 +452,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
                     "title": "Local Taylor Thread",
                     "note": "Follow up after intro",
                     "labels": ["VIP", "#Hiring", "vip", " ".join(["long"] * 20)],
+                    "avatar_data_url": "data:image/png;base64,aGVsbG8=",
                     "draft_text": "Draft reply from local UI",
                     "follow_up_at": "2026-03-12T09:30",
                 },
@@ -471,6 +472,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(pin_body["title"], "Local Taylor Thread")
         self.assertEqual(pin_body["note"], "Follow up after intro")
         self.assertEqual(pin_body["labels"], ["VIP", "Hiring", "long long long long long long lo"])
+        self.assertEqual(pin_body["avatar_data_url"], "data:image/png;base64,aGVsbG8=")
         self.assertEqual(pin_body["draft_text"], "Draft reply from local UI")
         self.assertEqual(pin_body["follow_up_at"], "2026-03-12T09:30")
 
@@ -481,6 +483,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(pinned_conversation["title"], "Local Taylor Thread")
         self.assertEqual(pinned_conversation["note"], "Follow up after intro")
         self.assertEqual(pinned_conversation["labels"], ["VIP", "Hiring", "long long long long long long lo"])
+        self.assertEqual(pinned_conversation["avatar_data_url"], "data:image/png;base64,aGVsbG8=")
         self.assertEqual(pinned_conversation["draft_text"], "Draft reply from local UI")
         self.assertEqual(pinned_conversation["follow_up_at"], "2026-03-12T09:30")
 
@@ -492,6 +495,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(archive_body["title"], "Local Taylor Thread")
         self.assertEqual(archive_body["note"], "Follow up after intro")
         self.assertEqual(archive_body["labels"], ["VIP", "Hiring", "long long long long long long lo"])
+        self.assertEqual(archive_body["avatar_data_url"], "data:image/png;base64,aGVsbG8=")
         self.assertEqual(archive_body["draft_text"], "Draft reply from local UI")
         self.assertEqual(archive_body["follow_up_at"], "2026-03-12T09:30")
 
@@ -519,6 +523,69 @@ class AppHttpIntegrationTests(unittest.TestCase):
             response = client.post("/penguin-connect/conversations/missing/management", json={"pinned": True})
 
         self.assertEqual(response.status_code, 404)
+
+    def test_scheduled_message_can_be_created_listed_and_cancelled(self):
+        with TestClient(app_module.app) as client:
+            create_response = client.post(
+                "/penguin-connect/conversations/amc_test/scheduled-messages",
+                json={
+                    "message": "Scheduled hello",
+                    "scheduled_at": "2099-03-12T09:30:00Z",
+                },
+            )
+            list_response = client.get(
+                "/penguin-connect/conversations/amc_test/scheduled-messages",
+            )
+            queue_response = client.get("/penguin-connect/scheduled-messages")
+            scheduled_id = create_response.json()["scheduled_message"]["scheduled_id"]
+            cancel_response = client.post(
+                f"/penguin-connect/scheduled-messages/{scheduled_id}/cancel",
+            )
+
+        self.assertEqual(create_response.status_code, 200)
+        self.assertEqual(create_response.json()["scheduled_message"]["status"], "scheduled")
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(list_response.json()["scheduled_messages"][0]["message"], "Scheduled hello")
+        self.assertEqual(queue_response.status_code, 200)
+        self.assertEqual(queue_response.json()["scheduled_messages"][0]["message"], "Scheduled hello")
+        self.assertEqual(cancel_response.status_code, 200)
+        self.assertEqual(cancel_response.json()["scheduled_message"]["status"], "cancelled")
+
+    def test_due_scheduled_message_requeues_when_provider_is_offline(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """INSERT INTO penguin_connect_scheduled_messages
+                   (scheduled_id, conversation_id, body_text, attachment_paths, scheduled_at, status)
+                   VALUES (?, ?, ?, '[]', ?, 'scheduled')""",
+                ("scheduled_offline", "amc_test", "Retry me", "2001-01-01T00:00:00+00:00"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with mock.patch(
+            "app.penguinconnect_send_manual_message",
+            return_value={"success": False, "error": "provider_offline"},
+        ):
+            result = app_module.run_due_scheduled_messages()
+
+        self.assertEqual(result["processed"], 1)
+        self.assertEqual(result["results"][0]["status"], "scheduled")
+        verify_conn = self._get_connection()
+        try:
+            row = verify_conn.execute(
+                """SELECT status, attempt_count, last_error, scheduled_at
+                   FROM penguin_connect_scheduled_messages
+                   WHERE scheduled_id = ?""",
+                ("scheduled_offline",),
+            ).fetchone()
+        finally:
+            verify_conn.close()
+        self.assertEqual(row["status"], "scheduled")
+        self.assertEqual(row["attempt_count"], 1)
+        self.assertEqual(row["last_error"], "provider_offline")
+        self.assertGreater(row["scheduled_at"], "2001-01-01T00:00:00+00:00")
 
     def test_open_messages_endpoint_opens_addressed_conversation(self):
         with mock.patch("app._open_messages_addressed", return_value="sms://open?addresses=%2B15127436385") as mock_open, TestClient(
@@ -911,7 +978,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
                     "owner@gmail.com",
                     "Me",
                     "[Apple Messages] Taylor",
-                    "I sent the plan.",
+                    "I sent the plan. https://example.com/launch",
                     "2026-03-11T09:30:00+00:00",
                     1,
                     "{}",
@@ -939,6 +1006,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
             title_response = client.get("/penguin-connect/messages/search", params={"query": "launch", "limit": 10})
             audio_response = client.get("/penguin-connect/messages/search", params={"view": "audio", "limit": 10})
             files_response = client.get("/penguin-connect/messages/search", params={"view": "files", "limit": 10})
+            links_response = client.get("/penguin-connect/messages/search", params={"view": "links", "limit": 10})
             unread_response = client.get("/penguin-connect/messages/search", params={"view": "unread", "limit": 10})
             starred_response = client.get("/penguin-connect/messages/search", params={"view": "starred", "limit": 10})
             noted_response = client.get("/penguin-connect/messages/search", params={"view": "noted", "limit": 10})
@@ -981,6 +1049,12 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("imsg-audio", file_ids)
         self.assertIn("imsg-file", file_ids)
         self.assertNotIn("manual-sent", file_ids)
+
+        self.assertEqual(links_response.status_code, 200)
+        self.assertEqual(
+            [message["provider_message_id"] for message in links_response.json()["messages"]],
+            ["manual-sent"],
+        )
 
         self.assertEqual(unread_response.status_code, 200)
         unread_ids = {message["provider_message_id"] for message in unread_response.json()["messages"]}
@@ -1052,7 +1126,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
                                 {
                                     "filename": str(attachment_path),
                                     "transfer_name": "voice-note.m4a",
-                                    "mime_type": "audio/mp4",
+                                    "mime_type": "audio",
                                     "size": len(b"fake-audio"),
                                 }
                             ]
@@ -1069,11 +1143,17 @@ class AppHttpIntegrationTests(unittest.TestCase):
                 "/penguin-connect/conversations/amc_test/attachments/0",
                 params={"provider_message_id": "imsg-voice-file"},
             )
+            inline_response = client.get(
+                "/penguin-connect/conversations/amc_test/attachments/0",
+                params={"provider_message_id": "imsg-voice-file", "inline": "true"},
+            )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, b"fake-audio")
         self.assertTrue(response.headers["content-type"].startswith("audio/mp4"))
         self.assertIn("voice-note.m4a", response.headers["content-disposition"])
+        self.assertEqual(inline_response.status_code, 200)
+        self.assertEqual(inline_response.headers["content-disposition"], "inline")
 
     def test_attachment_endpoint_rejects_unknown_attachment(self):
         with TestClient(app_module.app) as client:
@@ -1349,6 +1429,13 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(empty_favorites_response.json()["count"], 0)
         self.assertEqual(empty_favorites_response.json()["source_counts"]["favorites"], 0)
         self.assertEqual(empty_favorites_response.json()["source_counts"]["noted"], 1)
+
+    def test_contacts_endpoint_accepts_full_directory_limit(self):
+        with TestClient(app_module.app) as client:
+            response = client.get("/penguin-connect/contacts", params={"limit": 5000})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertLessEqual(response.json()["count"], 5000)
 
     def test_contacts_endpoint_uses_phone_key_note_for_email_primary_contact(self):
         conn = self._get_connection()
@@ -2242,7 +2329,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("--output-last-message", command)
         self.assertIn("-", command)
         self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
-        self.assertEqual(command[command.index("--ask-for-approval") + 1], "never")
+        self.assertNotIn("--ask-for-approval", command)
 
     def test_codex_status_reports_cli_auth_without_exposing_tokens(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2321,6 +2408,46 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn(".app-shell", inbox_css_response.text)
         self.assertEqual(inbox_js_response.status_code, 200)
         self.assertIn("loadConversations", inbox_js_response.text)
+        self.assertIn("hasCachedMessage", inbox_js_response.text)
+        self.assertIn("conversation?.chat_type === \"group\" && displayName", inbox_js_response.text)
+        self.assertIn("peopleVisible", inbox_js_response.text)
+        self.assertIn("limit=${limit}&source=all", inbox_js_response.text)
+        self.assertIn("moveConversationSelection", inbox_js_response.text)
+        self.assertIn("openConversationMeta", inbox_js_response.text)
+        self.assertIn("Primary context — currently selected conversation", inbox_js_response.text)
+        self.assertIn("renderInlineAttachment", inbox_js_response.text)
+        self.assertIn("message-attachment-preview", inbox_js_response.text)
+        self.assertIn("&inline=true", inbox_js_response.text)
+        self.assertIn("renderFilesList", inbox_js_response.text)
+        self.assertIn("loadFiles", inbox_js_response.text)
+        self.assertIn("renderLinksList", inbox_js_response.text)
+        self.assertIn("loadLinks", inbox_js_response.text)
+        self.assertIn("view=links", inbox_js_response.text)
+        self.assertIn("renderLabelBar", inbox_js_response.text)
+        self.assertIn("conversationLabels", inbox_js_response.text)
+        self.assertIn("refreshSelectedMessages", inbox_js_response.text)
+        self.assertIn("}, 5000);", inbox_js_response.text)
+        self.assertIn("undoPendingSend", inbox_js_response.text)
+        self.assertIn("Message queued for 15 seconds", inbox_js_response.text)
+        self.assertIn("loadScheduledMessages", inbox_js_response.text)
+        self.assertIn("renderQueueList", inbox_js_response.text)
+        self.assertIn("loadQueue", inbox_js_response.text)
+        self.assertIn("scheduleCurrentMessage", inbox_js_response.text)
+        self.assertIn("offline retry enabled", inbox_js_response.text)
+        self.assertIn("conversationAvatarDraft", inbox_js_response.text)
+        self.assertIn("openContactDialog", inbox_js_response.text)
+        self.assertIn("saveContact", inbox_js_response.text)
+        self.assertIn("renderAgentHistory", inbox_js_response.text)
+        self.assertIn('data-view-tab="files"', inbox_response.text)
+        self.assertIn('data-view-tab="links"', inbox_response.text)
+        self.assertIn('id="resourceTabs"', inbox_response.text)
+        self.assertIn('id="contactDialog"', inbox_response.text)
+        self.assertIn('id="conversationMetaDialog"', inbox_response.text)
+        self.assertIn("Current chat first, then your inbox", inbox_response.text)
+        self.assertIn('id="conversationLabels"', inbox_response.text)
+        self.assertIn('id="scheduleDialog"', inbox_response.text)
+        self.assertIn('data-view-tab="queue"', inbox_response.text)
+        self.assertIn('id="conversationAvatarInput"', inbox_response.text)
         self.assertEqual(html_response.status_code, 200)
         self.assertIn("PenguinConnect Console", html_response.text)
         self.assertIn('rel="icon"', html_response.text)

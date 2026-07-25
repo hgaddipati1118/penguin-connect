@@ -52,6 +52,19 @@
       <symbol id="i-arrow" viewBox="0 0 24 24">
         <path d="m9 5 7 7-7 7" />
       </symbol>
+      <symbol id="i-note" viewBox="0 0 24 24">
+        <path d="M5 3.75h14v16.5H5zM8.5 8h7M8.5 12h7M8.5 16h4" />
+      </symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="8.5" />
+        <path d="M12 7.5V12l3.25 2" />
+      </symbol>
+      <symbol id="i-link" viewBox="0 0 24 24">
+        <path d="M9.5 14.5 14.5 9.5M7.75 16.25l-1.2 1.2a3.54 3.54 0 0 1-5-5l3.7-3.7a3.54 3.54 0 0 1 5 0M16.25 7.75l1.2-1.2a3.54 3.54 0 0 1 5 5l-3.7 3.7a3.54 3.54 0 0 1-5 0" />
+      </symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24">
+        <path d="M3.5 6.5h6l2 2h9v10h-17z" />
+      </symbol>
     </svg>
 
     <main class="app-shell">
@@ -61,14 +74,11 @@
           <button class="nav-button active" type="button" data-view="inbox" title="Inbox" aria-label="Inbox">
             <svg><use href="#i-inbox"></use></svg>
           </button>
-          <button class="nav-button" type="button" data-view="people" title="People" aria-label="People">
-            <svg><use href="#i-people"></use></svg>
+          <button class="nav-button" id="toggleAgentButton" type="button" title="Penguin Agent" aria-label="Penguin Agent" aria-pressed="true">
+            <svg><use href="#i-spark"></use></svg>
           </button>
         </div>
         <div class="nav-spacer"></div>
-        <button class="nav-button" id="toggleAgentButton" type="button" title="Toggle Penguin Agent" aria-label="Toggle Penguin Agent" aria-pressed="true">
-          <svg><use href="#i-spark"></use></svg>
-        </button>
         <div class="connection-orbit" id="connectionOrbit" title="Checking local bridge">
           <span></span>
         </div>
@@ -80,9 +90,14 @@
             <p class="overline">Penguin</p>
             <h1 id="paneTitle">Inbox</h1>
           </div>
-          <button class="icon-button" id="composeButton" type="button" title="New message" aria-label="New message">
-            <svg><use href="#i-compose"></use></svg>
-          </button>
+          <div class="pane-header-actions">
+            <button class="icon-button" id="addContactButton" type="button" title="Add or update contact" aria-label="Add or update contact" hidden>
+              <svg><use href="#i-people"></use></svg>
+            </button>
+            <button class="icon-button" id="composeButton" type="button" title="New message" aria-label="New message">
+              <svg><use href="#i-compose"></use></svg>
+            </button>
+          </div>
         </header>
 
         <label class="global-search">
@@ -91,11 +106,20 @@
           <kbd>⌘K</kbd>
         </label>
 
+        <div class="resource-tabs" id="resourceTabs" role="tablist" aria-label="Workspace views">
+          <button class="active" type="button" data-view-tab="inbox" role="tab">Messages</button>
+          <button type="button" data-view-tab="files" role="tab">Files</button>
+          <button type="button" data-view-tab="links" role="tab">Links</button>
+          <button type="button" data-view-tab="queue" role="tab">Queue</button>
+          <button type="button" data-view-tab="people" role="tab">People</button>
+        </div>
+
         <div class="source-tabs" id="sourceTabs" role="group" aria-label="Message source">
           <button class="active" type="button" data-source="all">All</button>
           <button type="button" data-source="imessage"><span class="source-dot imessage"></span>iMessage</button>
           <button type="button" data-source="whatsapp"><span class="source-dot whatsapp"></span>WhatsApp</button>
         </div>
+        <div class="label-bar" id="labelBar" aria-label="Conversation folders"></div>
 
         <div class="list-summary">
           <span id="listSummary">Loading conversations</span>
@@ -107,6 +131,9 @@
 
         <div class="pane-list" id="conversationList" role="list" aria-live="polite"></div>
         <div class="pane-list people-list" id="peopleList" role="list" aria-live="polite" hidden></div>
+        <div class="pane-list files-list" id="filesList" role="list" aria-live="polite" hidden></div>
+        <div class="pane-list links-list" id="linksList" role="list" aria-live="polite" hidden></div>
+        <div class="pane-list queue-list" id="queueList" role="list" aria-live="polite" hidden></div>
         <div class="pane-list search-list" id="searchList" role="list" aria-live="polite" hidden></div>
 
         <footer class="pane-footer">
@@ -140,6 +167,15 @@
               <p id="threadSubtitle"></p>
             </div>
             <div class="thread-header-actions">
+              <button class="icon-button" id="threadNoteButton" type="button" title="Conversation note (E)" aria-label="Edit conversation note">
+                <svg><use href="#i-note"></use></svg>
+              </button>
+              <button class="icon-button" id="threadLabelButton" type="button" title="Organize with labels" aria-label="Organize conversation with labels">
+                <svg><use href="#i-folder"></use></svg>
+              </button>
+              <button class="icon-button" id="threadReminderButton" type="button" title="Follow-up reminder (H)" aria-label="Set follow-up reminder">
+                <svg><use href="#i-clock"></use></svg>
+              </button>
               <button class="icon-button" id="threadSearchButton" type="button" title="Search this conversation" aria-label="Search this conversation">
                 <svg><use href="#i-search"></use></svg>
               </button>
@@ -163,6 +199,7 @@
           <div class="message-list" id="messageList" role="log" aria-live="polite"></div>
 
           <div class="composer-wrap">
+            <div class="scheduled-queue" id="scheduledQueue" aria-label="Scheduled message queue" hidden></div>
             <div class="attachment-preview" id="attachmentPreview" hidden></div>
             <div class="composer">
               <label class="attach-button" for="attachmentInput" title="Attach files" aria-label="Attach files">
@@ -170,6 +207,9 @@
               </label>
               <input id="attachmentInput" type="file" multiple hidden />
               <textarea id="messageComposer" rows="1" placeholder="Write a message" aria-label="Write a message"></textarea>
+              <button class="schedule-send-button" id="scheduleSendButton" type="button" title="Schedule message" aria-label="Schedule message" disabled>
+                <svg><use href="#i-clock"></use></svg>
+              </button>
               <button class="send-button" id="sendButton" type="button" title="Send message" aria-label="Send message" disabled>
                 <svg><use href="#i-send"></use></svg>
               </button>
@@ -191,22 +231,17 @@
               <p id="agentStatus">Checking Codex</p>
             </div>
           </div>
-          <button class="icon-button compact" id="closeAgentButton" type="button" title="Close agent" aria-label="Close agent">
-            <svg><use href="#i-close"></use></svg>
-          </button>
         </header>
 
         <div class="agent-body">
           <div class="agent-context">
-            <span>Context</span>
-            <button class="context-chip active" type="button" data-agent-scope="thread">This chat</button>
-            <button class="context-chip" type="button" data-agent-scope="inbox">Across inbox</button>
+            <span class="context-orbit"></span>
+            <span id="agentScopeSummary">Current chat first, then your inbox</span>
           </div>
 
           <div class="agent-welcome" id="agentWelcome">
-            <p class="overline">Local message intelligence</p>
-            <h3>Ask what happened, what matters, or what to say next.</h3>
-            <p>Codex receives only the local context included in your prompt.</p>
+            <h3>What do you want to know?</h3>
+            <p>Ask about this conversation or anything across your messages.</p>
           </div>
 
           <div class="agent-quick-actions" id="agentQuickActions">
@@ -222,15 +257,22 @@
               <span>Find commitments</span>
               <small>Pull out promises and next steps</small>
             </button>
+            <button type="button" data-agent-action="contact">
+              <span>Add or update contact</span>
+              <small>Use the current conversation as a starting point</small>
+            </button>
           </div>
 
           <div class="agent-answer" id="agentAnswer" hidden>
             <div class="agent-answer-head">
-              <span>Agent response</span>
-              <button class="text-button" id="copyAgentAnswerButton" type="button">
-                <svg><use href="#i-copy"></use></svg>
-                Copy
-              </button>
+              <span>Agent chat</span>
+              <div>
+                <button class="text-button" id="retryAgentAnswerButton" type="button">Retry</button>
+                <button class="text-button" id="copyAgentAnswerButton" type="button">
+                  <svg><use href="#i-copy"></use></svg>
+                  Copy
+                </button>
+              </div>
             </div>
             <div class="agent-answer-content" id="agentAnswerContent"></div>
             <button class="secondary-button full-width" id="useAgentAnswerButton" type="button">
@@ -269,6 +311,106 @@
         </label>
         <div class="compose-results" id="composeResults" role="list"></div>
         <p class="dialog-note">New outbound threads use an existing safe route. The power console can stage a brand-new Apple Messages draft.</p>
+      </form>
+    </dialog>
+
+    <dialog class="compose-dialog contact-dialog" id="contactDialog" aria-labelledby="contactDialogTitle">
+      <form id="contactForm">
+        <header>
+          <div>
+            <p class="overline">Apple Contacts</p>
+            <h2 id="contactDialogTitle">Add or update contact</h2>
+          </div>
+          <button class="icon-button" type="button" id="closeContactDialogButton" title="Close" aria-label="Close">
+            <svg><use href="#i-close"></use></svg>
+          </button>
+        </header>
+        <div class="conversation-meta-fields contact-fields">
+          <label>
+            <span>Existing phone or email (optional)</span>
+            <input id="contactMatchHandle" type="text" placeholder="Fill this to update an existing contact" />
+          </label>
+          <div class="contact-name-fields">
+            <label><span>First name</span><input id="contactFirstName" type="text" autocomplete="given-name" /></label>
+            <label><span>Last name</span><input id="contactLastName" type="text" autocomplete="family-name" /></label>
+          </div>
+          <label><span>Organization</span><input id="contactOrganization" type="text" autocomplete="organization" /></label>
+          <label><span>Phone</span><input id="contactPhone" type="tel" autocomplete="tel" /></label>
+          <label><span>Email</span><input id="contactEmail" type="email" autocomplete="email" /></label>
+        </div>
+        <div class="conversation-meta-actions">
+          <button class="secondary-button" type="button" id="cancelContactButton">Cancel</button>
+          <button class="agent-send-button" type="submit" id="saveContactButton">Save contact</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="compose-dialog conversation-meta-dialog" id="conversationMetaDialog" aria-labelledby="conversationMetaTitle">
+      <form id="conversationMetaForm">
+        <header>
+          <div>
+            <p class="overline">Conversation details</p>
+            <h2 id="conversationMetaTitle">Organize conversation</h2>
+          </div>
+          <button class="icon-button" type="button" id="closeConversationMetaButton" title="Close" aria-label="Close">
+            <svg><use href="#i-close"></use></svg>
+          </button>
+        </header>
+        <div class="conversation-meta-fields">
+          <label class="conversation-label-field">
+            <span>Custom conversation name</span>
+            <input id="conversationTitleInput" type="text" maxlength="160" placeholder="Keep the native name" />
+          </label>
+          <div class="conversation-avatar-field">
+            <span class="conversation-avatar-preview" id="conversationAvatarPreview"></span>
+            <label class="secondary-button conversation-avatar-upload" for="conversationAvatarInput">Choose group image</label>
+            <input id="conversationAvatarInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
+            <button class="text-button" id="removeConversationAvatarButton" type="button">Remove</button>
+          </div>
+          <label>
+            <span>Private note</span>
+            <textarea id="conversationNote" rows="6" placeholder="Add context, decisions, or anything to remember"></textarea>
+          </label>
+          <label>
+            <span>Follow up</span>
+            <input id="conversationFollowUp" type="datetime-local" />
+          </label>
+          <label class="conversation-label-field">
+            <span>Labels / folders</span>
+            <input id="conversationLabels" type="text" placeholder="Friends, Work, Waiting" />
+            <small>Separate labels with commas. They become folders in the inbox.</small>
+          </label>
+        </div>
+        <div class="conversation-meta-actions">
+          <button class="secondary-button" type="button" id="clearConversationFollowUpButton">Clear reminder</button>
+          <button class="agent-send-button" type="submit">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="compose-dialog conversation-meta-dialog schedule-dialog" id="scheduleDialog" aria-labelledby="scheduleDialogTitle">
+      <form id="scheduleForm">
+        <header>
+          <div>
+            <p class="overline">Local delivery queue</p>
+            <h2 id="scheduleDialogTitle">Schedule message</h2>
+          </div>
+          <button class="icon-button" type="button" id="closeScheduleButton" title="Close" aria-label="Close">
+            <svg><use href="#i-close"></use></svg>
+          </button>
+        </header>
+        <div class="schedule-dialog-body">
+          <label>
+            <span>Send at</span>
+            <input id="scheduleAt" type="datetime-local" required />
+          </label>
+          <div class="schedule-preview" id="schedulePreview"></div>
+          <p>Penguin stores this locally and retries automatically if the provider is offline.</p>
+        </div>
+        <div class="conversation-meta-actions">
+          <button class="secondary-button" type="button" id="cancelScheduleButton">Cancel</button>
+          <button class="agent-send-button" type="submit" id="confirmScheduleButton">Add to queue</button>
+        </div>
       </form>
     </dialog>
 

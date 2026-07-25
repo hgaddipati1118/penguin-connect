@@ -157,6 +157,7 @@ CREATE TABLE IF NOT EXISTS penguin_connect_conversation_management (
     title TEXT NOT NULL DEFAULT '',
     note TEXT NOT NULL DEFAULT '',
     labels TEXT NOT NULL DEFAULT '[]',
+    avatar_data_url TEXT NOT NULL DEFAULT '',
     draft_text TEXT NOT NULL DEFAULT '',
     follow_up_at TEXT NOT NULL DEFAULT '',
     updated_at TEXT DEFAULT (datetime('now'))
@@ -1478,6 +1479,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE penguin_connect_conversation_management ADD COLUMN title TEXT NOT NULL DEFAULT ''")
         if "labels" not in management_columns:
             conn.execute("ALTER TABLE penguin_connect_conversation_management ADD COLUMN labels TEXT NOT NULL DEFAULT '[]'")
+        if "avatar_data_url" not in management_columns:
+            conn.execute("ALTER TABLE penguin_connect_conversation_management ADD COLUMN avatar_data_url TEXT NOT NULL DEFAULT ''")
         if "draft_text" not in management_columns:
             conn.execute("ALTER TABLE penguin_connect_conversation_management ADD COLUMN draft_text TEXT NOT NULL DEFAULT ''")
         if "follow_up_at" not in management_columns:

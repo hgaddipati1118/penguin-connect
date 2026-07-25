@@ -2315,6 +2315,59 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(state["last_source_ts"], "2026-03-04T09:01:00+00:00")
         self.assertEqual(state["last_source_native_message_id"], "local-2")
 
+    def test_get_conversation_messages_caches_local_whatsapp_rows_without_gmail_account(self):
+        self.conn.execute("DELETE FROM penguin_connect_messages")
+        self.conn.execute("DELETE FROM penguin_connect_accounts")
+        self.conn.execute(
+            """UPDATE penguin_connect_conversations
+               SET gmail_email = ?, source_provider = 'whatsapp',
+                   source_chat_id = ?, source_chat_identifier = ?, alias_email = NULL
+               WHERE conversation_id = ?""",
+            (
+                penguin_connect.LOCAL_MESSAGES_ACCOUNT_EMAIL,
+                "15550000000@s.whatsapp.net",
+                "15550000000@s.whatsapp.net",
+                "amc_test",
+            ),
+        )
+        fake_channel = mock.Mock()
+        fake_channel.fetch_messages.return_value = [
+            {
+                "native_message_id": "wa-local-1",
+                "timestamp": "2026-03-04T09:00:00+00:00",
+                "text": "cached directly from WhatsApp",
+                "is_from_me": False,
+                "handle": "15550000000@s.whatsapp.net",
+                "push_name": "Synthetic Person",
+                "attachments": [],
+            }
+        ]
+        penguin_connect._upsert_sync_state(
+            self.conn,
+            "amc_test",
+            "2026-03-04T09:00:00+00:00",
+            "wa-preview-cursor",
+            None,
+            None,
+        )
+
+        with mock.patch.object(penguin_connect, "_WHATSAPP_CHANNEL", fake_channel):
+            result = penguin_connect.get_conversation_messages(self.conn, "amc_test", limit=50)
+
+        self.assertTrue(result["found"])
+        self.assertEqual(len(result["messages"]), 1)
+        self.assertEqual(result["messages"][0]["provider"], "whatsapp")
+        self.assertEqual(result["messages"][0]["provider_message_id"], "whatsapp:wa-local-1")
+        self.assertEqual(result["messages"][0]["direction"], "whatsapp_local")
+        self.assertEqual(result["messages"][0]["body_text"], "cached directly from WhatsApp")
+        self.assertTrue(result["messages"][0]["is_read"])
+        fake_channel.fetch_messages.assert_called_once_with(
+            "15550000000@s.whatsapp.net",
+            limit=50,
+            since=None,
+            since_native_message_id=None,
+        )
+
     def test_get_conversation_messages_does_not_cache_local_rows_for_gmail_backed_conversation(self):
         self.conn.execute("DELETE FROM penguin_connect_messages")
 

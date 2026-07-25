@@ -1,11 +1,24 @@
 const state = {
   view: "inbox",
   source: "all",
+  activeLabel: "",
   conversations: [],
+  conversationsVisible: 300,
   contacts: [],
+  contactsTotal: 0,
+  peopleVisible: 200,
+  files: [],
+  filesVisible: 100,
+  links: [],
+  linksVisible: 150,
+  linksQuery: "",
+  queue: [],
   selected: null,
   messages: [],
   attachments: [],
+  pendingSends: [],
+  scheduledMessages: [],
+  conversationAvatarDraft: "",
   search: {
     query: "",
     conversations: [],
@@ -15,9 +28,10 @@ const state = {
     token: 0,
   },
   agent: {
-    scope: "thread",
     status: null,
     answer: "",
+    lastQuestion: "",
+    history: [],
     busy: false,
   },
 };
@@ -25,12 +39,17 @@ const state = {
 const el = {
   shell: document.querySelector(".app-shell"),
   navButtons: [...document.querySelectorAll(".nav-button[data-view]")],
+  viewTabButtons: [...document.querySelectorAll("[data-view-tab]")],
   paneTitle: document.querySelector("#paneTitle"),
   globalSearch: document.querySelector("#globalSearch"),
   sourceTabs: document.querySelector("#sourceTabs"),
+  labelBar: document.querySelector("#labelBar"),
   listSummary: document.querySelector("#listSummary"),
   conversationList: document.querySelector("#conversationList"),
   peopleList: document.querySelector("#peopleList"),
+  filesList: document.querySelector("#filesList"),
+  linksList: document.querySelector("#linksList"),
+  queueList: document.querySelector("#queueList"),
   searchList: document.querySelector("#searchList"),
   refreshButton: document.querySelector("#refreshButton"),
   syncStatus: document.querySelector("#syncStatus"),
@@ -42,6 +61,9 @@ const el = {
   threadProvider: document.querySelector("#threadProvider"),
   threadSubtitle: document.querySelector("#threadSubtitle"),
   threadSearchButton: document.querySelector("#threadSearchButton"),
+  threadNoteButton: document.querySelector("#threadNoteButton"),
+  threadLabelButton: document.querySelector("#threadLabelButton"),
+  threadReminderButton: document.querySelector("#threadReminderButton"),
   threadSearchBar: document.querySelector("#threadSearchBar"),
   threadSearch: document.querySelector("#threadSearch"),
   threadSearchCount: document.querySelector("#threadSearchCount"),
@@ -49,12 +71,13 @@ const el = {
   messageList: document.querySelector("#messageList"),
   messageComposer: document.querySelector("#messageComposer"),
   sendButton: document.querySelector("#sendButton"),
+  scheduleSendButton: document.querySelector("#scheduleSendButton"),
   composerStatus: document.querySelector("#composerStatus"),
+  scheduledQueue: document.querySelector("#scheduledQueue"),
   attachmentInput: document.querySelector("#attachmentInput"),
   attachmentPreview: document.querySelector("#attachmentPreview"),
   agentPane: document.querySelector("#agentPane"),
   toggleAgentButton: document.querySelector("#toggleAgentButton"),
-  closeAgentButton: document.querySelector("#closeAgentButton"),
   threadAgentButton: document.querySelector("#threadAgentButton"),
   agentStatus: document.querySelector("#agentStatus"),
   agentQuestion: document.querySelector("#agentQuestion"),
@@ -65,12 +88,43 @@ const el = {
   agentAnswer: document.querySelector("#agentAnswer"),
   agentAnswerContent: document.querySelector("#agentAnswerContent"),
   copyAgentAnswerButton: document.querySelector("#copyAgentAnswerButton"),
+  retryAgentAnswerButton: document.querySelector("#retryAgentAnswerButton"),
   useAgentAnswerButton: document.querySelector("#useAgentAnswerButton"),
   composeButton: document.querySelector("#composeButton"),
+  addContactButton: document.querySelector("#addContactButton"),
   composeDialog: document.querySelector("#composeDialog"),
   composeSearch: document.querySelector("#composeSearch"),
   composeResults: document.querySelector("#composeResults"),
   emptySearchButton: document.querySelector("#emptySearchButton"),
+  conversationMetaDialog: document.querySelector("#conversationMetaDialog"),
+  conversationMetaForm: document.querySelector("#conversationMetaForm"),
+  closeConversationMetaButton: document.querySelector("#closeConversationMetaButton"),
+  conversationNote: document.querySelector("#conversationNote"),
+  conversationTitleInput: document.querySelector("#conversationTitleInput"),
+  conversationAvatarInput: document.querySelector("#conversationAvatarInput"),
+  conversationAvatarPreview: document.querySelector("#conversationAvatarPreview"),
+  removeConversationAvatarButton: document.querySelector("#removeConversationAvatarButton"),
+  conversationFollowUp: document.querySelector("#conversationFollowUp"),
+  conversationLabels: document.querySelector("#conversationLabels"),
+  clearConversationFollowUpButton: document.querySelector("#clearConversationFollowUpButton"),
+  scheduleDialog: document.querySelector("#scheduleDialog"),
+  scheduleForm: document.querySelector("#scheduleForm"),
+  scheduleAt: document.querySelector("#scheduleAt"),
+  schedulePreview: document.querySelector("#schedulePreview"),
+  closeScheduleButton: document.querySelector("#closeScheduleButton"),
+  cancelScheduleButton: document.querySelector("#cancelScheduleButton"),
+  confirmScheduleButton: document.querySelector("#confirmScheduleButton"),
+  contactDialog: document.querySelector("#contactDialog"),
+  contactForm: document.querySelector("#contactForm"),
+  closeContactDialogButton: document.querySelector("#closeContactDialogButton"),
+  cancelContactButton: document.querySelector("#cancelContactButton"),
+  saveContactButton: document.querySelector("#saveContactButton"),
+  contactMatchHandle: document.querySelector("#contactMatchHandle"),
+  contactFirstName: document.querySelector("#contactFirstName"),
+  contactLastName: document.querySelector("#contactLastName"),
+  contactOrganization: document.querySelector("#contactOrganization"),
+  contactPhone: document.querySelector("#contactPhone"),
+  contactEmail: document.querySelector("#contactEmail"),
   toastRegion: document.querySelector("#toastRegion"),
 };
 
@@ -148,16 +202,17 @@ function savedConversationContact(conversation) {
 function conversationName(conversation) {
   const localTitle = String(conversation?.title || "").trim();
   if (localTitle) return localTitle;
+  const displayName = String(conversation?.display_name || "").trim();
+  if (conversation?.chat_type === "group" && displayName) return displayName;
   const contact = savedConversationContact(conversation);
   if (contact?.display_name) return contact.display_name;
-  const displayName = String(conversation?.display_name || "").trim();
   if (displayName) return displayName;
   const participants = conversationParticipants(conversation);
   return participants[0] || "Unknown conversation";
 }
 
 function conversationTimestamp(conversation) {
-  const raw = conversation?.last_message_ts || conversation?.updated_at || conversation?.management_updated_at || "";
+  const raw = conversation?.last_message_ts || "";
   const timestamp = Date.parse(raw);
   return Number.isNaN(timestamp) ? 0 : timestamp;
 }
@@ -169,6 +224,13 @@ function sortedConversations(rows = state.conversations) {
   ));
 }
 
+function hasCachedMessage(conversation) {
+  return Boolean(
+    conversation?.last_message_provider_id
+    && (String(conversation?.last_message_preview || "").trim() || conversation?.last_message_has_attachments),
+  );
+}
+
 function sourceMatches(conversation) {
   return state.source === "all" || providerKey(conversation?.source_provider) === state.source;
 }
@@ -176,6 +238,8 @@ function sourceMatches(conversation) {
 function visibleConversations() {
   return sortedConversations(state.conversations.filter((conversation) => (
     sourceMatches(conversation)
+    && hasCachedMessage(conversation)
+    && (!state.activeLabel || (conversation.labels || []).includes(state.activeLabel))
     && !conversation.is_archived
     && conversation.status !== "disconnected"
     && !conversation.excluded
@@ -238,11 +302,18 @@ function createIcon(id) {
   return svg;
 }
 
-function avatarFor(name, provider, { large = false } = {}) {
+function avatarFor(name, provider, { large = false, imageUrl = "" } = {}) {
   const avatar = document.createElement("span");
   avatar.className = `person-avatar${large ? " large" : ""}`;
   avatar.dataset.provider = provider;
-  avatar.textContent = initials(name);
+  if (imageUrl) {
+    const image = document.createElement("img");
+    image.src = imageUrl;
+    image.alt = "";
+    avatar.append(image);
+  } else {
+    avatar.textContent = initials(name);
+  }
   if (!large) {
     const dot = document.createElement("span");
     dot.className = `avatar-provider ${provider}`;
@@ -257,6 +328,31 @@ function toast(message, kind = "") {
   item.textContent = message;
   el.toastRegion.append(item);
   window.setTimeout(() => item.remove(), 3600);
+}
+
+function actionToast(message, actionLabel, onAction, duration = 15000) {
+  const item = document.createElement("div");
+  item.className = "toast action-toast";
+  const copy = document.createElement("span");
+  copy.textContent = message;
+  const action = document.createElement("button");
+  action.type = "button";
+  action.textContent = actionLabel;
+  let active = true;
+  const dismiss = () => {
+    if (!active) return;
+    active = false;
+    item.remove();
+  };
+  action.addEventListener("click", () => {
+    if (!active) return;
+    onAction();
+    dismiss();
+  });
+  item.append(copy, action);
+  el.toastRegion.append(item);
+  window.setTimeout(dismiss, duration);
+  return dismiss;
 }
 
 function skeletonRows(target, count = 6) {
@@ -276,23 +372,81 @@ function skeletonRows(target, count = 6) {
 
 function renderView() {
   const searching = Boolean(state.search.query);
-  el.paneTitle.textContent = state.view === "people" ? "People" : "Inbox";
+  const titles = { inbox: "Inbox", people: "People", files: "Files", links: "Links", queue: "Queue" };
+  el.paneTitle.textContent = titles[state.view] || "Inbox";
+  el.globalSearch.placeholder = state.view === "links"
+    ? "Search shared links"
+    : (state.view === "files" ? "Search messages and files" : "Search messages and people");
+  el.addContactButton.hidden = state.view !== "people";
   for (const button of el.navButtons) {
     const active = button.dataset.view === state.view;
     button.classList.toggle("active", active);
     button.setAttribute("aria-current", active ? "page" : "false");
   }
+  for (const button of el.viewTabButtons) {
+    const active = button.dataset.viewTab === state.view;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  }
   el.conversationList.hidden = searching || state.view !== "inbox";
   el.peopleList.hidden = searching || state.view !== "people";
+  el.filesList.hidden = searching || state.view !== "files";
+  el.linksList.hidden = state.view !== "links";
+  el.queueList.hidden = searching || state.view !== "queue";
   el.searchList.hidden = !searching;
-  el.sourceTabs.hidden = state.view === "people" && !searching;
+  el.sourceTabs.hidden = ["people", "files", "links", "queue"].includes(state.view) && !searching;
+  el.labelBar.hidden = searching || state.view !== "inbox";
+  renderLabelBar();
   renderConversationList();
   renderPeopleList();
+  renderFilesList();
+  renderLinksList();
+  renderQueueList();
   renderSearchResults();
+}
+
+function allConversationLabels() {
+  return [...new Set(
+    state.conversations.flatMap((conversation) => (
+      Array.isArray(conversation.labels) ? conversation.labels : []
+    )),
+  )].sort((a, b) => a.localeCompare(b));
+}
+
+function renderLabelBar() {
+  el.labelBar.replaceChildren();
+  if (state.view !== "inbox" || state.search.query) return;
+  const labels = allConversationLabels();
+  const folderMark = document.createElement("span");
+  folderMark.className = "label-bar-title";
+  folderMark.innerHTML = '<svg><use href="#i-folder"></use></svg><span>Folders</span>';
+  el.labelBar.append(folderMark);
+
+  const options = [{ value: "", name: "All" }, ...labels.map((label) => ({ value: label, name: label }))];
+  for (const option of options) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "label-filter";
+    button.classList.toggle("active", state.activeLabel === option.value);
+    button.textContent = option.name;
+    button.addEventListener("click", () => {
+      state.activeLabel = option.value;
+      state.conversationsVisible = 300;
+      renderView();
+    });
+    el.labelBar.append(button);
+  }
+  if (!labels.length) {
+    const hint = document.createElement("span");
+    hint.className = "label-bar-hint";
+    hint.textContent = "Label a chat to create one";
+    el.labelBar.append(hint);
+  }
 }
 
 function renderConversationList() {
   const rows = visibleConversations();
+  const visibleRows = rows.slice(0, state.conversationsVisible);
   el.conversationList.replaceChildren();
   el.listSummary.textContent = `${rows.length} conversation${rows.length === 1 ? "" : "s"} · latest first`;
   if (!rows.length) {
@@ -305,7 +459,7 @@ function renderConversationList() {
     return;
   }
 
-  for (const conversation of rows) {
+  for (const conversation of visibleRows) {
     const row = document.createElement("button");
     row.type = "button";
     row.className = "conversation-row";
@@ -317,7 +471,7 @@ function renderConversationList() {
 
     const provider = providerKey(conversation.source_provider);
     const name = conversationName(conversation);
-    row.append(avatarFor(name, provider));
+    row.append(avatarFor(name, provider, { imageUrl: conversation.avatar_data_url || "" }));
 
     const copy = document.createElement("span");
     copy.className = "conversation-copy";
@@ -329,7 +483,7 @@ function renderConversationList() {
     const time = document.createElement("time");
     time.className = "conversation-time";
     time.dateTime = conversation.last_message_ts || "";
-    time.textContent = timeLabel(conversation.last_message_ts || conversation.updated_at);
+    time.textContent = timeLabel(conversation.last_message_ts);
     top.append(nameNode, time);
 
     const preview = document.createElement("span");
@@ -347,6 +501,13 @@ function renderConversationList() {
       || (conversation.last_message_has_attachments ? "Attachment" : "No messages cached yet"),
     ));
     preview.append(previewText);
+    const labels = Array.isArray(conversation.labels) ? conversation.labels : [];
+    if (labels.length) {
+      const label = document.createElement("span");
+      label.className = "conversation-label";
+      label.textContent = labels[0];
+      preview.append(label);
+    }
     if (Number(conversation.unread_count || 0) > 0) {
       const unread = document.createElement("span");
       unread.className = "unread-count";
@@ -357,6 +518,17 @@ function renderConversationList() {
     row.append(copy);
     row.addEventListener("click", () => selectConversation(conversation));
     el.conversationList.append(row);
+  }
+  if (state.conversationsVisible < rows.length) {
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "secondary-button people-load-more";
+    more.textContent = `Show ${Math.min(300, rows.length - state.conversationsVisible)} more`;
+    more.addEventListener("click", () => {
+      state.conversationsVisible += 300;
+      renderConversationList();
+    });
+    el.conversationList.append(more);
   }
 }
 
@@ -405,7 +577,8 @@ function renderPersonRow(contact, target, { closeDialog = false } = {}) {
 function renderPeopleList() {
   if (state.view !== "people" || state.search.query) return;
   el.peopleList.replaceChildren();
-  el.listSummary.textContent = `${state.contacts.length} people from Contacts and conversations`;
+  const visibleCount = Math.min(state.peopleVisible, state.contacts.length);
+  el.listSummary.textContent = `${visibleCount} shown · ${state.contacts.length} people loaded`;
   if (!state.contacts.length) {
     const empty = document.createElement("div");
     empty.className = "pane-empty";
@@ -413,7 +586,216 @@ function renderPeopleList() {
     el.peopleList.append(empty);
     return;
   }
-  for (const contact of state.contacts) renderPersonRow(contact, el.peopleList);
+  for (const contact of state.contacts.slice(0, state.peopleVisible)) renderPersonRow(contact, el.peopleList);
+  if (state.peopleVisible < state.contacts.length) {
+    const loadMore = document.createElement("button");
+    loadMore.type = "button";
+    loadMore.className = "secondary-button people-load-more";
+    const remaining = state.contacts.length - state.peopleVisible;
+    loadMore.textContent = `Show ${Math.min(200, remaining)} more`;
+    loadMore.addEventListener("click", () => {
+      state.peopleVisible += 200;
+      renderPeopleList();
+    });
+    el.peopleList.append(loadMore);
+  }
+}
+
+function renderFilesList() {
+  if (state.view !== "files" || state.search.query) return;
+  el.filesList.replaceChildren();
+  const visible = state.files.slice(0, state.filesVisible);
+  el.listSummary.textContent = `${visible.length} shown · ${state.files.length} files loaded`;
+  if (!visible.length) {
+    const empty = document.createElement("div");
+    empty.className = "pane-empty";
+    empty.textContent = "No cached attachments yet.";
+    el.filesList.append(empty);
+    return;
+  }
+  for (const file of visible) {
+    const row = document.createElement("article");
+    row.className = "file-row";
+    const preview = renderInlineAttachment(file.message, file.attachment, file.attachmentIndex);
+    preview.classList?.add("file-preview");
+    const info = document.createElement("button");
+    info.type = "button";
+    info.className = "file-info";
+    const name = document.createElement("strong");
+    name.textContent = attachmentLabel(file.attachment);
+    const context = document.createElement("span");
+    context.textContent = `${file.conversationName} · ${timeLabel(file.message.message_timestamp)}`;
+    info.append(name, context);
+    info.addEventListener("click", () => {
+      const conversation = state.conversations.find(
+        (item) => item.conversation_id === file.message.conversation_id,
+      );
+      if (conversation) openSearchConversation(conversation, file.message.provider_message_id);
+    });
+    row.append(preview, info);
+    el.filesList.append(row);
+  }
+  if (state.filesVisible < state.files.length) {
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "secondary-button people-load-more";
+    more.textContent = `Show ${Math.min(100, state.files.length - state.filesVisible)} more`;
+    more.addEventListener("click", () => {
+      state.filesVisible += 100;
+      renderFilesList();
+    });
+    el.filesList.append(more);
+  }
+}
+
+function messageLinks(message) {
+  const text = [message?.body_text, message?.subject]
+    .filter(Boolean)
+    .join("\n");
+  const matches = text.match(/\b(?:https?:\/\/|www\.)[^\s<>"']+/gi) || [];
+  return [...new Set(matches.map((raw) => {
+    const clean = raw.replace(/[),.;!?]+$/g, "");
+    return clean.toLowerCase().startsWith("www.") ? `https://${clean}` : clean;
+  }))];
+}
+
+function linkHostname(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch (_error) {
+    return url;
+  }
+}
+
+function visibleLinks() {
+  const needle = state.linksQuery.trim().toLowerCase();
+  if (!needle) return state.links;
+  return state.links.filter((link) => (
+    [
+      link.url,
+      link.hostname,
+      link.conversationName,
+      link.message.body_text,
+      link.message.sender_name,
+    ].join(" ").toLowerCase().includes(needle)
+  ));
+}
+
+function renderLinksList() {
+  if (state.view !== "links") return;
+  el.linksList.replaceChildren();
+  const matching = visibleLinks();
+  const visible = matching.slice(0, state.linksVisible);
+  el.listSummary.textContent = `${matching.length} shared link${matching.length === 1 ? "" : "s"}`;
+  if (!visible.length) {
+    const empty = document.createElement("div");
+    empty.className = "pane-empty";
+    empty.textContent = state.linksQuery ? "No shared links match that search." : "No cached shared links yet.";
+    el.linksList.append(empty);
+    return;
+  }
+  for (const link of visible) {
+    const row = document.createElement("article");
+    row.className = "link-row";
+
+    const favicon = document.createElement("span");
+    favicon.className = "link-favicon";
+    favicon.textContent = link.hostname.slice(0, 1).toUpperCase() || "↗";
+
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "link-copy";
+    const hostname = document.createElement("strong");
+    hostname.textContent = link.hostname;
+    const path = document.createElement("span");
+    path.textContent = link.url;
+    const context = document.createElement("small");
+    context.textContent = `${link.conversationName} · ${timeLabel(link.message.message_timestamp)}`;
+    copy.append(hostname, path, context);
+    copy.addEventListener("click", () => {
+      const conversation = state.conversations.find(
+        (item) => item.conversation_id === link.message.conversation_id,
+      );
+      if (conversation) openSearchConversation(conversation, link.message.provider_message_id);
+    });
+
+    const open = document.createElement("a");
+    open.className = "link-open";
+    open.href = link.url;
+    open.target = "_blank";
+    open.rel = "noopener noreferrer";
+    open.title = `Open ${link.hostname}`;
+    open.setAttribute("aria-label", `Open ${link.hostname}`);
+    open.textContent = "↗";
+    row.append(favicon, copy, open);
+    el.linksList.append(row);
+  }
+  if (state.linksVisible < matching.length) {
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "secondary-button people-load-more";
+    more.textContent = `Show ${Math.min(150, matching.length - state.linksVisible)} more`;
+    more.addEventListener("click", () => {
+      state.linksVisible += 150;
+      renderLinksList();
+    });
+    el.linksList.append(more);
+  }
+}
+
+function renderQueueList() {
+  if (state.view !== "queue" || state.search.query) return;
+  el.queueList.replaceChildren();
+  el.listSummary.textContent = `${state.queue.length} queued message${state.queue.length === 1 ? "" : "s"}`;
+  if (!state.queue.length) {
+    const empty = document.createElement("div");
+    empty.className = "pane-empty";
+    empty.textContent = "Your local delivery queue is empty.";
+    el.queueList.append(empty);
+    return;
+  }
+  for (const item of state.queue) {
+    const row = document.createElement("article");
+    row.className = `queue-row ${item.status}`;
+    const icon = document.createElement("span");
+    icon.className = "scheduled-item-icon";
+    icon.append(createIcon(item.status === "failed" ? "i-close" : "i-clock"));
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "queue-row-copy";
+    const name = document.createElement("strong");
+    name.textContent = item.display_name || "Conversation";
+    const message = document.createElement("span");
+    message.textContent = truncate(item.message || `${item.attachment_count} attachment${item.attachment_count === 1 ? "" : "s"}`, 80);
+    const when = document.createElement("small");
+    when.textContent = item.last_error
+      ? `Offline · retrying · ${item.attempt_count} attempt${item.attempt_count === 1 ? "" : "s"}`
+      : `${item.status === "sending" ? "Sending" : "Scheduled"} · ${timeLabel(item.scheduled_at)}`;
+    copy.append(name, message, when);
+    copy.addEventListener("click", () => {
+      const conversation = state.conversations.find(
+        (candidate) => candidate.conversation_id === item.conversation_id,
+      );
+      if (conversation) {
+        state.view = "inbox";
+        renderView();
+        selectConversation(conversation);
+      }
+    });
+    row.append(icon, copy);
+    if (item.status === "scheduled") {
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "scheduled-cancel";
+      cancel.textContent = "Cancel";
+      cancel.addEventListener("click", async () => {
+        await cancelScheduledMessage(item.scheduled_id);
+        await loadQueue();
+      });
+      row.append(cancel);
+    }
+    el.queueList.append(row);
+  }
 }
 
 function conversationsForContact(contact) {
@@ -443,6 +825,7 @@ function searchConversationRows(query) {
   const needle = query.trim().toLowerCase();
   if (!needle) return [];
   return sortedConversations(state.conversations.filter((conversation) => {
+    if (!hasCachedMessage(conversation)) return false;
     const contacts = Array.isArray(conversation.contact_context) ? conversation.contact_context : [];
     const haystack = [
       conversationName(conversation),
@@ -554,7 +937,10 @@ function renderThreadHeader() {
   if (!conversation) {
     el.threadEmpty.hidden = false;
     el.threadContent.hidden = true;
-    el.agentContextLabel.textContent = "No chat selected";
+    el.agentContextLabel.textContent = "Across inbox";
+    el.threadNoteButton.classList.remove("active");
+    el.threadLabelButton.classList.remove("active");
+    el.threadReminderButton.classList.remove("active");
     updateAgentButton();
     return;
   }
@@ -562,7 +948,10 @@ function renderThreadHeader() {
   el.threadContent.hidden = false;
   const name = conversationName(conversation);
   const provider = providerKey(conversation.source_provider);
-  el.threadAvatar.replaceWith(avatarFor(name, provider, { large: true }));
+  el.threadAvatar.replaceWith(avatarFor(name, provider, {
+    large: true,
+    imageUrl: conversation.avatar_data_url || "",
+  }));
   el.threadAvatar = document.querySelector(".thread-header .person-avatar");
   el.threadAvatar.id = "threadAvatar";
   el.threadTitle.textContent = name;
@@ -575,9 +964,10 @@ function renderThreadHeader() {
     conversation.chat_type === "group" ? `${participants.length} participants` : participants[0] || "",
     conversation.status !== "active" ? conversation.status : "",
   ].filter(Boolean).join(" · ") || "Local conversation";
-  el.agentContextLabel.textContent = state.agent.scope === "thread"
-    ? `${providerLabel(provider)} · ${name}`
-    : "Searches the local message cache";
+  el.agentContextLabel.textContent = `${name} first · then inbox`;
+  el.threadNoteButton.classList.toggle("active", Boolean(conversation.note));
+  el.threadLabelButton.classList.toggle("active", Boolean(conversation.labels?.length));
+  el.threadReminderButton.classList.toggle("active", Boolean(conversation.follow_up_at));
   updateAgentButton();
 }
 
@@ -592,7 +982,99 @@ function messageAttachments(message) {
   return Array.isArray(message?.metadata?.attachments) ? message.metadata.attachments : [];
 }
 
-function renderMessages({ focusMessageId = "" } = {}) {
+function attachmentLabel(attachment) {
+  return basename(attachment?.transfer_name || attachment?.filename || attachment?.mime_type || "Attachment");
+}
+
+function attachmentMimeType(attachment) {
+  const explicit = String(attachment?.mime_type || "").toLowerCase();
+  const filename = attachmentLabel(attachment).toLowerCase();
+  if (explicit.includes("/")) return explicit;
+  if (/\.(png|jpe?g|gif|webp|heic|heif)$/.test(filename)) return "image/unknown";
+  if (/\.(mp4|mov|m4v|webm)$/.test(filename)) return "video/unknown";
+  if (/\.(mp3|m4a|aac|wav|ogg|opus)$/.test(filename)) return "audio/unknown";
+  if (filename.endsWith(".pdf")) return "application/pdf";
+  if (explicit === "image") return "image/unknown";
+  if (explicit === "video") return "video/unknown";
+  if (explicit === "audio") return "audio/unknown";
+  return "application/octet-stream";
+}
+
+function attachmentUrl(message, index, { inline = true } = {}) {
+  const conversationId = encodeURIComponent(message.conversation_id || state.selected?.conversation_id || "");
+  const messageId = encodeURIComponent(message.provider_message_id || "");
+  return `/penguin-connect/conversations/${conversationId}/attachments/${index}?provider_message_id=${messageId}${inline ? "&inline=true" : ""}`;
+}
+
+function attachmentFileLink(message, attachment, index) {
+  const item = document.createElement("a");
+  item.className = "message-attachment";
+  item.href = attachmentUrl(message, index, { inline: false });
+  item.target = "_blank";
+  item.rel = "noreferrer";
+  item.append(createIcon("i-paperclip"));
+  const label = document.createElement("span");
+  label.textContent = attachmentLabel(attachment);
+  item.append(label);
+  return item;
+}
+
+function renderInlineAttachment(message, attachment, index) {
+  const mimeType = attachmentMimeType(attachment);
+  const url = attachmentUrl(message, index);
+  const label = attachmentLabel(attachment);
+  const wrapper = document.createElement("div");
+  wrapper.className = "message-attachment-preview";
+
+  if (mimeType.startsWith("image/")) {
+    const link = document.createElement("a");
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    const image = document.createElement("img");
+    image.src = url;
+    image.alt = label;
+    image.loading = "lazy";
+    image.addEventListener("error", () => wrapper.replaceWith(attachmentFileLink(message, attachment, index)));
+    link.append(image);
+    wrapper.append(link);
+    return wrapper;
+  }
+  if (mimeType.startsWith("video/")) {
+    const video = document.createElement("video");
+    video.src = url;
+    video.controls = true;
+    video.preload = "metadata";
+    video.setAttribute("playsinline", "");
+    video.setAttribute("aria-label", label);
+    video.addEventListener("error", () => wrapper.replaceWith(attachmentFileLink(message, attachment, index)));
+    wrapper.append(video);
+    return wrapper;
+  }
+  if (mimeType.startsWith("audio/")) {
+    const audio = document.createElement("audio");
+    audio.src = url;
+    audio.controls = true;
+    audio.preload = "metadata";
+    audio.setAttribute("aria-label", label);
+    audio.addEventListener("error", () => wrapper.replaceWith(attachmentFileLink(message, attachment, index)));
+    wrapper.append(audio, attachmentFileLink(message, attachment, index));
+    return wrapper;
+  }
+  if (mimeType === "application/pdf") {
+    const frame = document.createElement("iframe");
+    frame.src = `${url}#toolbar=0&navpanes=0`;
+    frame.title = label;
+    frame.loading = "lazy";
+    wrapper.append(frame, attachmentFileLink(message, attachment, index));
+    return wrapper;
+  }
+  return attachmentFileLink(message, attachment, index);
+}
+
+function renderMessages({ focusMessageId = "", preserveScroll = false } = {}) {
+  const previousScrollTop = el.messageList.scrollTop;
+  const previousBottomDistance = el.messageList.scrollHeight - el.messageList.clientHeight - el.messageList.scrollTop;
   el.messageList.replaceChildren();
   if (!state.messages.length) {
     const empty = document.createElement("div");
@@ -645,14 +1127,8 @@ function renderMessages({ focusMessageId = "" } = {}) {
     if (attachments.length) {
       const list = document.createElement("div");
       list.className = "message-attachments";
-      for (const attachment of attachments) {
-        const item = document.createElement("span");
-        item.className = "message-attachment";
-        item.append(createIcon("i-paperclip"));
-        const label = document.createElement("span");
-        label.textContent = basename(attachment.transfer_name || attachment.filename || attachment.mime_type);
-        item.append(label);
-        list.append(item);
+      for (const [index, attachment] of attachments.entries()) {
+        list.append(renderInlineAttachment(message, attachment, index));
       }
       bubble.append(list);
     }
@@ -678,12 +1154,18 @@ function renderMessages({ focusMessageId = "" } = {}) {
   const focused = focusMessageId
     ? el.messageList.querySelector(`[data-message-id="${CSS.escape(focusMessageId)}"]`)
     : null;
-  (focused || el.messageList.lastElementChild)?.scrollIntoView({ block: focused ? "center" : "end" });
+  if (preserveScroll && previousBottomDistance > 80 && !focused) {
+    el.messageList.scrollTop = previousScrollTop;
+  } else {
+    (focused || el.messageList.lastElementChild)?.scrollIntoView({ block: focused ? "center" : "end" });
+  }
 }
 
 async function selectConversation(conversation, { focusMessageId = "" } = {}) {
   state.selected = conversation;
   state.messages = [];
+  state.scheduledMessages = [];
+  renderScheduledQueue();
   el.shell.classList.add("thread-open");
   renderConversationList();
   renderThreadHeader();
@@ -695,11 +1177,37 @@ async function selectConversation(conversation, { focusMessageId = "" } = {}) {
     if (state.selected?.conversation_id !== conversation.conversation_id) return;
     state.messages = payload.messages || [];
     renderMessages({ focusMessageId });
-    await markConversationRead(conversation);
+    await Promise.all([
+      markConversationRead(conversation),
+      loadScheduledMessages(conversation.conversation_id),
+    ]);
   } catch (error) {
     el.messageList.innerHTML = `<div class="pane-empty"></div>`;
     el.messageList.firstElementChild.textContent = error.message;
   }
+}
+
+function messagesFingerprint(messages) {
+  return (messages || []).map((message) => [
+    message.provider_message_id,
+    message.message_timestamp,
+    message.body_text,
+    message.is_read,
+    messageAttachments(message).length,
+  ].join(":")).join("|");
+}
+
+async function refreshSelectedMessages() {
+  const conversationId = state.selected?.conversation_id;
+  if (!conversationId) return;
+  const payload = await api(
+    `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/messages?limit=300`,
+  );
+  if (state.selected?.conversation_id !== conversationId) return;
+  const nextMessages = payload.messages || [];
+  if (messagesFingerprint(nextMessages) === messagesFingerprint(state.messages)) return;
+  state.messages = nextMessages;
+  renderMessages({ preserveScroll: true });
 }
 
 async function markConversationRead(conversation) {
@@ -748,6 +1256,77 @@ function resizeComposer() {
 function updateSendButton() {
   const hasContent = Boolean(el.messageComposer.value.trim() || state.attachments.length);
   el.sendButton.disabled = !state.selected || !hasContent;
+  el.scheduleSendButton.disabled = !state.selected || !hasContent;
+}
+
+function renderScheduledQueue() {
+  el.scheduledQueue.replaceChildren();
+  const queued = state.scheduledMessages.filter((item) => (
+    ["scheduled", "sending", "failed"].includes(item.status)
+  ));
+  el.scheduledQueue.hidden = !queued.length;
+  for (const item of queued.slice(0, 4)) {
+    const row = document.createElement("div");
+    row.className = `scheduled-item ${item.status}`;
+    const icon = document.createElement("span");
+    icon.className = "scheduled-item-icon";
+    icon.append(createIcon(item.status === "failed" ? "i-close" : "i-clock"));
+    const copy = document.createElement("span");
+    copy.className = "scheduled-item-copy";
+    const message = document.createElement("strong");
+    message.textContent = truncate(item.message || `${item.attachment_count} attachment${item.attachment_count === 1 ? "" : "s"}`, 72);
+    const meta = document.createElement("small");
+    const when = new Date(item.scheduled_at);
+    const whenText = Number.isNaN(when.getTime())
+      ? "Queued"
+      : new Intl.DateTimeFormat(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      }).format(when);
+    meta.textContent = item.status === "sending"
+      ? "Sending now…"
+      : (item.last_error ? `Offline · retry ${whenText}` : `Scheduled ${whenText}`);
+    copy.append(message, meta);
+    row.append(icon, copy);
+    if (item.status === "scheduled") {
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "scheduled-cancel";
+      cancel.textContent = "Cancel";
+      cancel.addEventListener("click", () => cancelScheduledMessage(item.scheduled_id));
+      row.append(cancel);
+    }
+    el.scheduledQueue.append(row);
+  }
+}
+
+async function loadScheduledMessages(conversationId = state.selected?.conversation_id) {
+  if (!conversationId) {
+    state.scheduledMessages = [];
+    renderScheduledQueue();
+    return;
+  }
+  const payload = await api(
+    `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/scheduled-messages`,
+  );
+  if (state.selected?.conversation_id !== conversationId) return;
+  state.scheduledMessages = payload.scheduled_messages || [];
+  renderScheduledQueue();
+}
+
+async function cancelScheduledMessage(scheduledId) {
+  try {
+    await api(`/penguin-connect/scheduled-messages/${encodeURIComponent(scheduledId)}/cancel`, {
+      method: "POST",
+      body: "{}",
+    });
+    await loadScheduledMessages();
+    toast("Scheduled message cancelled");
+  } catch (error) {
+    toast(error.message, "error");
+  }
 }
 
 function renderAttachmentPreview() {
@@ -791,44 +1370,159 @@ function fileAsAttachment(file) {
   });
 }
 
-async function sendMessage() {
-  if (!state.selected || el.sendButton.disabled) return;
-  const conversation = state.selected;
-  const text = el.messageComposer.value.trim();
-  const files = [...state.attachments];
-  el.sendButton.disabled = true;
-  el.composerStatus.textContent = `Sending through ${providerLabel(conversation.source_provider)}…`;
+async function deliverPendingSend(pending) {
+  if (pending.cancelled) return;
+  state.pendingSends = state.pendingSends.filter((item) => item.id !== pending.id);
+  if (state.selected?.conversation_id === pending.conversation.conversation_id) {
+    el.composerStatus.textContent = `Sending through ${providerLabel(pending.conversation.source_provider)}…`;
+  }
   try {
-    const attachments = await Promise.all(files.map(fileAsAttachment));
-    await api(`/penguin-connect/conversations/${encodeURIComponent(conversation.conversation_id)}/send`, {
+    const attachments = await Promise.all(pending.files.map(fileAsAttachment));
+    await api(`/penguin-connect/conversations/${encodeURIComponent(pending.conversation.conversation_id)}/scheduled-messages`, {
       method: "POST",
       body: JSON.stringify({
         sender_email: "",
-        message: text,
+        message: pending.text,
         attachments,
+        scheduled_at: new Date(Date.now() + 1500).toISOString(),
       }),
     });
+    if (state.selected?.conversation_id === pending.conversation.conversation_id) {
+      el.composerStatus.textContent = `Queued for ${providerLabel(pending.conversation.source_provider)} · offline retry enabled`;
+      await loadScheduledMessages(pending.conversation.conversation_id);
+    }
+    window.setTimeout(async () => {
+      try {
+        await api("/penguin-connect/scheduled-messages/run-due", {
+          method: "POST",
+          body: "{}",
+        });
+        await Promise.all([
+          loadConversations({ keepSelection: true }),
+          state.selected?.conversation_id === pending.conversation.conversation_id
+            ? refreshSelectedMessages()
+            : Promise.resolve(),
+          state.selected?.conversation_id === pending.conversation.conversation_id
+            ? loadScheduledMessages(pending.conversation.conversation_id)
+            : Promise.resolve(),
+        ]);
+      } catch (_error) {
+        // The durable worker owns retrying; the UI can safely go away.
+      }
+    }, 1800);
+  } catch (error) {
+    if (state.selected?.conversation_id === pending.conversation.conversation_id) {
+      el.composerStatus.textContent = error.message;
+    }
+    toast(`Could not send: ${error.message}`, "error");
+  }
+}
+
+function defaultScheduleValue() {
+  const date = new Date(Date.now() + 60 * 60 * 1000);
+  date.setMinutes(Math.ceil(date.getMinutes() / 5) * 5, 0, 0);
+  const offset = date.getTimezoneOffset() * 60000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
+
+function openScheduleDialog() {
+  if (!state.selected || el.scheduleSendButton.disabled) return;
+  el.scheduleAt.value = defaultScheduleValue();
+  el.schedulePreview.textContent = truncate(
+    el.messageComposer.value.trim()
+      || `${state.attachments.length} attachment${state.attachments.length === 1 ? "" : "s"}`,
+    180,
+  );
+  el.scheduleDialog.showModal();
+  window.setTimeout(() => el.scheduleAt.focus(), 0);
+}
+
+async function scheduleCurrentMessage(event) {
+  event.preventDefault();
+  if (!state.selected || !el.scheduleAt.value || el.confirmScheduleButton.disabled) return;
+  const scheduledAt = new Date(el.scheduleAt.value);
+  if (Number.isNaN(scheduledAt.getTime()) || scheduledAt.getTime() <= Date.now()) {
+    toast("Choose a future delivery time.", "error");
+    return;
+  }
+  el.confirmScheduleButton.disabled = true;
+  el.confirmScheduleButton.textContent = "Queuing…";
+  try {
+    const attachments = await Promise.all(state.attachments.map(fileAsAttachment));
+    await api(
+      `/penguin-connect/conversations/${encodeURIComponent(state.selected.conversation_id)}/scheduled-messages`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          sender_email: "",
+          message: el.messageComposer.value.trim(),
+          attachments,
+          scheduled_at: scheduledAt.toISOString(),
+        }),
+      },
+    );
     el.messageComposer.value = "";
     state.attachments = [];
     renderAttachmentPreview();
     resizeComposer();
-    el.composerStatus.textContent = `Sent through ${providerLabel(conversation.source_provider)}`;
-    await Promise.all([
-      loadConversations({ keepSelection: true }),
-      selectConversation(conversation),
-    ]);
-  } catch (error) {
-    el.composerStatus.textContent = error.message;
-    toast(`Could not send: ${error.message}`, "error");
-  } finally {
     updateSendButton();
+    el.scheduleDialog.close();
+    await loadScheduledMessages();
+    el.composerStatus.textContent = "Scheduled locally · offline retry enabled";
+    toast("Message added to the local queue");
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    el.confirmScheduleButton.disabled = false;
+    el.confirmScheduleButton.textContent = "Add to queue";
   }
 }
 
-async function loadConversations({ keepSelection = true } = {}) {
-  if (!state.conversations.length) skeletonRows(el.conversationList, 7);
+function undoPendingSend(pending) {
+  if (pending.cancelled) return;
+  pending.cancelled = true;
+  window.clearTimeout(pending.timer);
+  state.pendingSends = state.pendingSends.filter((item) => item.id !== pending.id);
+  if (state.selected?.conversation_id === pending.conversation.conversation_id) {
+    if (!el.messageComposer.value.trim()) el.messageComposer.value = pending.text;
+    state.attachments.push(...pending.files);
+    renderAttachmentPreview();
+    resizeComposer();
+    updateSendButton();
+    el.composerStatus.textContent = "Send undone · draft restored";
+  }
+  toast("Send undone");
+}
+
+function sendMessage() {
+  if (!state.selected || el.sendButton.disabled) return;
+  const pending = {
+    id: `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    conversation: state.selected,
+    text: el.messageComposer.value.trim(),
+    files: [...state.attachments],
+    cancelled: false,
+    timer: 0,
+  };
+  state.pendingSends.push(pending);
+  el.messageComposer.value = "";
+  state.attachments = [];
+  renderAttachmentPreview();
+  resizeComposer();
+  updateSendButton();
+  el.composerStatus.textContent = "Sending in 15 seconds · Undo available";
+  pending.timer = window.setTimeout(() => deliverPendingSend(pending), 15000);
+  actionToast("Message queued for 15 seconds", "Undo", () => undoPendingSend(pending), 15000);
+}
+
+async function loadConversations({ keepSelection = true, discoverWhatsApp = false } = {}) {
+  if (!state.conversations.length) {
+    el.listSummary.textContent = "Loading conversations";
+    skeletonRows(el.conversationList, 7);
+  }
   try {
-    const payload = await api("/penguin-connect/conversations?include_whatsapp=true");
+    const suffix = discoverWhatsApp ? "?include_whatsapp=true" : "";
+    const payload = await api(`/penguin-connect/conversations${suffix}`);
     state.conversations = payload.conversations || [];
     if (keepSelection && state.selected) {
       state.selected = state.conversations.find(
@@ -850,11 +1544,70 @@ async function loadConversations({ keepSelection = true } = {}) {
 
 async function loadContacts(query = "") {
   if (state.view === "people" && !state.contacts.length && !query) skeletonRows(el.peopleList, 7);
+  const limit = query ? 500 : 5000;
   const payload = await api(
-    `/penguin-connect/contacts?search=${encodeURIComponent(query)}&limit=100&source=all`,
+    `/penguin-connect/contacts?search=${encodeURIComponent(query)}&limit=${limit}&source=all`,
   );
-  if (!query) state.contacts = payload.contacts || [];
+  if (!query) {
+    state.contacts = payload.contacts || [];
+    state.contactsTotal = state.contacts.length;
+    state.peopleVisible = 200;
+  }
   return payload.contacts || [];
+}
+
+async function loadFiles() {
+  if (!state.files.length) skeletonRows(el.filesList, 7);
+  const payload = await api("/penguin-connect/messages/search?query=&limit=500&view=files");
+  const files = [];
+  for (const message of payload.messages || []) {
+    const conversation = state.conversations.find(
+      (item) => item.conversation_id === message.conversation_id,
+    );
+    for (const [attachmentIndex, attachment] of messageAttachments(message).entries()) {
+      files.push({
+        message,
+        attachment,
+        attachmentIndex,
+        conversationName: conversation ? conversationName(conversation) : (message.title || message.display_name || "Conversation"),
+      });
+    }
+  }
+  state.files = files;
+  state.filesVisible = 100;
+  return files;
+}
+
+async function loadLinks() {
+  if (!state.links.length) skeletonRows(el.linksList, 7);
+  const payload = await api("/penguin-connect/messages/search?query=&limit=500&view=links");
+  const links = [];
+  for (const message of payload.messages || []) {
+    const conversation = state.conversations.find(
+      (item) => item.conversation_id === message.conversation_id,
+    );
+    const name = conversation
+      ? conversationName(conversation)
+      : (message.title || message.display_name || "Conversation");
+    for (const url of messageLinks(message)) {
+      links.push({
+        url,
+        hostname: linkHostname(url),
+        message,
+        conversationName: name,
+      });
+    }
+  }
+  state.links = links;
+  state.linksVisible = 150;
+  return links;
+}
+
+async function loadQueue() {
+  if (!state.queue.length) skeletonRows(el.queueList, 6);
+  const payload = await api("/penguin-connect/scheduled-messages?limit=500");
+  state.queue = payload.scheduled_messages || [];
+  return state.queue;
 }
 
 async function loadHealth() {
@@ -910,6 +1663,12 @@ let searchTimer = 0;
 function scheduleSearch() {
   window.clearTimeout(searchTimer);
   const query = el.globalSearch.value;
+  if (state.view === "links") {
+    state.linksQuery = query;
+    state.search.query = "";
+    renderLinksList();
+    return;
+  }
   if (!query.trim()) {
     runSearch("");
     return;
@@ -922,7 +1681,10 @@ function scheduleSearch() {
 }
 
 function setView(view) {
-  state.view = view === "people" ? "people" : "inbox";
+  state.view = ["people", "files", "links", "queue"].includes(view) ? view : "inbox";
+  state.search.query = "";
+  state.linksQuery = "";
+  el.globalSearch.value = "";
   if (state.view === "people") {
     state.source = "all";
     for (const button of el.sourceTabs.querySelectorAll("button[data-source]")) {
@@ -934,11 +1696,21 @@ function setView(view) {
   if (state.view === "people" && !state.contacts.length) {
     loadContacts().then(renderPeopleList).catch((error) => toast(error.message, "error"));
   }
+  if (state.view === "files" && !state.files.length) {
+    loadFiles().then(renderFilesList).catch((error) => toast(error.message, "error"));
+  }
+  if (state.view === "links" && !state.links.length) {
+    loadLinks().then(renderLinksList).catch((error) => toast(error.message, "error"));
+  }
+  if (state.view === "queue") {
+    loadQueue().then(renderQueueList).catch((error) => toast(error.message, "error"));
+  }
   renderView();
 }
 
 function setSource(source) {
   state.source = ["all", "imessage", "whatsapp"].includes(source) ? source : "all";
+  state.conversationsVisible = 300;
   for (const button of el.sourceTabs.querySelectorAll("button[data-source]")) {
     const active = button.dataset.source === state.source;
     button.classList.toggle("active", active);
@@ -948,27 +1720,16 @@ function setSource(source) {
   else renderView();
 }
 
-function setAgentOpen(open) {
-  el.shell.classList.toggle("agent-closed", !open);
-  el.toggleAgentButton.setAttribute("aria-pressed", open ? "true" : "false");
-  if (open) el.agentQuestion.focus();
-}
-
-function setAgentScope(scope) {
-  state.agent.scope = scope === "inbox" ? "inbox" : "thread";
-  for (const button of document.querySelectorAll("[data-agent-scope]")) {
-    const active = button.dataset.agentScope === state.agent.scope;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-pressed", active ? "true" : "false");
-  }
-  renderThreadHeader();
+function setAgentOpen(focus = false) {
+  el.shell.classList.remove("agent-closed");
+  el.toggleAgentButton.setAttribute("aria-pressed", "true");
+  if (focus) el.agentQuestion.focus();
 }
 
 function updateAgentButton() {
   const hasQuestion = Boolean(el.agentQuestion.value.trim());
-  const hasContext = state.agent.scope === "inbox" || Boolean(state.selected);
   const unavailable = state.agent.status && !state.agent.status.ask_enabled;
-  el.askAgentButton.disabled = state.agent.busy || unavailable || !hasQuestion || !hasContext;
+  el.askAgentButton.disabled = state.agent.busy || unavailable || !hasQuestion;
 }
 
 function agentThreadText(limit = 30) {
@@ -992,6 +1753,8 @@ function selectedConversationPromptContext() {
     `Type: ${state.selected.chat_type || "direct"}`,
     `Participants: ${conversationParticipants(state.selected).join(", ") || "unknown"}`,
     `Latest activity: ${state.selected.last_message_ts || "unknown"}`,
+    `Private note: ${state.selected.note || "none"}`,
+    `Follow up: ${state.selected.follow_up_at || "none"}`,
   ].join("\n");
 }
 
@@ -1007,34 +1770,56 @@ async function inboxAgentContext(query) {
   }).join("\n");
 }
 
+function renderAgentHistory() {
+  el.agentAnswerContent.replaceChildren();
+  for (const item of state.agent.history) {
+    const bubble = document.createElement("div");
+    bubble.className = `agent-chat-bubble ${item.role}${item.error ? " error" : ""}`;
+    bubble.textContent = item.text;
+    el.agentAnswerContent.append(bubble);
+  }
+  if (state.agent.busy) {
+    const loading = document.createElement("div");
+    loading.className = "agent-chat-bubble assistant loading";
+    loading.textContent = "Reading local context…";
+    el.agentAnswerContent.append(loading);
+  }
+  el.agentAnswerContent.scrollTop = el.agentAnswerContent.scrollHeight;
+  el.copyAgentAnswerButton.disabled = !state.agent.answer;
+  el.retryAgentAnswerButton.disabled = state.agent.busy || !state.agent.lastQuestion;
+  el.useAgentAnswerButton.disabled = !state.agent.answer || !state.selected;
+}
+
 async function askAgent({ question = "", instruction = "" } = {}) {
   const cleanQuestion = (question || el.agentQuestion.value).trim();
   if (!cleanQuestion || state.agent.busy) return;
-  el.agentQuestion.value = cleanQuestion;
+  state.agent.lastQuestion = cleanQuestion;
+  state.agent.history.push({ role: "user", text: cleanQuestion });
+  el.agentQuestion.value = "";
   state.agent.busy = true;
   state.agent.answer = "";
   el.agentWelcome.hidden = true;
   el.agentQuickActions.hidden = true;
   el.agentAnswer.hidden = false;
-  el.agentAnswerContent.className = "agent-answer-content loading";
-  el.agentAnswerContent.textContent = "";
+  el.agentAnswerContent.className = "agent-answer-content";
   el.agentStatus.textContent = "Codex is reading local context";
   updateAgentButton();
+  renderAgentHistory();
 
   try {
-    let context = "";
-    if (state.agent.scope === "inbox") {
-      context = await inboxAgentContext(cleanQuestion);
-    } else {
-      context = [
-        selectedConversationPromptContext(),
-        "",
-        "Recent messages:",
-        agentThreadText() || "No cached messages.",
-        "",
-        `Current unsent draft: ${el.messageComposer.value.trim() || "none"}`,
-      ].join("\n");
-    }
+    const inboxContext = await inboxAgentContext(cleanQuestion);
+    const context = [
+      "Primary context — currently selected conversation:",
+      selectedConversationPromptContext(),
+      "",
+      "Recent messages in the selected conversation:",
+      agentThreadText() || "No selected conversation or cached messages.",
+      "",
+      `Current unsent draft: ${state.selected ? (el.messageComposer.value.trim() || "none") : "none"}`,
+      "",
+      "Secondary context — relevant matches across the inbox:",
+      inboxContext || "No additional matching inbox messages.",
+    ].join("\n");
     const prompt = [
       "You are helping with a private local messaging workspace that combines iMessage and WhatsApp.",
       "Use only the supplied context. Do not invent facts, relationships, dates, or commitments.",
@@ -1042,7 +1827,7 @@ async function askAgent({ question = "", instruction = "" } = {}) {
       "",
       `Question: ${cleanQuestion}`,
       instruction ? `Specific task: ${instruction}` : "",
-      `Scope: ${state.agent.scope === "inbox" ? "matching messages across the inbox" : "the selected conversation"}`,
+      "Scope: prioritize the selected conversation, then use relevant messages across the inbox.",
       "",
       "Local context:",
       context || "No matching local messages were found.",
@@ -1052,16 +1837,19 @@ async function askAgent({ question = "", instruction = "" } = {}) {
       body: JSON.stringify({ prompt }),
     });
     state.agent.answer = result.answer || "";
-    el.agentAnswerContent.className = "agent-answer-content";
-    el.agentAnswerContent.textContent = state.agent.answer;
+    state.agent.history.push({ role: "assistant", text: state.agent.answer });
     el.agentStatus.textContent = "Codex · local context";
   } catch (error) {
-    el.agentAnswerContent.className = "agent-answer-content";
-    el.agentAnswerContent.textContent = `I couldn't answer that: ${error.message}`;
+    state.agent.history.push({
+      role: "assistant",
+      text: `I couldn't answer that: ${error.message}. You can retry without losing your question.`,
+      error: true,
+    });
     el.agentStatus.textContent = error.message;
   } finally {
     state.agent.busy = false;
     updateAgentButton();
+    renderAgentHistory();
   }
 }
 
@@ -1083,6 +1871,139 @@ async function loadAgentStatus() {
   }
 }
 
+function localDateTimeValue(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value).slice(0, 16);
+  const offset = date.getTimezoneOffset() * 60000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
+
+function openConversationMeta({ focus = "note" } = {}) {
+  if (!state.selected) {
+    toast("Choose a conversation first.", "error");
+    return;
+  }
+  el.conversationTitleInput.value = state.selected.title || "";
+  el.conversationNote.value = state.selected.note || "";
+  el.conversationFollowUp.value = localDateTimeValue(state.selected.follow_up_at);
+  el.conversationLabels.value = (state.selected.labels || []).join(", ");
+  state.conversationAvatarDraft = state.selected.avatar_data_url || "";
+  renderConversationAvatarDraft();
+  el.conversationMetaDialog.showModal();
+  window.setTimeout(() => {
+    if (focus === "reminder") el.conversationFollowUp.focus();
+    else if (focus === "labels") el.conversationLabels.focus();
+    else if (focus === "title") el.conversationTitleInput.focus();
+    else el.conversationNote.focus();
+  }, 0);
+}
+
+function renderConversationAvatarDraft() {
+  el.conversationAvatarPreview.replaceChildren();
+  if (state.conversationAvatarDraft) {
+    const image = document.createElement("img");
+    image.src = state.conversationAvatarDraft;
+    image.alt = "Conversation image preview";
+    el.conversationAvatarPreview.append(image);
+  } else {
+    el.conversationAvatarPreview.textContent = initials(conversationName(state.selected));
+  }
+  el.removeConversationAvatarButton.hidden = !state.conversationAvatarDraft;
+}
+
+function readImageAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Could not read that image."));
+    reader.onload = () => {
+      const image = new Image();
+      image.onerror = () => reject(new Error("That image format could not be read."));
+      image.onload = () => {
+        const maxSize = 256;
+        const scale = Math.min(1, maxSize / Math.max(image.naturalWidth, image.naturalHeight));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+        canvas.getContext("2d").drawImage(image, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL("image/webp", 0.86));
+      };
+      image.src = String(reader.result || "");
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function updateConversationAvatarDraft() {
+  const file = el.conversationAvatarInput.files?.[0];
+  el.conversationAvatarInput.value = "";
+  if (!file) return;
+  if (file.size > 8_000_000) {
+    toast("Choose an image under 8 MB.", "error");
+    return;
+  }
+  try {
+    state.conversationAvatarDraft = await readImageAsDataUrl(file);
+    renderConversationAvatarDraft();
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+function updateSelectedConversationManagement(management) {
+  const conversationId = state.selected?.conversation_id;
+  if (!conversationId) return;
+  const index = state.conversations.findIndex((item) => item.conversation_id === conversationId);
+  if (index >= 0) Object.assign(state.conversations[index], management);
+  Object.assign(state.selected, management);
+  renderThreadHeader();
+  renderConversationList();
+}
+
+async function saveConversationMeta(event) {
+  event.preventDefault();
+  if (!state.selected) return;
+  try {
+    const result = await api(
+      `/penguin-connect/conversations/${encodeURIComponent(state.selected.conversation_id)}/management`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          title: el.conversationTitleInput.value,
+          note: el.conversationNote.value,
+          follow_up_at: el.conversationFollowUp.value,
+          labels: el.conversationLabels.value
+            .split(",")
+            .map((label) => label.trim())
+            .filter(Boolean),
+          avatar_data_url: state.conversationAvatarDraft,
+        }),
+      },
+    );
+    updateSelectedConversationManagement(result);
+    el.conversationMetaDialog.close();
+    toast("Conversation details saved");
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+function shortcutTargetIsEditable(target) {
+  return Boolean(target?.closest?.("input, textarea, select, [contenteditable='true']"));
+}
+
+function moveConversationSelection(offset) {
+  const rows = visibleConversations();
+  if (!rows.length) return;
+  const currentIndex = rows.findIndex((conversation) => (
+    conversation.conversation_id === state.selected?.conversation_id
+  ));
+  const nextIndex = currentIndex < 0
+    ? (offset > 0 ? 0 : rows.length - 1)
+    : Math.max(0, Math.min(rows.length - 1, currentIndex + offset));
+  selectConversation(rows[nextIndex]);
+}
+
 async function copyText(value) {
   try {
     await navigator.clipboard.writeText(String(value || ""));
@@ -1097,6 +2018,57 @@ function openComposeDialog() {
   renderComposeResults();
   el.composeDialog.showModal();
   window.setTimeout(() => el.composeSearch.focus(), 0);
+}
+
+function openContactDialog(contact = null) {
+  const source = contact || null;
+  const handle = source ? contactHandle(source) : "";
+  el.contactMatchHandle.value = source?.is_saved === false ? "" : handle;
+  el.contactFirstName.value = source?.first_name || "";
+  el.contactLastName.value = source?.last_name || "";
+  el.contactOrganization.value = source?.organization || "";
+  el.contactPhone.value = source?.phone || (source?.handle_type === "phone" ? handle : "");
+  el.contactEmail.value = source?.email || (source?.handle_type === "email" ? handle : "");
+  el.contactDialog.showModal();
+  window.setTimeout(() => {
+    if (el.contactFirstName.value) el.contactFirstName.focus();
+    else if (handle) el.contactFirstName.focus();
+    else el.contactMatchHandle.focus();
+  }, 0);
+}
+
+async function saveContact(event) {
+  event.preventDefault();
+  if (el.saveContactButton.disabled) return;
+  el.saveContactButton.disabled = true;
+  el.saveContactButton.textContent = "Saving…";
+  try {
+    const payload = {
+      match_handle: el.contactMatchHandle.value.trim(),
+      first_name: el.contactFirstName.value.trim(),
+      last_name: el.contactLastName.value.trim(),
+      organization: el.contactOrganization.value.trim(),
+      phones: el.contactPhone.value.trim() ? [el.contactPhone.value.trim()] : [],
+      emails: el.contactEmail.value.trim() ? [el.contactEmail.value.trim()] : [],
+      refresh_after: true,
+    };
+    const result = await api("/penguin-connect/contacts", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    await Promise.all([
+      loadContacts(),
+      loadConversations({ keepSelection: true }),
+    ]);
+    el.contactDialog.close();
+    renderView();
+    toast(result.updated ? "Contact updated" : "Contact added");
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    el.saveContactButton.disabled = false;
+    el.saveContactButton.textContent = "Save contact";
+  }
 }
 
 function renderComposeResults() {
@@ -1169,7 +2141,7 @@ async function refreshAll() {
   el.listSummary.textContent = "Refreshing local sources";
   try {
     await Promise.all([
-      loadConversations({ keepSelection: true }),
+      loadConversations({ keepSelection: true, discoverWhatsApp: true }),
       loadContacts().then((contacts) => { state.contacts = contacts; }),
       loadHealth(),
     ]);
@@ -1186,6 +2158,9 @@ async function refreshAll() {
 for (const button of el.navButtons) {
   button.addEventListener("click", () => setView(button.dataset.view));
 }
+for (const button of el.viewTabButtons) {
+  button.addEventListener("click", () => setView(button.dataset.viewTab));
+}
 
 el.sourceTabs.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-source]");
@@ -1196,7 +2171,12 @@ el.globalSearch.addEventListener("input", scheduleSearch);
 el.globalSearch.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     el.globalSearch.value = "";
-    runSearch("");
+    if (state.view === "links") {
+      state.linksQuery = "";
+      renderLinksList();
+    } else {
+      runSearch("");
+    }
     el.globalSearch.blur();
   }
 });
@@ -1206,10 +2186,24 @@ el.threadSearchButton.addEventListener("click", showThreadSearch);
 el.closeThreadSearchButton.addEventListener("click", closeThreadSearch);
 el.threadSearch.addEventListener("input", applyThreadSearch);
 el.threadAgentButton.addEventListener("click", () => setAgentOpen(true));
-el.toggleAgentButton.addEventListener("click", () => {
-  setAgentOpen(el.shell.classList.contains("agent-closed"));
+el.toggleAgentButton.addEventListener("click", () => setAgentOpen(true));
+el.threadNoteButton.addEventListener("click", () => openConversationMeta({ focus: "note" }));
+el.threadLabelButton.addEventListener("click", () => openConversationMeta({ focus: "labels" }));
+el.threadReminderButton.addEventListener("click", () => openConversationMeta({ focus: "reminder" }));
+el.conversationMetaForm.addEventListener("submit", saveConversationMeta);
+el.conversationAvatarInput.addEventListener("change", updateConversationAvatarDraft);
+el.removeConversationAvatarButton.addEventListener("click", () => {
+  state.conversationAvatarDraft = "";
+  renderConversationAvatarDraft();
 });
-el.closeAgentButton.addEventListener("click", () => setAgentOpen(false));
+el.closeConversationMetaButton.addEventListener("click", () => el.conversationMetaDialog.close());
+el.clearConversationFollowUpButton.addEventListener("click", () => {
+  el.conversationFollowUp.value = "";
+  el.conversationFollowUp.focus();
+});
+el.conversationMetaDialog.addEventListener("click", (event) => {
+  if (event.target === el.conversationMetaDialog) el.conversationMetaDialog.close();
+});
 
 el.messageComposer.addEventListener("input", () => {
   resizeComposer();
@@ -1222,6 +2216,13 @@ el.messageComposer.addEventListener("keydown", (event) => {
   }
 });
 el.sendButton.addEventListener("click", sendMessage);
+el.scheduleSendButton.addEventListener("click", openScheduleDialog);
+el.scheduleForm.addEventListener("submit", scheduleCurrentMessage);
+el.closeScheduleButton.addEventListener("click", () => el.scheduleDialog.close());
+el.cancelScheduleButton.addEventListener("click", () => el.scheduleDialog.close());
+el.scheduleDialog.addEventListener("click", (event) => {
+  if (event.target === el.scheduleDialog) el.scheduleDialog.close();
+});
 el.attachmentInput.addEventListener("change", () => {
   state.attachments.push(...el.attachmentInput.files);
   el.attachmentInput.value = "";
@@ -1229,9 +2230,6 @@ el.attachmentInput.addEventListener("change", () => {
   updateSendButton();
 });
 
-for (const button of document.querySelectorAll("[data-agent-scope]")) {
-  button.addEventListener("click", () => setAgentScope(button.dataset.agentScope));
-}
 el.agentQuestion.addEventListener("input", updateAgentButton);
 el.agentQuestion.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
@@ -1243,6 +2241,10 @@ el.askAgentButton.addEventListener("click", () => askAgent());
 el.agentQuickActions.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-agent-action]");
   if (!button) return;
+  if (button.dataset.agentAction === "contact") {
+    openContactDialog(state.selected ? savedConversationContact(state.selected) : null);
+    return;
+  }
   const action = quickAgentActions[button.dataset.agentAction];
   if (!action) return;
   el.agentQuestion.value = action.question;
@@ -1250,6 +2252,9 @@ el.agentQuickActions.addEventListener("click", (event) => {
   askAgent(action);
 });
 el.copyAgentAnswerButton.addEventListener("click", () => copyText(state.agent.answer));
+el.retryAgentAnswerButton.addEventListener("click", () => {
+  if (state.agent.lastQuestion) askAgent({ question: state.agent.lastQuestion });
+});
 el.useAgentAnswerButton.addEventListener("click", () => {
   if (!state.agent.answer || !state.selected) return;
   el.messageComposer.value = state.agent.answer;
@@ -1260,6 +2265,13 @@ el.useAgentAnswerButton.addEventListener("click", () => {
 });
 
 el.composeButton.addEventListener("click", openComposeDialog);
+el.addContactButton.addEventListener("click", () => openContactDialog());
+el.contactForm.addEventListener("submit", saveContact);
+el.closeContactDialogButton.addEventListener("click", () => el.contactDialog.close());
+el.cancelContactButton.addEventListener("click", () => el.contactDialog.close());
+el.contactDialog.addEventListener("click", (event) => {
+  if (event.target === el.contactDialog) el.contactDialog.close();
+});
 el.composeSearch.addEventListener("input", renderComposeResults);
 el.composeDialog.addEventListener("click", (event) => {
   if (event.target === el.composeDialog) el.composeDialog.close();
@@ -1270,6 +2282,21 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     el.globalSearch.focus();
     el.globalSearch.select();
+    return;
+  }
+  if (event.metaKey || event.ctrlKey || event.altKey || shortcutTargetIsEditable(event.target)) return;
+  if (event.key.toLowerCase() === "j") {
+    event.preventDefault();
+    moveConversationSelection(1);
+  } else if (event.key.toLowerCase() === "k") {
+    event.preventDefault();
+    moveConversationSelection(-1);
+  } else if (event.key.toLowerCase() === "e") {
+    event.preventDefault();
+    openConversationMeta({ focus: "note" });
+  } else if (event.key.toLowerCase() === "h") {
+    event.preventDefault();
+    openConversationMeta({ focus: "reminder" });
   }
   if (event.key === "Escape" && window.innerWidth <= 800 && el.shell.classList.contains("thread-open")) {
     el.shell.classList.remove("thread-open");
@@ -1283,7 +2310,7 @@ document.querySelector(".thread-header").addEventListener("click", (event) => {
 });
 
 async function start() {
-  setAgentOpen(window.innerWidth > 1180);
+  setAgentOpen(false);
   setSource("all");
   renderView();
   await Promise.allSettled([
@@ -1296,8 +2323,26 @@ async function start() {
 
 start();
 
+let autoRefreshBusy = false;
+window.setInterval(async () => {
+  if (document.visibilityState !== "visible") return;
+  if (autoRefreshBusy) return;
+  autoRefreshBusy = true;
+  try {
+    await Promise.all([
+      loadConversations({ keepSelection: true }),
+      refreshSelectedMessages(),
+      loadScheduledMessages(),
+      state.view === "queue" ? loadQueue() : Promise.resolve(),
+    ]);
+  } catch (_error) {
+    // Keep the last good local view and retry on the next tick.
+  } finally {
+    autoRefreshBusy = false;
+  }
+}, 5000);
+
 window.setInterval(() => {
   if (document.visibilityState !== "visible") return;
-  loadConversations({ keepSelection: true }).catch(() => {});
   loadHealth();
 }, 30000);

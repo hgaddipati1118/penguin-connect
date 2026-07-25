@@ -20,6 +20,11 @@ def _whatsapp_db_path() -> Path:
     return Path(os.environ.get("PENGUIN_CONNECT_WHATSAPP_DB_PATH", _DEFAULT_WHATSAPP_DB))
 
 
+def _whatsapp_metadata_db_path() -> Path:
+    configured = os.environ.get("PENGUIN_CONNECT_WHATSAPP_METADATA_DB_PATH")
+    return Path(configured) if configured else _whatsapp_db_path().with_name("whatsapp.db")
+
+
 def _whatsapp_api_url() -> str:
     return os.environ.get("PENGUIN_CONNECT_WHATSAPP_API_URL", "http://localhost:8080/api")
 
@@ -40,6 +45,54 @@ def _open_whatsapp_db() -> Optional[sqlite3.Connection]:
         return None
 
 
+def _open_whatsapp_metadata_db() -> Optional[sqlite3.Connection]:
+    db_path = _whatsapp_metadata_db_path()
+    if not db_path.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        return conn
+    except sqlite3.OperationalError:
+        return None
+
+
+def _whatsapp_identity(conn: Optional[sqlite3.Connection], jid: str) -> dict[str, str]:
+    raw_jid = (jid or "").strip()
+    fallback = _jid_to_phone(raw_jid)
+    if conn is None or not raw_jid or _is_group_jid(raw_jid):
+        return {"phone": fallback, "name": ""}
+    resolved_phone = fallback
+    if raw_jid.endswith("@lid"):
+        row = conn.execute(
+            "SELECT pn FROM whatsmeow_lid_map WHERE lid = ? LIMIT 1",
+            (fallback,),
+        ).fetchone()
+        if row and row["pn"]:
+            resolved_phone = str(row["pn"])
+    candidate_jids = [raw_jid]
+    phone_jid = f"{resolved_phone}@s.whatsapp.net"
+    if phone_jid not in candidate_jids:
+        candidate_jids.append(phone_jid)
+    placeholders = ",".join("?" for _ in candidate_jids)
+    rows = conn.execute(
+        f"""SELECT their_jid, first_name, full_name, push_name, business_name
+            FROM whatsmeow_contacts
+            WHERE their_jid IN ({placeholders})""",
+        candidate_jids,
+    ).fetchall()
+    by_jid = {row["their_jid"]: row for row in rows}
+    ordered = [by_jid.get(jid_value) for jid_value in candidate_jids]
+    for row in ordered:
+        if not row:
+            continue
+        for key in ("full_name", "first_name", "business_name", "push_name"):
+            value = str(row[key] or "").strip()
+            if value:
+                return {"phone": resolved_phone, "name": value}
+    return {"phone": resolved_phone, "name": ""}
+
+
 def _is_group_jid(jid: str) -> bool:
     return jid.endswith("@g.us")
 
@@ -57,6 +110,7 @@ class WhatsAppChannelAdapter:
         if conn is None:
             return {"available": False, "reason": "WhatsApp messages.db not found"}
 
+        metadata_conn = _open_whatsapp_metadata_db()
         try:
             safe_limit = max(1, min(int(limit or 100), 100000))
             params: list[Any] = []
@@ -91,7 +145,9 @@ class WhatsAppChannelAdapter:
             for row in rows:
                 jid = row["jid"]
                 is_group = _is_group_jid(jid)
-                name = row["name"] or _jid_to_phone(jid)
+                identity = _whatsapp_identity(metadata_conn, jid)
+                source_name = (row["name"] or "").strip()
+                name = source_name or identity["name"] or identity["phone"]
 
                 participants: list[str] = []
                 if is_group:
@@ -101,7 +157,7 @@ class WhatsAppChannelAdapter:
                     ).fetchall()
                     participants = [s["sender"] for s in senders if s["sender"]]
                 else:
-                    participants = [_jid_to_phone(jid)]
+                    participants = [identity["phone"]]
 
                 chats.append(
                     {
@@ -109,7 +165,7 @@ class WhatsAppChannelAdapter:
                         "chat_guid": jid,
                         "chat_identifier": jid,
                         "name": name,
-                        "source_display_name": (row["name"] or "").strip(),
+                        "source_display_name": source_name or identity["name"],
                         "room_name": "",
                         "chat_type": "group" if is_group else "dm",
                         "participants": participants,
@@ -126,6 +182,8 @@ class WhatsAppChannelAdapter:
             return {"available": False, "reason": str(exc)}
         finally:
             conn.close()
+            if metadata_conn is not None:
+                metadata_conn.close()
 
     def list_recent_activity(self, since: str, limit: int = 500) -> dict[str, Any]:
         conn = _open_whatsapp_db()
@@ -183,6 +241,7 @@ class WhatsAppChannelAdapter:
         if conn is None:
             return []
 
+        metadata_conn = _open_whatsapp_metadata_db()
         try:
             safe_limit = max(1, min(int(limit or 50), 1000))
             params: list[Any] = [chat_id]
@@ -235,7 +294,8 @@ class WhatsAppChannelAdapter:
                     continue
 
                 sender_jid = row["sender"] or ""
-                chat_name = None
+                identity = _whatsapp_identity(metadata_conn, sender_jid)
+                chat_name = identity["name"] or None
                 if sender_jid:
                     name_row = conn.execute(
                         "SELECT name FROM chats WHERE jid = ? LIMIT 1", (sender_jid,)
@@ -260,6 +320,8 @@ class WhatsAppChannelAdapter:
             return []
         finally:
             conn.close()
+            if metadata_conn is not None:
+                metadata_conn.close()
 
     def _download_media(self, chat_jid: str, message_id: str) -> Optional[str]:
         """Download media via the whatsapp-mcp bridge API, return local file path."""
