@@ -1333,15 +1333,16 @@ def _codex_workspace_path() -> Path:
 
 def _codex_stream_mode(mode: str, confirmed: bool) -> tuple[str, str]:
     normalized = str(mode or "read").strip().lower()
+    normalized = {"edit": "ask", "pr": "yolo"}.get(normalized, normalized)
     if normalized == "read":
         return normalized, "read-only"
-    if normalized == "edit":
+    if normalized == "ask":
         if not confirmed:
-            raise HTTPException(status_code=403, detail="codex_edit_confirmation_required")
+            raise HTTPException(status_code=403, detail="codex_ask_confirmation_required")
         return normalized, "danger-full-access"
-    if normalized == "pr":
+    if normalized == "yolo":
         if not confirmed:
-            raise HTTPException(status_code=403, detail="codex_pr_confirmation_required")
+            raise HTTPException(status_code=403, detail="codex_yolo_confirmation_required")
         return normalized, "danger-full-access"
     raise HTTPException(status_code=400, detail="invalid_codex_workspace_mode")
 
@@ -1409,12 +1410,12 @@ def _codex_stream_events(prompt: str, mode: str, confirmed: bool):
     workspace = _codex_workspace_path()
     permission_note = {
         "read": "You may inspect repositories and use configured read-only tools. Do not modify files or external state.",
-        "edit": (
+        "ask": (
             "You may edit files and run tests. Before changing a repository, inspect its status and preserve all pre-existing work. "
             "Create an isolated task branch or worktree when practical, commit only the changes you make, and report every commit hash. "
             "Do not push, open PRs, or mutate production data."
         ),
-        "pr": (
+        "yolo": (
             "You may edit, test, commit, push, and open a pull request only when the user's request explicitly asks for it. "
             "Preserve pre-existing work, use an isolated task branch or worktree, commit only your changes, and report commit and PR links."
         ),

@@ -232,7 +232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
                     }
                 } else {
                     self.showError(
-                        "The local bridge did not become ready. Open Terminal with Full Disk Access, run scripts/run_penguin_connect_bridge.sh, then reopen Penguin."
+                        "The local bridge did not become ready. Grant Penguin Full Disk Access, or run scripts/run_penguin_connect_bridge.sh from a Terminal that has Full Disk Access, then try again."
                     )
                 }
             }

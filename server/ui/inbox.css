@@ -1203,7 +1203,41 @@ kbd {
   justify-content: flex-end;
 }
 
-.message-pin-button {
+.message-delivery-status {
+  color: var(--ink-faint);
+}
+
+.message-delivery-status.failed {
+  color: #b54830;
+}
+
+.message-receipt {
+  color: #5f776b;
+}
+
+.message-reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin: 6px 0 -12px;
+}
+
+.message-reactions span {
+  display: inline-flex;
+  min-width: 23px;
+  min-height: 21px;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 6px;
+  border: 1px solid rgba(32, 40, 36, 0.12);
+  border-radius: 999px;
+  background: var(--paper-strong);
+  box-shadow: 0 1px 3px rgba(31, 41, 36, 0.08);
+  font-size: 12px;
+}
+
+.message-pin-button,
+.message-react-button {
   display: grid;
   width: 28px;
   height: 28px;
@@ -1220,8 +1254,10 @@ kbd {
 
 .message-row:hover .message-pin-button,
 .message-row:hover .message-translate-button,
+.message-row:hover .message-react-button,
 .message-pin-button:focus-visible,
 .message-translate-button:focus-visible,
+.message-react-button:focus-visible,
 .message-pin-button[aria-pressed="true"] {
   opacity: 1;
 }
@@ -1235,6 +1271,15 @@ kbd {
 .message-pin-button svg {
   width: 14px;
   height: 14px;
+}
+
+.message-react-button {
+  font-size: 15px;
+}
+
+.message-react-button:hover {
+  background: #f2f1ec;
+  color: var(--ink);
 }
 
 .message-translate-button {
@@ -1395,6 +1440,7 @@ kbd {
 }
 
 .composer {
+  position: relative;
   display: grid;
   grid-template-columns: auto auto minmax(0, 1fr) auto auto auto;
   align-items: end;
@@ -1409,6 +1455,50 @@ kbd {
 
 .composer:focus-within {
   border-color: #9fa59e;
+}
+
+.composer.is-rewriting {
+  border-color: #e0a995;
+  box-shadow: 0 0 0 3px rgba(213, 104, 75, 0.09);
+}
+
+.composer-ai-state {
+  position: absolute;
+  right: 94px;
+  bottom: calc(100% + 7px);
+  display: inline-flex;
+  height: 24px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 1px solid #e9c8bc;
+  border-radius: 999px;
+  background: #fff7f3;
+  box-shadow: 0 3px 10px rgba(31, 41, 36, 0.08);
+  color: #a84d35;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.composer-ai-state[hidden] {
+  display: none;
+}
+
+.composer-ai-state svg {
+  width: 12px;
+  height: 12px;
+  animation: composer-ai-pulse 900ms ease-in-out infinite alternate;
+}
+
+@keyframes composer-ai-pulse {
+  from {
+    opacity: 0.5;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1.08);
+  }
 }
 
 .attach-button,
@@ -2649,6 +2739,102 @@ kbd {
   gap: 8px;
   padding: 12px 18px 16px;
   border-top: 1px solid var(--line);
+}
+
+.label-picker-dialog {
+  width: min(430px, calc(100vw - 32px));
+}
+
+.label-picker {
+  display: grid;
+  grid-template-rows: auto minmax(120px, 1fr) auto auto;
+  max-height: min(610px, calc(100dvh - 40px));
+}
+
+.label-picker-options {
+  display: grid;
+  gap: 6px;
+  min-height: 120px;
+  padding: 4px 18px 14px;
+  overflow-y: auto;
+}
+
+.label-picker-option {
+  display: grid;
+  grid-template-columns: 25px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  min-height: 40px;
+  padding: 5px 10px 5px 7px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper-strong);
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.label-picker-option:hover,
+.label-picker-option[aria-pressed="true"] {
+  border-color: #9fc6b3;
+  background: #edf6f1;
+}
+
+.label-shortcut {
+  display: grid;
+  width: 23px;
+  height: 23px;
+  place-items: center;
+  border: 1px solid #d3d6cf;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink-faint);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+}
+
+.label-picker-option strong {
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.label-picker-check {
+  color: var(--success);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.label-picker-create {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto !important;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--line);
+}
+
+.label-picker-create input {
+  min-width: 0;
+  min-height: 38px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--paper-strong);
+  color: var(--ink);
+  font: inherit;
+  outline: none;
+}
+
+.label-picker-create input:focus {
+  border-color: #9fc6b3;
+  box-shadow: 0 0 0 3px rgba(44, 154, 108, 0.1);
+}
+
+.label-picker-hint {
+  margin-right: auto;
+  color: var(--ink-faint);
+  font-size: 9px;
 }
 
 .thread-header-actions .icon-button.active {

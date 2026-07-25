@@ -22,11 +22,15 @@
   <string>1</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Penguin uses Apple events to open Messages and update Contacts only when you ask.</string>
   <key>NSAppTransportSecurity</key>
   <dict>
     <key>NSAllowsLocalNetworking</key>
     <true/>
   </dict>
+  <key>NSContactsUsageDescription</key>
+  <string>Penguin uses Contacts to match conversations with people and apply contact updates you request.</string>
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSPrincipalClass</key>

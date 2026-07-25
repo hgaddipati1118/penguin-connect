@@ -36,6 +36,7 @@ const state = {
   autoTranslate: true,
   translationCache: new Map(),
   translatingMessages: new Set(),
+  labelDraft: new Set(),
   search: {
     query: "",
     conversations: [],
@@ -52,6 +53,7 @@ const state = {
     references: [],
     contactAction: null,
     mode: "read",
+    yoloArmed: false,
     activity: [],
     busy: false,
   },
@@ -59,6 +61,7 @@ const state = {
     original: "",
     result: "",
     busy: false,
+    inlineBusy: false,
   },
 };
 
@@ -97,6 +100,8 @@ const el = {
   pinnedMessagesBar: document.querySelector("#pinnedMessagesBar"),
   messageList: document.querySelector("#messageList"),
   messageComposer: document.querySelector("#messageComposer"),
+  messageComposerShell: document.querySelector("#messageComposerShell"),
+  composerAiState: document.querySelector("#composerAiState"),
   sendButton: document.querySelector("#sendButton"),
   scheduleSendButton: document.querySelector("#scheduleSendButton"),
   composerStatus: document.querySelector("#composerStatus"),
@@ -161,6 +166,12 @@ const el = {
   conversationFollowUp: document.querySelector("#conversationFollowUp"),
   conversationLabels: document.querySelector("#conversationLabels"),
   clearConversationFollowUpButton: document.querySelector("#clearConversationFollowUpButton"),
+  labelPickerDialog: document.querySelector("#labelPickerDialog"),
+  labelPickerOptions: document.querySelector("#labelPickerOptions"),
+  labelPickerCreateForm: document.querySelector("#labelPickerCreateForm"),
+  newLabelInput: document.querySelector("#newLabelInput"),
+  closeLabelPickerButton: document.querySelector("#closeLabelPickerButton"),
+  applyLabelsButton: document.querySelector("#applyLabelsButton"),
   scheduleDialog: document.querySelector("#scheduleDialog"),
   scheduleForm: document.querySelector("#scheduleForm"),
   scheduleAt: document.querySelector("#scheduleAt"),
@@ -521,6 +532,134 @@ function allConversationLabels() {
       Array.isArray(conversation.labels) ? conversation.labels : []
     )),
   )].sort((a, b) => a.localeCompare(b));
+}
+
+function labelOptionsByUsage() {
+  const usage = new Map();
+  for (const conversation of state.conversations) {
+    for (const label of conversation.labels || []) {
+      usage.set(label, (usage.get(label) || 0) + 1);
+    }
+  }
+  for (const label of state.labelDraft) {
+    if (!usage.has(label)) usage.set(label, 0);
+  }
+  return [...usage.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .map(([label]) => label);
+}
+
+function updateSelectedLabelsUI(labels) {
+  if (!state.selected) return;
+  const cleanLabels = [...new Set(labels.map((label) => String(label || "").trim()).filter(Boolean))];
+  state.selected.labels = cleanLabels;
+  const stored = state.conversations.find(
+    (conversation) => conversation.conversation_id === state.selected.conversation_id,
+  );
+  if (stored) stored.labels = cleanLabels;
+  renderThreadHeader();
+  renderLabelBar();
+  if (state.activeLabel) {
+    renderConversationList();
+    return;
+  }
+  const row = el.conversationList.querySelector(
+    `[data-conversation-id="${CSS.escape(state.selected.conversation_id)}"]`,
+  );
+  const preview = row?.querySelector(".conversation-preview");
+  preview?.querySelector(".conversation-label")?.remove();
+  if (preview && cleanLabels.length) {
+    const label = document.createElement("span");
+    label.className = "conversation-label";
+    label.textContent = cleanLabels[0];
+    const unread = preview.querySelector(".unread-count");
+    if (unread) preview.insertBefore(label, unread);
+    else preview.append(label);
+  }
+}
+
+function renderLabelPicker() {
+  el.labelPickerOptions.replaceChildren();
+  const labels = labelOptionsByUsage();
+  if (!labels.length) {
+    const empty = document.createElement("div");
+    empty.className = "pane-empty";
+    empty.textContent = "No labels yet. Create your first one below.";
+    el.labelPickerOptions.append(empty);
+    return;
+  }
+  for (const [index, label] of labels.entries()) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "label-picker-option";
+    button.dataset.label = label;
+    button.setAttribute("aria-pressed", state.labelDraft.has(label) ? "true" : "false");
+    const shortcut = document.createElement("span");
+    shortcut.className = "label-shortcut";
+    shortcut.textContent = index < 9 ? String(index + 1) : "·";
+    const name = document.createElement("strong");
+    name.textContent = label;
+    const check = document.createElement("span");
+    check.className = "label-picker-check";
+    check.textContent = state.labelDraft.has(label) ? "✓" : "";
+    button.append(shortcut, name, check);
+    button.addEventListener("click", () => {
+      if (state.labelDraft.has(label)) state.labelDraft.delete(label);
+      else state.labelDraft.add(label);
+      renderLabelPicker();
+    });
+    el.labelPickerOptions.append(button);
+  }
+}
+
+function openLabelPicker() {
+  if (!state.selected) {
+    toast("Choose a conversation first.", "error");
+    return;
+  }
+  state.labelDraft = new Set(state.selected.labels || []);
+  el.newLabelInput.value = "";
+  renderLabelPicker();
+  el.labelPickerDialog.showModal();
+  el.labelPickerDialog.focus({ preventScroll: true });
+}
+
+function createLabelFromPicker(event) {
+  event.preventDefault();
+  const label = el.newLabelInput.value.trim();
+  if (!label) return;
+  const existing = labelOptionsByUsage().find(
+    (candidate) => candidate.toLowerCase() === label.toLowerCase(),
+  );
+  state.labelDraft.add(existing || label);
+  el.newLabelInput.value = "";
+  renderLabelPicker();
+  el.newLabelInput.focus();
+}
+
+async function applyLabelDraft() {
+  if (!state.selected) return;
+  const conversationId = state.selected.conversation_id;
+  const previous = [...(state.selected.labels || [])];
+  const next = [...state.labelDraft];
+  updateSelectedLabelsUI(next);
+  el.labelPickerDialog.close();
+  try {
+    const result = await api(
+      `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/management`,
+      {
+        method: "POST",
+        body: JSON.stringify({ labels: next }),
+      },
+    );
+    if (state.selected?.conversation_id === conversationId) {
+      updateSelectedLabelsUI(result.labels || next);
+    }
+    toast(next.length ? "Labels updated" : "Labels cleared");
+  } catch (error) {
+    if (state.selected?.conversation_id === conversationId) updateSelectedLabelsUI(previous);
+    toast(`Could not update labels: ${error.message}`, "error");
+  }
 }
 
 function renderLabelBar() {
@@ -1429,6 +1568,56 @@ function queueMessageTranslation(message, { notify = false, priority = false } =
   pumpTranslationQueue();
 }
 
+function normalizeReactionTargetGuid(value) {
+  const clean = String(value || "").trim();
+  return clean.includes("/") ? clean.slice(clean.lastIndexOf("/") + 1) : clean;
+}
+
+function reactionsByTarget(messages) {
+  const latest = new Map();
+  for (const message of [...messages].sort((left, right) => (
+    Date.parse(left.message_timestamp || "") - Date.parse(right.message_timestamp || "")
+  ))) {
+    const reaction = message.metadata?.reaction;
+    if (!reaction?.target_guid) continue;
+    const target = normalizeReactionTargetGuid(reaction.target_guid);
+    const actor = message.sender_name || message.sender_email || "Someone";
+    const key = `${target}:${actor}:${reaction.type || reaction.emoji}`;
+    if (reaction.removed) latest.delete(key);
+    else latest.set(key, { ...reaction, actor });
+  }
+  const grouped = new Map();
+  for (const reaction of latest.values()) {
+    const target = normalizeReactionTargetGuid(reaction.target_guid);
+    if (!grouped.has(target)) grouped.set(target, []);
+    grouped.get(target).push(reaction);
+  }
+  return grouped;
+}
+
+function nativeReceiptLabel(message) {
+  if (!isOwnMessage(message) || message.metadata?.pending_send) return "";
+  if (message.metadata?.date_read) {
+    return `Read ${timeLabel(message.metadata.date_read)}`;
+  }
+  if (message.metadata?.date_delivered || message.metadata?.is_delivered) return "Delivered";
+  if (message.metadata?.delivery_status === "delivered") return "Sent";
+  return "";
+}
+
+async function openProviderToReact(message) {
+  if (!state.selected || message.metadata?.pending_send) return;
+  try {
+    const result = await api(
+      `/penguin-connect/conversations/${encodeURIComponent(state.selected.conversation_id)}/open-provider`,
+      { method: "POST", body: "{}" },
+    );
+    toast(`Opened ${result.application || providerLabel(state.selected.source_provider)} to react`);
+  } catch (error) {
+    toast(`Could not open provider: ${error.message}`, "error");
+  }
+}
+
 function renderMessages({
   focusMessageId = "",
   preserveScroll = false,
@@ -1450,6 +1639,7 @@ function renderMessages({
   const sortedRows = [...state.messages].sort((a, b) => (
     Date.parse(a.message_timestamp || "") - Date.parse(b.message_timestamp || "")
   ));
+  const nativeReactions = reactionsByTarget(sortedRows);
   if (focusMessageId) {
     const focusedIndex = sortedRows.findIndex(
       (message) => message.provider_message_id === focusMessageId,
@@ -1469,7 +1659,9 @@ function renderMessages({
   }
 
   let lastDate = "";
-  const rows = sortedRows.slice(-state.messagesVisible);
+  const rows = sortedRows.slice(-state.messagesVisible).filter(
+    (message) => !message.metadata?.reaction,
+  );
   for (const message of rows) {
     const date = fullDateLabel(message.message_timestamp);
     if (date !== lastDate) {
@@ -1516,6 +1708,20 @@ function renderMessages({
       }
       bubble.append(list);
     }
+    const reactions = nativeReactions.get(
+      normalizeReactionTargetGuid(message.metadata?.native_guid),
+    ) || [];
+    if (reactions.length) {
+      const reactionList = document.createElement("div");
+      reactionList.className = "message-reactions";
+      for (const reaction of reactions) {
+        const badge = document.createElement("span");
+        badge.textContent = reaction.emoji || "Reacted";
+        badge.title = `${reaction.actor} reacted`;
+        reactionList.append(badge);
+      }
+      bubble.append(reactionList);
+    }
     const meta = document.createElement("div");
     meta.className = "message-meta";
     const time = document.createElement("time");
@@ -1524,6 +1730,20 @@ function renderMessages({
       new Date(message.message_timestamp || Date.now()),
     );
     meta.append(time);
+    if (message.metadata?.pending_send) {
+      const delivery = document.createElement("span");
+      delivery.className = `message-delivery-status${message.metadata.pending_failed ? " failed" : ""}`;
+      delivery.textContent = message.metadata.pending_status || "Sending…";
+      meta.append(delivery);
+    } else {
+      const receiptLabel = nativeReceiptLabel(message);
+      if (receiptLabel) {
+        const receipt = document.createElement("span");
+        receipt.className = "message-receipt";
+        receipt.textContent = receiptLabel;
+        meta.append(receipt);
+      }
+    }
     if (!message.is_read && !mine) {
       const unread = document.createElement("span");
       unread.textContent = "Unread";
@@ -1548,8 +1768,16 @@ function renderMessages({
       notify: true,
       priority: true,
     }));
-    if (mine) row.append(translate, pin, stack);
-    else row.append(stack, pin, translate);
+    const react = document.createElement("button");
+    react.type = "button";
+    react.className = "message-react-button";
+    react.textContent = "☺";
+    react.title = `Open ${providerLabel(state.selected?.source_provider)} to react`;
+    react.setAttribute("aria-label", react.title);
+    react.addEventListener("click", () => openProviderToReact(message));
+    if (message.metadata?.pending_send) react.hidden = true;
+    if (mine) row.append(translate, pin, react, stack);
+    else row.append(stack, react, pin, translate);
     el.messageList.append(row);
     if (
       state.autoTranslate
@@ -1948,20 +2176,42 @@ function fileAsAttachment(file) {
 async function deliverPendingSend(pending) {
   if (pending.cancelled) return;
   state.pendingSends = state.pendingSends.filter((item) => item.id !== pending.id);
+  updatePendingOptimisticMessage(pending, "Sending…");
   if (state.selected?.conversation_id === pending.conversation.conversation_id) {
     el.composerStatus.textContent = `Sending through ${providerLabel(pending.conversation.source_provider)}…`;
   }
   try {
     const attachments = await Promise.all(pending.files.map(fileAsAttachment));
-    await api(`/penguin-connect/conversations/${encodeURIComponent(pending.conversation.conversation_id)}/scheduled-messages`, {
-      method: "POST",
-      body: JSON.stringify({
-        sender_email: "",
-        message: pending.text,
-        attachments,
-        scheduled_at: new Date(Date.now() + 1500).toISOString(),
-      }),
-    });
+    if (pending.instant) {
+      await api(`/penguin-connect/conversations/${encodeURIComponent(pending.conversation.conversation_id)}/send`, {
+        method: "POST",
+        body: JSON.stringify({
+          sender_email: "",
+          message: pending.text,
+          attachments,
+        }),
+      });
+      removePendingOptimisticMessage(pending);
+      if (state.selected?.conversation_id === pending.conversation.conversation_id) {
+        el.composerStatus.textContent = `Sent through ${providerLabel(pending.conversation.source_provider)}`;
+        await refreshSelectedMessages();
+      }
+      loadConversations({ keepSelection: true });
+      return;
+    }
+    await api(
+      `/penguin-connect/conversations/${encodeURIComponent(pending.conversation.conversation_id)}/scheduled-messages`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          sender_email: "",
+          message: pending.text,
+          attachments,
+          scheduled_at: new Date(Date.now() + 1500).toISOString(),
+        }),
+      },
+    );
+    updatePendingOptimisticMessage(pending, "Queued · offline retry enabled");
     if (state.selected?.conversation_id === pending.conversation.conversation_id) {
       el.composerStatus.textContent = `Queued for ${providerLabel(pending.conversation.source_provider)} · offline retry enabled`;
       await loadScheduledMessages(pending.conversation.conversation_id);
@@ -1972,6 +2222,7 @@ async function deliverPendingSend(pending) {
           method: "POST",
           body: "{}",
         });
+        removePendingOptimisticMessage(pending);
         await Promise.all([
           loadConversations({ keepSelection: true }),
           state.selected?.conversation_id === pending.conversation.conversation_id
@@ -1983,14 +2234,64 @@ async function deliverPendingSend(pending) {
         ]);
       } catch (_error) {
         // The durable worker owns retrying; the UI can safely go away.
+        updatePendingOptimisticMessage(pending, "Queued · retrying when online");
       }
     }, 1800);
   } catch (error) {
+    updatePendingOptimisticMessage(pending, `Not sent · ${error.message}`, true);
     if (state.selected?.conversation_id === pending.conversation.conversation_id) {
       el.composerStatus.textContent = error.message;
     }
     toast(`Could not send: ${error.message}`, "error");
   }
+}
+
+function addPendingOptimisticMessage(pending) {
+  pending.optimisticId = `optimistic:${pending.id}`;
+  const attachmentNames = pending.files.map((file) => file.name).filter(Boolean);
+  const message = {
+    conversation_id: pending.conversation.conversation_id,
+    provider: providerKey(pending.conversation.source_provider),
+    provider_message_id: pending.optimisticId,
+    direction: "manual_to_imessage",
+    sender_name: "Me",
+    body_text: pending.text || (attachmentNames.length ? `Attachment: ${attachmentNames.join(", ")}` : ""),
+    message_timestamp: new Date().toISOString(),
+    is_read: true,
+    is_starred: false,
+    metadata: {
+      is_from_me: true,
+      pending_send: true,
+      pending_status: pending.instant ? "Sending now…" : "Sending in 15 seconds · Undo available",
+      attachment_names: attachmentNames,
+    },
+    attachments: [],
+  };
+  pending.optimisticMessage = message;
+  state.messages.push(message);
+  state.messageCache.set(pending.conversation.conversation_id, state.messages);
+  if (state.selected?.conversation_id === pending.conversation.conversation_id) renderMessages();
+}
+
+function updatePendingOptimisticMessage(pending, status, failed = false) {
+  const message = pending.optimisticMessage;
+  if (!message) return;
+  message.metadata.pending_status = status;
+  message.metadata.pending_failed = failed;
+  if (state.selected?.conversation_id === pending.conversation.conversation_id) renderMessages();
+}
+
+function removePendingOptimisticMessage(pending) {
+  const conversationId = pending.conversation.conversation_id;
+  state.messages = state.messages.filter(
+    (message) => message.provider_message_id !== pending.optimisticId,
+  );
+  const cached = state.messageCache.get(conversationId) || [];
+  state.messageCache.set(
+    conversationId,
+    cached.filter((message) => message.provider_message_id !== pending.optimisticId),
+  );
+  if (state.selected?.conversation_id === conversationId) renderMessages();
 }
 
 function defaultScheduleValue() {
@@ -2058,6 +2359,7 @@ function undoPendingSend(pending) {
   pending.cancelled = true;
   window.clearTimeout(pending.timer);
   state.pendingSends = state.pendingSends.filter((item) => item.id !== pending.id);
+  removePendingOptimisticMessage(pending);
   if (state.selected?.conversation_id === pending.conversation.conversation_id) {
     if (!el.messageComposer.value.trim()) el.messageComposer.value = pending.text;
     state.attachments.push(...pending.files);
@@ -2069,7 +2371,7 @@ function undoPendingSend(pending) {
   toast("Send undone");
 }
 
-function sendMessage() {
+function sendMessage({ instant = false } = {}) {
   if (!state.selected || el.sendButton.disabled) return;
   const pending = {
     id: `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -2077,15 +2379,23 @@ function sendMessage() {
     text: el.messageComposer.value.trim(),
     files: [...state.attachments],
     cancelled: false,
+    instant,
     timer: 0,
   };
   state.pendingSends.push(pending);
+  addPendingOptimisticMessage(pending);
   el.messageComposer.value = "";
   state.attachments = [];
   renderAttachmentPreview();
   resizeComposer();
   updateSendButton();
-  el.composerStatus.textContent = "Sending in 15 seconds · Undo available";
+  el.composerStatus.textContent = instant
+    ? `Sending now through ${providerLabel(pending.conversation.source_provider)}…`
+    : "Sending in 15 seconds · Undo available";
+  if (instant) {
+    deliverPendingSend(pending);
+    return;
+  }
   pending.timer = window.setTimeout(() => deliverPendingSend(pending), 15000);
   actionToast("Message queued for 15 seconds", "Undo", () => undoPendingSend(pending), 15000);
 }
@@ -2621,11 +2931,11 @@ async function askAgent({ question = "", instruction = "" } = {}) {
   const cleanQuestion = (question || el.agentQuestion.value).trim();
   if (!cleanQuestion || state.agent.busy) return;
   const mode = el.agentModeSelect.value || "read";
-  const confirmed = mode === "read" || window.confirm(
-    mode === "pr"
-      ? "Allow Penguin Agent full repository and network access for this run? It may commit, push, and open a pull request only if your request asks for it."
-      : "Allow Penguin Agent to create an isolated branch, edit files, run tests, and commit its changes for this run? It will not push.",
-  );
+  const confirmed = mode === "read"
+    || (mode === "yolo" && state.agent.yoloArmed)
+    || window.confirm(
+      "Allow Penguin Agent to edit files, run tests, and commit only its own changes for this run? It will not push unless you switch to YOLO and explicitly ask.",
+    );
   if (!confirmed) return;
   state.agent.lastQuestion = cleanQuestion;
   state.agent.history.push({ role: "user", text: cleanQuestion });
@@ -2798,6 +3108,66 @@ async function runWritingAssistant(instruction) {
   }
 }
 
+async function rewriteDraftInline() {
+  if (!state.selected || state.writing.inlineBusy) return;
+  const original = el.messageComposer.value;
+  state.writing.inlineBusy = true;
+  el.writingButton.disabled = true;
+  el.messageComposerShell.classList.add("is-rewriting");
+  el.messageComposerShell.setAttribute("aria-busy", "true");
+  el.composerAiState.hidden = false;
+  el.composerStatus.textContent = original.trim()
+    ? "Codex is polishing this draft…"
+    : "Codex is drafting a reply…";
+  try {
+    const prompt = [
+      "You are an inline writing assistant inside a private messaging app.",
+      "Return only the final message text with no heading, explanation, quotes, or markdown fence.",
+      "Preserve the user's meaning and natural voice. Correct grammar, spelling, punctuation, and unclear wording.",
+      "Do not invent facts, commitments, names, dates, or links.",
+      "",
+      "Draft to replace:",
+      original.trim() || "(empty — draft a concise reply to the latest message)",
+      "",
+      "Current conversation:",
+      selectedConversationPromptContext(),
+      "",
+      "Recent messages:",
+      agentThreadText() || "No cached messages.",
+    ].join("\n");
+    const result = await api("/penguin-connect/codex/ask", {
+      method: "POST",
+      body: JSON.stringify({ prompt }),
+    });
+    const replacement = cleanWritingAnswer(result.answer);
+    if (!replacement) throw new Error("Codex returned an empty draft");
+    if (el.messageComposer.value !== original) {
+      toast("Draft changed while Codex was writing, so it was left untouched.");
+      return;
+    }
+    el.messageComposer.value = replacement;
+    resizeComposer();
+    updateSendButton();
+    el.messageComposer.focus();
+    el.composerStatus.textContent = "Draft replaced with Codex · Undo available";
+    actionToast("Draft rewritten", "Undo", () => {
+      el.messageComposer.value = original;
+      resizeComposer();
+      updateSendButton();
+      el.messageComposer.focus();
+    }, 10000);
+  } catch (error) {
+    el.composerStatus.textContent = `Codex: ${error.message}`;
+    toast(`Could not rewrite draft: ${error.message}`, "error");
+  } finally {
+    state.writing.inlineBusy = false;
+    el.writingButton.disabled = false;
+    el.messageComposerShell.classList.remove("is-rewriting");
+    el.messageComposerShell.removeAttribute("aria-busy");
+    el.composerAiState.hidden = true;
+  }
+}
+
 function localDateTimeValue(value) {
   if (!value) return "";
   const date = new Date(value);
@@ -2901,6 +3271,46 @@ function updateSelectedConversationManagement(management) {
   renderConversationList();
 }
 
+async function setConversationArchived(
+  conversation,
+  archived,
+  { select = false, previousValue = Boolean(conversation.is_archived) } = {},
+) {
+  const previous = previousValue;
+  conversation.is_archived = archived;
+  renderConversationList();
+  if (select) selectConversation(conversation);
+  try {
+    const result = await api(
+      `/penguin-connect/conversations/${encodeURIComponent(conversation.conversation_id)}/management`,
+      {
+        method: "POST",
+        body: JSON.stringify({ archived }),
+      },
+    );
+    Object.assign(conversation, result);
+  } catch (error) {
+    conversation.is_archived = previous;
+    renderConversationList();
+    toast(`Could not ${archived ? "archive" : "restore"}: ${error.message}`, "error");
+  }
+}
+
+function archiveSelectedConversation() {
+  if (!state.selected) return;
+  const conversation = state.selected;
+  const rows = visibleConversations();
+  const index = rows.findIndex((item) => item.conversation_id === conversation.conversation_id);
+  const next = rows[index + 1] || rows[index - 1] || null;
+  conversation.is_archived = true;
+  renderConversationList();
+  if (next) selectConversation(next);
+  setConversationArchived(conversation, true, { previousValue: false });
+  actionToast("Conversation archived", "Undo", () => {
+    setConversationArchived(conversation, false, { select: true });
+  }, 8000);
+}
+
 async function saveConversationMeta(event) {
   event.preventDefault();
   if (!state.selected) return;
@@ -2931,6 +3341,23 @@ async function saveConversationMeta(event) {
 
 function shortcutTargetIsEditable(target) {
   return Boolean(target?.closest?.("input, textarea, select, [contenteditable='true']"));
+}
+
+function focusMessageComposer() {
+  if (!state.selected || el.threadContent.hidden) return;
+  el.messageComposer.focus({ preventScroll: true });
+  const end = el.messageComposer.value.length;
+  el.messageComposer.setSelectionRange(end, end);
+}
+
+function scrollCurrentThread(direction) {
+  if (!state.selected || el.threadContent.hidden) return;
+  const step = Math.max(140, Math.round(el.messageList.clientHeight * 0.72));
+  const maximum = Math.max(0, el.messageList.scrollHeight - el.messageList.clientHeight);
+  const target = Math.max(0, Math.min(maximum, el.messageList.scrollTop + (direction * step)));
+  el.messageList.scrollTop = target;
+  state.followLatest = maximum - target < 100;
+  if (target < 180) loadOlderMessages();
 }
 
 function moveConversationSelection(offset) {
@@ -3216,7 +3643,7 @@ el.closeThreadSearchButton.addEventListener("click", closeThreadSearch);
 el.threadSearch.addEventListener("input", applyThreadSearch);
 el.threadAgentButton.addEventListener("click", () => setAgentOpen(true));
 el.threadNoteButton.addEventListener("click", () => openConversationMeta({ focus: "note" }));
-el.threadLabelButton.addEventListener("click", () => openConversationMeta({ focus: "labels" }));
+el.threadLabelButton.addEventListener("click", openLabelPicker);
 el.threadReminderButton.addEventListener("click", () => openConversationMeta({ focus: "reminder" }));
 el.conversationMetaForm.addEventListener("submit", saveConversationMeta);
 el.conversationAvatarInput.addEventListener("change", updateConversationAvatarDraft);
@@ -3244,6 +3671,26 @@ el.clearConversationFollowUpButton.addEventListener("click", () => {
 el.conversationMetaDialog.addEventListener("click", (event) => {
   if (event.target === el.conversationMetaDialog) el.conversationMetaDialog.close();
 });
+el.closeLabelPickerButton.addEventListener("click", () => el.labelPickerDialog.close());
+el.labelPickerCreateForm.addEventListener("submit", createLabelFromPicker);
+el.applyLabelsButton.addEventListener("click", applyLabelDraft);
+el.labelPickerDialog.addEventListener("click", (event) => {
+  if (event.target === el.labelPickerDialog) el.labelPickerDialog.close();
+});
+el.labelPickerDialog.addEventListener("keydown", (event) => {
+  if (shortcutTargetIsEditable(event.target)) return;
+  if (/^[1-9]$/.test(event.key)) {
+    const label = labelOptionsByUsage()[Number(event.key) - 1];
+    if (!label) return;
+    event.preventDefault();
+    if (state.labelDraft.has(label)) state.labelDraft.delete(label);
+    else state.labelDraft.add(label);
+    renderLabelPicker();
+  } else if (event.key === "Enter" && !event.target?.closest?.("button")) {
+    event.preventDefault();
+    applyLabelDraft();
+  }
+});
 
 el.messageComposer.addEventListener("input", () => {
   resizeComposer();
@@ -3265,7 +3712,28 @@ el.messageList.addEventListener("scroll", (event) => {
   if (el.messageList.scrollTop < 180) loadOlderMessages();
 }, { passive: true });
 el.messageComposer.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+  if (
+    event.key === "Enter"
+    && event.shiftKey
+    && (event.metaKey || event.ctrlKey)
+    && !event.isComposing
+  ) {
+    event.preventDefault();
+    sendMessage({ instant: true });
+  } else if (
+    event.key.toLowerCase() === "l"
+    && event.shiftKey
+    && (event.metaKey || event.ctrlKey)
+  ) {
+    event.preventDefault();
+    openScheduleDialog();
+  } else if (
+    event.key === "Enter"
+    && !event.shiftKey
+    && !event.metaKey
+    && !event.ctrlKey
+    && !event.isComposing
+  ) {
     event.preventDefault();
     sendMessage();
   }
@@ -3297,7 +3765,7 @@ el.replaceDraftButton.addEventListener("click", () => {
   el.messageComposer.focus();
   toast("Codex draft applied");
 });
-el.sendButton.addEventListener("click", sendMessage);
+el.sendButton.addEventListener("click", () => sendMessage());
 el.scheduleSendButton.addEventListener("click", openScheduleDialog);
 el.scheduleForm.addEventListener("submit", scheduleCurrentMessage);
 el.closeScheduleButton.addEventListener("click", () => el.scheduleDialog.close());
@@ -3337,9 +3805,16 @@ el.agentQuestion.addEventListener("input", updateAgentButton);
 el.agentModeSelect.addEventListener("change", () => {
   const help = {
     read: "Read-only · messages, Slashy repos, configured Supabase tools",
-    edit: "Confirmation required · isolated changes are committed locally",
-    pr: "Confirmation required · may commit, push, and open a pull request",
+    ask: "Asks before each write-capable run · commits its own changes",
+    yolo: "Full access for this session · may commit, push, and open PRs when asked",
   };
+  if (el.agentModeSelect.value === "yolo" && !state.agent.yoloArmed) {
+    const armed = window.confirm(
+      "Arm YOLO mode for this Penguin session? Codex will have full repository and network access and may commit, push, or open pull requests when your prompts ask it to.",
+    );
+    if (!armed) el.agentModeSelect.value = "read";
+    else state.agent.yoloArmed = true;
+  }
   state.agent.mode = el.agentModeSelect.value;
   el.agentModeHelp.textContent = help[state.agent.mode] || help.read;
 });
@@ -3431,9 +3906,23 @@ el.composeDialog.addEventListener("click", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
-  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "j") {
+  if (
+    (event.metaKey || event.ctrlKey)
+    && !event.shiftKey
+    && !event.altKey
+    && event.key.toLowerCase() === "j"
+  ) {
     event.preventDefault();
-    openWritingAssistant();
+    rewriteDraftInline();
+    return;
+  }
+  if (
+    (event.metaKey || event.ctrlKey)
+    && event.shiftKey
+    && event.key.toLowerCase() === "l"
+  ) {
+    event.preventDefault();
+    openScheduleDialog();
     return;
   }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "g") {
@@ -3458,7 +3947,21 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   if (event.metaKey || event.ctrlKey || event.altKey || shortcutTargetIsEditable(event.target)) return;
-  if (event.key.toLowerCase() === "j") {
+  if (
+    event.key === "Enter"
+    && state.selected
+    && !document.querySelector("dialog[open]")
+    && !event.target?.closest?.("button, a, summary")
+  ) {
+    event.preventDefault();
+    focusMessageComposer();
+  } else if (event.key === "ArrowUp" && state.selected) {
+    event.preventDefault();
+    scrollCurrentThread(-1);
+  } else if (event.key === "ArrowDown" && state.selected) {
+    event.preventDefault();
+    scrollCurrentThread(1);
+  } else if (event.key.toLowerCase() === "j") {
     event.preventDefault();
     moveConversationSelection(1);
   } else if (event.key.toLowerCase() === "k") {
@@ -3466,13 +3969,13 @@ document.addEventListener("keydown", (event) => {
     moveConversationSelection(-1);
   } else if (event.key.toLowerCase() === "e") {
     event.preventDefault();
-    openConversationMeta({ focus: "note" });
+    archiveSelectedConversation();
   } else if (event.key.toLowerCase() === "h") {
     event.preventDefault();
     openConversationMeta({ focus: "reminder" });
   } else if (event.key.toLowerCase() === "l") {
     event.preventDefault();
-    openConversationMeta({ focus: "labels" });
+    openLabelPicker();
   }
   if (event.key === "Escape" && window.innerWidth <= 800 && el.shell.classList.contains("thread-open")) {
     el.shell.classList.remove("thread-open");

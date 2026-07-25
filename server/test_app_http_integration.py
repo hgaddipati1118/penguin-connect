@@ -230,14 +230,14 @@ class AppHttpIntegrationTests(unittest.TestCase):
 
     def test_codex_workspace_modes_require_explicit_write_confirmation(self):
         self.assertEqual(app_module._codex_stream_mode("read", False), ("read", "read-only"))
-        self.assertEqual(app_module._codex_stream_mode("edit", True), ("edit", "danger-full-access"))
-        self.assertEqual(app_module._codex_stream_mode("pr", True), ("pr", "danger-full-access"))
-        with self.assertRaises(Exception) as edit_ctx:
-            app_module._codex_stream_mode("edit", False)
-        with self.assertRaises(Exception) as pr_ctx:
-            app_module._codex_stream_mode("pr", False)
-        self.assertEqual(edit_ctx.exception.status_code, 403)
-        self.assertEqual(pr_ctx.exception.status_code, 403)
+        self.assertEqual(app_module._codex_stream_mode("ask", True), ("ask", "danger-full-access"))
+        self.assertEqual(app_module._codex_stream_mode("yolo", True), ("yolo", "danger-full-access"))
+        with self.assertRaises(Exception) as ask_ctx:
+            app_module._codex_stream_mode("ask", False)
+        with self.assertRaises(Exception) as yolo_ctx:
+            app_module._codex_stream_mode("yolo", False)
+        self.assertEqual(ask_ctx.exception.status_code, 403)
+        self.assertEqual(yolo_ctx.exception.status_code, 403)
 
     def test_translation_uses_codex_for_non_english_text(self):
         with mock.patch("app._detect_message_language", return_value=("el", 0.99)), mock.patch(
@@ -2510,7 +2510,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("saveContact", inbox_js_response.text)
         self.assertIn("renderAgentHistory", inbox_js_response.text)
         self.assertIn("scrollThreadToBottom", inbox_js_response.text)
-        self.assertIn("event.key === \"Enter\" && !event.shiftKey", inbox_js_response.text)
+        self.assertIn("&& !event.shiftKey", inbox_js_response.text)
+        self.assertIn("&& !event.isComposing", inbox_js_response.text)
         self.assertIn("preloadRecentMessages", inbox_js_response.text)
         self.assertIn("openContactCard", inbox_js_response.text)
         self.assertIn("toggleConversationPane", inbox_js_response.text)
@@ -2520,8 +2521,20 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("appendInfiniteSentinel", inbox_js_response.text)
         self.assertIn("preloadAdjacentConversations", inbox_js_response.text)
         self.assertIn("updateConversationSelectionUI", inbox_js_response.text)
+        self.assertIn("focusMessageComposer", inbox_js_response.text)
+        self.assertIn("scrollCurrentThread", inbox_js_response.text)
+        self.assertIn("archiveSelectedConversation", inbox_js_response.text)
+        self.assertIn("openLabelPicker", inbox_js_response.text)
+        self.assertIn("applyLabelDraft", inbox_js_response.text)
         self.assertIn("openWritingAssistant", inbox_js_response.text)
         self.assertIn("runWritingAssistant", inbox_js_response.text)
+        self.assertIn("rewriteDraftInline", inbox_js_response.text)
+        self.assertIn('messageComposerShell.classList.add("is-rewriting")', inbox_js_response.text)
+        self.assertIn("addPendingOptimisticMessage", inbox_js_response.text)
+        self.assertIn("sendMessage({ instant: true })", inbox_js_response.text)
+        self.assertIn("nativeReceiptLabel", inbox_js_response.text)
+        self.assertIn("reactionsByTarget", inbox_js_response.text)
+        self.assertIn("openProviderToReact", inbox_js_response.text)
         self.assertIn('event.key.toLowerCase() === "j"', inbox_js_response.text)
         self.assertIn("openGifDialog", inbox_js_response.text)
         self.assertIn("queueMessageTranslation", inbox_js_response.text)
@@ -2536,8 +2549,11 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertNotIn('id="toggleAgentButton"', inbox_response.text)
         self.assertIn('id="contactDialog"', inbox_response.text)
         self.assertIn('id="conversationMetaDialog"', inbox_response.text)
+        self.assertIn('id="labelPickerDialog"', inbox_response.text)
         self.assertIn("Current chat first, then your inbox", inbox_response.text)
         self.assertIn("Workspace access", inbox_response.text)
+        self.assertIn('<option value="ask">Ask</option>', inbox_response.text)
+        self.assertIn('<option value="yolo">YOLO</option>', inbox_response.text)
         self.assertIn("Sources used", inbox_response.text)
         self.assertIn("Live activity", inbox_response.text)
         self.assertIn('id="pinnedMessagesBar"', inbox_response.text)
@@ -2547,6 +2563,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn('data-view="queue"', inbox_response.text)
         self.assertIn('id="conversationAvatarInput"', inbox_response.text)
         self.assertIn('id="writingDialog"', inbox_response.text)
+        self.assertIn('id="composerAiState"', inbox_response.text)
         self.assertIn("Write with Codex (⌘J)", inbox_response.text)
         self.assertEqual(html_response.status_code, 200)
         self.assertIn("PenguinConnect Console", html_response.text)

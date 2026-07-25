@@ -82,6 +82,40 @@ class PenguinConnectTests(unittest.TestCase):
             ("amc_test",),
         ).fetchone()
 
+    def test_source_message_native_metadata_maps_receipts_and_tapbacks(self):
+        metadata = penguin_connect._source_message_native_metadata(
+            {
+                "native_guid": "message-guid",
+                "is_delivered": True,
+                "date_delivered": "2026-07-25T10:00:00+00:00",
+                "date_read": "2026-07-25T10:01:00+00:00",
+                "associated_message_guid": "p:0/target-guid",
+                "associated_message_type": 2001,
+            }
+        )
+
+        self.assertEqual(metadata["native_guid"], "message-guid")
+        self.assertTrue(metadata["is_delivered"])
+        self.assertEqual(metadata["date_read"], "2026-07-25T10:01:00+00:00")
+        self.assertEqual(
+            metadata["reaction"],
+            {
+                "target_guid": "p:0/target-guid",
+                "type": 2001,
+                "emoji": "👍",
+                "removed": False,
+            },
+        )
+
+        removed = penguin_connect._source_message_native_metadata(
+            {
+                "associated_message_guid": "target-guid",
+                "associated_message_type": 3001,
+            }
+        )
+        self.assertEqual(removed["reaction"]["type"], 2001)
+        self.assertTrue(removed["reaction"]["removed"])
+
     def test_get_connection_tolerates_locked_wal_pragma(self):
         class FakeConnection:
             row_factory = None

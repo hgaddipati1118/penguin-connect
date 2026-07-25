@@ -96,7 +96,9 @@ open -a Penguin
 
 The app uses the same local-only workspace and starts the bridge when it is not already
 running. Its embedded repository path is recorded at build time, so rebuild the app after
-moving the checkout. Terminal Full Disk Access is still required for Apple Messages reads.
+moving the checkout. Grant Full Disk Access to Penguin when the app starts the bridge
+itself, or to Terminal when you run the bridge script there. macOS may also ask for
+Contacts or Apple Events access the first time you use those actions.
 
 ## Codex / MCP
 

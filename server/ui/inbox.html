@@ -206,13 +206,17 @@
           <div class="composer-wrap">
             <div class="scheduled-queue" id="scheduledQueue" aria-label="Scheduled message queue" hidden></div>
             <div class="attachment-preview" id="attachmentPreview" hidden></div>
-            <div class="composer">
+            <div class="composer" id="messageComposerShell">
               <label class="attach-button" for="attachmentInput" title="Attach files" aria-label="Attach files">
                 <svg><use href="#i-paperclip"></use></svg>
               </label>
               <input id="attachmentInput" type="file" multiple hidden />
               <button class="gif-button" id="gifButton" type="button" title="Find a GIF (⌘G)" aria-label="Find a GIF">GIF</button>
               <textarea id="messageComposer" rows="1" placeholder="Write a message" aria-label="Write a message"></textarea>
+              <span class="composer-ai-state" id="composerAiState" aria-live="polite" hidden>
+                <svg><use href="#i-spark"></use></svg>
+                Rewriting…
+              </span>
               <button class="writing-button" id="writingButton" type="button" title="Write with Codex (⌘J)" aria-label="Write with Codex (⌘J)">
                 <svg><use href="#i-spark"></use></svg>
               </button>
@@ -229,7 +233,7 @@
                 <input id="autoTranslateToggle" type="checkbox" checked />
                 Auto-translate
               </label>
-              <span><kbd>↵</kbd> send · <kbd>⇧</kbd><kbd>↵</kbd> new line</span>
+              <span><kbd>↵</kbd> send · <kbd>⌘⇧↵</kbd> now · <kbd>⌘⇧L</kbd> later</span>
             </div>
           </div>
         </div>
@@ -254,9 +258,9 @@
           <label class="agent-workspace-mode">
             <span>Workspace access</span>
             <select id="agentModeSelect" aria-label="Penguin Agent workspace access">
-              <option value="read">Read messages, repos &amp; Supabase</option>
-              <option value="edit">Make committed local changes</option>
-              <option value="pr">Create commits &amp; pull requests</option>
+              <option value="read">Read</option>
+              <option value="ask">Ask</option>
+              <option value="yolo">YOLO</option>
             </select>
             <small id="agentModeHelp">Read-only · uses the Slashy coordination root</small>
           </label>
@@ -477,6 +481,29 @@
           <button class="agent-send-button" type="submit">Save</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog class="compose-dialog label-picker-dialog" id="labelPickerDialog" aria-labelledby="labelPickerTitle" tabindex="-1">
+      <div class="label-picker">
+        <header>
+          <div>
+            <p class="overline">Organize conversation</p>
+            <h2 id="labelPickerTitle">Labels</h2>
+          </div>
+          <button class="icon-button" type="button" id="closeLabelPickerButton" title="Close" aria-label="Close labels">
+            <svg><use href="#i-close"></use></svg>
+          </button>
+        </header>
+        <div class="label-picker-options" id="labelPickerOptions"></div>
+        <form class="label-picker-create" id="labelPickerCreateForm">
+          <input id="newLabelInput" type="text" maxlength="48" placeholder="Create a label" autocomplete="off" />
+          <button class="secondary-button" type="submit">Add</button>
+        </form>
+        <div class="conversation-meta-actions">
+          <span class="label-picker-hint"><kbd>1–9</kbd> toggle · <kbd>↵</kbd> apply</span>
+          <button class="agent-send-button" type="button" id="applyLabelsButton">Apply labels</button>
+        </div>
+      </div>
     </dialog>
 
     <dialog class="compose-dialog conversation-meta-dialog schedule-dialog" id="scheduleDialog" aria-labelledby="scheduleDialogTitle">

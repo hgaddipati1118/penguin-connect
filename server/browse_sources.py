@@ -719,6 +719,26 @@ def fetch_imessage_messages(chat_id, limit=50, since=None, since_native_message_
         order_direction = "ASC" if since_ns else "DESC"
 
         safe_limit = max(1, min(int(limit or 50), 1000))
+        message_columns = {
+            str(row[1])
+            for row in cur.execute("PRAGMA table_info(message)").fetchall()
+        }
+
+        def message_column(name, fallback):
+            return f"m.{name}" if name in message_columns else fallback
+
+        native_guid_select = message_column("guid", "''")
+        delivered_select = message_column("is_delivered", "0")
+        date_delivered_select = message_column("date_delivered", "0")
+        date_read_select = message_column("date_read", "0")
+        associated_guid_select = message_column("associated_message_guid", "''")
+        associated_type_select = message_column("associated_message_type", "0")
+        associated_emoji_select = message_column("associated_message_emoji", "''")
+        reaction_filter = (
+            "OR COALESCE(m.associated_message_type, 0) != 0"
+            if "associated_message_type" in message_columns
+            else ""
+        )
         params = [chat_rowid]
         if since_ns:
             if since_rowid:
@@ -731,12 +751,19 @@ def fetch_imessage_messages(chat_id, limit=50, since=None, since_native_message_
             f"""
             SELECT DISTINCT
                 m.ROWID,
+                {native_guid_select},
                 m.text,
                 m.date,
                 m.is_from_me,
                 m.service,
                 h.id as handle_id,
-                m.attributedBody
+                m.attributedBody,
+                {delivered_select},
+                {date_delivered_select},
+                {date_read_select},
+                {associated_guid_select},
+                {associated_type_select},
+                {associated_emoji_select}
             FROM message m
             JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
             LEFT JOIN handle h ON m.handle_id = h.ROWID
@@ -745,7 +772,8 @@ def fetch_imessage_messages(chat_id, limit=50, since=None, since_native_message_
               {date_filter}
               AND ((m.text IS NOT NULL AND m.text != '')
                    OR m.attributedBody IS NOT NULL
-                   OR maj.attachment_id IS NOT NULL)
+                   OR maj.attachment_id IS NOT NULL
+                   {reaction_filter})
             ORDER BY m.date {order_direction}, m.ROWID {order_direction}
             {limit_clause}
             """,
@@ -754,7 +782,22 @@ def fetch_imessage_messages(chat_id, limit=50, since=None, since_native_message_
 
         messages = []
         for row in cur.fetchall():
-            msg_rowid, text, date, is_from_me, service, handle_id, attributed_body = row
+            (
+                msg_rowid,
+                native_guid,
+                text,
+                date,
+                is_from_me,
+                service,
+                handle_id,
+                attributed_body,
+                is_delivered,
+                date_delivered,
+                date_read,
+                associated_guid,
+                associated_type,
+                associated_emoji,
+            ) = row
             if not text and attributed_body:
                 text = _extract_text_from_attributed_body(attributed_body)
 
@@ -780,7 +823,7 @@ def fetch_imessage_messages(chat_id, limit=50, since=None, since_native_message_
                         }
                     )
 
-            if not text and not attachments:
+            if not text and not attachments and not associated_type:
                 continue
 
             messages.append(
@@ -792,6 +835,13 @@ def fetch_imessage_messages(chat_id, limit=50, since=None, since_native_message_
                     "handle": handle_id or "",
                     "attachments": attachments if attachments else None,
                     "native_message_id": str(msg_rowid),
+                    "native_guid": native_guid or "",
+                    "is_delivered": bool(is_delivered),
+                    "date_delivered": _apple_ts_to_iso(date_delivered) if date_delivered else "",
+                    "date_read": _apple_ts_to_iso(date_read) if date_read else "",
+                    "associated_message_guid": associated_guid or "",
+                    "associated_message_type": int(associated_type or 0),
+                    "associated_message_emoji": associated_emoji or "",
                 }
             )
         return messages

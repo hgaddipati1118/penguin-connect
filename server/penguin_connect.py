@@ -382,6 +382,36 @@ def _manual_attachment_metadata(attachment_paths: list[str]) -> list[dict[str, A
     return items
 
 
+def _source_message_native_metadata(msg: dict[str, Any]) -> dict[str, Any]:
+    associated_type = int(msg.get("associated_message_type") or 0)
+    reaction = None
+    if associated_type:
+        base_type = associated_type - 1000 if associated_type >= 3000 else associated_type
+        emoji = {
+            2000: "❤️",
+            2001: "👍",
+            2002: "👎",
+            2003: "😂",
+            2004: "‼️",
+            2005: "❓",
+        }.get(base_type, str(msg.get("associated_message_emoji") or "").strip())
+        reaction = {
+            "target_guid": str(msg.get("associated_message_guid") or "").strip(),
+            "type": base_type,
+            "emoji": emoji,
+            "removed": associated_type >= 3000,
+        }
+    metadata = {
+        "native_guid": str(msg.get("native_guid") or "").strip(),
+        "is_delivered": bool(msg.get("is_delivered")),
+        "date_delivered": str(msg.get("date_delivered") or "").strip(),
+        "date_read": str(msg.get("date_read") or "").strip(),
+    }
+    if reaction and reaction["target_guid"]:
+        metadata["reaction"] = reaction
+    return metadata
+
+
 def _get_imessage_unread_count(chat_identifier: str) -> Optional[int]:
     return _IMESSAGE_CHANNEL.get_unread_count(chat_identifier)
 
@@ -4163,12 +4193,16 @@ def _cache_local_source_messages_for_view(
         ts = msg.get("timestamp")
         text = msg.get("text") or ""
         attachments = msg.get("attachments") or []
-        if not ts or (not text and not attachments):
+        native_metadata = _source_message_native_metadata(msg)
+        if not ts or (not text and not attachments and not native_metadata.get("reaction")):
             continue
+        stored_text = text
+        if not stored_text and native_metadata.get("reaction"):
+            stored_text = f"Reacted {native_metadata['reaction'].get('emoji') or ''}".strip()
 
         provider_id = _provider_message_id(source_provider, msg)
         existing = conn.execute(
-            """SELECT 1
+            """SELECT metadata
                FROM penguin_connect_messages
                WHERE conversation_id = ? AND provider_message_id = ?
                LIMIT 1""",
@@ -4181,6 +4215,25 @@ def _cache_local_source_messages_for_view(
             msg.get("native_message_id"),
         )
         if existing:
+            try:
+                existing_metadata = json.loads(existing["metadata"] or "{}")
+            except Exception:
+                existing_metadata = {}
+            changed = False
+            for key, value in native_metadata.items():
+                if existing_metadata.get(key) != value:
+                    existing_metadata[key] = value
+                    changed = True
+            if attachments and existing_metadata.get("attachments") != attachments:
+                existing_metadata["attachments"] = attachments
+                changed = True
+            if changed:
+                conn.execute(
+                    """UPDATE penguin_connect_messages
+                       SET metadata = ?
+                       WHERE conversation_id = ? AND provider_message_id = ?""",
+                    (json.dumps(existing_metadata), conv["conversation_id"], provider_id),
+                )
             continue
 
         is_from_me = 1 if msg.get("is_from_me") else 0
@@ -4193,6 +4246,7 @@ def _cache_local_source_messages_for_view(
             "is_from_me": bool(is_from_me),
             "attachments": attachments,
             "local_cache_only": True,
+            **_source_message_native_metadata(msg),
         }
         stored_provider = "whatsapp" if source_provider == "whatsapp" else "imessage"
         stored_direction = "whatsapp_local" if source_provider == "whatsapp" else "imessage_local"
@@ -4210,7 +4264,7 @@ def _cache_local_source_messages_for_view(
                     stored_direction,
                     sender_name,
                     _provider_subject(source_provider, subject_name),
-                    text[:20000],
+                    stored_text[:20000],
                     ts,
                     0 if unread else 1,
                     json.dumps(metadata),
@@ -4364,8 +4418,12 @@ def _cache_local_search_message(conn: sqlite3.Connection, conv: sqlite3.Row, msg
     ts = msg.get("timestamp")
     text = msg.get("text") or ""
     attachments = msg.get("attachments") or []
-    if not ts or (not text and not attachments):
+    native_metadata = _source_message_native_metadata(msg)
+    if not ts or (not text and not attachments and not native_metadata.get("reaction")):
         return False
+    stored_text = text
+    if not stored_text and native_metadata.get("reaction"):
+        stored_text = f"Reacted {native_metadata['reaction'].get('emoji') or ''}".strip()
 
     provider_id = _provider_message_id(source_provider, msg)
     existing = conn.execute(
@@ -4380,9 +4438,16 @@ def _cache_local_search_message(conn: sqlite3.Connection, conv: sqlite3.Row, msg
             existing_metadata = json.loads(existing["metadata"] or "{}")
         except Exception:
             existing_metadata = {}
+        changed = False
+        for key, value in native_metadata.items():
+            if existing_metadata.get(key) != value:
+                existing_metadata[key] = value
+                changed = True
         if attachments and not existing_metadata.get("attachments"):
             existing_metadata["attachments"] = attachments
             existing_metadata["local_attachment_imported"] = True
+            changed = True
+        if changed:
             conn.execute(
                 """UPDATE penguin_connect_messages
                    SET metadata = ?
@@ -4401,6 +4466,7 @@ def _cache_local_search_message(conn: sqlite3.Connection, conv: sqlite3.Row, msg
         "attachments": attachments,
         "local_cache_only": True,
         "local_search_imported": True,
+        **native_metadata,
     }
     cursor = conn.execute(
         """INSERT OR IGNORE INTO penguin_connect_messages
@@ -4413,7 +4479,7 @@ def _cache_local_search_message(conn: sqlite3.Connection, conv: sqlite3.Row, msg
             provider_id,
             sender_name,
             _provider_subject(source_provider, subject_name),
-            text[:20000],
+            stored_text[:20000],
             ts,
             json.dumps(metadata),
         ),
@@ -4562,6 +4628,7 @@ def import_local_whatsapp_attachment_messages(
             "attachments": attachments,
             "local_cache_only": True,
             "local_attachment_imported": True,
+            **_source_message_native_metadata(msg),
         }
         cursor = conn.execute(
             """INSERT OR IGNORE INTO penguin_connect_messages
@@ -6454,6 +6521,7 @@ def _sync_conversation_imessage_to_gmail(
                 "native_message_id": msg.get("native_message_id"),
                 "is_from_me": bool(is_from_me),
                 "attachments": msg.get("attachments"),
+                **_source_message_native_metadata(msg),
                 "rfc_message_id": rfc_message_id,
                 "rfc_in_reply_to": in_reply_to,
                 "rfc_references": references,
