@@ -594,6 +594,41 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertFalse(second.json()["has_more"])
         self.assertEqual(first.json()["intelligence"]["complete"], 1)
 
+    def test_attachment_library_reads_catalog_without_reparsing_message_json(self):
+        conn = self._get_connection()
+        statements = []
+        try:
+            conn.execute(
+                """UPDATE penguin_connect_messages
+                   SET metadata = ?
+                   WHERE conversation_id = 'amc_test'
+                     AND provider_message_id = 'imsg-latest'""",
+                (
+                    json.dumps({
+                        "attachments": [{
+                            "transfer_name": "synthetic-image.png",
+                            "mime_type": "image/png",
+                        }]
+                    }),
+                ),
+            )
+            conn.commit()
+            conn.set_trace_callback(statements.append)
+            page = app_module._attachment_library_page(conn, limit=1, offset=0)
+        finally:
+            conn.set_trace_callback(None)
+            conn.close()
+
+        self.assertEqual(page["count"], 1)
+        self.assertGreater(page["total"], 0)
+        self.assertFalse(
+            any(
+                "json_each" in statement.lower()
+                for statement in statements
+                if statement.lstrip().lower().startswith("select")
+            )
+        )
+
     def test_attachment_intelligence_worker_drains_batches_before_refresh(self):
         batches = [
             {"attempted": 4, "processed": 4, "remaining": 3},

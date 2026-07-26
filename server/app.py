@@ -3008,55 +3008,46 @@ def _queue_attachment_intelligence(conn: sqlite3.Connection, *, limit: int = 100
              AND updated_at <= datetime('now', '-10 minutes')"""
     )
     rows = conn.execute(
-        """SELECT m.conversation_id, m.provider_message_id, m.metadata
-           FROM penguin_connect_messages m
-           WHERE COALESCE(m.metadata, '') LIKE '%"attachments"%'
-             AND EXISTS (
-                 SELECT 1
-                 FROM json_each(
-                     CASE
-                         WHEN json_valid(COALESCE(m.metadata, '')) THEN m.metadata
-                         ELSE '{"attachments":[]}'
-                     END,
-                     '$.attachments'
-                 ) attachment
-                 WHERE NOT EXISTS (
-                     SELECT 1
-                     FROM penguin_connect_attachment_intelligence ai
-                     WHERE ai.conversation_id = m.conversation_id
-                       AND ai.provider_message_id = m.provider_message_id
-                       AND ai.attachment_index = CAST(attachment.key AS INTEGER)
-                 )
-             )
-           ORDER BY m.message_timestamp DESC, m.id DESC
+        """SELECT attachment.conversation_id, attachment.provider_message_id,
+                  attachment.attachment_index, attachment.attachment_json
+           FROM penguin_connect_attachments attachment
+           LEFT JOIN penguin_connect_attachment_intelligence ai
+             ON ai.conversation_id = attachment.conversation_id
+            AND ai.provider_message_id = attachment.provider_message_id
+            AND ai.attachment_index = attachment.attachment_index
+           WHERE ai.conversation_id IS NULL
+           ORDER BY attachment.message_timestamp DESC,
+                    attachment.message_id DESC,
+                    attachment.attachment_index
            LIMIT ?""",
         (max(1, min(limit, 10000)),),
     ).fetchall()
     queued = 0
     for row in rows:
-        metadata = _message_metadata(row["metadata"])
-        attachments = metadata.get("attachments") if isinstance(metadata.get("attachments"), list) else []
-        for index, attachment in enumerate(attachments):
-            if not isinstance(attachment, dict):
-                continue
-            raw_path = str(attachment.get("filename") or attachment.get("path") or "").strip()
-            filename = str(attachment.get("transfer_name") or Path(raw_path).name or "attachment").strip()
-            mime_type = str(attachment.get("mime_type") or "").strip()
-            cursor = conn.execute(
-                """INSERT OR IGNORE INTO penguin_connect_attachment_intelligence
-                   (conversation_id, provider_message_id, attachment_index, file_path,
-                    filename, mime_type, status)
-                   VALUES (?, ?, ?, ?, ?, ?, 'queued')""",
-                (
-                    row["conversation_id"],
-                    row["provider_message_id"],
-                    index,
-                    raw_path,
-                    filename[:500],
-                    mime_type[:200],
-                ),
-            )
-            queued += max(0, cursor.rowcount)
+        try:
+            attachment = json.loads(row["attachment_json"] or "{}")
+        except Exception:
+            attachment = {}
+        if not isinstance(attachment, dict):
+            continue
+        raw_path = str(attachment.get("filename") or attachment.get("path") or "").strip()
+        filename = str(attachment.get("transfer_name") or Path(raw_path).name or "attachment").strip()
+        mime_type = str(attachment.get("mime_type") or "").strip()
+        cursor = conn.execute(
+            """INSERT OR IGNORE INTO penguin_connect_attachment_intelligence
+               (conversation_id, provider_message_id, attachment_index, file_path,
+                filename, mime_type, status)
+               VALUES (?, ?, ?, ?, ?, ?, 'queued')""",
+            (
+                row["conversation_id"],
+                row["provider_message_id"],
+                row["attachment_index"],
+                raw_path,
+                filename[:500],
+                mime_type[:200],
+            ),
+        )
+        queued += max(0, cursor.rowcount)
     conn.commit()
     return queued + requeued
 
@@ -3165,43 +3156,39 @@ def _attachment_library_page(
     limit: int,
     offset: int,
 ) -> dict:
-    metadata_json = """
-        CASE
-            WHEN json_valid(COALESCE(m.metadata, '')) THEN m.metadata
-            ELSE '{"attachments":[]}'
-        END
-    """
     total_row = conn.execute(
-        f"""SELECT COUNT(*) AS count
-            FROM penguin_connect_messages m,
-                 json_each({metadata_json}, '$.attachments') attachment"""
+        """SELECT COUNT(*) AS count
+           FROM penguin_connect_attachments"""
     ).fetchone()
     total = int(total_row["count"] or 0) if total_row else 0
     rows = conn.execute(
-        f"""
+        """
         SELECT
-            m.conversation_id,
+            attachment.conversation_id,
             m.provider,
-            m.provider_message_id,
-            m.message_timestamp,
+            attachment.provider_message_id,
+            attachment.message_timestamp,
             c.source_provider,
             COALESCE(NULLIF(cm.title, ''), NULLIF(c.display_name, ''), 'Conversation')
                 AS conversation_name,
-            CAST(attachment.key AS INTEGER) AS attachment_index,
-            attachment.value AS attachment_json,
+            attachment.attachment_index,
+            attachment.attachment_json,
             COALESCE(ai.summary, '') AS intelligence_summary,
             COALESCE(ai.status, '') AS intelligence_status
-        FROM penguin_connect_messages m
+        FROM penguin_connect_attachments attachment
+        JOIN penguin_connect_messages m
+          ON m.id = attachment.message_id
         JOIN penguin_connect_conversations c
-          ON c.conversation_id = m.conversation_id
+          ON c.conversation_id = attachment.conversation_id
         LEFT JOIN penguin_connect_conversation_management cm
-          ON cm.conversation_id = m.conversation_id
-        JOIN json_each({metadata_json}, '$.attachments') attachment
+          ON cm.conversation_id = attachment.conversation_id
         LEFT JOIN penguin_connect_attachment_intelligence ai
-          ON ai.conversation_id = m.conversation_id
-         AND ai.provider_message_id = m.provider_message_id
-         AND ai.attachment_index = CAST(attachment.key AS INTEGER)
-        ORDER BY m.message_timestamp DESC, m.id DESC, attachment_index ASC
+          ON ai.conversation_id = attachment.conversation_id
+         AND ai.provider_message_id = attachment.provider_message_id
+         AND ai.attachment_index = attachment.attachment_index
+        ORDER BY attachment.message_timestamp DESC,
+                 attachment.message_id DESC,
+                 attachment.attachment_index ASC
         LIMIT ? OFFSET ?
         """,
         (limit, offset),

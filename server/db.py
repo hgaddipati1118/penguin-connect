@@ -40,6 +40,11 @@ CREATE TABLE IF NOT EXISTS contacts (
 CREATE INDEX IF NOT EXISTS idx_contacts_phone ON contacts(phone_normalized);
 CREATE INDEX IF NOT EXISTS idx_contacts_email ON contacts(email);
 
+CREATE TABLE IF NOT EXISTS penguin_connect_schema_migrations (
+    migration_key TEXT PRIMARY KEY,
+    applied_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS penguin_connect_contact_management (
     contact_key TEXT PRIMARY KEY,
     is_favorite INTEGER NOT NULL DEFAULT 0,
@@ -122,6 +127,16 @@ CREATE TABLE IF NOT EXISTS penguin_connect_messages (
     metadata TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     UNIQUE(conversation_id, provider_message_id)
+);
+
+CREATE TABLE IF NOT EXISTS penguin_connect_attachments (
+    message_id INTEGER NOT NULL REFERENCES penguin_connect_messages(id) ON DELETE CASCADE,
+    conversation_id TEXT NOT NULL REFERENCES penguin_connect_conversations(conversation_id) ON DELETE CASCADE,
+    provider_message_id TEXT NOT NULL,
+    attachment_index INTEGER NOT NULL,
+    message_timestamp TEXT NOT NULL,
+    attachment_json TEXT NOT NULL,
+    PRIMARY KEY (conversation_id, provider_message_id, attachment_index)
 );
 
 CREATE TABLE IF NOT EXISTS penguin_connect_message_management (
@@ -247,6 +262,8 @@ CREATE INDEX IF NOT EXISTS idx_penguin_connect_msg_conv_ts ON penguin_connect_me
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_msg_read_conv_ts
 ON penguin_connect_messages(COALESCE(is_read, 0), conversation_id, message_timestamp);
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_msg_gmail ON penguin_connect_messages(gmail_message_id);
+CREATE INDEX IF NOT EXISTS idx_penguin_connect_attachments_recent
+ON penguin_connect_attachments(message_timestamp DESC, message_id DESC, attachment_index);
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_message_management_starred
 ON penguin_connect_message_management(conversation_id, is_starred, updated_at);
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_attachment_intelligence_status
@@ -262,6 +279,52 @@ CREATE INDEX IF NOT EXISTS idx_penguin_connect_scheduled_messages_due
 ON penguin_connect_scheduled_messages(status, scheduled_at);
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_scheduled_messages_conversation
 ON penguin_connect_scheduled_messages(conversation_id, status, scheduled_at);
+
+CREATE TRIGGER IF NOT EXISTS penguin_connect_messages_attachment_insert
+AFTER INSERT ON penguin_connect_messages
+BEGIN
+    INSERT OR REPLACE INTO penguin_connect_attachments
+        (message_id, conversation_id, provider_message_id, attachment_index,
+         message_timestamp, attachment_json)
+    SELECT NEW.id, NEW.conversation_id, NEW.provider_message_id,
+           CAST(attachment.key AS INTEGER), NEW.message_timestamp,
+           attachment.value
+    FROM json_each(
+        CASE
+            WHEN json_valid(COALESCE(NEW.metadata, '')) THEN NEW.metadata
+            ELSE '{"attachments":[]}'
+        END,
+        '$.attachments'
+    ) attachment
+    WHERE attachment.type = 'object';
+END;
+
+CREATE TRIGGER IF NOT EXISTS penguin_connect_messages_attachment_update
+AFTER UPDATE OF metadata, message_timestamp, conversation_id, provider_message_id
+ON penguin_connect_messages
+BEGIN
+    DELETE FROM penguin_connect_attachments WHERE message_id = OLD.id;
+    INSERT OR REPLACE INTO penguin_connect_attachments
+        (message_id, conversation_id, provider_message_id, attachment_index,
+         message_timestamp, attachment_json)
+    SELECT NEW.id, NEW.conversation_id, NEW.provider_message_id,
+           CAST(attachment.key AS INTEGER), NEW.message_timestamp,
+           attachment.value
+    FROM json_each(
+        CASE
+            WHEN json_valid(COALESCE(NEW.metadata, '')) THEN NEW.metadata
+            ELSE '{"attachments":[]}'
+        END,
+        '$.attachments'
+    ) attachment
+    WHERE attachment.type = 'object';
+END;
+
+CREATE TRIGGER IF NOT EXISTS penguin_connect_messages_attachment_delete
+AFTER DELETE ON penguin_connect_messages
+BEGIN
+    DELETE FROM penguin_connect_attachments WHERE message_id = OLD.id;
+END;
 """
 
 
@@ -1468,6 +1531,43 @@ def _repair_cached_message_provider_identity(conn: sqlite3.Connection) -> int:
     return repaired
 
 
+def _backfill_attachment_catalog(conn: sqlite3.Connection) -> int:
+    migration_key = "attachment_catalog_v1"
+    applied = conn.execute(
+        """SELECT 1
+           FROM penguin_connect_schema_migrations
+           WHERE migration_key = ?""",
+        (migration_key,),
+    ).fetchone()
+    if applied:
+        return 0
+    conn.execute("DELETE FROM penguin_connect_attachments")
+    cursor = conn.execute(
+        """INSERT INTO penguin_connect_attachments
+           (message_id, conversation_id, provider_message_id, attachment_index,
+            message_timestamp, attachment_json)
+           SELECT m.id, m.conversation_id, m.provider_message_id,
+                  CAST(attachment.key AS INTEGER), m.message_timestamp,
+                  attachment.value
+           FROM penguin_connect_messages m
+           JOIN json_each(
+               CASE
+                   WHEN json_valid(COALESCE(m.metadata, '')) THEN m.metadata
+                   ELSE '{"attachments":[]}'
+               END,
+               '$.attachments'
+           ) attachment
+           WHERE attachment.type = 'object'"""
+    )
+    conn.execute(
+        """INSERT INTO penguin_connect_schema_migrations
+           (migration_key)
+           VALUES (?)""",
+        (migration_key,),
+    )
+    return max(0, int(cursor.rowcount or 0))
+
+
 def init_db() -> None:
     conn = get_connection()
     try:
@@ -1689,6 +1789,7 @@ def init_db() -> None:
         _repair_incomplete_bootstrap_state(conn)
         _backfill_self_authored_sender_names(conn)
         _backfill_initial_full_verify_schedule(conn)
+        _backfill_attachment_catalog(conn)
         conn.commit()
     finally:
         conn.close()
