@@ -8,6 +8,7 @@ const {
   planNativeReplySummaries,
   planSlackAuthorGroups,
   planSlackThreadDefaults,
+  planSlackThreadWindow,
   providerSupportsReply,
 } = require("./thread-layout.js");
 
@@ -67,6 +68,51 @@ test("does not collapse a single thread or orphan replies", () => {
 
   assert.equal(single.defaultOpenThreadId, "thread-a");
   assert.deepEqual(single.collapsedThreadIds, []);
+});
+
+test("bounds an expanded Slack thread to the visible message window", () => {
+  const rows = [
+    root("thread-a", "2026-07-25T10:00:00Z", 5),
+    reply("reply-1", "thread-a", "2026-07-25T10:01:00Z"),
+    reply("reply-2", "thread-a", "2026-07-25T10:02:00Z"),
+    reply("reply-3", "thread-a", "2026-07-25T10:03:00Z"),
+    reply("reply-4", "thread-a", "2026-07-25T10:04:00Z"),
+    reply("reply-5", "thread-a", "2026-07-25T10:05:00Z"),
+  ];
+
+  const window = planSlackThreadWindow(rows, { visibleCount: 3 });
+
+  assert.deepEqual(window.visibleMessageIds, ["reply-3", "reply-4", "reply-5"]);
+  assert.deepEqual(window.contextRootIds, ["thread-a"]);
+  assert.equal(window.hasHiddenMessages, true);
+});
+
+test("does not let hidden Slack reactions consume the visible message window", () => {
+  const window = planSlackThreadWindow([
+    root("message-1", "2026-07-25T10:00:00Z", 0),
+    {
+      id: "reaction-event",
+      isReaction: true,
+      timestamp: "2026-07-25T10:01:00Z",
+    },
+    root("message-2", "2026-07-25T10:02:00Z", 0),
+  ], { visibleCount: 2 });
+
+  assert.deepEqual(window.visibleMessageIds, ["message-1", "message-2"]);
+  assert.deepEqual(window.contextRootIds, []);
+  assert.equal(window.hasHiddenMessages, false);
+});
+
+test("adds only missing roots as context for visible Slack replies", () => {
+  const window = planSlackThreadWindow([
+    root("thread-a", "2026-07-25T10:00:00Z", 2),
+    reply("reply-a", "thread-a", "2026-07-25T10:01:00Z"),
+    root("thread-b", "2026-07-25T10:02:00Z", 1),
+    reply("reply-b", "thread-b", "2026-07-25T10:03:00Z"),
+  ], { visibleCount: 3 });
+
+  assert.deepEqual(window.visibleMessageIds, ["reply-a", "thread-b", "reply-b"]);
+  assert.deepEqual(window.contextRootIds, ["thread-a"]);
 });
 
 test("groups consecutive Slack messages from the same author", () => {

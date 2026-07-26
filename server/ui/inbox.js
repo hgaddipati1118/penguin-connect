@@ -3152,13 +3152,22 @@ function slackThreadIdForMessage(message) {
 }
 
 function slackThreadRenderRows(sortedRows) {
-  const visibleRows = sortedRows.slice(-state.messagesVisible).filter(
-    (message) => !message.metadata?.reaction,
-  );
   if (providerKey(state.selected?.source_provider) !== "slack") {
+    const visibleRows = sortedRows
+      .filter((message) => !message.metadata?.reaction)
+      .slice(-state.messagesVisible);
     return visibleRows.map((message) => ({ message, isThreadReply: false }));
   }
 
+  const windowPlan = window.PenguinThreadLayout.planSlackThreadWindow(
+    slackThreadLayoutInput(sortedRows),
+    { visibleCount: state.messagesVisible },
+  );
+  const visibleMessageIds = new Set(windowPlan.visibleMessageIds || []);
+  const visibleRows = sortedRows.filter((message) => (
+    !message.metadata?.reaction
+    && visibleMessageIds.has(slackNativeMessageId(message) || message.provider_message_id)
+  ));
   const rootsById = new Map();
   const repliesByRoot = new Map();
   for (const message of sortedRows) {
@@ -3193,6 +3202,8 @@ function slackThreadRenderRows(sortedRows) {
   for (const [rootId, root] of roots) {
     const replies = [...(repliesByRoot.get(rootId) || [])].sort((left, right) => (
       Date.parse(left.message_timestamp || "") - Date.parse(right.message_timestamp || "")
+    )).filter((reply) => (
+      visibleMessageIds.has(slackNativeMessageId(reply) || reply.provider_message_id)
     ));
     renderRows.push({
       message: root,
@@ -4154,7 +4165,10 @@ function renderMessages({
       state.messagesVisible = Math.max(state.messagesVisible, sortedRows.length - focusedIndex);
     }
   }
-  const hasHiddenCachedMessages = state.messagesVisible < sortedRows.length;
+  const renderableMessageCount = sortedRows.filter(
+    (message) => !message.metadata?.reaction,
+  ).length;
+  const hasHiddenCachedMessages = state.messagesVisible < renderableMessageCount;
   if (hasHiddenCachedMessages || state.messagePagination.hasMore) {
     const historyLoader = document.createElement("div");
     historyLoader.className = "message-history-loader";

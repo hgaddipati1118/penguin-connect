@@ -180,6 +180,45 @@
     };
   }
 
+  function planSlackThreadWindow(rows, {
+    visibleCount = 60,
+  } = {}) {
+    const contentRows = (rows || []).filter((row) => (
+      row
+      && !row.isReaction
+      && String(row.id || "").trim()
+    ));
+    const limit = Math.max(1, Math.floor(Number(visibleCount) || 1));
+    const visibleRows = contentRows.slice(-limit);
+    const visibleMessageIds = visibleRows.map((row) => String(row.id).trim());
+    const visibleIds = new Set(visibleMessageIds);
+    const availableRootIds = new Set(
+      contentRows
+        .filter((row) => !row.isReply)
+        .map((row) => String(row.threadRootId || row.id || "").trim())
+        .filter(Boolean),
+    );
+    const contextRootIds = [];
+    const seenContextRoots = new Set();
+    for (const row of visibleRows) {
+      if (!row.isReply) continue;
+      const rootId = String(row.threadRootId || "").trim();
+      if (
+        !rootId
+        || visibleIds.has(rootId)
+        || seenContextRoots.has(rootId)
+        || !availableRootIds.has(rootId)
+      ) continue;
+      seenContextRoots.add(rootId);
+      contextRootIds.push(rootId);
+    }
+    return {
+      visibleMessageIds,
+      contextRootIds,
+      hasHiddenMessages: contentRows.length > visibleRows.length,
+    };
+  }
+
   const api = Object.freeze({
     buildMessageReplyTarget,
     buildSlackReplyTarget,
@@ -187,6 +226,7 @@
     planNativeReplySummaries,
     planSlackAuthorGroups,
     planSlackThreadDefaults,
+    planSlackThreadWindow,
     providerSupportsReply,
   });
   root.PenguinThreadLayout = api;
