@@ -1504,12 +1504,20 @@ kbd {
   color: #68467f;
 }
 
-.message-thread-summary {
+.message-thread-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 -2px;
+}
+
+.message-thread-summary,
+.message-thread-reply-cta {
   display: inline-flex;
+  flex: 0 0 auto;
   min-height: 25px;
   align-items: center;
   gap: 5px;
-  margin: 8px 0 -2px;
   padding: 3px 8px;
   border: 1px solid #d9d0df;
   border-radius: 999px;
@@ -1518,9 +1526,11 @@ kbd {
   cursor: pointer;
   font-size: 9px;
   font-weight: 700;
+  white-space: nowrap;
 }
 
-.message-thread-summary:hover {
+.message-thread-summary:hover,
+.message-thread-reply-cta:hover {
   border-color: #bca9c8;
   background: #f4eff6;
 }
@@ -1528,6 +1538,23 @@ kbd {
 .message-thread-summary svg {
   width: 12px;
   height: 12px;
+}
+
+.message-thread-chevron {
+  display: inline-block;
+  font-size: 12px;
+  line-height: 1;
+  transform: translateY(-1px);
+  transition: transform 120ms ease;
+}
+
+.message-thread-chevron.collapsed {
+  transform: rotate(-90deg);
+}
+
+.message-thread-reply-cta {
+  background: transparent;
+  color: var(--ink-muted);
 }
 
 .message-translate-button {

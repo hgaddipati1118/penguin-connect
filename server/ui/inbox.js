@@ -51,6 +51,7 @@ const state = {
   pendingSends: [],
   scheduledMessages: [],
   replyTarget: null,
+  collapsedSlackThreads: new Set(),
   conversationAvatarDraft: "",
   followLatest: true,
   gifs: [],
@@ -2494,6 +2495,18 @@ function slackThreadRootId(message) {
     || slackNativeMessageId(message);
 }
 
+function slackThreadKey(threadTs) {
+  const rootId = String(threadTs || "").trim();
+  return rootId && state.selected?.conversation_id
+    ? `${state.selected.conversation_id}:${rootId}`
+    : "";
+}
+
+function slackThreadIsCollapsed(threadTs) {
+  const key = slackThreadKey(threadTs);
+  return Boolean(key && state.collapsedSlackThreads.has(key));
+}
+
 function isSlackThreadReply(message) {
   if (providerKey(state.selected?.source_provider) !== "slack") return false;
   const threadTs = String(message?.metadata?.thread_ts || "").trim();
@@ -2591,6 +2604,7 @@ function slackThreadRenderRows(sortedRows) {
   ));
   for (const [rootId, root] of roots) {
     renderRows.push({ message: root, isThreadReply: false });
+    if (slackThreadIsCollapsed(rootId)) continue;
     const replies = [...(repliesByRoot.get(rootId) || [])].sort((left, right) => (
       Date.parse(left.message_timestamp || "") - Date.parse(right.message_timestamp || "")
     ));
@@ -2642,6 +2656,8 @@ function startSlackThreadReply(message) {
     toast("This Slack message cannot be replied to yet.", "error");
     return;
   }
+  const threadKey = slackThreadKey(threadTs);
+  if (threadKey) state.collapsedSlackThreads.delete(threadKey);
   state.replyTarget = {
     messageId: threadTs,
     threadTs,
@@ -2730,7 +2746,17 @@ function handleMessageListAction(event) {
   const row = action.closest(".message-row");
   const message = currentMessageById(row?.dataset.messageId);
   if (!message) return;
-  if (actionName === "pin") {
+  if (actionName === "toggle-thread") {
+    const threadTs = row.dataset.threadRoot || slackThreadRootId(message);
+    const threadKey = slackThreadKey(threadTs);
+    if (!threadKey) return;
+    if (state.collapsedSlackThreads.has(threadKey)) {
+      state.collapsedSlackThreads.delete(threadKey);
+    } else {
+      state.collapsedSlackThreads.add(threadKey);
+    }
+    renderMessages({ preserveScroll: true });
+  } else if (actionName === "pin") {
     togglePinnedMessage(message, action);
   } else if (actionName === "translate") {
     queueMessageTranslation(message, { notify: true, priority: true });
@@ -2757,6 +2783,7 @@ function messageRenderFingerprint(message, {
     parentMessage?.sender_name || "",
     parentMessage?.body_text || "",
     reactions || [],
+    slackThreadIsCollapsed(slackNativeMessageId(message)),
     state.translationCache.get(message.provider_message_id) || null,
     state.translatingMessages.has(message.provider_message_id),
   ]);
@@ -2963,21 +2990,40 @@ function renderMessages({
       bubble.append(list);
     }
     if (!isThreadReply && messageProvider === "slack" && replyCount > 0) {
+      const threadIsCollapsed = slackThreadIsCollapsed(slackNativeMessageId(message));
+      const threadActions = document.createElement("div");
+      threadActions.className = "message-thread-actions";
       const threadSummary = document.createElement("button");
       threadSummary.type = "button";
       threadSummary.className = "message-thread-summary";
       threadSummary.append(createIcon("i-reply"));
       const replyUsersCount = Number(message.metadata?.reply_users_count || 0);
-      threadSummary.append(
-        `${replyCount} ${replyCount === 1 ? "reply" : "replies"}${
-          replyUsersCount > 0
-            ? ` · ${replyUsersCount} ${replyUsersCount === 1 ? "person" : "people"}`
-            : ""
-        }`,
-      );
-      threadSummary.dataset.messageAction = "reply";
-      threadSummary.title = "Reply in this Slack thread";
-      bubble.append(threadSummary);
+      const threadPeopleLabel = replyUsersCount > 0
+        ? ` from ${replyUsersCount} ${replyUsersCount === 1 ? "person" : "people"}`
+        : "";
+      const threadActionLabel = `${threadIsCollapsed ? "Show" : "Hide"} ${replyCount} ${
+        replyCount === 1 ? "reply" : "replies"
+      }${threadPeopleLabel}`;
+      threadSummary.append(`${replyCount} ${replyCount === 1 ? "reply" : "replies"}`);
+      const threadChevron = document.createElement("span");
+      threadChevron.className = "message-thread-chevron";
+      threadChevron.textContent = "⌄";
+      threadChevron.setAttribute("aria-hidden", "true");
+      if (threadIsCollapsed) threadChevron.classList.add("collapsed");
+      threadSummary.append(threadChevron);
+      threadSummary.dataset.messageAction = "toggle-thread";
+      threadSummary.title = threadActionLabel;
+      threadSummary.setAttribute("aria-label", threadActionLabel);
+      threadSummary.setAttribute("aria-expanded", threadIsCollapsed ? "false" : "true");
+
+      const threadReply = document.createElement("button");
+      threadReply.type = "button";
+      threadReply.className = "message-thread-reply-cta";
+      threadReply.dataset.messageAction = "reply";
+      threadReply.textContent = "Reply";
+      threadReply.title = "Reply in this Slack thread";
+      threadActions.append(threadSummary, threadReply);
+      bubble.append(threadActions);
     }
     if (reactions.length) {
       const reactionList = document.createElement("div");
