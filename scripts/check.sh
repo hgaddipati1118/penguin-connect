@@ -18,6 +18,11 @@ if ! command -v rg >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v node >/dev/null 2>&1; then
+  echo "node is required to run frontend checks"
+  exit 1
+fi
+
 PYTHON_SOURCES=()
 while IFS= read -r file; do
   PYTHON_SOURCES+=("$file")
@@ -53,6 +58,11 @@ echo "[check] backend tests"
   cd "$ROOT_DIR/server"
   "$PYTHON_BIN" -m unittest -v
 )
+
+echo "[check] frontend syntax and unit tests"
+node --check "$ROOT_DIR/server/ui/inbox.js"
+node --check "$ROOT_DIR/server/ui/thread-layout.js"
+node --test "$ROOT_DIR/server/ui/thread-layout.test.cjs"
 
 echo "[check] shell script syntax"
 for script in "${SHELL_SOURCES[@]}"; do

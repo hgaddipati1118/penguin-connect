@@ -63,6 +63,8 @@ const state = {
     busy: false,
   },
   collapsedSlackThreads: new Set(),
+  expandedSlackThreads: new Set(),
+  defaultCollapsedSlackThreads: new Set(),
   conversationAvatarDraft: "",
   followLatest: true,
   gifs: [],
@@ -2830,8 +2832,12 @@ function slackThreadKey(threadTs) {
 }
 
 function slackThreadIsCollapsed(threadTs) {
+  const rootId = String(threadTs || "").trim();
   const key = slackThreadKey(threadTs);
-  return Boolean(key && state.collapsedSlackThreads.has(key));
+  if (!key || !rootId) return false;
+  if (state.collapsedSlackThreads.has(key)) return true;
+  if (state.expandedSlackThreads.has(key)) return false;
+  return state.defaultCollapsedSlackThreads.has(rootId);
 }
 
 function isSlackThreadReply(message) {
@@ -2890,6 +2896,39 @@ function slackMessageAuthor(message, { isThreadReply = false } = {}) {
   return author;
 }
 
+function slackThreadLayoutInput(messages) {
+  return (messages || [])
+    .filter((message) => !message.metadata?.reaction)
+    .map((message) => ({
+      id: slackNativeMessageId(message) || message.provider_message_id,
+      threadRootId: slackThreadRootId(message),
+      isReply: isSlackThreadReply(message),
+      replyCount: Number(message.metadata?.reply_count || 0),
+      timestamp: message.message_timestamp,
+    }));
+}
+
+function applySlackThreadDefaults(messages, preferredOpenThreadId = "") {
+  state.defaultCollapsedSlackThreads = new Set();
+  if (
+    providerKey(state.selected?.source_provider) !== "slack"
+    || typeof window.PenguinThreadLayout?.planSlackThreadDefaults !== "function"
+  ) return;
+  const layout = window.PenguinThreadLayout.planSlackThreadDefaults(
+    slackThreadLayoutInput(messages),
+    { preferredOpenThreadId },
+  );
+  state.defaultCollapsedSlackThreads = new Set(layout.collapsedThreadIds || []);
+}
+
+function slackThreadIdForMessage(message) {
+  if (!message) return "";
+  if (isSlackThreadReply(message)) return slackThreadRootId(message);
+  return Number(message.metadata?.reply_count || 0) > 0
+    ? slackNativeMessageId(message)
+    : "";
+}
+
 function slackThreadRenderRows(sortedRows) {
   const visibleRows = sortedRows.slice(-state.messagesVisible).filter(
     (message) => !message.metadata?.reaction,
@@ -2930,11 +2969,15 @@ function slackThreadRenderRows(sortedRows) {
     Date.parse(left[1].message_timestamp || "") - Date.parse(right[1].message_timestamp || "")
   ));
   for (const [rootId, root] of roots) {
-    renderRows.push({ message: root, isThreadReply: false });
-    if (slackThreadIsCollapsed(rootId)) continue;
     const replies = [...(repliesByRoot.get(rootId) || [])].sort((left, right) => (
       Date.parse(left.message_timestamp || "") - Date.parse(right.message_timestamp || "")
     ));
+    renderRows.push({
+      message: root,
+      isThreadReply: false,
+      latestThreadReply: replies.at(-1) || null,
+    });
+    if (slackThreadIsCollapsed(rootId)) continue;
     for (const [index, reply] of replies.entries()) {
       renderRows.push({
         message: reply,
@@ -3019,7 +3062,11 @@ function startSlackThreadReply(message) {
     return;
   }
   const threadKey = slackThreadKey(threadTs);
-  if (threadKey) state.collapsedSlackThreads.delete(threadKey);
+  const wasCollapsed = slackThreadIsCollapsed(threadTs);
+  if (threadKey) {
+    state.collapsedSlackThreads.delete(threadKey);
+    state.expandedSlackThreads.add(threadKey);
+  }
   const clickedSender = isOwnMessage(message)
     ? "You"
     : (message.sender_name || message.sender_email || "");
@@ -3036,6 +3083,7 @@ function startSlackThreadReply(message) {
     body: message.body_text || "Attachment",
   };
   renderReplyTarget();
+  if (wasCollapsed) renderMessages({ preserveScroll: true });
   scheduleDraftPersistence();
   el.messageComposer.focus({ preventScroll: true });
 }
@@ -3298,9 +3346,11 @@ function handleMessageListAction(event) {
     const threadTs = row.dataset.threadRoot || slackThreadRootId(message);
     const threadKey = slackThreadKey(threadTs);
     if (!threadKey) return;
-    if (state.collapsedSlackThreads.has(threadKey)) {
+    if (slackThreadIsCollapsed(threadTs)) {
       state.collapsedSlackThreads.delete(threadKey);
+      state.expandedSlackThreads.add(threadKey);
     } else {
+      state.expandedSlackThreads.delete(threadKey);
       state.collapsedSlackThreads.add(threadKey);
     }
     renderMessages({ preserveScroll: true });
@@ -3324,6 +3374,7 @@ function handleMessageListAction(event) {
 function messageRenderFingerprint(message, {
   isThreadReply,
   isThreadLastReply,
+  latestThreadReply,
   replyDepth,
   nativeReplyCount,
   parentMessage,
@@ -3336,6 +3387,9 @@ function messageRenderFingerprint(message, {
     state.selected?.chat_type || "",
     Boolean(isThreadReply),
     Boolean(isThreadLastReply),
+    latestThreadReply?.provider_message_id || "",
+    latestThreadReply?.sender_name || "",
+    latestThreadReply?.body_text || "",
     Number(replyDepth || 0),
     Number(nativeReplyCount || 0),
     message,
@@ -3428,10 +3482,22 @@ function renderMessages({
     messageChildren.push(historyLoader);
   }
 
+  const focusedThreadId = slackThreadIdForMessage(
+    sortedRows.find((message) => (
+      String(message.provider_message_id || "") === String(focusMessageId || "")
+    )),
+  );
+  applySlackThreadDefaults(sortedRows, focusedThreadId);
+
   let lastDate = "";
   const rows = slackThreadRenderRows(sortedRows);
   for (const entry of rows) {
-    const { message, isThreadReply, isThreadLastReply } = entry;
+    const {
+      message,
+      isThreadReply,
+      isThreadLastReply,
+      latestThreadReply,
+    } = entry;
     const date = fullDateLabel(message.message_timestamp);
     if (!isThreadReply && date !== lastDate) {
       const divider = document.createElement("div");
@@ -3467,6 +3533,7 @@ function renderMessages({
     const renderFingerprint = messageRenderFingerprint(message, {
       isThreadReply,
       isThreadLastReply,
+      latestThreadReply,
       replyDepth,
       nativeReplyCount,
       parentMessage,
@@ -3581,6 +3648,7 @@ function renderMessages({
       const threadSummary = document.createElement("button");
       threadSummary.type = "button";
       threadSummary.className = "message-thread-summary";
+      threadSummary.classList.toggle("collapsed", threadIsCollapsed);
       threadSummary.append(createIcon("i-reply"));
       const replyUsersCount = Number(message.metadata?.reply_users_count || 0);
       const threadPeopleLabel = replyUsersCount > 0
@@ -3590,6 +3658,18 @@ function renderMessages({
         replyCount === 1 ? "reply" : "replies"
       }${threadPeopleLabel}`;
       threadSummary.append(`${replyCount} ${replyCount === 1 ? "reply" : "replies"}`);
+      if (threadIsCollapsed && latestThreadReply) {
+        const latest = document.createElement("span");
+        latest.className = "message-thread-latest";
+        const latestAuthor = isOwnMessage(latestThreadReply)
+          ? "You"
+          : (latestThreadReply.sender_name || latestThreadReply.sender_email || "Slack member");
+        const latestText = latestThreadReply.body_text
+          || messageAttachments(latestThreadReply)[0]?.transfer_name
+          || "Attachment";
+        latest.textContent = `${latestAuthor}: ${truncate(latestText, 54)}`;
+        threadSummary.append(latest);
+      }
       const threadChevron = document.createElement("span");
       threadChevron.className = "message-thread-chevron";
       threadChevron.textContent = "⌄";

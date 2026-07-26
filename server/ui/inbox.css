@@ -1704,6 +1704,7 @@ button.message-reaction-chip:hover {
 
 .message-thread-actions {
   display: flex;
+  width: 100%;
   align-items: center;
   gap: 6px;
   margin: 8px 0 -2px;
@@ -1724,6 +1725,21 @@ button.message-reaction-chip:hover {
   cursor: pointer;
   font-size: 9px;
   font-weight: 700;
+  white-space: nowrap;
+}
+
+.message-thread-summary.collapsed {
+  min-width: 0;
+  flex: 1 1 auto;
+  justify-content: flex-start;
+}
+
+.message-thread-latest {
+  min-width: 0;
+  overflow: hidden;
+  color: #8a7d91;
+  font-weight: 550;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 

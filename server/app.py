@@ -4473,6 +4473,11 @@ def get_penguinconnect_logo():
 def get_penguinconnect_inbox_js():
     return _ui_file_response("inbox.js", "application/javascript; charset=utf-8")
 
+@app.get("/api/penguin-connect/ui/thread-layout.js")
+@app.get("/penguin-connect/ui/thread-layout.js")
+def get_penguinconnect_thread_layout_js():
+    return _ui_file_response("thread-layout.js", "application/javascript; charset=utf-8")
+
 @app.get("/api/penguin-connect/ui/app.css")
 @app.get("/penguin-connect/ui/app.css")
 def get_penguinconnect_ui_css():
