@@ -3891,6 +3891,7 @@ function renderMessages({
       "message-row",
       mine ? "mine" : "",
       messageProvider === "slack" ? "slack-message" : "",
+      ["slack", "whatsapp"].includes(messageProvider) ? "replyable-message" : "",
       message.provider_message_id === state.focusedMessageId ? "message-focused" : "",
       isThreadReply ? "message-thread-reply" : "",
       isThreadLastReply ? "message-thread-last-reply" : "",
@@ -4129,10 +4130,13 @@ function renderMessages({
     reply.dataset.messageAction = "reply";
     reply.append(createIcon("i-reply"));
     const replyProvider = messageProvider;
+    const replyRecipient = isOwnMessage(message)
+      ? "your message"
+      : (message.sender_name || message.sender_email || "this message");
     reply.title = replyProvider === "slack"
-      ? "Reply in Slack thread"
-      : "Reply to this WhatsApp message";
-    reply.setAttribute("aria-label", `Reply to ${message.sender_name || "message"}`);
+      ? `Reply to ${replyRecipient} in thread`
+      : `Reply to ${replyRecipient}`;
+    reply.setAttribute("aria-label", reply.title);
     reply.hidden = !["slack", "whatsapp"].includes(replyProvider)
       || Boolean(message.metadata?.pending_send);
     const more = document.createElement("button");

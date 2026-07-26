@@ -1733,6 +1733,16 @@ button.message-reaction-chip:hover {
   opacity: 1;
 }
 
+.message-row.replyable-message .message-reply-button {
+  opacity: 0.38;
+}
+
+.message-row.replyable-message:hover .message-reply-button,
+.message-row.replyable-message .message-reply-button:focus-visible,
+.message-row.replyable-message.message-focused .message-reply-button {
+  opacity: 1;
+}
+
 .message-pin-button:hover,
 .message-pin-button[aria-pressed="true"] {
   background: #f2e5de;
