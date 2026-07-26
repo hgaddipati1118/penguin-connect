@@ -265,7 +265,13 @@ const conversationRowFingerprints = new WeakMap();
 const messageRowFingerprints = new WeakMap();
 const WORKSPACE_CACHE_DB = "penguin-local-workspace";
 const WORKSPACE_CACHE_VERSION = 2;
-const WORKSPACE_CACHE_THREAD_LIMIT = 60;
+const WORKSPACE_CACHE_THREAD_LIMIT = 160;
+const PRELOAD_EAGER_THREAD_LIMIT = 48;
+const PRELOAD_BACKGROUND_THREAD_LIMIT = 120;
+const PRELOAD_EAGER_CONCURRENCY = 4;
+const PRELOAD_BACKGROUND_CONCURRENCY = 2;
+const PRELOAD_MESSAGE_BATCH = 80;
+const PRELOAD_SLACK_MESSAGE_BATCH = 120;
 const DRAFT_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024;
 const DRAFT_ATTACHMENT_TOTAL_MAX_BYTES = 50 * 1024 * 1024;
 const DRAFT_ATTACHMENT_MAX_COUNT = 20;
@@ -911,6 +917,12 @@ function initialMessageBatch(conversation) {
   return providerKey(conversation?.source_provider) === "slack"
     ? SLACK_MESSAGE_INITIAL_BATCH
     : MESSAGE_INITIAL_BATCH;
+}
+
+function preloadMessageBatch(conversation) {
+  return providerKey(conversation?.source_provider) === "slack"
+    ? PRELOAD_SLACK_MESSAGE_BATCH
+    : PRELOAD_MESSAGE_BATCH;
 }
 
 function messageListUrl(conversationId, {
@@ -3399,7 +3411,10 @@ function updateConversationSelectionUI(previousId, nextId) {
   requestAnimationFrame(() => next?.scrollIntoView({ block: "nearest", behavior: "auto" }));
 }
 
-async function preloadConversationMessages(conversation) {
+async function preloadConversationMessages(
+  conversation,
+  { limit = preloadMessageBatch(conversation) } = {},
+) {
   const conversationId = conversation?.conversation_id;
   if (
     !conversationId
@@ -3410,7 +3425,7 @@ async function preloadConversationMessages(conversation) {
   try {
     const payload = await api(
       messageListUrl(conversationId, {
-        limit: initialMessageBatch(conversation),
+        limit,
       }),
     );
     rememberConversationMessages(conversationId, payload.messages || [], {
@@ -3667,16 +3682,54 @@ async function preloadRecentMessages() {
   state.preloadStarted = true;
   const queue = sortedConversations(state.conversations)
     .filter(hasCachedMessage)
-    .slice(0, 40);
+    .slice(0, PRELOAD_BACKGROUND_THREAD_LIMIT);
+  const eager = queue.slice(0, PRELOAD_EAGER_THREAD_LIMIT);
+  const background = queue.slice(PRELOAD_EAGER_THREAD_LIMIT);
+  await runPreloadQueue(eager, {
+    concurrency: PRELOAD_EAGER_CONCURRENCY,
+  });
+  scheduleBackgroundPreload(background);
+}
+
+async function waitForPreloadIdle(timeout = 600) {
+  await new Promise((resolve) => {
+    const schedule = window.requestIdleCallback
+      || ((callback) => window.setTimeout(callback, 80));
+    schedule(resolve, { timeout });
+  });
+}
+
+async function runPreloadQueue(queue, {
+  concurrency = 1,
+  yieldEvery = 0,
+} = {}) {
   let nextIndex = 0;
+  let completed = 0;
   const worker = async () => {
     while (nextIndex < queue.length) {
       const conversation = queue[nextIndex];
       nextIndex += 1;
       await preloadConversationMessages(conversation);
+      completed += 1;
+      if (yieldEvery && completed % yieldEvery === 0) {
+        await waitForPreloadIdle();
+      }
     }
   };
-  await Promise.all([worker(), worker(), worker(), worker()]);
+  const workerCount = Math.max(1, Math.min(Number(concurrency || 1), queue.length));
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+}
+
+function scheduleBackgroundPreload(queue) {
+  if (!queue.length) return;
+  const schedule = window.requestIdleCallback
+    || ((callback) => window.setTimeout(callback, 250));
+  schedule(() => {
+    runPreloadQueue(queue, {
+      concurrency: PRELOAD_BACKGROUND_CONCURRENCY,
+      yieldEvery: 4,
+    }).catch(() => {});
+  }, { timeout: 1500 });
 }
 
 async function markConversationRead(conversation) {
