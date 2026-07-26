@@ -2926,6 +2926,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("saveContact", inbox_js_response.text)
         self.assertIn("renderAgentHistory", inbox_js_response.text)
         self.assertIn("scrollThreadToBottom", inbox_js_response.text)
+        self.assertIn("latestAnchorResizeObserver", inbox_js_response.text)
         self.assertIn("&& !event.shiftKey", inbox_js_response.text)
         self.assertIn("&& !event.isComposing", inbox_js_response.text)
         self.assertIn("preloadRecentMessages", inbox_js_response.text)

@@ -282,6 +282,8 @@ let selectionRenderFrame = 0;
 let selectionPreloadTimer = 0;
 let latestAnchorFrame = 0;
 let latestAnchorToken = 0;
+let latestAnchorResizeObserver = null;
+let latestAnchorStopTimer = 0;
 let mentionSelectionIndex = 0;
 let translationWorkerRunning = false;
 let shortcutPrefix = "";
@@ -1759,10 +1761,13 @@ function scrollThreadToBottom() {
   el.messageList.scrollTop = el.messageList.scrollHeight;
 }
 
-function stabilizeThreadAtLatest(durationMs = 220) {
+function stabilizeThreadAtLatest(durationMs = 420) {
   const token = ++latestAnchorToken;
   const startedAt = Date.now();
   window.cancelAnimationFrame(latestAnchorFrame);
+  window.clearTimeout(latestAnchorStopTimer);
+  latestAnchorResizeObserver?.disconnect();
+  latestAnchorResizeObserver = null;
   const anchor = () => {
     if (token !== latestAnchorToken || !state.followLatest) return;
     scrollThreadToBottom();
@@ -1771,6 +1776,21 @@ function stabilizeThreadAtLatest(durationMs = 220) {
     }
   };
   anchor();
+  if ("ResizeObserver" in window) {
+    latestAnchorResizeObserver = new ResizeObserver(() => {
+      if (token !== latestAnchorToken || !state.followLatest) return;
+      window.cancelAnimationFrame(latestAnchorFrame);
+      latestAnchorFrame = window.requestAnimationFrame(scrollThreadToBottom);
+    });
+    for (const row of el.messageList.querySelectorAll(".message-row")) {
+      latestAnchorResizeObserver.observe(row);
+    }
+  }
+  latestAnchorStopTimer = window.setTimeout(() => {
+    if (token !== latestAnchorToken) return;
+    latestAnchorResizeObserver?.disconnect();
+    latestAnchorResizeObserver = null;
+  }, Math.max(1600, durationMs));
 }
 
 function renderPinnedMessages() {
