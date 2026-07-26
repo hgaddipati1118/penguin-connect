@@ -3,77 +3,6 @@ import WebKit
 
 private let defaultPort = 9000
 
-private func htmlPage(title: String, detail: String, retry: Bool = false) -> String {
-    let retryButton = retry
-        ? "<button onclick=\"window.location.reload()\">Try again</button>"
-        : ""
-    return """
-    <!doctype html>
-    <html>
-      <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-          :root { color-scheme: light; }
-          * { box-sizing: border-box; }
-          body {
-            margin: 0;
-            min-height: 100vh;
-            display: grid;
-            place-items: center;
-            background: #f6f4ee;
-            color: #20231f;
-            font: 14px -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
-          }
-          main { width: min(440px, calc(100vw - 48px)); text-align: center; }
-          .mark {
-            width: 58px;
-            height: 58px;
-            margin: 0 auto 22px;
-            display: grid;
-            place-items: center;
-            border-radius: 16px;
-            background: #19231f;
-            color: #f8f5ed;
-            font: 700 30px Georgia, serif;
-            box-shadow: 0 12px 30px rgba(29, 37, 33, .15);
-          }
-          h1 { margin: 0 0 8px; font: 600 27px Georgia, serif; }
-          p { margin: 0 auto; max-width: 360px; color: #727972; line-height: 1.55; }
-          .pulse {
-            width: 5px;
-            height: 5px;
-            margin: 24px auto 0;
-            border-radius: 999px;
-            background: #2c9a6c;
-            box-shadow: -12px 0 #9fcab8, 12px 0 #9fcab8;
-            animation: breathe 1.1s ease-in-out infinite alternate;
-          }
-          button {
-            margin-top: 22px;
-            border: 1px solid #ccd0ca;
-            border-radius: 10px;
-            padding: 9px 15px;
-            background: #fff;
-            color: #242823;
-            font: inherit;
-            font-weight: 600;
-          }
-          @keyframes breathe { to { opacity: .35; transform: scale(.8); } }
-        </style>
-      </head>
-      <body>
-        <main>
-          <div class="mark">P</div>
-          <h1>\(title)</h1>
-          <p>\(detail)</p>
-          \(retry ? retryButton : "<div class=\"pulse\" aria-label=\"Loading\"></div>")
-        </main>
-      </body>
-    </html>
-    """
-}
-
 private func repoPort(at repoURL: URL) -> Int {
     if let value = ProcessInfo.processInfo.environment["PENGUIN_CONNECT_PORT"],
        let port = Int(value),
@@ -125,6 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     private var bridgeProcess: Process?
     private var launchAttempted = false
     private var healthAttempts = 0
+    private var healthGeneration = 0
 
     private lazy var repoURL: URL = {
         let configured = Bundle.main.object(forInfoDictionaryKey: "PenguinRepoPath") as? String ?? ""
@@ -143,8 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         NSApp.applicationIconImage = makeDockIcon()
         configureMainMenu()
         configureWindow()
-        showLoading()
-        checkBridge()
+        beginBridgeCheck()
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -201,39 +130,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
 
     private func showLoading() {
         webView.loadHTMLString(
-            htmlPage(
+            penguinHTMLPage(
                 title: "Opening Penguin",
                 detail: "Starting your private local messaging workspace."
             ),
-            baseURL: nil
+            baseURL: Bundle.main.resourceURL
         )
     }
 
     private func showError(_ detail: String) {
         webView.loadHTMLString(
-            htmlPage(title: "Penguin could not start", detail: detail, retry: true),
-            baseURL: nil
+            penguinHTMLPage(title: "Penguin could not start", detail: detail, retry: true),
+            baseURL: Bundle.main.resourceURL
         )
     }
 
-    private func checkBridge() {
+    private func beginBridgeCheck() {
+        healthGeneration += 1
+        launchAttempted = false
+        healthAttempts = 0
+        showLoading()
+        checkBridge(generation: healthGeneration)
+    }
+
+    private func checkBridge(generation: Int) {
         var request = URLRequest(url: healthURL)
         request.timeoutInterval = 1.2
         URLSession.shared.dataTask(with: request) { [weak self] _, response, _ in
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self, generation == self.healthGeneration else { return }
                 if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
                     self.webView.load(URLRequest(url: self.uiURL))
                     return
                 }
                 if !self.launchAttempted {
                     self.launchAttempted = true
-                    self.launchBridge()
+                    guard self.launchBridge() else { return }
                 }
                 self.healthAttempts += 1
                 if self.healthAttempts < 45 {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                        self.checkBridge()
+                        self.checkBridge(generation: generation)
                     }
                 } else {
                     self.showError(
@@ -244,11 +181,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         }.resume()
     }
 
-    private func launchBridge() {
+    private func launchBridge() -> Bool {
+        if bridgeProcess?.isRunning == true {
+            return true
+        }
         let runner = repoURL.appendingPathComponent("scripts/run_penguin_connect_bridge.sh")
         guard FileManager.default.isExecutableFile(atPath: runner.path) else {
             showError("The Penguin bridge script is missing or is not executable.")
-            return
+            return false
         }
 
         let process = Process()
@@ -261,8 +201,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         do {
             try process.run()
             bridgeProcess = process
+            return true
         } catch {
             showError("The local bridge could not be launched: \(error.localizedDescription)")
+            return false
         }
     }
 
@@ -272,6 +214,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
     ) {
         guard let url = navigationAction.request.url else {
+            decisionHandler(.cancel)
+            return
+        }
+        if isPenguinRetryURL(url) {
+            beginBridgeCheck()
             decisionHandler(.cancel)
             return
         }

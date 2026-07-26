@@ -71,6 +71,22 @@ node --test "$ROOT_DIR/server/ui/"*.test.cjs
 if [ "$(uname -s)" = "Darwin" ] && command -v swiftc >/dev/null 2>&1; then
   echo "[check] macOS Vision OCR helper"
   swiftc -typecheck "$ROOT_DIR/server/macos_vision_ocr.swift"
+
+  echo "[check] macOS desktop shell"
+  DESKTOP_CHECK_DIR="$(mktemp -d)"
+  trap 'rm -rf "$DESKTOP_CHECK_DIR"' EXIT
+  swiftc \
+    "$ROOT_DIR/desktop/PenguinDesktopSupport.swift" \
+    "$ROOT_DIR/desktop/PenguinDesktopSupportTests.swift" \
+    -o "$DESKTOP_CHECK_DIR/PenguinDesktopSupportTests"
+  "$DESKTOP_CHECK_DIR/PenguinDesktopSupportTests"
+  swiftc \
+    -typecheck \
+    -parse-as-library \
+    -framework Cocoa \
+    -framework WebKit \
+    "$ROOT_DIR/desktop/PenguinDesktopSupport.swift" \
+    "$ROOT_DIR/desktop/PenguinApp.swift"
 fi
 
 echo "[check] shell script syntax"

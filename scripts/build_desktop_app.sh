@@ -34,6 +34,7 @@ swiftc \
   -parse-as-library \
   -framework Cocoa \
   -framework WebKit \
+  "$REPO_DIR/desktop/PenguinDesktopSupport.swift" \
   "$REPO_DIR/desktop/PenguinApp.swift" \
   -o "$MACOS_DIR/Penguin"
 
