@@ -2873,7 +2873,6 @@ class PenguinConnectTests(unittest.TestCase):
             result = penguin_connect.backfill_local_conversation_cache(
                 self.conn,
                 "amc_test",
-                limit=120,
             )
 
         self.assertEqual(result, {"found": True, "imported": 0, "completed": True})

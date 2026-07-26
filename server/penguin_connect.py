@@ -5246,10 +5246,19 @@ def backfill_local_conversation_cache(
     ).fetchone()
     if state and state["local_cache_backfill_completed_at"]:
         if _conversation_source_provider(conv) == "whatsapp":
+            # Completed histories only need a bounded newest-page repair for
+            # reaction, edit, reply-context, and contact metadata that may have
+            # arrived after the original import. Re-reading the default
+            # 5,000-message backfill window on every selection makes j/k
+            # navigation needlessly contend with the local bridge.
+            recent_repair_limit = min(
+                max(1, int(limit or 5000)),
+                120,
+            )
             imported = _cache_local_source_messages_for_view(
                 conn,
                 conv,
-                limit=max(1, min(int(limit or 5000), 5000)),
+                limit=recent_repair_limit,
                 include_history=True,
                 backfill_history=False,
             )

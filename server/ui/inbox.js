@@ -321,6 +321,7 @@ const SLACK_MESSAGE_INITIAL_BATCH = 300;
 const MESSAGE_HISTORY_BATCH = 80;
 const LATEST_ANCHOR_OBSERVER_MS = 1600;
 const SLACK_SELECTED_REFRESH_MS = 10000;
+const SELECTED_REFRESH_COOLDOWN_MS = 1200;
 const NATIVE_SCROLL_ANCHORING = window.CSS?.supports?.("overflow-anchor: auto") || false;
 const CLOCK_FORMATTER = new Intl.DateTimeFormat(undefined, {
   hour: "numeric",
@@ -330,6 +331,9 @@ const WEEKDAY_FORMATTER = new Intl.DateTimeFormat(undefined, { weekday: "short" 
 const MONTH_DAY_FORMATTER = new Intl.DateTimeFormat(undefined, {
   month: "short",
   day: "numeric",
+});
+const selectedRefreshCoordinator = window.PenguinRefreshCoordinator.createRefreshCoordinator({
+  cooldownMs: SELECTED_REFRESH_COOLDOWN_MS,
 });
 const WEEKDAY_MONTH_DAY_YEAR_FORMATTER = new Intl.DateTimeFormat(undefined, {
   weekday: "short",
@@ -372,7 +376,7 @@ const draftLocalQueues = new Map();
 const draftServerQueues = new Map();
 const dirtyDraftConversations = new Set();
 let attachmentHistorySyncPromise = null;
-const cacheRepairRequests = new Map();
+const cacheRepairGate = window.PenguinRefreshCoordinator.createCompletionGate();
 const downloadableImageQueue = [];
 const downloadableImageTasks = new WeakMap();
 const queuedDownloadableImages = new WeakSet();
@@ -3327,7 +3331,7 @@ async function submitProviderReaction(message, {
     );
     toast(`${shouldRemove ? "Removed" : "Added"} ${reactionEmoji} reaction`);
     if (state.selected?.conversation_id === conversationId) {
-      refreshSelectedMessages({ incremental: false }).catch(() => {});
+      refreshSelectedMessages({ incremental: false, force: true }).catch(() => {});
     }
   } catch (error) {
     message.metadata = {
@@ -4324,7 +4328,7 @@ function scheduleSelectedConversationHydration(
       || state.selected?.conversation_id !== conversation.conversation_id
     ) return;
     const isSlack = providerKey(conversation.source_provider) === "slack";
-    refreshSelectedMessages({ incremental: !isSlack }).catch((error) => toast(error.message, "error"));
+    refreshSelectedMessages({ incremental: true }).catch((error) => toast(error.message, "error"));
     if (!isSlack) repairSelectedConversationCache(conversation).catch(() => {});
     loadScheduledMessages(conversation.conversation_id).catch(() => {});
     if (markRead) markConversationRead(conversation).catch(() => {});
@@ -4458,32 +4462,44 @@ function messagesFingerprint(messages) {
   ].join(":")).join("|");
 }
 
-async function refreshSelectedMessages({ incremental = true, refreshSource = true } = {}) {
+async function refreshSelectedMessages({
+  incremental = true,
+  refreshSource = true,
+  force = false,
+} = {}) {
   const conversationId = state.selected?.conversation_id;
   if (!conversationId) return;
-  const payload = await api(
-    messageListUrl(conversationId, {
-      limit: initialMessageBatch(state.selected),
-      refresh: refreshSource,
-      incremental,
-    }),
-  );
-  if (state.selected?.conversation_id !== conversationId) return;
-  let nextMessages = payload.messages || [];
-  if (state.messages.length > nextMessages.length) {
-    const merged = new Map(
-      state.messages.map((message) => [message.provider_message_id, message]),
+  const selectedConversation = state.selected;
+  const refreshKey = [
+    conversationId,
+    refreshSource ? "source" : "cache",
+    incremental ? "incremental" : "full",
+  ].join(":");
+  return selectedRefreshCoordinator.run(refreshKey, async () => {
+    const payload = await api(
+      messageListUrl(conversationId, {
+        limit: initialMessageBatch(selectedConversation),
+        refresh: refreshSource,
+        incremental,
+      }),
     );
-    for (const message of nextMessages) merged.set(message.provider_message_id, message);
-    nextMessages = [...merged.values()];
-  }
-  state.messagePagination.total = Number(payload.total || nextMessages.length);
-  state.messagePagination.hasMore = nextMessages.length < state.messagePagination.total;
-  rememberConversationMessages(conversationId, nextMessages, state.messagePagination);
-  if (messagesFingerprint(nextMessages) === messagesFingerprint(state.messages)) return;
-  const shouldFollowLatest = state.followLatest;
-  state.messages = nextMessages;
-  renderMessages({ preserveScroll: !shouldFollowLatest });
+    if (state.selected?.conversation_id !== conversationId) return;
+    let nextMessages = payload.messages || [];
+    if (state.messages.length > nextMessages.length) {
+      const merged = new Map(
+        state.messages.map((message) => [message.provider_message_id, message]),
+      );
+      for (const message of nextMessages) merged.set(message.provider_message_id, message);
+      nextMessages = [...merged.values()];
+    }
+    state.messagePagination.total = Number(payload.total || nextMessages.length);
+    state.messagePagination.hasMore = nextMessages.length < state.messagePagination.total;
+    rememberConversationMessages(conversationId, nextMessages, state.messagePagination);
+    if (messagesFingerprint(nextMessages) === messagesFingerprint(state.messages)) return;
+    const shouldFollowLatest = state.followLatest;
+    state.messages = nextMessages;
+    renderMessages({ preserveScroll: !shouldFollowLatest });
+  }, { force });
 }
 
 async function repairSelectedConversationCache(conversation) {
@@ -4492,33 +4508,32 @@ async function repairSelectedConversationCache(conversation) {
     !conversationId
     || !["imessage", "apple_messages", "sms", "rcs", "whatsapp", "slack"].includes(conversation.source_provider)
   ) return;
-  if (cacheRepairRequests.has(conversationId)) {
-    await cacheRepairRequests.get(conversationId);
-    return;
-  }
-  const repair = (async () => {
+  const result = await cacheRepairGate.run(conversationId, async () => {
     let totalImported = 0;
+    let completed = false;
     for (let batch = 0; batch < 3; batch += 1) {
       if (state.selected?.conversation_id !== conversationId) break;
-      const result = await api(
+      const batchResult = await api(
         `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/cache-backfill`,
         { method: "POST", body: "{}" },
       );
-      const imported = Number(result.imported || 0);
+      const imported = Number(batchResult.imported || 0);
       totalImported += imported;
-      if (result.completed || imported === 0) break;
+      completed = Boolean(batchResult.completed);
+      if (completed || imported === 0) break;
       await new Promise((resolve) => window.setTimeout(resolve, 120));
     }
-    return { imported: totalImported };
-  })();
-  cacheRepairRequests.set(conversationId, repair);
-  try {
-    const result = await repair;
-    if (Number(result.imported || 0) > 0 && state.selected?.conversation_id === conversationId) {
-      await refreshSelectedMessages({ incremental: false, refreshSource: false });
-    }
-  } finally {
-    cacheRepairRequests.delete(conversationId);
+    return { imported: totalImported, completed };
+  });
+  if (
+    Number(result.imported || 0) > 0
+    && state.selected?.conversation_id === conversationId
+  ) {
+    await refreshSelectedMessages({
+      incremental: false,
+      refreshSource: false,
+      force: true,
+    });
   }
 }
 
@@ -4916,7 +4931,7 @@ async function deliverPendingSend(pending) {
       removePendingOptimisticMessage(pending);
       if (state.selected?.conversation_id === pending.conversation.conversation_id) {
         el.composerStatus.textContent = `Sent through ${providerLabel(pending.conversation.source_provider)}`;
-        await refreshSelectedMessages();
+        await refreshSelectedMessages({ force: true });
       }
       loadConversations({ keepSelection: true });
       return;
@@ -4950,7 +4965,7 @@ async function deliverPendingSend(pending) {
         await Promise.all([
           loadConversations({ keepSelection: true }),
           state.selected?.conversation_id === pending.conversation.conversation_id
-            ? refreshSelectedMessages()
+            ? refreshSelectedMessages({ force: true })
             : Promise.resolve(),
           state.selected?.conversation_id === pending.conversation.conversation_id
             ? loadScheduledMessages(pending.conversation.conversation_id)
@@ -5302,7 +5317,7 @@ async function refreshWorkspaceIfChanged() {
         discoverSlack: slackChanged,
       }),
       selectedChanged
-        ? refreshSelectedMessages({ incremental: selectedProvider !== "slack" })
+        ? refreshSelectedMessages({ incremental: true })
         : Promise.resolve(),
       loadScheduledMessages(),
       state.view === "queue" ? loadQueue() : Promise.resolve(),

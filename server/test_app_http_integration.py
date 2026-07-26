@@ -3559,6 +3559,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
             logo_response = client.get("/penguin-connect/ui/penguin-logo.png")
             inbox_js_response = client.get("/penguin-connect/ui/inbox.js")
             thread_layout_js_response = client.get("/penguin-connect/ui/thread-layout.js")
+            refresh_coordinator_js_response = client.get(
+                "/penguin-connect/ui/refresh-coordinator.js",
+            )
             html_response = client.get("/penguin-connect/console")
             css_response = client.get("/penguin-connect/ui/app.css")
             js_response = client.get("/penguin-connect/ui/app.js")
@@ -3600,11 +3603,24 @@ class AppHttpIntegrationTests(unittest.TestCase):
             'src="/penguin-connect/ui/thread-layout.js"',
             inbox_response.text,
         )
+        self.assertIn(
+            'src="/penguin-connect/ui/refresh-coordinator.js"',
+            inbox_response.text,
+        )
         self.assertEqual(inbox_js_response.status_code, 200)
         self.assertEqual(inbox_js_response.headers["cache-control"], "no-store")
         self.assertEqual(thread_layout_js_response.status_code, 200)
         self.assertEqual(thread_layout_js_response.headers["cache-control"], "no-store")
         self.assertIn("planSlackThreadDefaults", thread_layout_js_response.text)
+        self.assertEqual(refresh_coordinator_js_response.status_code, 200)
+        self.assertEqual(
+            refresh_coordinator_js_response.headers["cache-control"],
+            "no-store",
+        )
+        self.assertIn(
+            "createRefreshCoordinator",
+            refresh_coordinator_js_response.text,
+        )
         self.assertIn("loadConversations", inbox_js_response.text)
         self.assertIn("hasCachedMessage", inbox_js_response.text)
         self.assertIn("conversation?.chat_type === \"group\" && displayName", inbox_js_response.text)
@@ -3672,6 +3688,12 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("renderLabelBar", inbox_js_response.text)
         self.assertIn("conversationLabels", inbox_js_response.text)
         self.assertIn("refreshSelectedMessages", inbox_js_response.text)
+        self.assertIn("selectedRefreshCoordinator.run", inbox_js_response.text)
+        self.assertIn("cacheRepairGate.run", inbox_js_response.text)
+        self.assertIn(
+            "refreshSelectedMessages({ incremental: true })",
+            inbox_js_response.text,
+        )
         self.assertIn("renderMessages({ preserveScroll: !shouldFollowLatest })", inbox_js_response.text)
         self.assertIn("refreshWorkspaceIfChanged", inbox_js_response.text)
         self.assertIn("rememberWorkspaceRevision", inbox_js_response.text)

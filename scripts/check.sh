@@ -62,7 +62,8 @@ echo "[check] backend tests"
 echo "[check] frontend syntax and unit tests"
 node --check "$ROOT_DIR/server/ui/inbox.js"
 node --check "$ROOT_DIR/server/ui/thread-layout.js"
-node --test "$ROOT_DIR/server/ui/thread-layout.test.cjs"
+node --check "$ROOT_DIR/server/ui/refresh-coordinator.js"
+node --test "$ROOT_DIR/server/ui/"*.test.cjs
 
 echo "[check] shell script syntax"
 for script in "${SHELL_SOURCES[@]}"; do

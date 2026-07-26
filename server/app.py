@@ -4488,6 +4488,11 @@ def get_penguinconnect_inbox_js():
 def get_penguinconnect_thread_layout_js():
     return _ui_file_response("thread-layout.js", "application/javascript; charset=utf-8")
 
+@app.get("/api/penguin-connect/ui/refresh-coordinator.js")
+@app.get("/penguin-connect/ui/refresh-coordinator.js")
+def get_penguinconnect_refresh_coordinator_js():
+    return _ui_file_response("refresh-coordinator.js", "application/javascript; charset=utf-8")
+
 @app.get("/api/penguin-connect/ui/app.css")
 @app.get("/penguin-connect/ui/app.css")
 def get_penguinconnect_ui_css():
