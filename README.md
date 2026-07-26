@@ -34,8 +34,9 @@ flowchart LR
 ## Current Status
 
 - Shipping source adapters: **Apple Messages** (`iMessage`, `SMS`, `RCS`), **WhatsApp**, and **Slack**
-- Slack channels retain human-readable authors, keep the newest active thread open while collapsing older reply trees with a latest-reply preview, support inline emoji reactions plus native edit/delete for your own messages, and can send or schedule replies back into the native Slack thread while preserving the exact clicked message as local quoted context
+- Slack channels retain human-readable authors, keep the newest active thread open while collapsing older reply trees with a latest-reply preview, download private images/files into an authenticated local cache only when previewed, support inline emoji reactions plus native edit/delete for your own messages, and can send or schedule replies back into the native Slack thread while preserving the exact clicked message as local quoted context
 - WhatsApp conversations preserve native quoted replies, reconcile native reactions and edited/deleted messages from the local bridge, support inline reactions on exact cached messages, and expose native edit/delete only for messages owned by you (including WhatsApp's edit-window limit)
+- Apple Messages rows can keep local quoted-reply context and visual nesting in Penguin; the outgoing text still uses Apple's regular send path because the local bridge has no native arbitrary-message reply API
 - Primary operator surfaces: **local messaging workspace**, **power console**, **local CLI**, and **MCP server**
 - Optional legacy bridge surface: **Gmail aliases**
 - Additional adapter available: **Telegram**
