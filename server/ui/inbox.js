@@ -334,6 +334,9 @@ const MESSAGE_HISTORY_BATCH = 80;
 const LATEST_ANCHOR_OBSERVER_MS = 1600;
 const SLACK_SELECTED_REFRESH_MS = 10000;
 const SELECTED_REFRESH_COOLDOWN_MS = 1200;
+const UNDO_SEND_DELAY_MS = 15000;
+const SCHEDULED_RECONCILE_GRACE_MS = 350;
+const SCHEDULED_RECONCILE_RETRY_MS = 5000;
 const NATIVE_SCROLL_ANCHORING = window.CSS?.supports?.("overflow-anchor: auto") || false;
 const CLOCK_FORMATTER = new Intl.DateTimeFormat(undefined, {
   hour: "numeric",
@@ -5322,6 +5325,10 @@ function pendingConversationIsSelected(pending) {
 }
 
 function failPendingDelivery(pending, error) {
+  if (pending.deliveryFailed) return;
+  pending.deliveryFailed = true;
+  pending.dismissUndoToast?.();
+  state.pendingSends = state.pendingSends.filter((item) => item.id !== pending.id);
   removePendingOptimisticMessage(pending);
   restorePendingDraft(pending);
   if (pendingConversationIsSelected(pending)) {
@@ -5364,52 +5371,18 @@ async function deliverPendingSend(pending) {
     return;
   }
 
-  if (pending.instant) {
-    let delivery;
-    try {
-      delivery = await api(
-        `/penguin-connect/conversations/${
-          encodeURIComponent(pending.conversation.conversation_id)
-        }/send`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            sender_email: "",
-            message: pending.providerText,
-            attachments,
-            reply_to_message_id: replyTargetProviderMessageId(pending.replyTo),
-            reply_context_message_id: replyTargetContextMessageId(pending.replyTo),
-          }),
-        },
-      );
-    } catch (error) {
-      failPendingDelivery(pending, error);
-      return;
-    }
-
-    settlePendingOptimisticMessage(pending, delivery.provider_message_id);
-    if (pendingConversationIsSelected(pending)) {
-      el.composerStatus.textContent = `Sent through ${
-        providerLabel(pending.conversation.source_provider)
-      }`;
-    }
-    await refreshAfterPendingDelivery(pending);
-    return;
-  }
-
-  let scheduled;
+  let delivery;
   try {
-    scheduled = await api(
+    delivery = await api(
       `/penguin-connect/conversations/${
         encodeURIComponent(pending.conversation.conversation_id)
-      }/scheduled-messages`,
+      }/send`,
       {
         method: "POST",
         body: JSON.stringify({
           sender_email: "",
           message: pending.providerText,
           attachments,
-          scheduled_at: new Date(Date.now() + 1500).toISOString(),
           reply_to_message_id: replyTargetProviderMessageId(pending.replyTo),
           reply_context_message_id: replyTargetContextMessageId(pending.replyTo),
         }),
@@ -5420,65 +5393,144 @@ async function deliverPendingSend(pending) {
     return;
   }
 
-  pending.scheduledId = String(
-    scheduled?.scheduled_message?.scheduled_id || "",
-  );
-  updatePendingOptimisticMessage(pending, "Queued · offline retry enabled");
+  settlePendingOptimisticMessage(pending, delivery.provider_message_id);
   if (pendingConversationIsSelected(pending)) {
-    el.composerStatus.textContent = `Queued for ${
+    el.composerStatus.textContent = `Sent through ${
       providerLabel(pending.conversation.source_provider)
-    } · offline retry enabled`;
+    }`;
   }
-  loadScheduledMessages(pending.conversation.conversation_id).catch(() => {});
+  await refreshAfterPendingDelivery(pending);
+}
 
-  window.setTimeout(async () => {
-    let runResult;
-    try {
-      runResult = await api("/penguin-connect/scheduled-messages/run-due", {
-        method: "POST",
-        body: "{}",
-      });
-    } catch (_error) {
-      updatePendingOptimisticMessage(pending, "Queued · retrying when online");
-      return;
-    }
+function armPendingScheduledReconciliation(
+  pending,
+  scheduledAt = pending.scheduledAt,
+) {
+  if (pending.cancelled || pending.deliveryFailed) return;
+  window.clearTimeout(pending.timer);
+  const dueAt = Date.parse(String(scheduledAt || ""));
+  const delay = Number.isFinite(dueAt)
+    ? Math.max(250, dueAt - Date.now() + SCHEDULED_RECONCILE_GRACE_MS)
+    : SCHEDULED_RECONCILE_RETRY_MS;
+  pending.timer = window.setTimeout(
+    () => reconcileScheduledPendingSend(pending),
+    delay,
+  );
+}
 
-    let delivery = (runResult.results || []).find(
-      (result) => result.scheduled_id === pending.scheduledId,
-    );
-    try {
-      const scheduledMessages = await loadScheduledMessages(
-        pending.conversation.conversation_id,
-      );
-      delivery = scheduledMessages.find(
-        (item) => item.scheduled_id === pending.scheduledId,
-      ) || delivery;
-    } catch (_error) {
-      // The run-due response still carries the authoritative delivery result.
-    }
-
-    if (delivery?.status === "sent") {
-      settlePendingOptimisticMessage(
-        pending,
-        delivery.provider_message_id,
-      );
-      if (pendingConversationIsSelected(pending)) {
-        el.composerStatus.textContent = `Sent through ${
-          providerLabel(pending.conversation.source_provider)
-        }`;
-      }
-      await refreshAfterPendingDelivery(pending);
-      return;
-    }
-    if (delivery?.status === "failed") {
-      failPendingDelivery(
-        pending,
-        new Error(delivery.error || delivery.last_error || "delivery failed"),
-      );
-      return;
-    }
+async function reconcileScheduledPendingSend(pending) {
+  if (pending.cancelled || pending.deliveryFailed) return;
+  let runResult = null;
+  try {
+    runResult = await api("/penguin-connect/scheduled-messages/run-due", {
+      method: "POST",
+      body: "{}",
+    });
+  } catch (_error) {
     updatePendingOptimisticMessage(pending, "Queued · retrying when online");
-  }, 1800);
+    armPendingScheduledReconciliation(
+      pending,
+      new Date(Date.now() + SCHEDULED_RECONCILE_RETRY_MS).toISOString(),
+    );
+    return;
+  }
+
+  let delivery = (runResult.results || []).find(
+    (result) => result.scheduled_id === pending.scheduledId,
+  );
+  try {
+    const scheduledMessages = await loadScheduledMessages(
+      pending.conversation.conversation_id,
+    );
+    delivery = scheduledMessages.find(
+      (item) => item.scheduled_id === pending.scheduledId,
+    ) || delivery;
+  } catch (_error) {
+    // The run-due response still carries the authoritative delivery result.
+  }
+
+  if (delivery?.status === "sent") {
+    state.pendingSends = state.pendingSends.filter((item) => item.id !== pending.id);
+    settlePendingOptimisticMessage(pending, delivery.provider_message_id);
+    if (pendingConversationIsSelected(pending)) {
+      el.composerStatus.textContent = `Sent through ${
+        providerLabel(pending.conversation.source_provider)
+      }`;
+    }
+    await refreshAfterPendingDelivery(pending);
+    return;
+  }
+  if (delivery?.status === "failed") {
+    failPendingDelivery(
+      pending,
+      new Error(delivery.error || delivery.last_error || "delivery failed"),
+    );
+    return;
+  }
+  updatePendingOptimisticMessage(pending, "Queued · retrying when online");
+  armPendingScheduledReconciliation(
+    pending,
+    new Date(Date.now() + SCHEDULED_RECONCILE_RETRY_MS).toISOString(),
+  );
+}
+
+function queueUndoablePendingSend(pending) {
+  const conversationId = pending.conversation.conversation_id;
+  pending.durableUndoQueue = (
+    window.PenguinRefreshCoordinator.createDurableUndoQueue({
+      schedule: async () => {
+        const attachments = await Promise.all(pending.files.map(fileAsAttachment));
+        const scheduledAt = new Date(
+          Math.max(pending.undoUntil, Date.now() + 1000),
+        ).toISOString();
+        return api(
+          `/penguin-connect/conversations/${
+            encodeURIComponent(conversationId)
+          }/scheduled-messages`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              sender_email: "",
+              message: pending.providerText,
+              attachments,
+              scheduled_at: scheduledAt,
+              reply_to_message_id: replyTargetProviderMessageId(pending.replyTo),
+              reply_context_message_id: replyTargetContextMessageId(pending.replyTo),
+            }),
+          },
+        );
+      },
+      cancel: async (scheduled) => {
+        const scheduledId = String(
+          scheduled?.scheduled_message?.scheduled_id || "",
+        );
+        if (!scheduledId) throw new Error("Scheduled message was not created");
+        return api(
+          `/penguin-connect/scheduled-messages/${
+            encodeURIComponent(scheduledId)
+          }/cancel`,
+          { method: "POST", body: "{}" },
+        );
+      },
+    })
+  );
+  pending.schedulePromise = pending.durableUndoQueue.enqueue({});
+  pending.schedulePromise
+    .then((scheduled) => {
+      const record = scheduled?.scheduled_message || {};
+      pending.scheduledId = String(record.scheduled_id || "");
+      pending.scheduledAt = String(record.scheduled_at || "");
+      if (pending.durableUndoQueue.undoRequested) return;
+      updatePendingOptimisticMessage(
+        pending,
+        "Queued locally · Undo available",
+      );
+      loadScheduledMessages(conversationId).catch(() => {});
+      armPendingScheduledReconciliation(pending);
+    })
+    .catch((error) => {
+      failPendingDelivery(pending, error);
+    });
 }
 
 function addPendingOptimisticMessage(pending) {
@@ -5702,14 +5754,35 @@ function restorePendingDraft(pending) {
   queueConversationDraftServerWrite(conversationId, record.text, revision);
 }
 
-function undoPendingSend(pending) {
-  if (pending.cancelled) return;
-  pending.cancelled = true;
+async function undoPendingSend(pending) {
+  if (pending.cancelled || pending.undoInFlight) return;
+  pending.undoInFlight = true;
   window.clearTimeout(pending.timer);
+  updatePendingOptimisticMessage(pending, "Undoing…");
+  try {
+    await pending.durableUndoQueue.undo();
+  } catch (error) {
+    pending.undoInFlight = false;
+    if (pending.deliveryFailed) return;
+    updatePendingOptimisticMessage(
+      pending,
+      "Queued · Undo failed · sending soon",
+      true,
+    );
+    armPendingScheduledReconciliation(pending);
+    if (pendingConversationIsSelected(pending)) {
+      el.composerStatus.textContent = `Could not undo · ${error.message}`;
+    }
+    toast(`Could not undo: ${error.message}`, "error");
+    return;
+  }
+  pending.cancelled = true;
+  pending.undoInFlight = false;
   state.pendingSends = state.pendingSends.filter((item) => item.id !== pending.id);
   removePendingOptimisticMessage(pending);
   restorePendingDraft(pending);
-  if (state.selected?.conversation_id === pending.conversation.conversation_id) {
+  loadScheduledMessages(pending.conversation.conversation_id).catch(() => {});
+  if (pendingConversationIsSelected(pending)) {
     el.composerStatus.textContent = "Send undone · draft restored";
   }
   toast("Send undone");
@@ -5725,8 +5798,10 @@ function sendMessage({ instant = false } = {}) {
     files: [...state.attachments],
     replyTo: state.replyTarget ? { ...state.replyTarget } : null,
     cancelled: false,
+    deliveryFailed: false,
     instant,
     timer: 0,
+    undoUntil: Date.now() + UNDO_SEND_DELAY_MS,
   };
   state.pendingSends.push(pending);
   addPendingOptimisticMessage(pending);
@@ -5744,8 +5819,13 @@ function sendMessage({ instant = false } = {}) {
     deliverPendingSend(pending);
     return;
   }
-  pending.timer = window.setTimeout(() => deliverPendingSend(pending), 15000);
-  actionToast("Message queued for 15 seconds", "Undo", () => undoPendingSend(pending), 15000);
+  queueUndoablePendingSend(pending);
+  pending.dismissUndoToast = actionToast(
+    "Message queued for 15 seconds",
+    "Undo",
+    () => undoPendingSend(pending),
+    UNDO_SEND_DELAY_MS,
+  );
 }
 
 async function loadConversations({

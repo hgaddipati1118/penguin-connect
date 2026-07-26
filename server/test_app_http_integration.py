@@ -1432,11 +1432,14 @@ class AppHttpIntegrationTests(unittest.TestCase):
                     "scheduled_at": "2099-03-12T09:30:00Z",
                 },
             )
+        scheduled_id = create_response.json()["scheduled_message"]["scheduled_id"]
+
+        # A fresh app session must recover the durable queue and still allow undo.
+        with TestClient(app_module.app) as client:
             list_response = client.get(
                 "/penguin-connect/conversations/amc_test/scheduled-messages",
             )
             queue_response = client.get("/penguin-connect/scheduled-messages")
-            scheduled_id = create_response.json()["scheduled_message"]["scheduled_id"]
             cancel_response = client.post(
                 f"/penguin-connect/scheduled-messages/{scheduled_id}/cancel",
             )
@@ -3690,6 +3693,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
             refresh_coordinator_js_response.text,
         )
         self.assertIn(
+            "createDurableUndoQueue",
+            refresh_coordinator_js_response.text,
+        )
+        self.assertIn(
             "mergeRefreshedMessages",
             refresh_coordinator_js_response.text,
         )
@@ -3811,6 +3818,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         )
         self.assertIn("}, 5000);", inbox_js_response.text)
         self.assertIn("undoPendingSend", inbox_js_response.text)
+        self.assertIn("queueUndoablePendingSend", inbox_js_response.text)
+        self.assertIn("reconcileScheduledPendingSend", inbox_js_response.text)
         self.assertIn("Message queued for 15 seconds", inbox_js_response.text)
         self.assertIn("loadScheduledMessages", inbox_js_response.text)
         self.assertIn("renderQueueList", inbox_js_response.text)

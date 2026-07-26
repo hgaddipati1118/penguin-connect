@@ -3,6 +3,7 @@ const test = require("node:test");
 
 const {
   createCompletionGate,
+  createDurableUndoQueue,
   createRefreshCoordinator,
   mergeRefreshedMessages,
   settleOptimisticMessage,
@@ -256,4 +257,98 @@ test("replaces a settled optimistic send with its refreshed canonical row", () =
   const merged = mergeRefreshedMessages([settled], [canonical]);
 
   assert.deepEqual(merged, [canonical]);
+});
+
+test("queues an undoable send durably before the undo window expires", async () => {
+  const scheduled = {
+    scheduled_message: {
+      scheduled_id: "scheduled-1",
+      scheduled_at: "2026-07-26T12:00:15Z",
+    },
+  };
+  let scheduleCalls = 0;
+  const queue = createDurableUndoQueue({
+    schedule: async (payload) => {
+      scheduleCalls += 1;
+      assert.deepEqual(payload, { body: "Queued message" });
+      return scheduled;
+    },
+    cancel: async () => {
+      throw new Error("not expected");
+    },
+  });
+
+  const result = await queue.enqueue({ body: "Queued message" });
+
+  assert.equal(scheduleCalls, 1);
+  assert.equal(result, scheduled);
+  assert.equal(queue.undoRequested, false);
+});
+
+test("waits for durable creation before cancelling an immediate undo", async () => {
+  let resolveSchedule;
+  const scheduling = new Promise((resolve) => {
+    resolveSchedule = resolve;
+  });
+  let cancelledId = "";
+  const queue = createDurableUndoQueue({
+    schedule: async () => scheduling,
+    cancel: async (scheduled) => {
+      cancelledId = scheduled.scheduled_message.scheduled_id;
+      return { success: true };
+    },
+  });
+
+  const enqueue = queue.enqueue({});
+  const undo = queue.undo();
+  assert.equal(queue.undoRequested, true);
+  assert.equal(cancelledId, "");
+  resolveSchedule({
+    scheduled_message: { scheduled_id: "scheduled-race" },
+  });
+
+  await Promise.all([enqueue, undo]);
+  assert.equal(cancelledId, "scheduled-race");
+  assert.equal(queue.cancelled, true);
+});
+
+test("coalesces repeated undo clicks into one scheduler cancellation", async () => {
+  let cancelCalls = 0;
+  const queue = createDurableUndoQueue({
+    schedule: async () => ({
+      scheduled_message: { scheduled_id: "scheduled-1" },
+    }),
+    cancel: async () => {
+      cancelCalls += 1;
+      return { success: true };
+    },
+  });
+  await queue.enqueue({});
+
+  await Promise.all([queue.undo(), queue.undo(), queue.undo()]);
+
+  assert.equal(cancelCalls, 1);
+  assert.equal(queue.cancelled, true);
+});
+
+test("allows undo cancellation to retry after a transient failure", async () => {
+  let cancelCalls = 0;
+  const queue = createDurableUndoQueue({
+    schedule: async () => ({
+      scheduled_message: { scheduled_id: "scheduled-1" },
+    }),
+    cancel: async () => {
+      cancelCalls += 1;
+      if (cancelCalls === 1) throw new Error("temporary");
+      return { success: true };
+    },
+  });
+  await queue.enqueue({});
+
+  await assert.rejects(queue.undo(), /temporary/);
+  assert.equal(queue.undoRequested, false);
+  await queue.undo();
+
+  assert.equal(cancelCalls, 2);
+  assert.equal(queue.cancelled, true);
 });

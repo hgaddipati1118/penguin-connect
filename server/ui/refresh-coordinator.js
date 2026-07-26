@@ -69,6 +69,61 @@
     return Object.freeze({ run });
   }
 
+  function createDurableUndoQueue({
+    schedule,
+    cancel,
+  } = {}) {
+    if (typeof schedule !== "function" || typeof cancel !== "function") {
+      throw new TypeError("Schedule and cancel functions are required");
+    }
+    let schedulePromise = null;
+    let undoPromise = null;
+    let undoRequested = false;
+    let cancelled = false;
+
+    function enqueue(payload) {
+      if (!schedulePromise) {
+        schedulePromise = Promise.resolve().then(() => schedule(payload));
+      }
+      return schedulePromise;
+    }
+
+    function undo() {
+      if (!schedulePromise) {
+        return Promise.reject(new Error("The send has not been queued yet"));
+      }
+      if (cancelled) return Promise.resolve({ skipped: "cancelled" });
+      if (undoPromise) return undoPromise;
+      undoRequested = true;
+      const operation = schedulePromise
+        .then((scheduled) => cancel(scheduled))
+        .then((result) => {
+          cancelled = true;
+          return result;
+        })
+        .catch((error) => {
+          undoRequested = false;
+          throw error;
+        })
+        .finally(() => {
+          if (undoPromise === operation) undoPromise = null;
+        });
+      undoPromise = operation;
+      return operation;
+    }
+
+    return Object.freeze({
+      enqueue,
+      undo,
+      get cancelled() {
+        return cancelled;
+      },
+      get undoRequested() {
+        return undoRequested;
+      },
+    });
+  }
+
   function mergeRefreshedMessages(currentMessages, refreshedMessages) {
     const current = Array.isArray(currentMessages) ? currentMessages : [];
     const refreshed = Array.isArray(refreshedMessages) ? refreshedMessages : [];
@@ -120,6 +175,7 @@
 
   const api = Object.freeze({
     createCompletionGate,
+    createDurableUndoQueue,
     createRefreshCoordinator,
     mergeRefreshedMessages,
     settleOptimisticMessage,
