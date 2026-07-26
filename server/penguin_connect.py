@@ -3913,6 +3913,14 @@ def ensure_whatsapp_conversations_discovered(
             continue
         source_provider = "whatsapp"
         participants = chat.get("participants") or []
+        participant_names = chat.get("participant_names") or {}
+        if not isinstance(participant_names, dict):
+            participant_names = {}
+        participant_names = {
+            str(handle).strip(): str(name).strip()
+            for handle, name in participant_names.items()
+            if str(handle).strip() and str(name).strip()
+        }
         chat_type = chat.get("chat_type") or ("group" if chat_id.endswith("@g.us") else "dm")
         display_name = chat.get("name") or chat_id.split("@")[0]
         excluded = is_chat_excluded(chat, exclusions=exclusions, gmail_email=gmail_email)
@@ -3921,14 +3929,16 @@ def ensure_whatsapp_conversations_discovered(
         conn.execute(
             """INSERT INTO penguin_connect_conversations
                (gmail_email, source_provider, conversation_id, source_chat_id, source_chat_identifier,
-                source_service_name, display_name, chat_type, participants, status, exclude_from_sync, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                source_service_name, display_name, chat_type, participants, participant_names,
+                status, exclude_from_sync, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                ON CONFLICT(conversation_id) DO UPDATE SET
                  source_provider = excluded.source_provider,
                  source_chat_id = excluded.source_chat_id,
                  display_name = excluded.display_name,
                  chat_type = excluded.chat_type,
                  participants = excluded.participants,
+                 participant_names = excluded.participant_names,
                  exclude_from_sync = excluded.exclude_from_sync,
                  updated_at = datetime('now')""",
             (
@@ -3941,6 +3951,7 @@ def ensure_whatsapp_conversations_discovered(
                 display_name,
                 chat_type,
                 json.dumps(participants),
+                json.dumps(participant_names, ensure_ascii=False),
                 "active",
                 1 if excluded else 0,
             ),
@@ -4289,7 +4300,7 @@ def list_conversations(
 
     query = """SELECT c.gmail_email, c.conversation_id, c.source_provider, c.source_chat_id, c.source_chat_identifier,
                       c.source_service_name, c.display_name, c.chat_type, c.exclude_from_sync,
-                      c.participants, c.alias_email, c.status, c.gmail_thread_id,
+                      c.participants, c.participant_names, c.alias_email, c.status, c.gmail_thread_id,
                       c.last_synced_at, c.updated_at,
                       s.last_source_ts, s.last_gmail_ts, s.last_message_ts, s.initial_sync_completed_at
                FROM penguin_connect_conversations c
@@ -4310,6 +4321,13 @@ def list_conversations(
             participants = json.loads(row["participants"] or "[]")
         except Exception:
             pass
+        participant_names = {}
+        try:
+            parsed_participant_names = json.loads(row["participant_names"] or "{}")
+            if isinstance(parsed_participant_names, dict):
+                participant_names = parsed_participant_names
+        except Exception:
+            pass
         conversations.append(
             {
                 "conversation_id": row["conversation_id"],
@@ -4321,6 +4339,7 @@ def list_conversations(
                 "display_name": row["display_name"],
                 "chat_type": row["chat_type"],
                 "participants": participants,
+                "participant_names": participant_names,
                 "alias_email": row["alias_email"],
                 "status": row["status"],
                 "excluded": bool(row["exclude_from_sync"]),

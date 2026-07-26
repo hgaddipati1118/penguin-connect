@@ -315,16 +315,22 @@ class WhatsAppChannelAdapter:
                 source_name = (row["name"] or "").strip()
                 name = source_name or identity["name"] or identity["phone"]
 
-                participants = (
-                    list(dict.fromkeys(
-                        (identities.get(participant) or {
-                            "phone": _jid_to_phone(participant),
-                        })["phone"]
-                        for participant in participants_by_chat.get(jid, [])
-                    ))
-                    if is_group
-                    else [identity["phone"]]
-                )
+                raw_participants = participants_by_chat.get(jid, []) if is_group else [jid]
+                participants = []
+                participant_names: dict[str, str] = {}
+                for participant in raw_participants:
+                    participant_identity = identities.get(participant) or {
+                        "phone": _jid_to_phone(participant),
+                        "name": "",
+                    }
+                    participant_phone = str(participant_identity.get("phone") or "").strip()
+                    if not participant_phone:
+                        continue
+                    if participant_phone not in participants:
+                        participants.append(participant_phone)
+                    participant_name = str(participant_identity.get("name") or "").strip()
+                    if participant_name:
+                        participant_names[participant_phone] = participant_name
                 latest_sender = str(row["latest_sender"] or "").strip()
                 latest_sender_identity = identities.get(latest_sender) or {
                     "phone": _jid_to_phone(latest_sender),
@@ -355,6 +361,7 @@ class WhatsAppChannelAdapter:
                         "room_name": "",
                         "chat_type": "group" if is_group else "dm",
                         "participants": participants,
+                        "participant_names": participant_names,
                         "message_count": row["msg_count"],
                         "last_message_at": row["last_message_time"],
                         "last_message_preview": (row["last_message_preview"] or "")[:120],

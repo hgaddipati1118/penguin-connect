@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS penguin_connect_conversations (
     display_name TEXT,
     chat_type TEXT DEFAULT 'dm',
     participants TEXT,
+    participant_names TEXT NOT NULL DEFAULT '{}',
     alias_email TEXT,
     status TEXT NOT NULL DEFAULT 'active',
     exclude_from_sync INTEGER NOT NULL DEFAULT 0,
@@ -923,6 +924,7 @@ def _rebuild_conversations_table_for_provider_uniqueness(conn: sqlite3.Connectio
                 display_name TEXT,
                 chat_type TEXT DEFAULT 'dm',
                 participants TEXT,
+                participant_names TEXT NOT NULL DEFAULT '{}',
                 alias_email TEXT,
                 status TEXT NOT NULL DEFAULT 'active',
                 exclude_from_sync INTEGER NOT NULL DEFAULT 0,
@@ -944,6 +946,7 @@ def _rebuild_conversations_table_for_provider_uniqueness(conn: sqlite3.Connectio
                 display_name,
                 chat_type,
                 participants,
+                participant_names,
                 alias_email,
                 status,
                 exclude_from_sync,
@@ -963,6 +966,7 @@ def _rebuild_conversations_table_for_provider_uniqueness(conn: sqlite3.Connectio
                 display_name,
                 chat_type,
                 participants,
+                COALESCE(NULLIF(participant_names, ''), '{}'),
                 alias_email,
                 status,
                 0,
@@ -1506,6 +1510,11 @@ def init_db() -> None:
             conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN source_service_name TEXT")
         if "exclude_from_sync" not in conversation_columns:
             conn.execute("ALTER TABLE penguin_connect_conversations ADD COLUMN exclude_from_sync INTEGER NOT NULL DEFAULT 0")
+        if "participant_names" not in conversation_columns:
+            conn.execute(
+                """ALTER TABLE penguin_connect_conversations
+                   ADD COLUMN participant_names TEXT NOT NULL DEFAULT '{}'"""
+            )
         conn.execute(
             """UPDATE penguin_connect_conversations
                SET source_chat_identifier = COALESCE(NULLIF(source_chat_identifier, ''), source_chat_id)

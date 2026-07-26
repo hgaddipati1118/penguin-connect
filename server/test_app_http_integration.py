@@ -710,6 +710,22 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertLess(len(first.content), 500)
 
     def test_conversations_compact_mode_keeps_inbox_fields_and_drops_bridge_fields(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """UPDATE penguin_connect_conversations
+                   SET participant_names = ?
+                   WHERE conversation_id = (
+                       SELECT conversation_id
+                       FROM penguin_connect_conversations
+                       ORDER BY id
+                       LIMIT 1
+                   )""",
+                (json.dumps({"15550101999": "Taylor Example"}),),
+            )
+            conn.commit()
+        finally:
+            conn.close()
         with TestClient(app_module.app) as client:
             full_response = client.get("/penguin-connect/conversations")
             compact_response = client.get(
@@ -724,6 +740,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(compact_row["conversation_id"], full_row["conversation_id"])
         self.assertEqual(compact_row["last_message_preview"], full_row["last_message_preview"])
         self.assertIn("participants", compact_row)
+        self.assertEqual(
+            compact_row["participant_names"],
+            {"15550101999": "Taylor Example"},
+        )
         self.assertIn("contact_context", compact_row)
         self.assertIn("is_archived", compact_row)
         self.assertNotIn("alias_email", compact_row)
@@ -2633,15 +2653,16 @@ class AppHttpIntegrationTests(unittest.TestCase):
         try:
             conn.execute(
                 """INSERT INTO penguin_connect_conversations
-                   (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants,
+                   (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants, participant_names,
                     alias_email, status)
-                   VALUES (?, ?, ?, ?, 'dm', ?, ?, 'active')""",
+                   VALUES (?, ?, ?, ?, 'dm', ?, ?, ?, 'active')""",
                 (
                     "owner@gmail.com",
                     "amc_unsaved",
                     "chat-unsaved",
                     "Unsaved Thread",
                     '["+1 (415) 555-0199"]',
+                    json.dumps({"+1 (415) 555-0199": "Taylor Example"}),
                     "owner+unsaved@gmail.com",
                 ),
             )
@@ -2682,6 +2703,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
         with TestClient(app_module.app) as client:
             all_browse_response = client.get("/penguin-connect/contacts", params={"limit": 10})
             response = client.get("/penguin-connect/contacts", params={"search": "5550199", "limit": 10})
+            provider_name_response = client.get(
+                "/penguin-connect/contacts",
+                params={"search": "Taylor Example", "limit": 10},
+            )
             thread_name_response = client.get("/penguin-connect/contacts", params={"search": "unsaved thread", "limit": 10})
             management_note_response = client.get("/penguin-connect/contacts", params={"search": "soundcheck", "limit": 10})
             message_context_response = client.get("/penguin-connect/contacts", params={"search": "rider setup", "limit": 10})
@@ -2802,7 +2827,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         result = body["contacts"][0]
         self.assertEqual(result["source"], "conversation")
         self.assertFalse(result["is_saved"])
-        self.assertEqual(result["display_name"], "+1 (415) 555-0199")
+        self.assertEqual(result["display_name"], "Taylor Example")
         self.assertEqual(result["primary_handle"], "+1 (415) 555-0199")
         self.assertEqual(result["phone_normalized"], "14155550199")
         self.assertEqual(result["handle_type"], "phone")
@@ -2818,6 +2843,19 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(result["unread_message_count"], 1)
         self.assertEqual(result["last_thread_at"], "2026-03-11T10:00:00+00:00")
         self.assertEqual(result["thread_names"], ["Unsaved Thread"])
+
+        self.assertEqual(provider_name_response.status_code, 200)
+        provider_name_body = provider_name_response.json()
+        provider_name_contact = next(
+            contact
+            for contact in provider_name_body["contacts"]
+            if contact["primary_handle"] == "+1 (415) 555-0199"
+        )
+        self.assertEqual(provider_name_contact["display_name"], "Taylor Example")
+        self.assertEqual(
+            provider_name_contact["primary_handle"],
+            "+1 (415) 555-0199",
+        )
 
         self.assertEqual(thread_name_response.status_code, 200)
         thread_name_body = thread_name_response.json()
@@ -3534,6 +3572,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("discoverSlack: slackChanged", inbox_js_response.text)
         self.assertIn("SLACK_SELECTED_REFRESH_MS = 10000", inbox_js_response.text)
         self.assertIn("conversationsFingerprint", inbox_js_response.text)
+        self.assertIn("conversationParticipants(conversation).join", inbox_js_response.text)
+        self.assertIn("JSON.stringify(conversation.participant_names || {})", inbox_js_response.text)
         self.assertIn(
             'query.set("incremental", incremental ? "true" : "false")',
             inbox_js_response.text,

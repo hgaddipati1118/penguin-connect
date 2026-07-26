@@ -1423,9 +1423,14 @@ class SyncIntegrationTests(unittest.TestCase):
         conn = db.get_connection()
         conn.close()
 
-        legacy_schema = db.SCHEMA.replace("    exclude_from_sync INTEGER NOT NULL DEFAULT 0,\n", "").replace(
-            "CREATE INDEX IF NOT EXISTS idx_penguin_connect_conv_status ON penguin_connect_conversations(gmail_email, source_provider, status);\n",
-            "",
+        legacy_schema = (
+            db.SCHEMA
+            .replace("    exclude_from_sync INTEGER NOT NULL DEFAULT 0,\n", "")
+            .replace("    participant_names TEXT NOT NULL DEFAULT '{}',\n", "")
+            .replace(
+                "CREATE INDEX IF NOT EXISTS idx_penguin_connect_conv_status ON penguin_connect_conversations(gmail_email, source_provider, status);\n",
+                "",
+            )
         )
 
         raw_conn = sqlite3.connect(str(db.DB_PATH))
@@ -1449,7 +1454,7 @@ class SyncIntegrationTests(unittest.TestCase):
                 row["name"] for row in migrated_conn.execute("PRAGMA table_info(penguin_connect_conversations)").fetchall()
             }
             row = migrated_conn.execute(
-                """SELECT exclude_from_sync
+                """SELECT exclude_from_sync, participant_names
                    FROM penguin_connect_conversations
                    WHERE source_chat_id = ?""",
                 ("chat-legacy-excluded",),
@@ -1462,7 +1467,9 @@ class SyncIntegrationTests(unittest.TestCase):
             migrated_conn.close()
 
         self.assertIn("exclude_from_sync", columns)
+        self.assertIn("participant_names", columns)
         self.assertEqual(row["exclude_from_sync"], 0)
+        self.assertEqual(row["participant_names"], "{}")
         self.assertIn("idx_penguin_connect_conv_excluded", indexes)
 
     def test_init_db_adds_gmail_rate_limit_streak_to_existing_poll_state_table(self):

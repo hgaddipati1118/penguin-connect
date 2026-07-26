@@ -450,6 +450,7 @@ class WhatsAppBridgeIntegrationTests(unittest.TestCase):
                     "name": "Bob",
                     "chat_type": "dm",
                     "participants": ["14155559999"],
+                    "participant_names": {"14155559999": "Bob Example"},
                     "latest_message": {
                         "native_message_id": "wa-latest-1",
                         "timestamp": "2026-03-15T12:00:00+00:00",
@@ -477,6 +478,23 @@ class WhatsAppBridgeIntegrationTests(unittest.TestCase):
         ).fetchall()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["display_name"], "Bob")
+        self.assertEqual(
+            json.loads(rows[0]["participant_names"]),
+            {"14155559999": "Bob Example"},
+        )
+        listed = penguin_connect.list_conversations(
+            self.conn,
+            discover_sources=False,
+            hydrate_previews=False,
+        )
+        listed_row = next(
+            row for row in listed["conversations"]
+            if row["conversation_id"] == rows[0]["conversation_id"]
+        )
+        self.assertEqual(
+            listed_row["participant_names"],
+            {"14155559999": "Bob Example"},
+        )
         mock_channel.list_conversations.assert_called_once_with(limit=None)
         preview = self.conn.execute(
             """SELECT provider, body_text

@@ -944,6 +944,11 @@ function conversationParticipants(conversation) {
   return participants.map((value) => String(value || "").trim()).filter(Boolean);
 }
 
+function conversationParticipantNames(conversation) {
+  const names = conversation?.participant_names;
+  return names && typeof names === "object" && !Array.isArray(names) ? names : {};
+}
+
 function conversationContactCandidates(conversation) {
   const candidates = Array.isArray(conversation?.contact_context)
     ? [...conversation.contact_context]
@@ -1008,6 +1013,8 @@ function conversationsFingerprint(conversations) {
     conversation.is_muted ? 1 : 0,
     conversation.follow_up_at,
     (conversation.labels || []).join(","),
+    conversationParticipants(conversation).join(","),
+    JSON.stringify(conversation.participant_names || {}),
     `${String(conversation.avatar_data_url || "").length}:${String(conversation.avatar_data_url || "").slice(-16)}`,
     (conversation.contact_context || []).map((contact) => (
       `${contact.primary_handle || ""}:${contact.display_name || ""}:${contact.is_saved === false ? 0 : 1}`
@@ -1595,9 +1602,16 @@ function contactForHandle(handle, context = []) {
   return contextual || contactIndex.get(normalized) || null;
 }
 
-function participantDisplayName(handle) {
+function participantDisplayName(handle, conversation = null) {
   const contact = contactForHandle(handle);
-  return contact?.display_name || handle;
+  if (contact?.display_name) return contact.display_name;
+  const names = conversationParticipantNames(conversation);
+  if (names[handle]) return names[handle];
+  const normalized = normalizedHandle(handle);
+  const matchingEntry = Object.entries(names).find(
+    ([candidate]) => normalizedHandle(candidate) === normalized,
+  );
+  return matchingEntry?.[1] || handle;
 }
 
 function conversationAvatarFor(conversation, { large = false } = {}) {
@@ -1615,7 +1629,7 @@ function conversationAvatarFor(conversation, { large = false } = {}) {
   const participants = conversationParticipants(conversation).slice(0, 3);
   for (const [index, participant] of participants.entries()) {
     const member = document.createElement("span");
-    const participantName = participantDisplayName(participant);
+    const participantName = participantDisplayName(participant, conversation);
     member.className = "group-avatar-member";
     member.style.setProperty("--member-index", String(index));
     member.textContent = initials(participantName);
@@ -5274,8 +5288,7 @@ function openConversationMeta({ focus = "note" } = {}) {
   el.conversationParticipantList.replaceChildren();
   for (const participant of participants) {
     const chip = document.createElement("span");
-    const contact = contactForHandle(participant);
-    chip.textContent = contact?.display_name || participant;
+    chip.textContent = participantDisplayName(participant, state.selected);
     el.conversationParticipantList.append(chip);
   }
   el.manageParticipantsButton.textContent = `Manage in ${providerLabel(state.selected.source_provider)}`;

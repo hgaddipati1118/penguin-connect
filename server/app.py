@@ -2130,13 +2130,27 @@ def _attach_contact_thread_stats(contacts: list[dict], stats_by_key: dict[str, d
     return contacts
 
 
-def _participant_matches_query(handle: str, conversation_name: str, query: str, context_text: str = "") -> bool:
+def _participant_matches_query(
+    handle: str,
+    conversation_name: str,
+    query: str,
+    context_text: str = "",
+    participant_name: str = "",
+) -> bool:
     if _participant_handle_matches_query(handle, query):
         return True
     clean_query = str(query or "").strip().lower()
     clean_conversation = str(conversation_name or "").strip().lower()
     clean_context = str(context_text or "").strip().lower()
-    return bool(clean_query and (clean_query in clean_conversation or clean_query in clean_context))
+    clean_participant_name = str(participant_name or "").strip().lower()
+    return bool(
+        clean_query
+        and (
+            clean_query in clean_conversation
+            or clean_query in clean_context
+            or clean_query in clean_participant_name
+        )
+    )
 
 
 def _conversation_participant_contact_results(
@@ -2155,6 +2169,7 @@ def _conversation_participant_contact_results(
     rows = conn.execute(
         """
         SELECT c.conversation_id, c.display_name, c.source_chat_identifier, c.participants,
+               c.participant_names,
                COALESCE(m.title, '') AS management_title,
                COALESCE(m.note, '') AS management_note,
                COALESCE(m.labels, '[]') AS management_labels
@@ -2170,20 +2185,43 @@ def _conversation_participant_contact_results(
         conversation_name = (row["display_name"] or row["source_chat_identifier"] or "Conversation").strip()
         context_text = _conversation_context_text(row)
         context_labels = _parse_management_labels(row["management_labels"])
+        participant_names = {}
+        try:
+            parsed_names = json.loads(row["participant_names"] or "{}")
+            if isinstance(parsed_names, dict):
+                participant_names = {
+                    str(name_key).strip(): str(name).strip()
+                    for name_key, name in parsed_names.items()
+                    if str(name_key).strip() and str(name).strip()
+                }
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+        participant_names_by_key = {
+            _contact_compare_key(name_key): name
+            for name_key, name in participant_names.items()
+            if _contact_compare_key(name_key)
+        }
         for handle in _conversation_participant_handles(row):
             key = _contact_compare_key(handle)
             if not key or key in seen:
                 continue
             if allowed_keys is not None and key not in allowed_keys:
                 continue
-            if query and not _participant_matches_query(handle, conversation_name, query, context_text):
+            participant_name = participant_names.get(handle) or participant_names_by_key.get(key) or ""
+            if query and not _participant_matches_query(
+                handle,
+                conversation_name,
+                query,
+                context_text,
+                participant_name,
+            ):
                 continue
             seen.add(key)
             handle_type = _contact_handle_type(handle)
             results.append(
                 {
                     "id": f"conversation:{key}",
-                    "display_name": handle,
+                    "display_name": participant_name or handle,
                     "first_name": "",
                     "last_name": "",
                     "organization": f"Seen in {conversation_name}" if conversation_name else "Conversation participant",
@@ -5131,6 +5169,7 @@ _COMPACT_CONVERSATION_FIELDS = (
     "display_name",
     "chat_type",
     "participants",
+    "participant_names",
     "status",
     "excluded",
     "last_message_provider_id",
@@ -5164,6 +5203,7 @@ _COMPACT_CONTACT_CONTEXT_FIELDS = (
 _SPARSE_COMPACT_DEFAULTS = {
     "chat_type": ("dm", None),
     "participants": ([], None),
+    "participant_names": ({}, None),
     "status": ("active", None),
     "excluded": (False, None),
     "last_message_has_attachments": (False, None),

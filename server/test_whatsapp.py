@@ -209,6 +209,7 @@ class WhatsAppAdapterTests(unittest.TestCase):
         chat = next(item for item in result["chats"] if item["chat_id"] == group_jid)
         self.assertIn(phone, chat["participants"])
         self.assertNotIn(lid, chat["participants"])
+        self.assertEqual(chat["participant_names"][phone], "Taylor Example")
         self.assertEqual(chat["latest_message"]["push_name"], "Taylor Example")
 
     def test_list_conversations_source_provider(self):
@@ -304,7 +305,7 @@ class WhatsAppAdapterTests(unittest.TestCase):
         reply = next(message for message in messages if message["native_message_id"] == "msg2")
 
         self.assertEqual(reply["reply_to_message_id"], "msg1")
-        self.assertEqual(reply["reply_to_sender"], "14155551234@s.whatsapp.net")
+        self.assertEqual(reply["reply_to_sender"], "14155551234")
         self.assertEqual(reply["reply_to_text"], "Hello from Alice")
 
     def test_fetch_messages_tolerates_legacy_bridge_without_reply_columns(self):
