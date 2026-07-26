@@ -350,6 +350,11 @@ const MONTH_DAY_FORMATTER = new Intl.DateTimeFormat(undefined, {
 const selectedRefreshCoordinator = window.PenguinRefreshCoordinator.createRefreshCoordinator({
   cooldownMs: SELECTED_REFRESH_COOLDOWN_MS,
 });
+const conversationMessageLoadCoordinator = (
+  window.PenguinRefreshCoordinator.createRefreshCoordinator({
+    cooldownMs: 0,
+  })
+);
 const conversationNavigationCoordinator = (
   window.PenguinConversationNavigation.createConversationNavigationCoordinator({
     onPreview: (next, previous) => {
@@ -357,6 +362,9 @@ const conversationNavigationCoordinator = (
         previous?.conversation_id || state.selected?.conversation_id,
         next.conversation_id,
       );
+      preloadConversationMessages(next, {
+        limit: initialMessageBatch(next),
+      });
     },
     onCommit: (next) => selectConversation(next),
     onCancel: (pending) => {
@@ -4539,6 +4547,29 @@ function updateConversationSelectionUI(previousId, nextId) {
   requestAnimationFrame(() => next?.scrollIntoView({ block: "nearest", behavior: "auto" }));
 }
 
+function loadConversationMessageBatch(
+  conversation,
+  { limit = initialMessageBatch(conversation) } = {},
+) {
+  const conversationId = String(conversation?.conversation_id || "");
+  if (!conversationId) {
+    return Promise.reject(new Error("Conversation is required"));
+  }
+  return conversationMessageLoadCoordinator.run(
+    conversationId,
+    async () => {
+      const payload = await api(
+        messageListUrl(conversationId, { limit }),
+      );
+      rememberConversationMessages(conversationId, payload.messages || [], {
+        total: Number(payload.total || 0),
+        hasMore: Boolean(payload.has_more),
+      });
+      return payload;
+    },
+  );
+}
+
 async function preloadConversationMessages(
   conversation,
   { limit = preloadMessageBatch(conversation) } = {},
@@ -4551,15 +4582,7 @@ async function preloadConversationMessages(
   ) return;
   state.preloadingConversations.add(conversationId);
   try {
-    const payload = await api(
-      messageListUrl(conversationId, {
-        limit,
-      }),
-    );
-    rememberConversationMessages(conversationId, payload.messages || [], {
-      total: Number(payload.total || 0),
-      hasMore: Boolean(payload.has_more),
-    });
+    await loadConversationMessageBatch(conversation, { limit });
   } catch (_error) {
     // Adjacent preloading is opportunistic.
   } finally {
@@ -4801,24 +4824,19 @@ async function selectConversation(
       || state.selected?.conversation_id !== conversation.conversation_id
     ) return;
     try {
-      const payload = await api(
-        messageListUrl(conversation.conversation_id, {
-          limit: initialMessageBatch(conversation),
-        }),
-      );
+      const payload = await loadConversationMessageBatch(conversation, {
+        limit: initialMessageBatch(conversation),
+      });
       if (
         selectionToken !== state.selectionToken
         || state.selected?.conversation_id !== conversation.conversation_id
       ) return;
-      state.messages = payload.messages || [];
+      state.messages = state.messageCache.get(conversation.conversation_id)
+        || payload.messages
+        || [];
       state.messagePagination.total = Number(payload.total || state.messages.length);
       state.messagePagination.hasMore = Boolean(payload.has_more);
       captureUnreadBoundary(conversation, state.messages);
-      rememberConversationMessages(
-        conversation.conversation_id,
-        state.messages,
-        state.messagePagination,
-      );
       renderMessages({ focusMessageId });
       scheduleSelectedConversationHydration(conversation, selectionToken, { markRead });
     } catch (error) {

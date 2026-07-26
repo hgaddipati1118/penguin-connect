@@ -1,11 +1,21 @@
 (function exposePenguinConversationNavigation(root) {
   function createConversationNavigationCoordinator({
-    scheduleCommit = (callback) => root.setTimeout(callback, 50),
-    cancelCommit = (timer) => root.clearTimeout(timer),
+    scheduleCommit,
+    cancelCommit,
     onPreview = () => {},
     onCommit = () => {},
     onCancel = () => {},
   } = {}) {
+    const schedule = scheduleCommit || ((callback) => (
+      typeof root.requestAnimationFrame === "function"
+        ? root.requestAnimationFrame(callback)
+        : root.setTimeout(callback, 16)
+    ));
+    const cancelSchedule = cancelCommit || ((timer) => (
+      typeof root.cancelAnimationFrame === "function"
+        ? root.cancelAnimationFrame(timer)
+        : root.clearTimeout(timer)
+    ));
     let commitTimer = 0;
     let pending = null;
 
@@ -43,8 +53,8 @@
       const previous = pending?.conversation || conversations[currentIndex] || null;
       pending = { conversation: next };
       onPreview(next, previous);
-      if (commitTimer) cancelCommit(commitTimer);
-      commitTimer = scheduleCommit(flush);
+      if (commitTimer) cancelSchedule(commitTimer);
+      commitTimer = schedule(flush);
       return next;
     }
 
@@ -52,7 +62,7 @@
       if (!pending) return false;
       const canceled = pending.conversation;
       pending = null;
-      if (commitTimer) cancelCommit(commitTimer);
+      if (commitTimer) cancelSchedule(commitTimer);
       commitTimer = 0;
       onCancel(canceled);
       return true;

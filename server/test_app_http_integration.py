@@ -3908,6 +3908,11 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("PRELOAD_BACKGROUND_THREAD_LIMIT = 120", inbox_js_response.text)
         self.assertIn("PRELOAD_MESSAGE_BATCH = 80", inbox_js_response.text)
         self.assertIn("PRELOAD_SLACK_MESSAGE_BATCH = 120", inbox_js_response.text)
+        self.assertIn("conversationMessageLoadCoordinator", inbox_js_response.text)
+        self.assertIn(
+            "preloadConversationMessages(next, {",
+            inbox_js_response.text,
+        )
         self.assertIn("runPreloadQueue", inbox_js_response.text)
         self.assertIn("scheduleBackgroundPreload", inbox_js_response.text)
         self.assertIn("hydrateWorkspaceCache", inbox_js_response.text)

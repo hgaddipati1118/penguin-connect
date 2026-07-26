@@ -75,6 +75,48 @@ test("coalesces rapid moves into one commit for the final conversation", () => {
   assert.equal(frames.pending, false);
 });
 
+test("commits the previewed conversation on the next animation frame by default", () => {
+  const previousRequestAnimationFrame = global.requestAnimationFrame;
+  const previousCancelAnimationFrame = global.cancelAnimationFrame;
+  let frameCallback = null;
+  let cancelledFrame = 0;
+  const commits = [];
+  global.requestAnimationFrame = (callback) => {
+    frameCallback = callback;
+    return 41;
+  };
+  global.cancelAnimationFrame = (frame) => {
+    cancelledFrame = frame;
+    frameCallback = null;
+  };
+
+  const coordinator = createConversationNavigationCoordinator({
+    onCommit: (next) => commits.push(next.conversation_id),
+  });
+  try {
+    coordinator.move(rows, "a", 1);
+
+    assert.deepEqual(commits, []);
+    assert.equal(typeof frameCallback, "function");
+    frameCallback();
+    assert.deepEqual(commits, ["b"]);
+  } finally {
+    coordinator.cancel();
+    if (previousRequestAnimationFrame === undefined) {
+      delete global.requestAnimationFrame;
+    } else {
+      global.requestAnimationFrame = previousRequestAnimationFrame;
+    }
+    if (previousCancelAnimationFrame === undefined) {
+      delete global.cancelAnimationFrame;
+    } else {
+      global.cancelAnimationFrame = previousCancelAnimationFrame;
+    }
+  }
+
+  assert.equal(cancelledFrame, 0);
+});
+
 test("applies direction changes to the pending selection", () => {
   const frames = createFrameHarness();
   const commits = [];
