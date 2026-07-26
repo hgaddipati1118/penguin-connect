@@ -45,6 +45,8 @@ const state = {
   },
   workspaceRefreshBusy: false,
   persistentCacheHydrated: false,
+  draftCache: new Map(),
+  draftRevisions: new Map(),
   attachments: [],
   pendingSends: [],
   scheduledMessages: [],
@@ -257,11 +259,18 @@ const listObservers = new Map();
 const contactIndex = new Map();
 const translationQueue = [];
 const WORKSPACE_CACHE_DB = "penguin-local-workspace";
-const WORKSPACE_CACHE_VERSION = 1;
+const WORKSPACE_CACHE_VERSION = 2;
 const WORKSPACE_CACHE_THREAD_LIMIT = 60;
+const DRAFT_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024;
+const DRAFT_ATTACHMENT_TOTAL_MAX_BYTES = 50 * 1024 * 1024;
+const DRAFT_ATTACHMENT_MAX_COUNT = 20;
+const DRAFT_LOCAL_DEBOUNCE_MS = 100;
+const DRAFT_SERVER_DEBOUNCE_MS = 650;
+const COMPOSER_IDLE_STATUS = "Messages never leave this Mac except through their original service.";
 const CONVERSATION_RENDER_BATCH = 120;
 const MESSAGE_RENDER_WINDOW = 60;
 const MESSAGE_HISTORY_BATCH = 80;
+const LATEST_ANCHOR_OBSERVER_MS = 1600;
 const NATIVE_SCROLL_ANCHORING = window.CSS?.supports?.("overflow-anchor: auto") || false;
 const CLOCK_FORMATTER = new Intl.DateTimeFormat(undefined, {
   hour: "numeric",
@@ -307,6 +316,11 @@ let shortcutPrefix = "";
 let shortcutPrefixTimer = 0;
 let workspaceCacheDatabasePromise = null;
 let workspaceCachePruneScheduled = false;
+const draftLocalTimers = new Map();
+const draftServerTimers = new Map();
+const draftLocalQueues = new Map();
+const draftServerQueues = new Map();
+const dirtyDraftConversations = new Set();
 let attachmentHistorySyncPromise = null;
 const cacheRepairRequests = new Map();
 let threadSearchTimer = 0;
@@ -352,6 +366,9 @@ function openWorkspaceCache() {
       if (!database.objectStoreNames.contains("threads")) {
         database.createObjectStore("threads", { keyPath: "conversationId" });
       }
+      if (!database.objectStoreNames.contains("drafts")) {
+        database.createObjectStore("drafts", { keyPath: "conversationId" });
+      }
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error || new Error("Local cache unavailable"));
@@ -384,14 +401,356 @@ async function readAllWorkspaceCache(storeName) {
 
 async function writeWorkspaceCache(storeName, value) {
   const database = await openWorkspaceCache();
-  if (!database) return;
-  await new Promise((resolve) => {
+  if (!database) return false;
+  return new Promise((resolve) => {
     const transaction = database.transaction(storeName, "readwrite");
     transaction.objectStore(storeName).put(value);
-    transaction.oncomplete = resolve;
-    transaction.onerror = resolve;
-    transaction.onabort = resolve;
+    transaction.oncomplete = () => resolve(true);
+    transaction.onerror = () => resolve(false);
+    transaction.onabort = () => resolve(false);
   });
+}
+
+function draftRecordHasContent(record) {
+  if (!record || record.cleared) return false;
+  return Boolean(
+    String(record.text || "").length
+    || (Array.isArray(record.attachments) && record.attachments.length)
+    || record.replyTarget?.threadTs,
+  );
+}
+
+function conversationHasDraft(conversation) {
+  const conversationId = String(conversation?.conversation_id || "");
+  if (conversationId && state.draftCache.has(conversationId)) {
+    return draftRecordHasContent(state.draftCache.get(conversationId));
+  }
+  return Boolean(String(conversation?.draft_text || "").length);
+}
+
+function cleanDraftReplyTarget(target) {
+  const threadTs = String(target?.threadTs || "").trim();
+  if (!threadTs) return null;
+  return {
+    threadTs: threadTs.slice(0, 500),
+    sender: String(target?.sender || "").slice(0, 300),
+    body: String(target?.body || "").slice(0, 2000),
+  };
+}
+
+function draftAttachmentSnapshot(files) {
+  const attachments = [];
+  let totalBytes = 0;
+  let attachmentsPersisted = true;
+  for (const file of files.slice(0, DRAFT_ATTACHMENT_MAX_COUNT)) {
+    const size = Number(file?.size || 0);
+    if (
+      !file
+      || size <= 0
+      || size > DRAFT_ATTACHMENT_MAX_BYTES
+      || totalBytes + size > DRAFT_ATTACHMENT_TOTAL_MAX_BYTES
+    ) {
+      attachmentsPersisted = false;
+      continue;
+    }
+    totalBytes += size;
+    attachments.push({
+      name: String(file.name || "attachment").slice(0, 240),
+      type: String(file.type || "application/octet-stream").slice(0, 200),
+      size,
+      lastModified: Number(file.lastModified || Date.now()),
+      blob: file,
+    });
+  }
+  if (files.length > DRAFT_ATTACHMENT_MAX_COUNT || attachments.length !== files.length) {
+    attachmentsPersisted = false;
+  }
+  return { attachments, attachmentsPersisted };
+}
+
+function draftAttachmentFiles(record) {
+  const files = [];
+  for (const attachment of record?.attachments || []) {
+    const blob = attachment?.blob;
+    if (!(blob instanceof Blob)) continue;
+    files.push(new File([blob], attachment.name || "attachment", {
+      type: attachment.type || blob.type || "application/octet-stream",
+      lastModified: Number(attachment.lastModified || Date.now()),
+    }));
+  }
+  return files;
+}
+
+function nextDraftRevision(conversationId) {
+  const revision = Number(state.draftRevisions.get(conversationId) || 0) + 1;
+  state.draftRevisions.set(conversationId, revision);
+  return revision;
+}
+
+function updateConversationDraftCache(record) {
+  const conversationId = String(record?.conversationId || "");
+  if (!conversationId) return;
+  const conversation = state.conversations.find(
+    (item) => item.conversation_id === conversationId,
+  );
+  const hadDraft = conversation ? conversationHasDraft(conversation) : false;
+  state.draftCache.set(conversationId, record);
+  if (conversation) conversation.draft_text = record.cleared ? "" : String(record.text || "");
+  if (state.selected?.conversation_id === conversationId && state.selected !== conversation) {
+    state.selected.draft_text = record.cleared ? "" : String(record.text || "");
+  }
+  const hasDraft = draftRecordHasContent(record);
+  if (hadDraft !== hasDraft) renderConversationList();
+}
+
+function currentDraftRecord(conversationId = state.selected?.conversation_id) {
+  if (!conversationId) return null;
+  if (state.selected?.conversation_id !== conversationId) {
+    return state.draftCache.get(conversationId) || null;
+  }
+  const attachmentState = draftAttachmentSnapshot(state.attachments);
+  const revision = nextDraftRevision(conversationId);
+  return {
+    conversationId,
+    text: el.messageComposer.value,
+    replyTarget: cleanDraftReplyTarget(state.replyTarget),
+    attachments: attachmentState.attachments,
+    attachmentsPersisted: attachmentState.attachmentsPersisted,
+    cleared: false,
+    revision,
+    updatedAt: Date.now(),
+  };
+}
+
+function persistDraftRecord(record) {
+  if (!record?.conversationId) return Promise.resolve(false);
+  const previous = draftLocalQueues.get(record.conversationId) || Promise.resolve();
+  const queued = previous
+    .catch(() => false)
+    .then(async () => {
+      let persisted = await writeWorkspaceCache("drafts", record);
+      if (!persisted && record.attachments?.length) {
+        persisted = await writeWorkspaceCache("drafts", {
+          ...record,
+          attachments: [],
+          attachmentsPersisted: false,
+        });
+      }
+      if (
+        state.selected?.conversation_id === record.conversationId
+        && Number(state.draftRevisions.get(record.conversationId) || 0) === record.revision
+      ) {
+        if (draftRecordHasContent(record)) {
+          el.composerStatus.textContent = persisted
+            ? (record.attachmentsPersisted
+              ? "Draft saved locally"
+              : "Draft text saved locally · some attachments are too large to keep")
+            : "Draft is safe for this session · local storage is unavailable";
+        } else {
+          el.composerStatus.textContent = COMPOSER_IDLE_STATUS;
+        }
+      }
+      return persisted;
+    });
+  const safeQueued = queued.catch(() => false);
+  draftLocalQueues.set(record.conversationId, safeQueued);
+  safeQueued.then(() => {
+    if (draftLocalQueues.get(record.conversationId) === safeQueued) {
+      draftLocalQueues.delete(record.conversationId);
+    }
+  });
+  return safeQueued;
+}
+
+function queueConversationDraftServerWrite(conversationId, text, revision) {
+  const previous = draftServerQueues.get(conversationId) || Promise.resolve();
+  const queued = previous
+    .catch(() => {})
+    .then(() => api(
+      `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/management`,
+      {
+        method: "POST",
+        body: JSON.stringify({ draft_text: String(text || "").slice(0, 20000) }),
+      },
+    ))
+    .then((result) => {
+      if (Number(state.draftRevisions.get(conversationId) || 0) !== revision) return;
+      const conversation = state.conversations.find(
+        (item) => item.conversation_id === conversationId,
+      );
+      if (conversation && result?.management_updated_at) {
+        conversation.management_updated_at = result.management_updated_at;
+      }
+    });
+  const safeQueued = queued.catch(() => {
+    if (
+      state.selected?.conversation_id === conversationId
+      && Number(state.draftRevisions.get(conversationId) || 0) === revision
+      && draftRecordHasContent(state.draftCache.get(conversationId))
+    ) {
+      el.composerStatus.textContent = "Draft saved locally · Mac database sync will retry";
+    }
+  });
+  draftServerQueues.set(conversationId, safeQueued);
+  safeQueued.then(() => {
+    if (draftServerQueues.get(conversationId) === safeQueued) {
+      draftServerQueues.delete(conversationId);
+    }
+  });
+  return safeQueued;
+}
+
+function scheduleDraftPersistence() {
+  const conversationId = state.selected?.conversation_id;
+  if (!conversationId) return null;
+  const record = currentDraftRecord(conversationId);
+  updateConversationDraftCache(record);
+  dirtyDraftConversations.add(conversationId);
+
+  window.clearTimeout(draftLocalTimers.get(conversationId));
+  draftLocalTimers.set(conversationId, window.setTimeout(() => {
+    draftLocalTimers.delete(conversationId);
+    persistDraftRecord(record).catch(() => {});
+  }, DRAFT_LOCAL_DEBOUNCE_MS));
+
+  window.clearTimeout(draftServerTimers.get(conversationId));
+  draftServerTimers.set(conversationId, window.setTimeout(() => {
+    draftServerTimers.delete(conversationId);
+    queueConversationDraftServerWrite(conversationId, record.text, record.revision);
+  }, DRAFT_SERVER_DEBOUNCE_MS));
+  return record;
+}
+
+function persistCurrentDraftNow({
+  conversationId = state.selected?.conversation_id,
+  keepalive = false,
+} = {}) {
+  if (!conversationId) return Promise.resolve();
+  if (
+    state.selected?.conversation_id === conversationId
+    && !dirtyDraftConversations.has(conversationId)
+  ) return Promise.resolve();
+  let record = null;
+  if (state.selected?.conversation_id === conversationId) {
+    record = currentDraftRecord(conversationId);
+    updateConversationDraftCache(record);
+  } else {
+    record = state.draftCache.get(conversationId) || null;
+  }
+  if (!record) return Promise.resolve();
+  window.clearTimeout(draftLocalTimers.get(conversationId));
+  window.clearTimeout(draftServerTimers.get(conversationId));
+  draftLocalTimers.delete(conversationId);
+  draftServerTimers.delete(conversationId);
+  dirtyDraftConversations.delete(conversationId);
+  const localWrite = persistDraftRecord(record);
+  if (keepalive) {
+    fetch(`/penguin-connect/conversations/${encodeURIComponent(conversationId)}/management`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ draft_text: String(record.text || "").slice(0, 20000) }),
+      keepalive: true,
+    }).catch(() => {});
+  } else {
+    queueConversationDraftServerWrite(conversationId, record.text, record.revision);
+  }
+  return localWrite;
+}
+
+function clearConversationDraft(
+  conversationId = state.selected?.conversation_id,
+  { keepalive = false } = {},
+) {
+  if (!conversationId) return Promise.resolve();
+  window.clearTimeout(draftLocalTimers.get(conversationId));
+  window.clearTimeout(draftServerTimers.get(conversationId));
+  draftLocalTimers.delete(conversationId);
+  draftServerTimers.delete(conversationId);
+  dirtyDraftConversations.add(conversationId);
+  const revision = nextDraftRevision(conversationId);
+  const tombstone = {
+    conversationId,
+    text: "",
+    replyTarget: null,
+    attachments: [],
+    attachmentsPersisted: true,
+    cleared: true,
+    revision,
+    updatedAt: Date.now(),
+  };
+  updateConversationDraftCache(tombstone);
+  const localWrite = persistDraftRecord(tombstone).finally(() => {
+    if (Number(state.draftRevisions.get(conversationId) || 0) === revision) {
+      dirtyDraftConversations.delete(conversationId);
+    }
+  });
+  if (keepalive) {
+    fetch(`/penguin-connect/conversations/${encodeURIComponent(conversationId)}/management`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ draft_text: "" }),
+      keepalive: true,
+    }).catch(() => {});
+  } else {
+    queueConversationDraftServerWrite(conversationId, "", revision);
+  }
+  return localWrite;
+}
+
+async function hydrateDraftCache() {
+  const records = await readAllWorkspaceCache("drafts");
+  for (const record of records) {
+    const conversationId = String(record?.conversationId || "");
+    if (!conversationId) continue;
+    state.draftCache.set(conversationId, record);
+    state.draftRevisions.set(
+      conversationId,
+      Math.max(
+        Number(state.draftRevisions.get(conversationId) || 0),
+        Number(record.revision || 0),
+      ),
+    );
+  }
+}
+
+function restoreConversationDraft(conversation, selectionToken = state.selectionToken) {
+  const conversationId = String(conversation?.conversation_id || "");
+  if (
+    !conversationId
+    || selectionToken !== state.selectionToken
+    || state.selected?.conversation_id !== conversationId
+  ) return false;
+  let record = state.draftCache.get(conversationId);
+  if (!record && String(conversation.draft_text || "").length) {
+    record = {
+      conversationId,
+      text: String(conversation.draft_text || ""),
+      replyTarget: null,
+      attachments: [],
+      attachmentsPersisted: true,
+      cleared: false,
+      revision: nextDraftRevision(conversationId),
+      updatedAt: Date.now(),
+    };
+    updateConversationDraftCache(record);
+    persistDraftRecord(record).catch(() => {});
+  }
+  const hasDraft = draftRecordHasContent(record);
+  el.messageComposer.value = hasDraft ? String(record.text || "") : "";
+  state.attachments = hasDraft ? draftAttachmentFiles(record) : [];
+  state.replyTarget = (
+    hasDraft
+    && providerKey(conversation.source_provider) === "slack"
+    && record.replyTarget?.threadTs
+  ) ? { ...record.replyTarget } : null;
+  renderReplyTarget();
+  renderAttachmentPreview();
+  resizeComposer();
+  updateSendButton();
+  el.composerStatus.textContent = hasDraft
+    ? "Draft restored · saved locally"
+    : COMPOSER_IDLE_STATUS;
+  return hasDraft;
 }
 
 async function pruneWorkspaceThreadCache() {
@@ -454,7 +813,10 @@ function rememberConversationMessages(conversationId, messages, metadata = {}) {
 }
 
 async function hydrateWorkspaceCache() {
-  const snapshot = await readWorkspaceCache("snapshots", "conversations");
+  const [snapshot] = await Promise.all([
+    readWorkspaceCache("snapshots", "conversations"),
+    hydrateDraftCache(),
+  ]);
   if (!Array.isArray(snapshot?.conversations) || !snapshot.conversations.length) {
     state.persistentCacheHydrated = true;
     return false;
@@ -1079,7 +1441,7 @@ function renderConversationList() {
     preview.className = "conversation-preview";
     const previewText = document.createElement("span");
     previewText.className = "conversation-preview-text";
-    if (conversation.draft_text) {
+    if (conversationHasDraft(conversation)) {
       const draft = document.createElement("span");
       draft.className = "draft-label";
       draft.textContent = "Draft";
@@ -1871,7 +2233,7 @@ function stabilizeThreadAtLatest() {
     if (token !== latestAnchorToken) return;
     latestAnchorResizeObserver?.disconnect();
     latestAnchorResizeObserver = null;
-  }, Math.max(1600, durationMs));
+  }, LATEST_ANCHOR_OBSERVER_MS);
 }
 
 function renderPinnedMessages() {
@@ -2137,9 +2499,10 @@ function renderReplyTarget() {
   );
 }
 
-function clearReplyTarget({ focus = false } = {}) {
+function clearReplyTarget({ focus = false, persist = true } = {}) {
   state.replyTarget = null;
   renderReplyTarget();
+  if (persist) scheduleDraftPersistence();
   if (focus) el.messageComposer.focus({ preventScroll: true });
 }
 
@@ -2158,6 +2521,7 @@ function startSlackThreadReply(message) {
     body: message.body_text || "Attachment",
   };
   renderReplyTarget();
+  scheduleDraftPersistence();
   el.messageComposer.focus({ preventScroll: true });
 }
 
@@ -2552,11 +2916,16 @@ async function selectConversation(
 ) {
   const selectionToken = ++state.selectionToken;
   const previousConversationId = state.selected?.conversation_id || "";
+  if (previousConversationId && previousConversationId !== conversation.conversation_id) {
+    persistCurrentDraftNow({ conversationId: previousConversationId }).catch(() => {});
+  }
   window.cancelAnimationFrame(selectionRenderFrame);
   window.clearTimeout(selectionHydrationTimer);
   window.clearTimeout(selectionPreloadTimer);
   state.selected = conversation;
-  if (previousConversationId !== conversation.conversation_id) clearReplyTarget();
+  if (previousConversationId !== conversation.conversation_id) {
+    restoreConversationDraft(conversation, selectionToken);
+  }
   try {
     localStorage.setItem("penguin-last-conversation", conversation.conversation_id);
   } catch (_error) {
@@ -2871,6 +3240,7 @@ function insertMention(candidate) {
   el.mentionSuggestions.hidden = true;
   resizeComposer();
   updateSendButton();
+  scheduleDraftPersistence();
   el.messageComposer.focus({ preventScroll: true });
 }
 
@@ -2920,6 +3290,7 @@ function openMentionSuggestions() {
   resizeComposer();
   updateSendButton();
   renderMentionSuggestions();
+  scheduleDraftPersistence();
   el.messageComposer.focus({ preventScroll: true });
 }
 
@@ -3014,6 +3385,7 @@ function renderAttachmentPreview() {
       state.attachments.splice(index, 1);
       renderAttachmentPreview();
       updateSendButton();
+      scheduleDraftPersistence();
     });
     item.append(name, remove);
     el.attachmentPreview.append(item);
@@ -3104,9 +3476,10 @@ async function deliverPendingSend(pending) {
       }
     }, 1800);
   } catch (error) {
-    updatePendingOptimisticMessage(pending, `Not sent · ${error.message}`, true);
+    removePendingOptimisticMessage(pending);
+    restorePendingDraft(pending);
     if (state.selected?.conversation_id === pending.conversation.conversation_id) {
-      el.composerStatus.textContent = error.message;
+      el.composerStatus.textContent = `Not sent · draft restored · ${error.message}`;
     }
     toast(`Could not send: ${error.message}`, "error");
   }
@@ -3184,6 +3557,10 @@ function openScheduleDialog() {
 async function scheduleCurrentMessage(event) {
   event.preventDefault();
   if (!state.selected || !el.scheduleAt.value || el.confirmScheduleButton.disabled) return;
+  const conversationId = state.selected.conversation_id;
+  const draftText = el.messageComposer.value.trim();
+  const draftFiles = [...state.attachments];
+  const draftReplyTarget = state.replyTarget ? { ...state.replyTarget } : null;
   const scheduledAt = new Date(el.scheduleAt.value);
   if (Number.isNaN(scheduledAt.getTime()) || scheduledAt.getTime() <= Date.now()) {
     toast("Choose a future delivery time.", "error");
@@ -3192,29 +3569,34 @@ async function scheduleCurrentMessage(event) {
   el.confirmScheduleButton.disabled = true;
   el.confirmScheduleButton.textContent = "Queuing…";
   try {
-    const attachments = await Promise.all(state.attachments.map(fileAsAttachment));
+    const attachments = await Promise.all(draftFiles.map(fileAsAttachment));
     await api(
-      `/penguin-connect/conversations/${encodeURIComponent(state.selected.conversation_id)}/scheduled-messages`,
+      `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/scheduled-messages`,
       {
         method: "POST",
         body: JSON.stringify({
           sender_email: "",
-          message: el.messageComposer.value.trim(),
+          message: draftText,
           attachments,
           scheduled_at: scheduledAt.toISOString(),
-          reply_to_message_id: state.replyTarget?.threadTs || "",
+          reply_to_message_id: draftReplyTarget?.threadTs || "",
         }),
       },
     );
-    el.messageComposer.value = "";
-    state.attachments = [];
-    clearReplyTarget();
-    renderAttachmentPreview();
-    resizeComposer();
-    updateSendButton();
+    clearConversationDraft(conversationId).catch(() => {});
+    if (state.selected?.conversation_id === conversationId) {
+      el.messageComposer.value = "";
+      state.attachments = [];
+      clearReplyTarget({ persist: false });
+      renderAttachmentPreview();
+      resizeComposer();
+      updateSendButton();
+    }
     el.scheduleDialog.close();
-    await loadScheduledMessages();
-    el.composerStatus.textContent = "Scheduled locally · offline retry enabled";
+    await loadScheduledMessages(conversationId);
+    if (state.selected?.conversation_id === conversationId) {
+      el.composerStatus.textContent = "Scheduled locally · offline retry enabled";
+    }
     toast("Message added to the local queue");
   } catch (error) {
     toast(error.message, "error");
@@ -3224,22 +3606,60 @@ async function scheduleCurrentMessage(event) {
   }
 }
 
+function restorePendingDraft(pending) {
+  const conversationId = pending.conversation.conversation_id;
+  if (state.selected?.conversation_id === conversationId) {
+    const currentText = el.messageComposer.value;
+    el.messageComposer.value = currentText.trim()
+      ? [pending.text, currentText].filter(Boolean).join("\n\n")
+      : pending.text;
+    state.attachments = [...pending.files, ...state.attachments];
+    if (pending.replyTo && !state.replyTarget) {
+      state.replyTarget = { ...pending.replyTo };
+    }
+    renderReplyTarget();
+    renderAttachmentPreview();
+    resizeComposer();
+    updateSendButton();
+    scheduleDraftPersistence();
+    return;
+  }
+
+  const existing = state.draftCache.get(conversationId);
+  const existingText = draftRecordHasContent(existing) ? String(existing.text || "") : "";
+  const pendingAttachments = draftAttachmentSnapshot(pending.files);
+  const revision = nextDraftRevision(conversationId);
+  const record = {
+    conversationId,
+    text: existingText.trim()
+      ? [pending.text, existingText].filter(Boolean).join("\n\n")
+      : pending.text,
+    replyTarget: existing?.replyTarget || cleanDraftReplyTarget(pending.replyTo),
+    attachments: [
+      ...pendingAttachments.attachments,
+      ...(draftRecordHasContent(existing) ? (existing.attachments || []) : []),
+    ],
+    attachmentsPersisted: (
+      pendingAttachments.attachmentsPersisted
+      && (existing?.attachmentsPersisted !== false)
+    ),
+    cleared: false,
+    revision,
+    updatedAt: Date.now(),
+  };
+  updateConversationDraftCache(record);
+  persistDraftRecord(record).catch(() => {});
+  queueConversationDraftServerWrite(conversationId, record.text, revision);
+}
+
 function undoPendingSend(pending) {
   if (pending.cancelled) return;
   pending.cancelled = true;
   window.clearTimeout(pending.timer);
   state.pendingSends = state.pendingSends.filter((item) => item.id !== pending.id);
   removePendingOptimisticMessage(pending);
+  restorePendingDraft(pending);
   if (state.selected?.conversation_id === pending.conversation.conversation_id) {
-    if (!el.messageComposer.value.trim()) el.messageComposer.value = pending.text;
-    state.attachments.push(...pending.files);
-    if (pending.replyTo) {
-      state.replyTarget = { ...pending.replyTo };
-      renderReplyTarget();
-    }
-    renderAttachmentPreview();
-    resizeComposer();
-    updateSendButton();
     el.composerStatus.textContent = "Send undone · draft restored";
   }
   toast("Send undone");
@@ -3261,10 +3681,11 @@ function sendMessage({ instant = false } = {}) {
   addPendingOptimisticMessage(pending);
   el.messageComposer.value = "";
   state.attachments = [];
-  clearReplyTarget();
+  clearReplyTarget({ persist: false });
   renderAttachmentPreview();
   resizeComposer();
   updateSendButton();
+  clearConversationDraft(pending.conversation.conversation_id).catch(() => {});
   el.composerStatus.textContent = instant
     ? `Sending now through ${providerLabel(pending.conversation.source_provider)}…`
     : "Sending in 15 seconds · Undo available";
@@ -4265,12 +4686,14 @@ async function rewriteDraftInline() {
     el.messageComposer.value = replacement;
     resizeComposer();
     updateSendButton();
+    scheduleDraftPersistence();
     el.messageComposer.focus();
     el.composerStatus.textContent = "Draft replaced with Codex · Undo available";
     actionToast("Draft rewritten", "Undo", () => {
       el.messageComposer.value = original;
       resizeComposer();
       updateSendButton();
+      scheduleDraftPersistence();
       el.messageComposer.focus();
     }, 10000);
   } catch (error) {
@@ -4689,6 +5112,7 @@ async function addGifToMessage(gif) {
     state.attachments.push(new File([blob], filename, { type: blob.type || "image/gif" }));
     renderAttachmentPreview();
     updateSendButton();
+    scheduleDraftPersistence();
     el.gifDialog.close();
     el.messageComposer.focus();
     toast("GIF added to your message");
@@ -4923,6 +5347,7 @@ el.messageComposer.addEventListener("input", () => {
   updateSendButton();
   mentionSelectionIndex = 0;
   renderMentionSuggestions();
+  scheduleDraftPersistence();
 });
 el.clearReplyTargetButton.addEventListener("click", () => clearReplyTarget({ focus: true }));
 el.autoTranslateToggle.addEventListener("change", () => {
@@ -5017,6 +5442,7 @@ el.replaceDraftButton.addEventListener("click", () => {
   el.messageComposer.value = state.writing.result;
   resizeComposer();
   updateSendButton();
+  scheduleDraftPersistence();
   el.writingDialog.close();
   el.messageComposer.focus();
   toast("Codex draft applied");
@@ -5034,6 +5460,7 @@ el.attachmentInput.addEventListener("change", () => {
   el.attachmentInput.value = "";
   renderAttachmentPreview();
   updateSendButton();
+  scheduleDraftPersistence();
 });
 el.gifButton.addEventListener("click", openGifDialog);
 el.closeGifButton.addEventListener("click", () => el.gifDialog.close());
@@ -5111,6 +5538,7 @@ el.useAgentAnswerButton.addEventListener("click", () => {
   el.messageComposer.value = state.agent.answer;
   resizeComposer();
   updateSendButton();
+  scheduleDraftPersistence();
   el.messageComposer.focus();
   toast("Agent response moved to your draft");
 });
@@ -5338,6 +5766,10 @@ document.querySelector(".thread-header").addEventListener("click", (event) => {
   if (window.innerWidth <= 800 && event.clientX < 115) {
     el.shell.classList.remove("thread-open");
   }
+});
+
+window.addEventListener("pagehide", () => {
+  persistCurrentDraftNow({ keepalive: true }).catch(() => {});
 });
 
 async function start() {
