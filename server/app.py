@@ -5226,6 +5226,150 @@ def _compact_conversation_result(
     return compact_result
 
 
+_COMPACT_MESSAGE_FIELDS = (
+    "provider",
+    "source_provider",
+    "provider_message_id",
+    "direction",
+    "sender_email",
+    "sender_name",
+    "subject",
+    "body_text",
+    "message_timestamp",
+    "is_read",
+    "metadata",
+    "attachments",
+    "is_starred",
+    "message_note",
+)
+
+_COMPACT_MESSAGE_METADATA_FIELDS = (
+    "is_from_me",
+    "native_guid",
+    "native_message_id",
+    "is_delivered",
+    "date_delivered",
+    "date_read",
+    "delivery_status",
+    "reaction",
+    "reply_context",
+    "thread_ts",
+    "is_thread_reply",
+    "reply_count",
+    "reply_users_count",
+    "latest_reply",
+    "thread_parent_name",
+    "sender_avatar_url",
+)
+
+_COMPACT_MESSAGE_ATTACHMENT_FIELDS = (
+    "filename",
+    "transfer_name",
+    "mime_type",
+    "size",
+    "availability",
+)
+
+_SPARSE_COMPACT_MESSAGE_DEFAULTS = {
+    "sender_email": ("", None),
+    "sender_name": ("", None),
+    "subject": ("", None),
+    "body_text": ("", None),
+    "attachments": ([], None),
+    "is_starred": (False, None),
+    "message_note": ("", None),
+}
+
+_SPARSE_COMPACT_MESSAGE_METADATA_DEFAULTS = {
+    "is_from_me": (False, None),
+    "native_guid": ("", None),
+    "native_message_id": ("", None),
+    "is_delivered": (False, None),
+    "date_delivered": ("", None),
+    "date_read": ("", None),
+    "delivery_status": ("", None),
+    "reaction": ({}, None),
+    "reply_context": ({}, None),
+    "thread_ts": ("", None),
+    "is_thread_reply": (False, None),
+    "reply_count": (0, None),
+    "reply_users_count": (0, None),
+    "latest_reply": ("", None),
+    "thread_parent_name": ("", None),
+    "sender_avatar_url": ("", None),
+}
+
+
+def _compact_message_result(
+    result: dict,
+    *,
+    sparse_defaults: bool = False,
+) -> dict:
+    """Return the native fields needed to render and interact with message rows."""
+    compact_result = {
+        key: value
+        for key, value in result.items()
+        if key != "messages"
+    }
+    compact_messages = []
+    for message in result.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        compact = {}
+        for key in _COMPACT_MESSAGE_FIELDS:
+            if key not in message or key in {"metadata", "attachments"}:
+                continue
+            value = message.get(key)
+            if (
+                sparse_defaults
+                and key in _SPARSE_COMPACT_MESSAGE_DEFAULTS
+                and value in _SPARSE_COMPACT_MESSAGE_DEFAULTS[key]
+            ):
+                continue
+            compact[key] = value
+
+        metadata = message.get("metadata")
+        compact_metadata = {}
+        if isinstance(metadata, dict):
+            compact_metadata = {
+                key: metadata.get(key)
+                for key in _COMPACT_MESSAGE_METADATA_FIELDS
+                if key in metadata
+                and not (
+                    sparse_defaults
+                    and key in _SPARSE_COMPACT_MESSAGE_METADATA_DEFAULTS
+                    and metadata.get(key) in _SPARSE_COMPACT_MESSAGE_METADATA_DEFAULTS[key]
+                )
+            }
+        if compact_metadata or (not sparse_defaults and "metadata" in message):
+            compact["metadata"] = compact_metadata
+
+        attachments = message.get("attachments")
+        compact_attachments = []
+        if isinstance(attachments, list):
+            for attachment in attachments:
+                if isinstance(attachment, dict):
+                    compact_attachments.append(
+                        {
+                            key: attachment.get(key)
+                            for key in _COMPACT_MESSAGE_ATTACHMENT_FIELDS
+                            if key in attachment
+                        }
+                    )
+                else:
+                    compact_attachments.append(
+                        {
+                            "transfer_name": str(attachment or "Attachment"),
+                            "availability": "missing",
+                        }
+                    )
+        if compact_attachments or (not sparse_defaults and "attachments" in message):
+            compact["attachments"] = compact_attachments
+        compact_messages.append(compact)
+    compact_result["messages"] = compact_messages
+    return compact_result
+
+
 def _workspace_source_file_token(source_path: Path | str) -> tuple[tuple[int, int], ...]:
     """Return metadata-only change stamps for a SQLite source and its WAL."""
     path = Path(source_path).expanduser()
@@ -5296,6 +5440,8 @@ def get_penguinconnect_conversation_messages(
     offset: int = Query(0, ge=0, le=100_000),
     refresh: bool = True,
     incremental: bool = False,
+    compact: bool = False,
+    sparse: bool = False,
 ):
     conn = get_connection()
     try:
@@ -5309,7 +5455,12 @@ def get_penguinconnect_conversation_messages(
         )
         if not result.get("found"):
             raise HTTPException(status_code=404, detail="conversation_not_found")
-        return _annotate_message_attachment_availability(result)
+        result = _annotate_message_attachment_availability(result)
+        return (
+            _compact_message_result(result, sparse_defaults=sparse)
+            if compact
+            else result
+        )
     finally:
         conn.close()
 

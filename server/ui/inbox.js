@@ -29,6 +29,7 @@ const state = {
   messages: [],
   messagesVisible: 60,
   messageCache: new Map(),
+  messageCacheMetadata: new Map(),
   preloadingConversations: new Set(),
   messagePagination: {
     hasMore: false,
@@ -272,6 +273,8 @@ const DRAFT_SERVER_DEBOUNCE_MS = 650;
 const COMPOSER_IDLE_STATUS = "Messages never leave this Mac except through their original service.";
 const CONVERSATION_RENDER_BATCH = 120;
 const MESSAGE_RENDER_WINDOW = 60;
+const MESSAGE_INITIAL_BATCH = 120;
+const SLACK_MESSAGE_INITIAL_BATCH = 300;
 const MESSAGE_HISTORY_BATCH = 80;
 const LATEST_ANCHOR_OBSERVER_MS = 1600;
 const SLACK_SELECTED_REFRESH_MS = 10000;
@@ -801,14 +804,21 @@ function persistConversationSnapshot() {
   });
 }
 
+function newestMessagesForCache(messages, limit = 300) {
+  return [...(messages || [])]
+    .filter((message) => !message?.metadata?.pending_send)
+    .sort((left, right) => (
+      Date.parse(right.message_timestamp || "") - Date.parse(left.message_timestamp || "")
+    ))
+    .slice(0, limit);
+}
+
 function persistThreadSnapshot(conversationId, messages, {
   total = messages.length,
   hasMore = false,
 } = {}) {
   if (!conversationId) return Promise.resolve();
-  const durableMessages = messages
-    .filter((message) => !message?.metadata?.pending_send)
-    .slice(-300);
+  const durableMessages = newestMessagesForCache(messages);
   scheduleWorkspaceCachePrune();
   return writeWorkspaceCache("threads", {
     conversationId,
@@ -821,7 +831,17 @@ function persistThreadSnapshot(conversationId, messages, {
 
 function rememberConversationMessages(conversationId, messages, metadata = {}) {
   state.messageCache.set(conversationId, messages);
-  persistThreadSnapshot(conversationId, messages, metadata).catch(() => {});
+  const previous = state.messageCacheMetadata.get(conversationId) || {};
+  const normalizedMetadata = {
+    total: metadata.total === undefined
+      ? Math.max(Number(previous.total || 0), messages.length)
+      : Math.max(Number(metadata.total || 0), messages.length),
+    hasMore: metadata.hasMore === undefined
+      ? Boolean(previous.hasMore)
+      : Boolean(metadata.hasMore),
+  };
+  state.messageCacheMetadata.set(conversationId, normalizedMetadata);
+  persistThreadSnapshot(conversationId, messages, normalizedMetadata).catch(() => {});
 }
 
 async function hydrateWorkspaceCache() {
@@ -848,6 +868,10 @@ async function hydrateWorkspaceCache() {
       && thread.messages.length
     ) {
       state.messageCache.set(thread.conversationId, thread.messages);
+      state.messageCacheMetadata.set(thread.conversationId, {
+        total: Math.max(Number(thread.total || 0), thread.messages.length),
+        hasMore: Boolean(thread.hasMore),
+      });
     }
   }
   state.persistentCacheHydrated = true;
@@ -880,6 +904,28 @@ function providerLabel(value) {
     whatsapp: "WhatsApp",
     slack: "Slack",
   }[providerKey(value)];
+}
+
+function initialMessageBatch(conversation) {
+  return providerKey(conversation?.source_provider) === "slack"
+    ? SLACK_MESSAGE_INITIAL_BATCH
+    : MESSAGE_INITIAL_BATCH;
+}
+
+function messageListUrl(conversationId, {
+  limit,
+  offset = 0,
+  refresh = false,
+  incremental = false,
+} = {}) {
+  const query = new URLSearchParams();
+  query.set("limit", String(limit || MESSAGE_INITIAL_BATCH));
+  query.set("offset", String(offset));
+  query.set("refresh", refresh ? "true" : "false");
+  query.set("incremental", incremental ? "true" : "false");
+  query.set("compact", "true");
+  query.set("sparse", "true");
+  return `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/messages?${query}`;
 }
 
 function normalizedHandle(value) {
@@ -3175,7 +3221,11 @@ async function loadOlderMessages() {
   try {
     const offset = state.messages.length;
     const payload = await api(
-      `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/messages?limit=300&offset=${offset}&refresh=true`,
+      messageListUrl(conversationId, {
+        limit: SLACK_MESSAGE_INITIAL_BATCH,
+        offset,
+        refresh: true,
+      }),
     );
     if (state.selected?.conversation_id !== conversationId) return;
     const merged = new Map(
@@ -3240,7 +3290,9 @@ async function preloadConversationMessages(conversation) {
   state.preloadingConversations.add(conversationId);
   try {
     const payload = await api(
-      `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/messages?limit=300&offset=0&refresh=false`,
+      messageListUrl(conversationId, {
+        limit: initialMessageBatch(conversation),
+      }),
     );
     rememberConversationMessages(conversationId, payload.messages || [], {
       total: Number(payload.total || 0),
@@ -3326,11 +3378,12 @@ async function selectConversation(
     // Selection still works when persistent browser storage is unavailable.
   }
   const cachedMessages = state.messageCache.get(conversation.conversation_id) || [];
+  const cachedMetadata = state.messageCacheMetadata.get(conversation.conversation_id) || {};
   state.messages = cachedMessages;
   state.messagesVisible = MESSAGE_RENDER_WINDOW;
   state.messagePagination = {
-    hasMore: cachedMessages.length >= 300,
-    total: cachedMessages.length,
+    hasMore: Boolean(cachedMetadata.hasMore),
+    total: Math.max(Number(cachedMetadata.total || 0), cachedMessages.length),
     loadingOlder: false,
   };
   state.followLatest = true;
@@ -3359,7 +3412,9 @@ async function selectConversation(
     ) return;
     try {
       const payload = await api(
-        `/penguin-connect/conversations/${encodeURIComponent(conversation.conversation_id)}/messages?limit=300&offset=0&refresh=false`,
+        messageListUrl(conversation.conversation_id, {
+          limit: initialMessageBatch(conversation),
+        }),
       );
       if (
         selectionToken !== state.selectionToken
@@ -3417,7 +3472,11 @@ async function refreshSelectedMessages({ incremental = true, refreshSource = tru
   const conversationId = state.selected?.conversation_id;
   if (!conversationId) return;
   const payload = await api(
-    `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/messages?limit=300&offset=0&refresh=${refreshSource ? "true" : "false"}&incremental=${incremental ? "true" : "false"}`,
+    messageListUrl(conversationId, {
+      limit: initialMessageBatch(state.selected),
+      refresh: refreshSource,
+      incremental,
+    }),
   );
   if (state.selected?.conversation_id !== conversationId) return;
   let nextMessages = payload.messages || [];

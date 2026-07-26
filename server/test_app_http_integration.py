@@ -228,6 +228,154 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(older["offset"], 1)
         self.assertNotEqual(older["messages"][0]["provider_message_id"], "imsg-latest")
 
+    def test_sparse_compact_messages_keep_render_fields_and_drop_bridge_metadata(self):
+        result = {
+            "found": True,
+            "conversation_id": "amc_test",
+            "source_provider": "slack",
+            "messages": [
+                {
+                    "provider": "slack",
+                    "source_provider": "slack",
+                    "provider_message_id": "slack:123.45",
+                    "direction": "slack_local",
+                    "sender_email": "",
+                    "sender_name": "Taylor",
+                    "subject": "",
+                    "body_text": "Nested reply",
+                    "message_timestamp": "2026-07-25T12:00:00+00:00",
+                    "is_read": True,
+                    "metadata": {
+                        "is_from_me": False,
+                        "native_message_id": "123.45",
+                        "native_guid": "",
+                        "thread_ts": "123.00",
+                        "is_thread_reply": True,
+                        "thread_parent_name": "Harsha",
+                        "reply_context": {
+                            "message_id": "123.00",
+                            "sender": "Harsha",
+                            "text": "Thread root",
+                        },
+                        "attachments": [
+                            {
+                                "filename": "/private/tmp/launch.png",
+                                "transfer_name": "launch.png",
+                                "mime_type": "image/png",
+                            }
+                        ],
+                        "source_chat_id": "C123",
+                        "local_cache_only": True,
+                        "local_search_imported": True,
+                        "security_gate": {"internal": True},
+                    },
+                    "attachments": [
+                        {
+                            "filename": "/private/tmp/launch.png",
+                            "transfer_name": "launch.png",
+                            "mime_type": "image/png",
+                            "availability": "local",
+                            "whatsapp_chat_jid": "not-needed-by-the-browser",
+                        }
+                    ],
+                    "gmail_message_id": "gmail-message-id",
+                    "gmail_thread_id": "gmail-thread-id",
+                    "is_starred": False,
+                    "message_note": "",
+                }
+            ],
+            "limit": 120,
+            "offset": 0,
+            "total": 1,
+            "has_more": False,
+        }
+
+        compact = app_module._compact_message_result(
+            result,
+            sparse_defaults=True,
+        )
+        message = compact["messages"][0]
+
+        self.assertEqual(message["provider"], "slack")
+        self.assertEqual(message["source_provider"], "slack")
+        self.assertEqual(message["provider_message_id"], "slack:123.45")
+        self.assertEqual(message["sender_name"], "Taylor")
+        self.assertEqual(message["body_text"], "Nested reply")
+        self.assertTrue(message["is_read"])
+        self.assertEqual(message["metadata"]["native_message_id"], "123.45")
+        self.assertTrue(message["metadata"]["is_thread_reply"])
+        self.assertEqual(message["metadata"]["thread_ts"], "123.00")
+        self.assertEqual(
+            message["metadata"]["reply_context"]["message_id"],
+            "123.00",
+        )
+        self.assertEqual(
+            message["attachments"],
+            [
+                {
+                    "filename": "/private/tmp/launch.png",
+                    "transfer_name": "launch.png",
+                    "mime_type": "image/png",
+                    "availability": "local",
+                }
+            ],
+        )
+        self.assertNotIn("sender_email", message)
+        self.assertNotIn("subject", message)
+        self.assertNotIn("is_starred", message)
+        self.assertNotIn("message_note", message)
+        self.assertNotIn("gmail_message_id", message)
+        self.assertNotIn("gmail_thread_id", message)
+        self.assertNotIn("attachments", message["metadata"])
+        self.assertNotIn("source_chat_id", message["metadata"])
+        self.assertNotIn("local_cache_only", message["metadata"])
+        self.assertNotIn("local_search_imported", message["metadata"])
+        self.assertNotIn("security_gate", message["metadata"])
+        self.assertNotIn("is_from_me", message["metadata"])
+        self.assertNotIn("native_guid", message["metadata"])
+
+    def test_sparse_compact_messages_are_smaller_and_preserve_latest_page(self):
+        with TestClient(app_module.app) as client:
+            regular_response = client.get(
+                "/penguin-connect/conversations/amc_test/messages",
+                params={"limit": 20, "refresh": False},
+            )
+            sparse_response = client.get(
+                "/penguin-connect/conversations/amc_test/messages",
+                params={
+                    "limit": 20,
+                    "refresh": False,
+                    "compact": True,
+                    "sparse": True,
+                },
+            )
+
+        self.assertEqual(regular_response.status_code, 200)
+        self.assertEqual(sparse_response.status_code, 200)
+        regular = regular_response.json()
+        sparse = sparse_response.json()
+        self.assertEqual(sparse["total"], regular["total"])
+        self.assertEqual(sparse["has_more"], regular["has_more"])
+        self.assertEqual(
+            [
+                (
+                    message["provider_message_id"],
+                    message["body_text"],
+                    message["message_timestamp"],
+                )
+                for message in sparse["messages"]
+            ],
+            [
+                (
+                    message["provider_message_id"],
+                    message["body_text"],
+                    message["message_timestamp"],
+                )
+                for message in regular["messages"]
+            ],
+        )
+        self.assertLess(len(sparse_response.content), len(regular_response.content))
+
     def test_messages_endpoint_marks_attachment_preview_availability(self):
         local_attachment = Path(self.tmpdir.name) / "available-image.png"
         local_attachment.write_bytes(b"synthetic-image")
@@ -3352,6 +3500,11 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn('query.set("fast", "true")', inbox_js_response.text)
         self.assertIn("CONVERSATION_RENDER_BATCH = 120", inbox_js_response.text)
         self.assertIn("MESSAGE_RENDER_WINDOW = 60", inbox_js_response.text)
+        self.assertIn("MESSAGE_INITIAL_BATCH = 120", inbox_js_response.text)
+        self.assertIn("SLACK_MESSAGE_INITIAL_BATCH = 300", inbox_js_response.text)
+        self.assertIn("messageListUrl", inbox_js_response.text)
+        self.assertIn('query.set("compact", "true")', inbox_js_response.text)
+        self.assertIn('query.set("sparse", "true")', inbox_js_response.text)
         self.assertIn("reconcileMessageList", inbox_js_response.text)
         self.assertIn("reusableMessageRow", inbox_js_response.text)
         self.assertIn("messageRowFingerprints = new WeakMap()", inbox_js_response.text)
@@ -3381,7 +3534,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("discoverSlack: slackChanged", inbox_js_response.text)
         self.assertIn("SLACK_SELECTED_REFRESH_MS = 10000", inbox_js_response.text)
         self.assertIn("conversationsFingerprint", inbox_js_response.text)
-        self.assertIn('incremental=${incremental ? "true" : "false"}', inbox_js_response.text)
+        self.assertIn(
+            'query.set("incremental", incremental ? "true" : "false")',
+            inbox_js_response.text,
+        )
         self.assertIn("}, 5000);", inbox_js_response.text)
         self.assertIn("undoPendingSend", inbox_js_response.text)
         self.assertIn("Message queued for 15 seconds", inbox_js_response.text)
@@ -3438,6 +3594,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("hydrateWorkspaceCache", inbox_js_response.text)
         self.assertIn("persistConversationSnapshot", inbox_js_response.text)
         self.assertIn("persistThreadSnapshot", inbox_js_response.text)
+        self.assertIn("newestMessagesForCache", inbox_js_response.text)
+        self.assertNotIn(".slice(-300)", inbox_js_response.text)
         self.assertIn("penguin-local-workspace", inbox_js_response.text)
         self.assertIn("WORKSPACE_CACHE_VERSION = 2", inbox_js_response.text)
         self.assertIn('createObjectStore("drafts", { keyPath: "conversationId" })', inbox_js_response.text)
