@@ -2756,6 +2756,15 @@ function nativeReceiptLabel(message) {
   return "";
 }
 
+function latestOwnMessageId(messages) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (isOwnMessage(messages[index])) {
+      return String(messages[index].provider_message_id || "");
+    }
+  }
+  return "";
+}
+
 function slackNativeMessageId(message) {
   const nativeId = String(message?.metadata?.native_message_id || "").trim();
   if (nativeId) return nativeId;
@@ -3082,6 +3091,7 @@ function messageRenderFingerprint(message, {
   nativeReplyCount,
   parentMessage,
   reactions,
+  showNativeReceipt,
 } = {}) {
   return JSON.stringify([
     state.selected?.conversation_id || "",
@@ -3095,6 +3105,7 @@ function messageRenderFingerprint(message, {
     parentMessage?.sender_name || "",
     parentMessage?.body_text || "",
     reactions || [],
+    Boolean(showNativeReceipt),
     slackThreadIsCollapsed(slackNativeMessageId(message)),
     state.translationCache.get(message.provider_message_id) || null,
     state.translatingMessages.has(message.provider_message_id),
@@ -3154,6 +3165,7 @@ function renderMessages({
   const sortedRows = [...state.messages].sort((a, b) => (
     Date.parse(a.message_timestamp || "") - Date.parse(b.message_timestamp || "")
   ));
+  const latestReceiptMessageId = latestOwnMessageId(sortedRows);
   const messagesByNativeId = new Map();
   for (const message of sortedRows) {
     const nativeId = messageNativeId(message);
@@ -3204,6 +3216,10 @@ function renderMessages({
     const reactions = nativeReactions.get(
       normalizeReactionTargetGuid(message.metadata?.native_guid),
     ) || [];
+    const showNativeReceipt = (
+      message.provider_message_id === latestReceiptMessageId
+      && Boolean(nativeReceiptLabel(message))
+    );
     const renderFingerprint = messageRenderFingerprint(message, {
       isThreadReply,
       isThreadLastReply,
@@ -3211,6 +3227,7 @@ function renderMessages({
       nativeReplyCount,
       parentMessage,
       reactions,
+      showNativeReceipt,
     });
     let row = reusableMessageRow(existingRows, message, renderFingerprint);
     if (row) {
@@ -3367,7 +3384,7 @@ function renderMessages({
       delivery.textContent = message.metadata.pending_status || "Sending…";
       meta.append(delivery);
     } else {
-      const receiptLabel = nativeReceiptLabel(message);
+      const receiptLabel = showNativeReceipt ? nativeReceiptLabel(message) : "";
       if (receiptLabel) {
         const receipt = document.createElement("span");
         receipt.className = "message-receipt";
