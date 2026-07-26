@@ -3749,11 +3749,77 @@ def ensure_local_imessage_conversations_discovered(
     )
 
 
+def _cache_discovered_whatsapp_preview(
+    conn: sqlite3.Connection,
+    *,
+    conversation_id: str,
+    chat_id: str,
+    display_name: str,
+    latest_message: dict[str, Any],
+) -> bool:
+    timestamp = str(latest_message.get("timestamp") or "").strip()
+    native_message_id = str(latest_message.get("native_message_id") or "").strip()
+    text = str(latest_message.get("text") or "")
+    attachments = latest_message.get("attachments")
+    if not isinstance(attachments, list):
+        attachments = []
+    if not timestamp or not native_message_id or (not text and not attachments):
+        return False
+
+    provider_id = _provider_message_id("whatsapp", latest_message)
+    is_from_me = bool(latest_message.get("is_from_me"))
+    sender_name = "Me" if is_from_me else (
+        str(latest_message.get("push_name") or "").strip()
+        or str(latest_message.get("handle") or "").strip()
+        or display_name
+        or "WhatsApp"
+    )
+    metadata = {
+        "source_chat_id": chat_id,
+        "native_message_id": native_message_id,
+        "is_from_me": is_from_me,
+        "attachments": attachments,
+        "local_cache_only": True,
+    }
+    conn.execute(
+        """INSERT INTO penguin_connect_messages
+           (conversation_id, provider, provider_message_id, direction,
+            sender_email, sender_name, subject, body_text, message_timestamp,
+            is_read, metadata)
+           VALUES (?, 'whatsapp', ?, 'whatsapp_local', NULL, ?, ?, ?, ?, 1, ?)
+           ON CONFLICT(conversation_id, provider_message_id) DO UPDATE SET
+             sender_name = excluded.sender_name,
+             subject = excluded.subject,
+             body_text = excluded.body_text,
+             message_timestamp = excluded.message_timestamp,
+             metadata = excluded.metadata""",
+        (
+            conversation_id,
+            provider_id,
+            sender_name,
+            _provider_subject("whatsapp", display_name or sender_name),
+            text[:20000],
+            timestamp,
+            json.dumps(metadata),
+        ),
+    )
+    _upsert_sync_state(
+        conn,
+        conversation_id,
+        timestamp,
+        native_message_id,
+        None,
+        None,
+    )
+    _record_conversation_activity_hint(conn, conversation_id, timestamp)
+    return True
+
+
 def ensure_whatsapp_conversations_discovered(
     conn: sqlite3.Connection,
     gmail_email: str,
     *,
-    max_chats: int | None = 500,
+    max_chats: int | None = None,
     provision_aliases: bool = True,
 ) -> int:
     """Discover WhatsApp conversations and persist them into the conversation table."""
@@ -3811,6 +3877,13 @@ def ensure_whatsapp_conversations_discovered(
                 "active",
                 1 if excluded else 0,
             ),
+        )
+        _cache_discovered_whatsapp_preview(
+            conn,
+            conversation_id=conversation_id,
+            chat_id=chat_id,
+            display_name=display_name,
+            latest_message=chat.get("latest_message") or {},
         )
 
         if provision_aliases and not excluded:
@@ -4173,6 +4246,7 @@ def _cache_local_source_messages_for_view(
         "apple_messages",
         "sms",
         "rcs",
+        "whatsapp",
     }
     before = state["local_cache_backfill_ts"] if state and supports_cursor_backfill else None
     before_native_message_id = (
@@ -4202,7 +4276,7 @@ def _cache_local_source_messages_for_view(
             batch,
             key=lambda msg: (
                 msg.get("timestamp") or "",
-                _imessage_native_message_sort_value(msg.get("native_message_id")),
+                _source_native_message_sort_value(source_provider, msg.get("native_message_id")),
             ),
         )
         next_before = oldest.get("timestamp")
@@ -4238,7 +4312,7 @@ def _cache_local_source_messages_for_view(
         messages,
         key=lambda msg: (
             msg.get("timestamp") or "",
-            _imessage_native_message_sort_value(msg.get("native_message_id")),
+            _source_native_message_sort_value(source_provider, msg.get("native_message_id")),
         ),
     )
     unread_count = (
@@ -4270,14 +4344,17 @@ def _cache_local_source_messages_for_view(
             stored_text = f"Reacted {native_metadata['reaction'].get('emoji') or ''}".strip()
 
         provider_id = _provider_message_id(source_provider, msg)
+        sender_name, subject_name = _resolve_sender_and_subject(conn, conv, msg)
+        desired_subject = _provider_subject(source_provider, subject_name)
         existing = conn.execute(
-            """SELECT metadata
+            """SELECT metadata, sender_name, subject, body_text
                FROM penguin_connect_messages
                WHERE conversation_id = ? AND provider_message_id = ?
                LIMIT 1""",
             (conv["conversation_id"], provider_id),
         ).fetchone()
-        last_ts, last_native_message_id = _merge_imessage_sync_cursor(
+        last_ts, last_native_message_id = _merge_source_sync_cursor(
+            source_provider,
             last_ts,
             last_native_message_id,
             ts,
@@ -4296,19 +4373,31 @@ def _cache_local_source_messages_for_view(
             if attachments and existing_metadata.get("attachments") != attachments:
                 existing_metadata["attachments"] = attachments
                 changed = True
+            if existing["sender_name"] != sender_name:
+                changed = True
+            if existing["subject"] != desired_subject:
+                changed = True
+            if existing["body_text"] != stored_text[:20000]:
+                changed = True
             if changed:
                 conn.execute(
                     """UPDATE penguin_connect_messages
-                       SET metadata = ?
+                       SET metadata = ?, sender_name = ?, subject = ?, body_text = ?
                        WHERE conversation_id = ? AND provider_message_id = ?""",
-                    (json.dumps(existing_metadata), conv["conversation_id"], provider_id),
+                    (
+                        json.dumps(existing_metadata),
+                        sender_name,
+                        desired_subject,
+                        stored_text[:20000],
+                        conv["conversation_id"],
+                        provider_id,
+                    ),
                 )
             continue
 
         is_from_me = 1 if msg.get("is_from_me") else 0
         unread = not is_from_me and provider_id in unread_provider_ids
 
-        sender_name, subject_name = _resolve_sender_and_subject(conn, conv, msg)
         metadata = {
             "source_chat_id": msg.get("chat_id") or conv["source_chat_id"],
             "native_message_id": msg.get("native_message_id"),
@@ -4332,7 +4421,7 @@ def _cache_local_source_messages_for_view(
                     provider_id,
                     stored_direction,
                     sender_name,
-                    _provider_subject(source_provider, subject_name),
+                    desired_subject,
                     stored_text[:20000],
                     ts,
                     0 if unread else 1,
@@ -4389,7 +4478,7 @@ def _cache_local_source_messages_for_view(
             messages,
             key=lambda msg: (
                 msg.get("timestamp") or "",
-                _imessage_native_message_sort_value(msg.get("native_message_id")),
+                _source_native_message_sort_value(source_provider, msg.get("native_message_id")),
             ),
         )
         conn.execute(
@@ -4812,7 +4901,7 @@ def get_conversation_messages(
                 limit=refresh_limit,
                 include_history=True,
                 backfill_history=_conversation_source_provider(conv)
-                in {"imessage", "apple_messages", "sms", "rcs"},
+                in {"imessage", "apple_messages", "sms", "rcs", "whatsapp"},
             )
 
     account = conn.execute(
@@ -4914,7 +5003,7 @@ def backfill_local_conversation_cache(
     ).fetchone()
     if not conv:
         return {"found": False, "imported": 0, "completed": False}
-    if _conversation_source_provider(conv) not in {"imessage", "apple_messages", "sms", "rcs"}:
+    if _conversation_source_provider(conv) not in {"imessage", "apple_messages", "sms", "rcs", "whatsapp"}:
         return {"found": True, "imported": 0, "completed": True}
 
     state = conn.execute(
@@ -5200,6 +5289,43 @@ def _imessage_native_message_sort_value(value: Optional[str]) -> int:
         return int(raw)
     except Exception:
         return -1
+
+
+def _source_native_message_sort_value(source_provider: str, value: Optional[str]) -> tuple[int, int | str]:
+    if source_provider in {"imessage", "apple_messages", "sms", "rcs"}:
+        return (0, _imessage_native_message_sort_value(value))
+    return (1, str(value or ""))
+
+
+def _merge_source_sync_cursor(
+    source_provider: str,
+    existing_ts: Optional[str],
+    existing_native_message_id: Optional[str],
+    candidate_ts: Optional[str],
+    candidate_native_message_id: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    if source_provider in {"imessage", "apple_messages", "sms", "rcs"}:
+        return _merge_imessage_sync_cursor(
+            existing_ts,
+            existing_native_message_id,
+            candidate_ts,
+            candidate_native_message_id,
+        )
+    existing_dt = _parse_iso(existing_ts)
+    candidate_dt = _parse_iso(candidate_ts)
+    if existing_dt and candidate_dt:
+        if candidate_dt > existing_dt:
+            return candidate_ts, candidate_native_message_id
+        if existing_dt > candidate_dt:
+            return existing_ts, existing_native_message_id
+        if str(candidate_native_message_id or "") > str(existing_native_message_id or ""):
+            return candidate_ts, candidate_native_message_id
+        return existing_ts, existing_native_message_id
+    if candidate_dt:
+        return candidate_ts, candidate_native_message_id
+    if existing_dt:
+        return existing_ts, existing_native_message_id
+    return candidate_ts or existing_ts, candidate_native_message_id or existing_native_message_id
 
 
 def _merge_imessage_sync_cursor(
@@ -5882,14 +6008,18 @@ def _upsert_sync_state(
 
     last_message_ts = _max_iso(last_source_ts, last_gmail_ts)
     existing = conn.execute(
-        """SELECT last_source_ts, last_source_native_message_id, last_gmail_ts, last_message_ts,
-                  last_gmail_history_id, pending_gmail_activity_at
-           FROM penguin_connect_sync_state
-           WHERE conversation_id = ?""",
+        """SELECT s.last_source_ts, s.last_source_native_message_id, s.last_gmail_ts, s.last_message_ts,
+                  s.last_gmail_history_id, s.pending_gmail_activity_at,
+                  c.source_provider
+           FROM penguin_connect_sync_state s
+           JOIN penguin_connect_conversations c
+             ON c.conversation_id = s.conversation_id
+           WHERE s.conversation_id = ?""",
         (conversation_id,),
     ).fetchone()
     if existing:
-        last_source_ts, last_source_native_message_id = _merge_imessage_sync_cursor(
+        last_source_ts, last_source_native_message_id = _merge_source_sync_cursor(
+            str(existing["source_provider"] or "imessage"),
             existing["last_source_ts"],
             existing["last_source_native_message_id"],
             last_source_ts,
@@ -6481,6 +6611,8 @@ def _fetch_whatsapp_messages_for_conversation(
     limit: int,
     since: Optional[str],
     since_native_message_id: Optional[str] = None,
+    before: Optional[str] = None,
+    before_native_message_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Fetch messages from the WhatsApp bridge DB for a conversation."""
     if _WHATSAPP_CHANNEL is None:
@@ -6488,7 +6620,15 @@ def _fetch_whatsapp_messages_for_conversation(
     chat_id = _conversation_source_chat_id(conv)
     if not chat_id:
         return []
-    return _WHATSAPP_CHANNEL.fetch_messages(chat_id, limit=limit, since=since, since_native_message_id=since_native_message_id)
+    fetch_kwargs: dict[str, Any] = {
+        "limit": limit,
+        "since": since,
+        "since_native_message_id": since_native_message_id,
+    }
+    if before:
+        fetch_kwargs["before"] = before
+        fetch_kwargs["before_native_message_id"] = before_native_message_id
+    return _WHATSAPP_CHANNEL.fetch_messages(chat_id, **fetch_kwargs)
 
 
 def _fetch_telegram_messages_for_conversation(
@@ -6519,7 +6659,14 @@ def _fetch_source_messages_for_conversation(
     """Provider-dispatch: fetch messages from the right adapter."""
     source_provider = _conversation_source_provider(conv)
     if source_provider == "whatsapp":
-        return _fetch_whatsapp_messages_for_conversation(conv, limit=limit, since=since, since_native_message_id=since_native_message_id)
+        return _fetch_whatsapp_messages_for_conversation(
+            conv,
+            limit=limit,
+            since=since,
+            since_native_message_id=since_native_message_id,
+            before=before,
+            before_native_message_id=before_native_message_id,
+        )
     if source_provider == "telegram":
         return _fetch_telegram_messages_for_conversation(conv, limit=limit, since=since, since_native_message_id=since_native_message_id)
     return _fetch_apple_messages_messages_for_conversation(

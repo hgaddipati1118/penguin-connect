@@ -771,6 +771,27 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(state["last_source_ts"], same_ts)
         self.assertEqual(state["last_source_native_message_id"], "102")
 
+    def test_upsert_sync_state_uses_opaque_whatsapp_cursor_for_equal_timestamp(self):
+        cid = "amc_test"
+        self.conn.execute(
+            """UPDATE penguin_connect_conversations
+               SET source_provider = 'whatsapp'
+               WHERE conversation_id = ?""",
+            (cid,),
+        )
+        same_ts = "2026-03-04T10:00:00+00:00"
+        penguin_connect._upsert_sync_state(self.conn, cid, same_ts, "msg-a", None, None)
+        penguin_connect._upsert_sync_state(self.conn, cid, same_ts, "msg-b", None, None)
+
+        state = self.conn.execute(
+            """SELECT last_source_ts, last_source_native_message_id
+               FROM penguin_connect_sync_state
+               WHERE conversation_id = ?""",
+            (cid,),
+        ).fetchone()
+        self.assertEqual(state["last_source_ts"], same_ts)
+        self.assertEqual(state["last_source_native_message_id"], "msg-b")
+
     def test_initial_sync_bootstrapped_requires_completed_initial_sync(self):
         self.conn.execute(
             """INSERT INTO penguin_connect_sync_state
@@ -2463,6 +2484,91 @@ class PenguinConnectTests(unittest.TestCase):
             limit=50,
             since=None,
             since_native_message_id=None,
+        )
+
+    def test_whatsapp_local_cache_backfill_resumes_from_durable_cursor(self):
+        self.conn.execute("DELETE FROM penguin_connect_messages")
+        self.conn.execute("DELETE FROM penguin_connect_sync_state")
+        self.conn.execute(
+            """UPDATE penguin_connect_conversations
+               SET gmail_email = ?, source_provider = 'whatsapp',
+                   source_chat_id = ?, source_chat_identifier = ?, alias_email = NULL
+               WHERE conversation_id = ?""",
+            (
+                penguin_connect.LOCAL_MESSAGES_ACCOUNT_EMAIL,
+                "15550000000@s.whatsapp.net",
+                "15550000000@s.whatsapp.net",
+                "amc_test",
+            ),
+        )
+        newest = [
+            {
+                "native_message_id": "wa-3",
+                "timestamp": "2026-03-04T09:03:00+00:00",
+                "text": "third",
+                "is_from_me": False,
+                "handle": "15550000000@s.whatsapp.net",
+                "push_name": "Synthetic Person",
+                "attachments": [],
+            },
+            {
+                "native_message_id": "wa-2",
+                "timestamp": "2026-03-04T09:02:00+00:00",
+                "text": "second",
+                "is_from_me": False,
+                "handle": "15550000000@s.whatsapp.net",
+                "push_name": "Synthetic Person",
+                "attachments": [],
+            },
+        ]
+        oldest = [
+            {
+                "native_message_id": "wa-1",
+                "timestamp": "2026-03-04T09:01:00+00:00",
+                "text": "first",
+                "is_from_me": False,
+                "handle": "15550000000@s.whatsapp.net",
+                "push_name": "Synthetic Person",
+                "attachments": [],
+            }
+        ]
+        fake_channel = mock.Mock()
+        fake_channel.fetch_messages.side_effect = [newest, oldest]
+
+        with mock.patch.object(penguin_connect, "_WHATSAPP_CHANNEL", fake_channel), mock.patch(
+            "penguin_connect._resolve_sender_and_subject",
+            return_value=("Synthetic Person", "Synthetic Person"),
+        ):
+            first = penguin_connect.backfill_local_conversation_cache(
+                self.conn,
+                "amc_test",
+                limit=2,
+            )
+            second = penguin_connect.backfill_local_conversation_cache(
+                self.conn,
+                "amc_test",
+                limit=2,
+            )
+
+        self.assertEqual(first, {"found": True, "imported": 2, "completed": False})
+        self.assertEqual(second, {"found": True, "imported": 1, "completed": True})
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM penguin_connect_messages WHERE conversation_id = ?",
+                ("amc_test",),
+            ).fetchone()[0],
+            3,
+        )
+        self.assertEqual(
+            fake_channel.fetch_messages.call_args_list[1],
+            mock.call(
+                "15550000000@s.whatsapp.net",
+                limit=2,
+                since=None,
+                since_native_message_id=None,
+                before="2026-03-04T09:02:00+00:00",
+                before_native_message_id="wa-2",
+            ),
         )
 
     def test_get_conversation_messages_does_not_cache_local_rows_for_gmail_backed_conversation(self):

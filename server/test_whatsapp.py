@@ -106,6 +106,11 @@ class WhatsAppAdapterTests(unittest.TestCase):
         self.assertIn("14155551234@s.whatsapp.net", jids)
         self.assertIn("120363047891234567@g.us", jids)
 
+    def test_list_conversations_none_limit_means_all_available_chats(self):
+        result = self.adapter.list_conversations(limit=None)
+        self.assertTrue(result["available"])
+        self.assertEqual(len(result["chats"]), 2)
+
     def test_list_conversations_dm_vs_group(self):
         result = self.adapter.list_conversations()
         chats_by_jid = {c["chat_id"]: c for c in result["chats"]}
@@ -197,6 +202,22 @@ class WhatsAppAdapterTests(unittest.TestCase):
         self.assertEqual(len(messages), 2)
         texts = {m["text"] for m in messages if m["text"]}
         self.assertIn("Hi Alice!", texts)
+
+    def test_fetch_messages_pages_backwards_without_repeating_boundary(self):
+        older = self.adapter.fetch_messages(
+            "14155551234@s.whatsapp.net",
+            limit=2,
+            before="2026-03-15T09:02:00",
+            before_native_message_id="msg4",
+        )
+        self.assertEqual([message["native_message_id"] for message in older], ["msg2", "msg1"])
+
+    def test_fetch_messages_does_not_download_media_during_cache_reads(self):
+        with mock.patch.object(self.adapter, "_download_media") as download:
+            messages = self.adapter.fetch_messages("14155551234@s.whatsapp.net", limit=50)
+
+        self.assertTrue(any(message.get("attachments") for message in messages))
+        download.assert_not_called()
 
     def test_fetch_messages_has_required_keys(self):
         messages = self.adapter.fetch_messages("14155551234@s.whatsapp.net", limit=1)

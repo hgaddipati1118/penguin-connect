@@ -2769,11 +2769,79 @@ def _message_attachment_path(raw_path: str) -> Path:
     return candidate
 
 
+def _attachment_metadata_summary(row: sqlite3.Row | dict) -> str:
+    filename = str(row["filename"] or "attachment").strip()
+    mime_type = str(row["mime_type"] or "").strip()
+    conversation_name = str(row["conversation_name"] or "").strip()
+    sender_name = str(row["sender_name"] or "").strip()
+    message_timestamp = str(row["message_timestamp"] or "").strip()
+    body_text = " ".join(str(row["body_text"] or "").split()).strip()
+
+    lead = f"{mime_type or 'File'} attachment named {filename}"
+    context = []
+    if conversation_name:
+        context.append(f"in {conversation_name}")
+    if sender_name:
+        context.append(f"from {sender_name}")
+    if message_timestamp:
+        context.append(f"on {message_timestamp}")
+    summary = f"{lead} {' '.join(context)}.".strip()
+    if body_text and body_text.lower() not in {
+        filename.lower(),
+        f"attachment: {filename}".lower(),
+    }:
+        summary += f" Message context: {body_text[:1200]}"
+    return summary[:2000]
+
+
+def _reconcile_missing_attachment_intelligence(conn: sqlite3.Connection) -> int:
+    rows = conn.execute(
+        """SELECT ai.conversation_id, ai.provider_message_id, ai.attachment_index,
+                  ai.filename, ai.mime_type, m.body_text, m.sender_name,
+                  m.message_timestamp,
+                  COALESCE(NULLIF(cm.title, ''), NULLIF(c.display_name, ''), '')
+                      AS conversation_name
+           FROM penguin_connect_attachment_intelligence ai
+           JOIN penguin_connect_messages m
+             ON m.conversation_id = ai.conversation_id
+            AND m.provider_message_id = ai.provider_message_id
+           JOIN penguin_connect_conversations c
+             ON c.conversation_id = ai.conversation_id
+           LEFT JOIN penguin_connect_conversation_management cm
+             ON cm.conversation_id = ai.conversation_id
+           WHERE ai.status IN ('failed', 'retry')
+             AND ai.last_error = 'attachment_file_not_found'"""
+    ).fetchall()
+    if not rows:
+        return 0
+    conn.executemany(
+        """UPDATE penguin_connect_attachment_intelligence
+           SET extracted_text = ?, summary = ?, status = 'metadata_only',
+               last_error = '', updated_at = datetime('now')
+           WHERE conversation_id = ? AND provider_message_id = ? AND attachment_index = ?""",
+        [
+            (
+                summary,
+                summary,
+                row["conversation_id"],
+                row["provider_message_id"],
+                row["attachment_index"],
+            )
+            for row in rows
+            for summary in [_attachment_metadata_summary(row)]
+        ],
+    )
+    conn.commit()
+    return len(rows)
+
+
 def _queue_attachment_intelligence(conn: sqlite3.Connection, *, limit: int = 10000) -> int:
+    _reconcile_missing_attachment_intelligence(conn)
     conn.execute(
         """UPDATE penguin_connect_attachment_intelligence
            SET status = 'retry', updated_at = datetime('now')
            WHERE status IN ('failed', 'processing')
+             AND last_error <> 'attachment_file_not_found'
              AND updated_at <= datetime('now', '-10 minutes')"""
     )
     rows = conn.execute(
@@ -2949,11 +3017,21 @@ def _run_attachment_intelligence_batch() -> dict:
     attempted = 0
     try:
         rows = conn.execute(
-            """SELECT conversation_id, provider_message_id, attachment_index,
-                      file_path, filename, mime_type
-               FROM penguin_connect_attachment_intelligence
-               WHERE status IN ('queued', 'retry')
-               ORDER BY created_at DESC, rowid DESC
+            """SELECT ai.conversation_id, ai.provider_message_id, ai.attachment_index,
+                      ai.file_path, ai.filename, ai.mime_type, m.body_text, m.sender_name,
+                      m.message_timestamp,
+                      COALESCE(NULLIF(cm.title, ''), NULLIF(c.display_name, ''), '')
+                          AS conversation_name
+               FROM penguin_connect_attachment_intelligence ai
+               JOIN penguin_connect_messages m
+                 ON m.conversation_id = ai.conversation_id
+                AND m.provider_message_id = ai.provider_message_id
+               JOIN penguin_connect_conversations c
+                 ON c.conversation_id = ai.conversation_id
+               LEFT JOIN penguin_connect_conversation_management cm
+                 ON cm.conversation_id = ai.conversation_id
+               WHERE ai.status IN ('queued', 'retry')
+               ORDER BY ai.created_at DESC, ai.rowid DESC
                LIMIT ?""",
             (_attachment_intelligence_batch_size(),),
         ).fetchall()
@@ -3015,12 +3093,23 @@ def _run_attachment_intelligence_batch() -> dict:
                 processed += 1
             except Exception as exc:
                 detail = getattr(exc, "detail", None) or str(exc) or type(exc).__name__
-                conn.execute(
-                    """UPDATE penguin_connect_attachment_intelligence
-                       SET status = 'failed', last_error = ?, updated_at = datetime('now')
-                       WHERE conversation_id = ? AND provider_message_id = ? AND attachment_index = ?""",
-                    (str(detail)[:1000], *key),
-                )
+                if str(detail) == "attachment_file_not_found":
+                    summary = _attachment_metadata_summary(row)
+                    conn.execute(
+                        """UPDATE penguin_connect_attachment_intelligence
+                           SET extracted_text = ?, summary = ?, status = 'metadata_only',
+                               last_error = '', updated_at = datetime('now')
+                           WHERE conversation_id = ? AND provider_message_id = ? AND attachment_index = ?""",
+                        (summary, summary, *key),
+                    )
+                    processed += 1
+                else:
+                    conn.execute(
+                        """UPDATE penguin_connect_attachment_intelligence
+                           SET status = 'failed', last_error = ?, updated_at = datetime('now')
+                           WHERE conversation_id = ? AND provider_message_id = ? AND attachment_index = ?""",
+                        (str(detail)[:1000], *key),
+                    )
                 conn.commit()
         remaining_row = conn.execute(
             """SELECT COUNT(*) AS count
@@ -3131,6 +3220,13 @@ def _stored_message_attachment(
                SET metadata = ?
                WHERE conversation_id = ? AND provider_message_id = ?""",
             (json.dumps(metadata), conversation_id, provider_message_id),
+        )
+        conn.execute(
+            """UPDATE penguin_connect_attachment_intelligence
+               SET file_path = ?, status = 'queued', last_error = '',
+                   updated_at = datetime('now')
+               WHERE conversation_id = ? AND provider_message_id = ? AND attachment_index = ?""",
+            (downloaded, conversation_id, provider_message_id, attachment_index),
         )
         conn.commit()
         path = _message_attachment_path(downloaded)
@@ -4868,7 +4964,7 @@ def get_penguinconnect_conversations(
             result = penguinconnect_list_conversations(
                 conn,
                 discover_sources=False,
-                hydrate_previews=True,
+                hydrate_previews=False,
             )
         result = _attach_conversation_unread_counts(conn, result)
         result = _attach_conversation_previews(conn, result)

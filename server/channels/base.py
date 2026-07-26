@@ -13,7 +13,11 @@ class MessagingChannelAdapter(Protocol):
     provider: str
     provider_label: str
 
-    def list_conversations(self, search: Optional[str] = None, limit: int = 100) -> dict[str, Any]:
+    def list_conversations(
+        self,
+        search: Optional[str] = None,
+        limit: Optional[int] = 100,
+    ) -> dict[str, Any]:
         """Return provider conversations for discovery."""
 
     def list_recent_activity(self, since: str, limit: int = 500) -> dict[str, Any]:

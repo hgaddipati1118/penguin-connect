@@ -2364,16 +2364,27 @@ async function repairSelectedConversationCache(conversation) {
   const conversationId = conversation?.conversation_id;
   if (
     !conversationId
-    || !["imessage", "apple_messages", "sms", "rcs"].includes(conversation.source_provider)
+    || !["imessage", "apple_messages", "sms", "rcs", "whatsapp"].includes(conversation.source_provider)
   ) return;
   if (cacheRepairRequests.has(conversationId)) {
     await cacheRepairRequests.get(conversationId);
     return;
   }
-  const repair = api(
-    `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/cache-backfill`,
-    { method: "POST", body: "{}" },
-  );
+  const repair = (async () => {
+    let totalImported = 0;
+    for (let batch = 0; batch < 3; batch += 1) {
+      if (state.selected?.conversation_id !== conversationId) break;
+      const result = await api(
+        `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/cache-backfill`,
+        { method: "POST", body: "{}" },
+      );
+      const imported = Number(result.imported || 0);
+      totalImported += imported;
+      if (result.completed || imported === 0) break;
+      await new Promise((resolve) => window.setTimeout(resolve, 120));
+    }
+    return { imported: totalImported };
+  })();
   cacheRepairRequests.set(conversationId, repair);
   try {
     const result = await repair;

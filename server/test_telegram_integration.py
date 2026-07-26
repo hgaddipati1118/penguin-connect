@@ -450,6 +450,15 @@ class WhatsAppBridgeIntegrationTests(unittest.TestCase):
                     "name": "Bob",
                     "chat_type": "dm",
                     "participants": ["14155559999"],
+                    "latest_message": {
+                        "native_message_id": "wa-latest-1",
+                        "timestamp": "2026-03-15T12:00:00+00:00",
+                        "text": "Latest WhatsApp preview",
+                        "is_from_me": False,
+                        "handle": "14155559999@s.whatsapp.net",
+                        "push_name": "Bob",
+                        "attachments": [],
+                    },
                 },
             ],
         }
@@ -468,6 +477,15 @@ class WhatsAppBridgeIntegrationTests(unittest.TestCase):
         ).fetchall()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["display_name"], "Bob")
+        mock_channel.list_conversations.assert_called_once_with(limit=None)
+        preview = self.conn.execute(
+            """SELECT provider, body_text
+               FROM penguin_connect_messages
+               WHERE conversation_id = ?""",
+            (rows[0]["conversation_id"],),
+        ).fetchone()
+        self.assertEqual(preview["provider"], "whatsapp")
+        self.assertEqual(preview["body_text"], "Latest WhatsApp preview")
 
     def test_ensure_whatsapp_conversations_discovered_skips_when_no_channel(self):
         with mock.patch.object(penguin_connect, "_WHATSAPP_CHANNEL", None):

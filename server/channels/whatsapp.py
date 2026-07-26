@@ -113,6 +113,60 @@ def _whatsapp_identity(conn: Optional[sqlite3.Connection], jid: str) -> dict[str
     return {"phone": resolved_phone, "name": ""}
 
 
+def _whatsapp_identity_cache(
+    conn: Optional[sqlite3.Connection],
+    jids: list[str],
+) -> dict[str, dict[str, str]]:
+    """Resolve a discovery batch without issuing queries per conversation."""
+    raw_jids = [str(jid or "").strip() for jid in jids if str(jid or "").strip()]
+    identities = {
+        jid: {"phone": _jid_to_phone(jid), "name": ""}
+        for jid in raw_jids
+    }
+    if conn is None:
+        return identities
+
+    lid_to_phone: dict[str, str] = {}
+    try:
+        lid_to_phone = {
+            str(row["lid"]): str(row["pn"])
+            for row in conn.execute("SELECT lid, pn FROM whatsmeow_lid_map")
+            if row["lid"] and row["pn"]
+        }
+    except sqlite3.Error:
+        lid_to_phone = {}
+
+    names_by_jid: dict[str, str] = {}
+    try:
+        rows = conn.execute(
+            """SELECT their_jid, first_name, full_name, push_name, business_name
+               FROM whatsmeow_contacts"""
+        ).fetchall()
+    except sqlite3.Error:
+        rows = []
+    for row in rows:
+        their_jid = str(row["their_jid"] or "").strip()
+        if not their_jid or names_by_jid.get(their_jid):
+            continue
+        for key in ("full_name", "first_name", "business_name", "push_name"):
+            value = str(row[key] or "").strip()
+            if value:
+                names_by_jid[their_jid] = value
+                break
+
+    for jid in raw_jids:
+        if _is_group_jid(jid):
+            continue
+        raw_phone = _jid_to_phone(jid)
+        phone = lid_to_phone.get(raw_phone, raw_phone) if jid.endswith("@lid") else raw_phone
+        phone_jid = f"{phone}@s.whatsapp.net"
+        identities[jid] = {
+            "phone": phone,
+            "name": names_by_jid.get(jid) or names_by_jid.get(phone_jid) or "",
+        }
+    return identities
+
+
 def _is_group_jid(jid: str) -> bool:
     return jid.endswith("@g.us")
 
@@ -125,14 +179,14 @@ class WhatsAppChannelAdapter:
     provider = "whatsapp"
     provider_label = "WhatsApp"
 
-    def list_conversations(self, search: Optional[str] = None, limit: int = 100) -> dict[str, Any]:
+    def list_conversations(self, search: Optional[str] = None, limit: Optional[int] = 100) -> dict[str, Any]:
         conn = _open_whatsapp_db()
         if conn is None:
             return {"available": False, "reason": "WhatsApp messages.db not found"}
 
         metadata_conn = _open_whatsapp_metadata_db()
         try:
-            safe_limit = max(1, min(int(limit or 100), 100000))
+            safe_limit = 100000 if limit is None else max(1, min(int(limit or 100), 100000))
             params: list[Any] = []
             where_clause = ""
             if search:
@@ -142,42 +196,105 @@ class WhatsAppChannelAdapter:
 
             rows = conn.execute(
                 f"""
+                WITH message_stats AS (
+                    SELECT chat_jid, COUNT(*) AS msg_count
+                    FROM messages
+                    GROUP BY chat_jid
+                ),
+                ranked_messages AS (
+                    SELECT
+                        chat_jid,
+                        id,
+                        content,
+                        timestamp,
+                        is_from_me,
+                        sender,
+                        media_type,
+                        filename,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY chat_jid
+                            ORDER BY timestamp DESC, id DESC
+                        ) AS row_number
+                    FROM messages
+                )
                 SELECT
                     c.jid,
                     c.name,
                     c.last_message_time,
-                    COUNT(DISTINCT m.id) AS msg_count,
-                    (SELECT m2.content FROM messages m2
-                     WHERE m2.chat_jid = c.jid
-                     ORDER BY m2.timestamp DESC LIMIT 1) AS last_message_preview
+                    stats.msg_count,
+                    latest.id AS last_message_id,
+                    latest.content AS last_message_preview,
+                    latest.timestamp AS latest_message_timestamp,
+                    latest.is_from_me AS latest_is_from_me,
+                    latest.sender AS latest_sender,
+                    latest.media_type AS latest_media_type,
+                    latest.filename AS latest_filename
                 FROM chats c
-                LEFT JOIN messages m ON m.chat_jid = c.jid
+                JOIN message_stats stats ON stats.chat_jid = c.jid
+                LEFT JOIN ranked_messages latest
+                  ON latest.chat_jid = c.jid
+                 AND latest.row_number = 1
                 {where_clause}
-                GROUP BY c.jid
-                HAVING msg_count > 0
                 ORDER BY c.last_message_time DESC
                 LIMIT ?
                 """,
                 (*params, safe_limit),
             ).fetchall()
 
+            selected_jids = [str(row["jid"] or "").strip() for row in rows if row["jid"]]
+            latest_senders = [
+                str(row["latest_sender"] or "").strip()
+                for row in rows
+                if str(row["latest_sender"] or "").strip()
+            ]
+            identities = _whatsapp_identity_cache(metadata_conn, [*selected_jids, *latest_senders])
+            participants_by_chat: dict[str, list[str]] = {}
+            for chunk_start in range(0, len(selected_jids), 800):
+                jid_chunk = selected_jids[chunk_start:chunk_start + 800]
+                placeholders = ",".join("?" for _ in jid_chunk)
+                participant_rows = conn.execute(
+                    f"""SELECT chat_jid, sender
+                        FROM messages
+                        WHERE chat_jid IN ({placeholders})
+                          AND is_from_me = 0
+                          AND TRIM(COALESCE(sender, '')) <> ''
+                        GROUP BY chat_jid, sender
+                        ORDER BY chat_jid, sender""",
+                    jid_chunk,
+                ).fetchall()
+                for participant_row in participant_rows:
+                    participants_by_chat.setdefault(participant_row["chat_jid"], []).append(
+                        participant_row["sender"]
+                    )
+
             chats = []
             for row in rows:
                 jid = row["jid"]
                 is_group = _is_group_jid(jid)
-                identity = _whatsapp_identity(metadata_conn, jid)
+                identity = identities.get(jid) or {"phone": _jid_to_phone(jid), "name": ""}
                 source_name = (row["name"] or "").strip()
                 name = source_name or identity["name"] or identity["phone"]
 
-                participants: list[str] = []
-                if is_group:
-                    senders = conn.execute(
-                        "SELECT DISTINCT sender FROM messages WHERE chat_jid = ? AND is_from_me = 0",
-                        (jid,),
-                    ).fetchall()
-                    participants = [s["sender"] for s in senders if s["sender"]]
-                else:
-                    participants = [identity["phone"]]
+                participants = participants_by_chat.get(jid, []) if is_group else [identity["phone"]]
+                latest_sender = str(row["latest_sender"] or "").strip()
+                latest_sender_identity = identities.get(latest_sender) or {
+                    "phone": _jid_to_phone(latest_sender),
+                    "name": "",
+                }
+                latest_filename = str(row["latest_filename"] or "").strip()
+                latest_media_type = str(row["latest_media_type"] or "").strip()
+                latest_attachments = None
+                if latest_media_type:
+                    latest_attachments = [
+                        {
+                            "filename": latest_filename,
+                            "mime_type": latest_media_type,
+                            "size": 0,
+                            "transfer_name": Path(latest_filename).name
+                            if latest_filename
+                            else f"whatsapp-{row['last_message_id']}",
+                        }
+                    ]
 
                 chats.append(
                     {
@@ -192,6 +309,17 @@ class WhatsAppChannelAdapter:
                         "message_count": row["msg_count"],
                         "last_message_at": row["last_message_time"],
                         "last_message_preview": (row["last_message_preview"] or "")[:120],
+                        "latest_message": {
+                            "text": row["last_message_preview"] or "",
+                            "timestamp": row["latest_message_timestamp"] or row["last_message_time"],
+                            "is_from_me": bool(row["latest_is_from_me"]),
+                            "service": "WhatsApp",
+                            "handle": latest_sender,
+                            "push_name": latest_sender_identity["name"]
+                            or latest_sender_identity["phone"],
+                            "attachments": latest_attachments,
+                            "native_message_id": str(row["last_message_id"] or ""),
+                        },
                         "service": "WhatsApp",
                         "source_provider": "whatsapp",
                     }
@@ -317,6 +445,9 @@ class WhatsAppChannelAdapter:
         limit: int = 50,
         since: Optional[str] = None,
         since_native_message_id: Optional[str] = None,
+        before: Optional[str] = None,
+        before_native_message_id: Optional[str] = None,
+        download_media: bool = False,
     ) -> list[dict[str, Any]]:
         conn = _open_whatsapp_db()
         if conn is None:
@@ -327,9 +458,18 @@ class WhatsAppChannelAdapter:
             safe_limit = max(1, min(int(limit or 50), 1000))
             params: list[Any] = [chat_id]
             date_filter = ""
-            if since:
+            if since and since_native_message_id:
+                date_filter = "AND (m.timestamp > ? OR (m.timestamp = ? AND m.id > ?))"
+                params.extend([since, since, since_native_message_id])
+            elif since:
                 date_filter = "AND m.timestamp > ?"
                 params.append(since)
+            elif before and before_native_message_id:
+                date_filter = "AND (m.timestamp < ? OR (m.timestamp = ? AND m.id < ?))"
+                params.extend([before, before, before_native_message_id])
+            elif before:
+                date_filter = "AND m.timestamp < ?"
+                params.append(before)
             order_direction = "ASC" if since else "DESC"
             params.append(safe_limit)
 
@@ -361,7 +501,7 @@ class WhatsAppChannelAdapter:
 
                 attachments = None
                 if media_type:
-                    local_path = self._download_media(chat_id, row["id"])
+                    local_path = self._download_media(chat_id, row["id"]) if download_media else None
                     attachments = [
                         {
                             "filename": local_path or filename,

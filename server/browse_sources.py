@@ -263,6 +263,27 @@ def browse_imessage_chats(search=None, limit=100):
             params.append(safe_limit)
         cur.execute(
             f"""
+            WITH message_stats AS (
+                SELECT
+                    cmj.chat_id,
+                    COUNT(DISTINCT cmj.message_id) AS msg_count,
+                    MAX(m.date) AS last_msg_date
+                FROM chat_message_join cmj
+                JOIN message m ON m.ROWID = cmj.message_id
+                GROUP BY cmj.chat_id
+            ),
+            latest_material_messages AS (
+                SELECT
+                    cmj.chat_id,
+                    MAX(m.date) AS latest_message_date,
+                    m.text,
+                    m.attributedBody
+                FROM chat_message_join cmj
+                JOIN message m ON m.ROWID = cmj.message_id
+                WHERE (m.text IS NOT NULL AND m.text != '')
+                   OR m.attributedBody IS NOT NULL
+                GROUP BY cmj.chat_id
+            )
             SELECT
                 c.ROWID,
                 c.guid,
@@ -270,35 +291,57 @@ def browse_imessage_chats(search=None, limit=100):
                 c.display_name,
                 {room_name_expr},
                 c.service_name,
-                COUNT(DISTINCT cmj.message_id) as msg_count,
-                MAX(m.date) as last_msg_date
+                stats.msg_count,
+                stats.last_msg_date,
+                latest.text,
+                latest.attributedBody
             FROM chat c
-            LEFT JOIN chat_message_join cmj ON cmj.chat_id = c.ROWID
-            LEFT JOIN message m ON m.ROWID = cmj.message_id
+            JOIN message_stats stats ON stats.chat_id = c.ROWID
+            LEFT JOIN latest_material_messages latest
+              ON latest.chat_id = c.ROWID
             WHERE c.guid IS NOT NULL
               AND c.service_name IN ('iMessage', 'SMS', 'RCS')
-            GROUP BY c.ROWID
-            HAVING msg_count > 0
-            ORDER BY last_msg_date DESC
+            ORDER BY stats.last_msg_date DESC
             {limit_clause}
             """,
             params,
         )
         raw_chats = cur.fetchall()
 
+        participants_by_chat = {}
+        chat_rowids = [row[0] for row in raw_chats]
+        for chunk_start in range(0, len(chat_rowids), 800):
+            rowid_chunk = chat_rowids[chunk_start:chunk_start + 800]
+            placeholders = ",".join("?" for _ in rowid_chunk)
+            cur.execute(
+                f"""
+                SELECT chj.chat_id, h.id
+                FROM chat_handle_join chj
+                JOIN handle h ON h.ROWID = chj.handle_id
+                WHERE chj.chat_id IN ({placeholders})
+                ORDER BY chj.chat_id, h.ROWID
+                """,
+                rowid_chunk,
+            )
+            for chat_rowid, handle_id in cur.fetchall():
+                if handle_id:
+                    participants_by_chat.setdefault(chat_rowid, []).append(handle_id)
+
         chats = []
         for row in raw_chats:
-            chat_rowid, chat_guid, chat_identifier, display_name, room_name, service, msg_count, last_date = row
-
-            cur.execute(
-                """
-                SELECT h.id FROM handle h
-                JOIN chat_handle_join chj ON chj.handle_id = h.ROWID
-                WHERE chj.chat_id = ?
-                """,
-                (chat_rowid,),
-            )
-            participants = [p[0] for p in cur.fetchall() if p and p[0]]
+            (
+                chat_rowid,
+                chat_guid,
+                chat_identifier,
+                display_name,
+                room_name,
+                service,
+                msg_count,
+                last_date,
+                last_message_text,
+                last_message_attributed_body,
+            ) = row
+            participants = participants_by_chat.get(chat_rowid, [])
 
             is_group = len(participants) > 1
             chat_type = "group" if is_group else "dm"
@@ -316,25 +359,10 @@ def browse_imessage_chats(search=None, limit=100):
                 if s not in searchable:
                     continue
 
-            cur.execute(
-                """
-                SELECT m.text, m.attributedBody
-                FROM message m
-                JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
-                WHERE cmj.chat_id = ?
-                  AND ((m.text IS NOT NULL AND m.text != '') OR m.attributedBody IS NOT NULL)
-                ORDER BY m.date DESC
-                LIMIT 1
-                """,
-                (chat_rowid,),
-            )
-            last_msg_row = cur.fetchone()
-            last_msg = ""
-            if last_msg_row:
-                last_msg = last_msg_row[0] or ""
-                if not last_msg and last_msg_row[1]:
-                    last_msg = _extract_text_from_attributed_body(last_msg_row[1]) or ""
-                last_msg = last_msg[:120]
+            last_msg = last_message_text or ""
+            if not last_msg and last_message_attributed_body:
+                last_msg = _extract_text_from_attributed_body(last_message_attributed_body) or ""
+            last_msg = last_msg[:120]
 
             chats.append(
                 {

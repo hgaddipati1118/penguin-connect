@@ -350,6 +350,85 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(queued_row["provider_message_id"], "queue-older-missing")
         self.assertEqual(queued_row["status"], "queued")
 
+    def test_missing_attachment_becomes_searchable_metadata_without_retrying(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """UPDATE penguin_connect_messages
+                   SET body_text = ?, sender_name = ?, metadata = ?
+                   WHERE conversation_id = 'amc_test'
+                     AND provider_message_id = 'imsg-latest'""",
+                (
+                    "The launch plan is attached.",
+                    "Taylor Example",
+                    json.dumps({
+                        "attachments": [{
+                            "filename": "/missing/launch-plan.pdf",
+                            "transfer_name": "launch-plan.pdf",
+                            "mime_type": "application/pdf",
+                        }],
+                    }),
+                ),
+            )
+            conn.execute(
+                """INSERT INTO penguin_connect_attachment_intelligence
+                   (conversation_id, provider_message_id, attachment_index, file_path,
+                    filename, mime_type, status)
+                   VALUES ('amc_test', 'imsg-latest', 0, '/missing/launch-plan.pdf',
+                           'launch-plan.pdf', 'application/pdf', 'queued')"""
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = app_module._run_attachment_intelligence_batch()
+
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                """SELECT status, summary, extracted_text, last_error
+                   FROM penguin_connect_attachment_intelligence
+                   WHERE conversation_id = 'amc_test'
+                     AND provider_message_id = 'imsg-latest'
+                     AND attachment_index = 0"""
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertEqual(result["processed"], 1)
+        self.assertEqual(row["status"], "metadata_only")
+        self.assertIn("launch-plan.pdf", row["summary"])
+        self.assertIn("Taylor Example", row["summary"])
+        self.assertIn("The launch plan is attached.", row["extracted_text"])
+        self.assertEqual(row["last_error"], "")
+
+    def test_queue_reconciles_legacy_missing_file_failures(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """INSERT INTO penguin_connect_attachment_intelligence
+                   (conversation_id, provider_message_id, attachment_index, file_path,
+                    filename, mime_type, status, last_error)
+                   VALUES ('amc_test', 'imsg-latest', 0, '/missing/photo.jpg',
+                           'photo.jpg', 'image/jpeg', 'failed',
+                           'attachment_file_not_found')"""
+            )
+            conn.commit()
+            app_module._queue_attachment_intelligence(conn, limit=1)
+            row = conn.execute(
+                """SELECT status, summary, last_error
+                   FROM penguin_connect_attachment_intelligence
+                   WHERE conversation_id = 'amc_test'
+                     AND provider_message_id = 'imsg-latest'
+                     AND attachment_index = 0"""
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertEqual(row["status"], "metadata_only")
+        self.assertIn("photo.jpg", row["summary"])
+        self.assertEqual(row["last_error"], "")
+
     def test_workspace_revision_is_small_private_and_changes_with_cached_messages(self):
         source_stamp = ((101, 202), (303, 404))
         with mock.patch("app._workspace_source_file_token", return_value=source_stamp), TestClient(
