@@ -1125,10 +1125,20 @@ kbd {
   padding: 24px max(22px, 6vw) 42px;
   overflow-x: hidden;
   overflow-y: auto;
-  overflow-anchor: none;
+  overflow-anchor: auto;
   overscroll-behavior: contain;
   scroll-padding-bottom: 42px;
   scroll-behavior: auto;
+}
+
+.message-list > * {
+  overflow-anchor: none;
+}
+
+.thread-bottom-anchor {
+  height: 1px;
+  overflow-anchor: auto;
+  pointer-events: none;
 }
 
 .message-history-loader {

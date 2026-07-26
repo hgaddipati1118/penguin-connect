@@ -249,6 +249,7 @@ const writingActions = {
 };
 
 const listObservers = new Map();
+const contactIndex = new Map();
 const translationQueue = [];
 const WORKSPACE_CACHE_DB = "penguin-local-workspace";
 const WORKSPACE_CACHE_VERSION = 1;
@@ -256,6 +257,7 @@ const WORKSPACE_CACHE_THREAD_LIMIT = 60;
 const CONVERSATION_RENDER_BATCH = 120;
 const MESSAGE_RENDER_WINDOW = 60;
 const MESSAGE_HISTORY_BATCH = 80;
+const NATIVE_SCROLL_ANCHORING = window.CSS?.supports?.("overflow-anchor: auto") || false;
 const CLOCK_FORMATTER = new Intl.DateTimeFormat(undefined, {
   hour: "numeric",
   minute: "2-digit",
@@ -1117,12 +1119,40 @@ function contactHandle(contact) {
   return contact?.primary_handle || contact?.email || contact?.phone || "";
 }
 
-function participantDisplayName(handle) {
+function contactLookupKeys(contact) {
+  return [
+    contactHandle(contact),
+    contact?.contact_key,
+    contact?.phone,
+    contact?.phone_normalized,
+    contact?.email,
+    ...(Array.isArray(contact?.contact_keys) ? contact.contact_keys : []),
+  ].map(normalizedHandle).filter(Boolean);
+}
+
+function rebuildContactIndex() {
+  contactIndex.clear();
+  for (const contact of state.contacts) {
+    for (const key of contactLookupKeys(contact)) {
+      const existing = contactIndex.get(key);
+      if (!existing || (existing.is_saved === false && contact.is_saved !== false)) {
+        contactIndex.set(key, contact);
+      }
+    }
+  }
+}
+
+function contactForHandle(handle, context = []) {
   const normalized = normalizedHandle(handle);
-  const contact = state.contacts.find((item) => (
-    normalizedHandle(contactHandle(item)) === normalized
-    || (item.contact_keys || []).some((key) => normalizedHandle(key) === normalized)
+  if (!normalized) return null;
+  const contextual = context.find((contact) => (
+    contactLookupKeys(contact).includes(normalized)
   ));
+  return contextual || contactIndex.get(normalized) || null;
+}
+
+function participantDisplayName(handle) {
+  const contact = contactForHandle(handle);
   return contact?.display_name || handle;
 }
 
@@ -1141,10 +1171,11 @@ function conversationAvatarFor(conversation, { large = false } = {}) {
   const participants = conversationParticipants(conversation).slice(0, 3);
   for (const [index, participant] of participants.entries()) {
     const member = document.createElement("span");
+    const participantName = participantDisplayName(participant);
     member.className = "group-avatar-member";
     member.style.setProperty("--member-index", String(index));
-    member.textContent = initials(participantDisplayName(participant));
-    member.title = participantDisplayName(participant);
+    member.textContent = initials(participantName);
+    member.title = participantName;
     avatar.append(member);
   }
   if (!participants.length) avatar.textContent = initials(name);
@@ -1752,11 +1783,12 @@ function renderInlineAttachment(message, attachment, index) {
     image.alt = label;
     image.loading = "lazy";
     image.addEventListener("load", () => {
-      if (state.followLatest) scrollThreadToBottom();
+      if (state.followLatest && !NATIVE_SCROLL_ANCHORING) queueThreadBottomAnchor();
     });
-    image.addEventListener("error", () => wrapper.replaceWith(
-      missingMediaPreview(message, label, "Image"),
-    ));
+    image.addEventListener("error", () => {
+      wrapper.replaceWith(missingMediaPreview(message, label, "Image"));
+      if (state.followLatest && !NATIVE_SCROLL_ANCHORING) queueThreadBottomAnchor();
+    });
     link.append(image);
     wrapper.append(link);
     return wrapper;
@@ -1769,11 +1801,12 @@ function renderInlineAttachment(message, attachment, index) {
     video.setAttribute("playsinline", "");
     video.setAttribute("aria-label", label);
     video.addEventListener("loadedmetadata", () => {
-      if (state.followLatest) scrollThreadToBottom();
+      if (state.followLatest && !NATIVE_SCROLL_ANCHORING) queueThreadBottomAnchor();
     });
-    video.addEventListener("error", () => wrapper.replaceWith(
-      missingMediaPreview(message, label, "Video"),
-    ));
+    video.addEventListener("error", () => {
+      wrapper.replaceWith(missingMediaPreview(message, label, "Video"));
+      if (state.followLatest && !NATIVE_SCROLL_ANCHORING) queueThreadBottomAnchor();
+    });
     wrapper.append(video);
     return wrapper;
   }
@@ -1793,7 +1826,7 @@ function renderInlineAttachment(message, attachment, index) {
     frame.title = label;
     frame.loading = "lazy";
     frame.addEventListener("load", () => {
-      if (state.followLatest) scrollThreadToBottom();
+      if (state.followLatest && !NATIVE_SCROLL_ANCHORING) queueThreadBottomAnchor();
     });
     wrapper.append(frame, attachmentFileLink(message, attachment, index));
     return wrapper;
@@ -1805,29 +1838,28 @@ function scrollThreadToBottom() {
   el.messageList.scrollTop = el.messageList.scrollHeight;
 }
 
-function stabilizeThreadAtLatest(durationMs = 420) {
+function queueThreadBottomAnchor(token = latestAnchorToken) {
+  window.cancelAnimationFrame(latestAnchorFrame);
+  latestAnchorFrame = window.requestAnimationFrame(() => {
+    if (token !== latestAnchorToken || !state.followLatest) return;
+    scrollThreadToBottom();
+  });
+}
+
+function stabilizeThreadAtLatest() {
   const token = ++latestAnchorToken;
-  const startedAt = Date.now();
   window.cancelAnimationFrame(latestAnchorFrame);
   window.clearTimeout(latestAnchorStopTimer);
   latestAnchorResizeObserver?.disconnect();
   latestAnchorResizeObserver = null;
-  const anchor = () => {
-    if (token !== latestAnchorToken || !state.followLatest) return;
-    scrollThreadToBottom();
-    if (Date.now() - startedAt < durationMs) {
-      latestAnchorFrame = window.requestAnimationFrame(anchor);
-    }
-  };
-  anchor();
-  if ("ResizeObserver" in window) {
+  scrollThreadToBottom();
+  if (!NATIVE_SCROLL_ANCHORING && "ResizeObserver" in window) {
     latestAnchorResizeObserver = new ResizeObserver(() => {
       if (token !== latestAnchorToken || !state.followLatest) return;
-      window.cancelAnimationFrame(latestAnchorFrame);
-      latestAnchorFrame = window.requestAnimationFrame(scrollThreadToBottom);
+      queueThreadBottomAnchor(token);
     });
-    for (const row of el.messageList.querySelectorAll(".message-row")) {
-      latestAnchorResizeObserver.observe(row);
+    for (const preview of el.messageList.querySelectorAll(".message-attachment-preview")) {
+      latestAnchorResizeObserver.observe(preview);
     }
   }
   latestAnchorStopTimer = window.setTimeout(() => {
@@ -1928,7 +1960,7 @@ function refreshVisibleMessageTranslation(message) {
   );
   const body = row?.querySelector(".message-body");
   if (body) renderMessageTranslation(body, message);
-  if (body && state.followLatest) stabilizeThreadAtLatest(250);
+  if (body && state.followLatest) stabilizeThreadAtLatest();
 }
 
 async function runQueuedTranslation(message, notify = false) {
@@ -2196,6 +2228,10 @@ function renderMessages({
     }
   }
 
+  const bottomAnchor = document.createElement("div");
+  bottomAnchor.className = "thread-bottom-anchor";
+  bottomAnchor.setAttribute("aria-hidden", "true");
+  messageFragment.append(bottomAnchor);
   el.messageList.append(messageFragment);
   applyThreadSearch();
   const focused = focusMessageId
@@ -2646,14 +2682,7 @@ function mentionCandidates() {
     : [];
   const seen = new Set();
   return conversationParticipants(state.selected).map((participant) => {
-    const participantKey = normalizedHandle(participant);
-    const contact = context.find((item) => (
-      normalizedHandle(item.primary_handle) === participantKey
-      || (item.contact_keys || []).some((key) => normalizedHandle(key) === participantKey)
-    )) || state.contacts.find((item) => (
-      normalizedHandle(contactHandle(item)) === participantKey
-      || (item.contact_keys || []).some((key) => normalizedHandle(key) === participantKey)
-    ));
+    const contact = contactForHandle(participant, context);
     return {
       label: String(contact?.display_name || participant).trim(),
       handle: participant,
@@ -3216,6 +3245,7 @@ async function loadContacts(query = "", {
   );
   if (!query) {
     state.contacts = payload.contacts || [];
+    rebuildContactIndex();
     state.contactsTotal = state.contacts.length;
     state.peopleVisible = 200;
     invalidateConversationProjection();
@@ -4116,10 +4146,7 @@ function openConversationMeta({ focus = "note" } = {}) {
   el.conversationParticipantList.replaceChildren();
   for (const participant of participants) {
     const chip = document.createElement("span");
-    const contact = state.contacts.find((item) => (
-      normalizedHandle(contactHandle(item)) === normalizedHandle(participant)
-      || (item.contact_keys || []).some((key) => normalizedHandle(key) === normalizedHandle(participant))
-    ));
+    const contact = contactForHandle(participant);
     chip.textContent = contact?.display_name || participant;
     el.conversationParticipantList.append(chip);
   }
