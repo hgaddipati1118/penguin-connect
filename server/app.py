@@ -3140,12 +3140,6 @@ def _run_attachment_intelligence_worker() -> None:
     while True:
         result = _run_attachment_intelligence_batch()
         changed_since_refresh += int(result.get("processed") or 0)
-        if changed_since_refresh >= 50:
-            try:
-                refresh_message_search_index()
-            except Exception:
-                pass
-            changed_since_refresh = 0
         if not int(result.get("attempted") or 0) or not int(result.get("remaining") or 0):
             break
         time.sleep(_attachment_intelligence_pause_seconds())
