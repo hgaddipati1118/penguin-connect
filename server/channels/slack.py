@@ -102,6 +102,17 @@ def _timestamp_to_iso(value: Any) -> str:
         return ""
 
 
+def _profile_avatar_url(*profiles: Any) -> str:
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            continue
+        for key in ("image_72", "image_48", "image_32", "image_24"):
+            url = str(profile.get(key) or "").strip()
+            if url.startswith("https://") and len(url) <= 2048:
+                return url
+    return ""
+
+
 class SlackChannelAdapter:
     provider = "slack"
     provider_label = "Slack"
@@ -110,6 +121,7 @@ class SlackChannelAdapter:
         self._lock = threading.RLock()
         self._user_resolution_lock = threading.Lock()
         self._users: dict[str, str] = {}
+        self._user_avatars: dict[str, str] = {}
         self._channels: dict[str, str] = {}
         self._self_user_id = ""
         self._workspace_name = ""
@@ -197,6 +209,9 @@ class SlackChannelAdapter:
                 user_id = str(member.get("id") or "").strip()
                 if user_id:
                     self._users[user_id] = name or user_id
+                    avatar_url = _profile_avatar_url(profile)
+                    if avatar_url:
+                        self._user_avatars[user_id] = avatar_url
             cursor = str((payload.get("response_metadata") or {}).get("next_cursor") or "").strip()
             if not cursor:
                 break
@@ -225,6 +240,9 @@ class SlackChannelAdapter:
                 or normalized
             )
             self._users[normalized] = name
+            avatar_url = _profile_avatar_url(profile)
+            if avatar_url:
+                self._user_avatars[normalized] = avatar_url
             return name
 
     def _render_text(self, value: Any) -> str:
@@ -244,6 +262,13 @@ class SlackChannelAdapter:
             or str(message.get("username") or "").strip()
             or user_id
             or "Slack"
+        )
+        sender_avatar_url = (
+            self._user_avatars.get(user_id)
+            or _profile_avatar_url(
+                bot_profile.get("icons"),
+                message.get("icons"),
+            )
         )
         files = message.get("files") if isinstance(message.get("files"), list) else []
         attachments = []
@@ -271,6 +296,7 @@ class SlackChannelAdapter:
             "chat_id": channel_id,
             "handle": user_id,
             "push_name": sender_name,
+            "sender_avatar_url": sender_avatar_url,
             "is_from_me": bool(user_id and user_id == self._self_user_id),
             "attachments": attachments,
             "source_provider": "slack",

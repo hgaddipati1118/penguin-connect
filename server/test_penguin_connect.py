@@ -134,6 +134,20 @@ class PenguinConnectTests(unittest.TestCase):
             },
         )
 
+    def test_source_message_native_metadata_keeps_https_sender_avatar(self):
+        metadata = penguin_connect._source_message_native_metadata(
+            {"sender_avatar_url": "https://cdn.example.test/member.png"}
+        )
+        rejected = penguin_connect._source_message_native_metadata(
+            {"sender_avatar_url": "file:///tmp/private-avatar.png"}
+        )
+
+        self.assertEqual(
+            metadata["sender_avatar_url"],
+            "https://cdn.example.test/member.png",
+        )
+        self.assertNotIn("sender_avatar_url", rejected)
+
     def test_get_connection_tolerates_locked_wal_pragma(self):
         class FakeConnection:
             row_factory = None

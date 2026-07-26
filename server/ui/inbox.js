@@ -2441,6 +2441,53 @@ function isSlackThreadReply(message) {
   );
 }
 
+function slackAuthorTone(value) {
+  let hash = 0;
+  for (const character of String(value || "")) {
+    hash = (Math.imul(hash, 31) + character.codePointAt(0)) >>> 0;
+  }
+  return hash % 6;
+}
+
+function slackMessageAuthor(message, { isThreadReply = false } = {}) {
+  const mine = isOwnMessage(message);
+  const authorName = mine
+    ? "You"
+    : (message.sender_name || message.sender_email || "Slack member");
+  const author = document.createElement("div");
+  author.className = "message-author";
+
+  const avatar = document.createElement("span");
+  avatar.className = `message-author-avatar tone-${slackAuthorTone(authorName)}`;
+  avatar.textContent = initials(authorName);
+  const avatarUrl = String(message.metadata?.sender_avatar_url || "");
+  if (avatarUrl.startsWith("https://")) {
+    const image = document.createElement("img");
+    image.src = avatarUrl;
+    image.alt = "";
+    image.loading = "lazy";
+    image.decoding = "async";
+    image.referrerPolicy = "no-referrer";
+    avatar.append(image);
+  }
+
+  const name = document.createElement("strong");
+  name.textContent = authorName;
+  author.append(avatar, name);
+
+  const isThreadRoot = Number(message.metadata?.reply_count || 0) > 0;
+  if (isThreadReply || isThreadRoot) {
+    const context = document.createElement("span");
+    context.className = "message-author-context";
+    const parentName = String(message.metadata?.thread_parent_name || "").trim();
+    context.textContent = isThreadReply
+      ? `Thread reply${parentName ? ` to ${parentName}` : ""}`
+      : "Thread starter";
+    author.append(context);
+  }
+  return author;
+}
+
 function slackThreadRenderRows(sortedRows) {
   const visibleRows = sortedRows.slice(-state.messagesVisible).filter(
     (message) => !message.metadata?.reaction,
@@ -2485,12 +2532,22 @@ function slackThreadRenderRows(sortedRows) {
     const replies = [...(repliesByRoot.get(rootId) || [])].sort((left, right) => (
       Date.parse(left.message_timestamp || "") - Date.parse(right.message_timestamp || "")
     ));
-    for (const reply of replies) {
-      renderRows.push({ message: reply, isThreadReply: true, root });
+    for (const [index, reply] of replies.entries()) {
+      renderRows.push({
+        message: reply,
+        isThreadReply: true,
+        isThreadLastReply: index === replies.length - 1,
+        root,
+      });
     }
   }
   for (const reply of orphanReplies) {
-    renderRows.push({ message: reply, isThreadReply: true, root: null });
+    renderRows.push({
+      message: reply,
+      isThreadReply: true,
+      isThreadLastReply: true,
+      root: null,
+    });
   }
   return renderRows;
 }
@@ -2624,6 +2681,7 @@ function handleMessageListAction(event) {
 
 function messageRenderFingerprint(message, {
   isThreadReply,
+  isThreadLastReply,
   parentMessage,
   reactions,
 } = {}) {
@@ -2632,6 +2690,7 @@ function messageRenderFingerprint(message, {
     state.selected?.source_provider || "",
     state.selected?.chat_type || "",
     Boolean(isThreadReply),
+    Boolean(isThreadLastReply),
     message,
     parentMessage?.sender_name || "",
     parentMessage?.body_text || "",
@@ -2720,7 +2779,7 @@ function renderMessages({
   let lastDate = "";
   const rows = slackThreadRenderRows(sortedRows);
   for (const entry of rows) {
-    const { message, isThreadReply } = entry;
+    const { message, isThreadReply, isThreadLastReply } = entry;
     const date = fullDateLabel(message.message_timestamp);
     if (!isThreadReply && date !== lastDate) {
       const divider = document.createElement("div");
@@ -2731,6 +2790,8 @@ function renderMessages({
     }
 
     const mine = isOwnMessage(message);
+    const messageProvider = providerKey(state.selected?.source_provider);
+    const replyCount = Number(message.metadata?.reply_count || 0);
     const replyContext = message.metadata?.reply_context;
     const parentMessage = replyContext?.message_id
       ? messagesByNativeId.get(String(replyContext.message_id))
@@ -2740,6 +2801,7 @@ function renderMessages({
     ) || [];
     const renderFingerprint = messageRenderFingerprint(message, {
       isThreadReply,
+      isThreadLastReply,
       parentMessage,
       reactions,
     });
@@ -2759,8 +2821,9 @@ function renderMessages({
     row.className = [
       "message-row",
       mine ? "mine" : "",
-      providerKey(state.selected?.source_provider) === "slack" ? "slack-message" : "",
+      messageProvider === "slack" ? "slack-message" : "",
       isThreadReply ? "message-thread-reply" : "",
+      isThreadLastReply ? "message-thread-last-reply" : "",
     ].filter(Boolean).join(" ");
     row.dataset.messageId = message.provider_message_id || "";
     row.dataset.nativeMessageId = String(
@@ -2768,7 +2831,10 @@ function renderMessages({
       || message.metadata?.native_message_id
       || "",
     );
-    row.dataset.threadRoot = isThreadReply ? slackThreadRootId(message) : "";
+    row.dataset.threadRoot = isThreadReply
+      ? slackThreadRootId(message)
+      : (messageProvider === "slack" && replyCount > 0 ? slackNativeMessageId(message) : "");
+    row.dataset.threadDepth = isThreadReply ? "1" : "0";
     row.dataset.searchText = [
       message.body_text,
       message.sender_name,
@@ -2778,13 +2844,18 @@ function renderMessages({
 
     const stack = document.createElement("div");
     stack.className = "message-stack";
-    if (
+    if (messageProvider === "slack") {
+      row.setAttribute(
+        "aria-label",
+        `${isThreadReply ? "Thread reply" : "Message"} from ${
+          mine ? "you" : (message.sender_name || message.sender_email || "Slack member")
+        }`,
+      );
+      stack.append(slackMessageAuthor(message, { isThreadReply }));
+    } else if (
       !mine
       && message.sender_name
-      && (
-        ["group", "channel"].includes(state.selected?.chat_type)
-        || providerKey(state.selected?.source_provider) === "slack"
-      )
+      && ["group", "channel"].includes(state.selected?.chat_type)
     ) {
       const sender = document.createElement("p");
       sender.className = "message-sender";
@@ -2829,13 +2900,19 @@ function renderMessages({
       }
       bubble.append(list);
     }
-    const replyCount = Number(message.metadata?.reply_count || 0);
-    if (!isThreadReply && providerKey(state.selected?.source_provider) === "slack" && replyCount > 0) {
+    if (!isThreadReply && messageProvider === "slack" && replyCount > 0) {
       const threadSummary = document.createElement("button");
       threadSummary.type = "button";
       threadSummary.className = "message-thread-summary";
       threadSummary.append(createIcon("i-reply"));
-      threadSummary.append(`${replyCount} ${replyCount === 1 ? "reply" : "replies"}`);
+      const replyUsersCount = Number(message.metadata?.reply_users_count || 0);
+      threadSummary.append(
+        `${replyCount} ${replyCount === 1 ? "reply" : "replies"}${
+          replyUsersCount > 0
+            ? ` · ${replyUsersCount} ${replyUsersCount === 1 ? "person" : "people"}`
+            : ""
+        }`,
+      );
       threadSummary.dataset.messageAction = "reply";
       threadSummary.title = "Reply in this Slack thread";
       bubble.append(threadSummary);
@@ -2905,7 +2982,7 @@ function renderMessages({
     reply.className = "message-reply-button";
     reply.dataset.messageAction = "reply";
     reply.append(createIcon("i-reply"));
-    const replyProvider = providerKey(state.selected?.source_provider);
+    const replyProvider = messageProvider;
     reply.title = replyProvider === "slack"
       ? "Reply in Slack thread"
       : "Reply to this WhatsApp message";

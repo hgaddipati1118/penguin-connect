@@ -122,6 +122,11 @@ class SlackChannelAdapterTests(unittest.TestCase):
             "UANH": "Anh",
             "UDHRUV": "Dhruv",
         }
+        adapter._user_avatars = {
+            "USELF": "https://cdn.example.test/harsha.png",
+            "UANH": "https://cdn.example.test/anh.png",
+            "UDHRUV": "https://cdn.example.test/dhruv.png",
+        }
 
         def fake_api(method, **kwargs):
             if method == "conversations.history":
@@ -183,6 +188,10 @@ class SlackChannelAdapterTests(unittest.TestCase):
         self.assertTrue(messages[1]["is_thread_reply"])
         self.assertEqual(messages[1]["thread_parent_name"], "Anh")
         self.assertEqual(messages[1]["push_name"], "Dhruv")
+        self.assertEqual(
+            messages[1]["sender_avatar_url"],
+            "https://cdn.example.test/dhruv.png",
+        )
         self.assertTrue(messages[2]["is_from_me"])
 
     def test_sends_reply_into_existing_slack_thread(self):
