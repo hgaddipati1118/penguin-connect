@@ -804,6 +804,56 @@ class PenguinConnectTests(unittest.TestCase):
             "native_replies_not_supported_for_imessage",
         )
 
+    def test_send_manual_message_preserves_local_imessage_reply_context(self):
+        self.conn.execute(
+            """INSERT INTO penguin_connect_messages
+               (conversation_id, provider, provider_message_id, direction,
+                sender_name, body_text, message_timestamp, is_read, metadata)
+               VALUES (?, 'imessage', ?, 'imessage_to_gmail', ?, ?, ?, 1, '{}')""",
+            (
+                "amc_test",
+                "imessage:parent-guid",
+                "Taylor Example",
+                "The original iMessage",
+                "2026-07-26T12:00:00+00:00",
+            ),
+        )
+
+        with mock.patch(
+            "penguin_connect.send_imessage",
+            return_value=(True, None),
+        ) as mock_send:
+            result = penguin_connect.send_manual_message(
+                self.conn,
+                conversation_id="amc_test",
+                body_text="A locally nested reply",
+                reply_context_message_id="imessage:parent-guid",
+            )
+
+        self.assertTrue(result["success"])
+        mock_send.assert_called_once_with(
+            "chat-123",
+            "A locally nested reply",
+            attachment_paths=None,
+        )
+        row = self.conn.execute(
+            """SELECT metadata
+               FROM penguin_connect_messages
+               WHERE conversation_id = ?
+                 AND direction = 'manual_to_imessage'
+               ORDER BY message_timestamp DESC
+               LIMIT 1""",
+            ("amc_test",),
+        ).fetchone()
+        self.assertEqual(
+            json.loads(row["metadata"])["reply_context"],
+            {
+                "message_id": "imessage:parent-guid",
+                "sender": "Taylor Example",
+                "text": "The original iMessage",
+            },
+        )
+
 
     def test_disconnect_and_reconnect_provisions_fresh_alias(self):
         first_alias = self.conn.execute(

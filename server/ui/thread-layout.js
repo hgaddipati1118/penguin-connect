@@ -22,6 +22,31 @@
     };
   }
 
+  function buildMessageReplyTarget({
+    provider = "",
+    providerMessageId = "",
+    nativeMessageId = "",
+    sender = "",
+    body = "",
+  } = {}) {
+    const normalizedProvider = String(provider || "").trim().toLowerCase();
+    const isNativeReply = normalizedProvider === "whatsapp";
+    const messageId = String(
+      isNativeReply ? nativeMessageId : providerMessageId,
+    ).trim();
+    if (!messageId || !["imessage", "whatsapp"].includes(normalizedProvider)) {
+      return null;
+    }
+    return {
+      messageId,
+      threadTs: "",
+      provider: normalizedProvider,
+      sender: String(sender || "").trim(),
+      body: String(body || "").trim(),
+      native: isNativeReply,
+    };
+  }
+
   function firstUnreadMessageId(rows) {
     const unread = (rows || [])
       .filter((row) => (
@@ -121,6 +146,7 @@
   }
 
   const api = Object.freeze({
+    buildMessageReplyTarget,
     buildSlackReplyTarget,
     firstUnreadMessageId,
     planSlackAuthorGroups,

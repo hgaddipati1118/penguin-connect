@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const {
+  buildMessageReplyTarget,
   buildSlackReplyTarget,
   firstUnreadMessageId,
   planSlackAuthorGroups,
@@ -213,6 +214,39 @@ test("uses a standalone Slack message as both the clicked target and thread root
 
   assert.equal(target.messageId, "root-1");
   assert.equal(target.threadTs, "root-1");
+});
+
+test("keeps iMessage reply context local while targeting the stored parent", () => {
+  const target = buildMessageReplyTarget({
+    provider: "imessage",
+    providerMessageId: "imessage:parent-guid",
+    nativeMessageId: "parent-guid",
+    sender: "Taylor Example",
+    body: "The original iMessage",
+  });
+
+  assert.deepEqual(target, {
+    messageId: "imessage:parent-guid",
+    threadTs: "",
+    provider: "imessage",
+    sender: "Taylor Example",
+    body: "The original iMessage",
+    native: false,
+  });
+});
+
+test("uses the native WhatsApp id for quoted replies", () => {
+  const target = buildMessageReplyTarget({
+    provider: "whatsapp",
+    providerMessageId: "whatsapp:stored-id",
+    nativeMessageId: "native-id",
+    sender: "Jordan Example",
+    body: "The original WhatsApp message",
+  });
+
+  assert.equal(target.messageId, "native-id");
+  assert.equal(target.provider, "whatsapp");
+  assert.equal(target.native, true);
 });
 
 test("finds the earliest unread incoming message regardless of input order", () => {

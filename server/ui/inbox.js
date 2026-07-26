@@ -538,10 +538,14 @@ function replyTargetMessageId(target) {
 }
 
 function replyTargetProviderMessageId(target) {
-  if (providerKey(target?.provider) === "slack") {
+  const provider = providerKey(target?.provider);
+  if (provider === "slack") {
     return String(target?.threadTs || target?.messageId || "").trim();
   }
-  return replyTargetMessageId(target);
+  if (provider === "whatsapp" && target?.native !== false) {
+    return replyTargetMessageId(target);
+  }
+  return "";
 }
 
 function replyTargetContextMessageId(target) {
@@ -557,6 +561,7 @@ function cleanDraftReplyTarget(target) {
     provider: target?.provider ? providerKey(target.provider).slice(0, 40) : "",
     sender: String(target?.sender || "").slice(0, 300),
     body: String(target?.body || "").slice(0, 2000),
+    native: target?.native !== false,
   };
 }
 
@@ -3134,8 +3139,16 @@ function messageNativeId(message) {
   return String(
     message?.metadata?.native_guid
     || message?.metadata?.native_message_id
+    || message?.provider_message_id
     || "",
   ).trim();
+}
+
+function messageLookupIds(message) {
+  return [
+    messageNativeId(message),
+    String(message?.provider_message_id || "").trim(),
+  ].filter((value, index, values) => value && values.indexOf(value) === index);
 }
 
 function nativeReplyDepth(message, messagesByNativeId) {
@@ -3191,9 +3204,13 @@ function renderReplyTarget() {
   el.composerReplyContext.hidden = !target;
   if (!target) return;
   const targetProvider = providerKey(target.provider || state.selected?.source_provider);
-  el.composerReplyTitle.textContent = targetProvider === "slack"
-    ? `Replying to ${target.sender || "this message"} in thread`
-    : `Replying to ${target.sender || "message"}`;
+  el.composerReplyTitle.textContent = (
+    targetProvider === "slack"
+      ? `Replying to ${target.sender || "this message"} in thread`
+      : targetProvider === "imessage"
+        ? `Replying with local context to ${target.sender || "this message"}`
+        : `Replying to ${target.sender || "message"}`
+  );
   el.composerReplySnippet.textContent = truncate(
     target.body || (targetProvider === "slack" ? "Slack thread" : "Message"),
     120,
@@ -3247,23 +3264,27 @@ function startNativeReply(message) {
     startSlackThreadReply(message);
     return;
   }
-  if (provider !== "whatsapp") return;
-  const messageId = String(message?.metadata?.native_message_id || "").trim();
-  if (!messageId) {
-    toast("This WhatsApp message cannot be replied to yet.", "error");
-    return;
-  }
-  state.replyTarget = {
-    messageId,
-    threadTs: "",
+  const target = window.PenguinThreadLayout?.buildMessageReplyTarget?.({
     provider,
+    providerMessageId: message?.provider_message_id,
+    nativeMessageId: message?.metadata?.native_message_id,
     sender: isOwnMessage(message)
       ? "yourself"
       : (message.sender_name || message.sender_email || "this message"),
     body: message.body_text
       || messageAttachments(message)[0]?.transfer_name
       || "Attachment",
-  };
+  });
+  if (!target) {
+    toast(
+      provider === "whatsapp"
+        ? "This WhatsApp message cannot be replied to yet."
+        : "This message cannot keep local reply context yet.",
+      "error",
+    );
+    return;
+  }
+  state.replyTarget = target;
   renderReplyTarget();
   scheduleDraftPersistence();
   el.messageComposer.focus({ preventScroll: true });
@@ -3273,7 +3294,10 @@ function scrollToNativeReplyTarget(messageId) {
   const cleanId = String(messageId || "").trim();
   if (!cleanId) return;
   const target = [...el.messageList.querySelectorAll(".message-row")].find(
-    (row) => row.dataset.nativeMessageId === cleanId,
+    (row) => (
+      row.dataset.nativeMessageId === cleanId
+      || row.dataset.messageId === cleanId
+    ),
   );
   if (!target) {
     toast("The replied-to message is outside the loaded history.");
@@ -4023,8 +4047,9 @@ function renderMessages({
   const latestReceiptMessageId = latestOwnMessageId(sortedRows);
   const messagesByNativeId = new Map();
   for (const message of sortedRows) {
-    const nativeId = messageNativeId(message);
-    if (nativeId) messagesByNativeId.set(nativeId, message);
+    for (const lookupId of messageLookupIds(message)) {
+      messagesByNativeId.set(lookupId, message);
+    }
   }
   const replyCountsByNativeId = nativeReplyCounts(sortedRows);
   const nativeReactions = reactionsByTarget(sortedRows);
@@ -4102,7 +4127,12 @@ function renderMessages({
     const replyCount = Number(message.metadata?.reply_count || 0);
     const replyContext = message.metadata?.reply_context;
     const replyDepth = nativeReplyDepth(message, messagesByNativeId);
-    const nativeReplyCount = replyCountsByNativeId.get(messageNativeId(message)) || 0;
+    const nativeReplyCount = Math.max(
+      0,
+      ...messageLookupIds(message).map((lookupId) => (
+        replyCountsByNativeId.get(lookupId) || 0
+      )),
+    );
     const parentMessage = replyContext?.message_id
       ? messagesByNativeId.get(String(replyContext.message_id))
       : null;
@@ -4149,7 +4179,7 @@ function renderMessages({
       "message-row",
       mine ? "mine" : "",
       messageProvider === "slack" ? "slack-message" : "",
-      ["slack", "whatsapp"].includes(messageProvider) ? "replyable-message" : "",
+      ["slack", "whatsapp", "imessage"].includes(messageProvider) ? "replyable-message" : "",
       message.provider_message_id === state.focusedMessageId ? "message-focused" : "",
       isThreadReply ? "message-thread-reply" : "",
       isThreadLastReply ? "message-thread-last-reply" : "",
@@ -4419,11 +4449,15 @@ function renderMessages({
     const replyRecipient = isOwnMessage(message)
       ? "your message"
       : (message.sender_name || message.sender_email || "this message");
-    reply.title = replyProvider === "slack"
-      ? `Reply to ${replyRecipient} in thread`
-      : `Reply to ${replyRecipient}`;
+    reply.title = (
+      replyProvider === "slack"
+        ? `Reply to ${replyRecipient} in thread`
+        : replyProvider === "imessage"
+          ? `Reply to ${replyRecipient} with local context`
+          : `Reply to ${replyRecipient}`
+    );
     reply.setAttribute("aria-label", reply.title);
-    reply.hidden = !["slack", "whatsapp"].includes(replyProvider)
+    reply.hidden = !["slack", "whatsapp", "imessage"].includes(replyProvider)
       || Boolean(message.metadata?.pending_send);
     const more = document.createElement("button");
     more.type = "button";
