@@ -4619,6 +4619,14 @@ def get_penguinconnect_conversation_navigation_js():
         "application/javascript; charset=utf-8",
     )
 
+@app.get("/api/penguin-connect/ui/list-windowing.js")
+@app.get("/penguin-connect/ui/list-windowing.js")
+def get_penguinconnect_list_windowing_js():
+    return _ui_file_response(
+        "list-windowing.js",
+        "application/javascript; charset=utf-8",
+    )
+
 @app.get("/api/penguin-connect/ui/app.css")
 @app.get("/penguin-connect/ui/app.css")
 def get_penguinconnect_ui_css():

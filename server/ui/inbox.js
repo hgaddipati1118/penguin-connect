@@ -1,16 +1,19 @@
+const renderWindows = window.PenguinListWindowing.DEFAULT_RENDER_WINDOWS;
+const nextVisibleCount = window.PenguinListWindowing.nextVisibleCount;
+
 const state = {
   view: "inbox",
   source: "all",
   smartView: "all",
   activeLabel: "",
   conversations: [],
-  conversationsVisible: 120,
+  conversationsVisible: renderWindows.conversations,
   contacts: [],
   contactsDetailed: false,
   contactsTotal: 0,
   peopleVisible: 200,
   files: [],
-  filesVisible: 100,
+  filesVisible: renderWindows.files,
   filesTotal: 0,
   filesHasMore: false,
   filesLoading: false,
@@ -326,7 +329,8 @@ const DRAFT_ATTACHMENT_MAX_COUNT = 20;
 const DRAFT_LOCAL_DEBOUNCE_MS = 100;
 const DRAFT_SERVER_DEBOUNCE_MS = 650;
 const COMPOSER_IDLE_STATUS = "Messages never leave this Mac except through their original service.";
-const CONVERSATION_RENDER_BATCH = 120;
+const CONVERSATION_RENDER_BATCH = renderWindows.conversations;
+const FILE_RENDER_BATCH = renderWindows.files;
 const MESSAGE_RENDER_WINDOW = 60;
 const MESSAGE_INITIAL_BATCH = 120;
 const SLACK_MESSAGE_INITIAL_BATCH = 300;
@@ -1732,7 +1736,11 @@ function renderConversationList() {
   reconcileConversationList(visibleRows);
   if (state.conversationsVisible < rows.length) {
     appendInfiniteSentinel(el.conversationList, "Loading more conversations…", () => {
-      state.conversationsVisible += CONVERSATION_RENDER_BATCH;
+      state.conversationsVisible = nextVisibleCount(
+        state.conversationsVisible,
+        rows.length,
+        CONVERSATION_RENDER_BATCH,
+      );
       renderConversationList();
     });
   }
@@ -1985,7 +1993,11 @@ function renderFilesList() {
   if (state.filesVisible < state.files.length || state.filesHasMore) {
     appendInfiniteSentinel(el.filesList, "Loading more files…", () => {
       if (state.filesVisible < state.files.length) {
-        state.filesVisible += 100;
+        state.filesVisible = nextVisibleCount(
+          state.filesVisible,
+          state.files.length,
+          FILE_RENDER_BATCH,
+        );
         renderFilesList();
       } else {
         loadFilePage({ append: true }).catch((error) => {
@@ -6087,8 +6099,11 @@ async function loadFilePage({ append = false } = {}) {
     state.filesHasMore = Boolean(payload.has_more);
     updateFileIntelligence(payload);
     state.filesVisible = append
-      ? state.files.length
-      : Math.min(state.files.length, Math.max(100, previousVisible));
+      ? nextVisibleCount(previousVisible, state.files.length, FILE_RENDER_BATCH)
+      : Math.min(
+        state.files.length,
+        Math.max(FILE_RENDER_BATCH, previousVisible),
+      );
     renderFilesList();
     return state.files;
   } finally {

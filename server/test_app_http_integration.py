@@ -3857,6 +3857,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
             conversation_navigation_js_response = client.get(
                 "/penguin-connect/ui/conversation-navigation.js",
             )
+            list_windowing_js_response = client.get(
+                "/penguin-connect/ui/list-windowing.js",
+            )
             html_response = client.get("/penguin-connect/console")
             css_response = client.get("/penguin-connect/ui/app.css")
             js_response = client.get("/penguin-connect/ui/app.js")
@@ -3910,6 +3913,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
             'src="/penguin-connect/ui/conversation-navigation.js"',
             inbox_response.text,
         )
+        self.assertIn(
+            'src="/penguin-connect/ui/list-windowing.js"',
+            inbox_response.text,
+        )
         self.assertEqual(inbox_js_response.status_code, 200)
         self.assertEqual(inbox_js_response.headers["cache-control"], "no-store")
         self.assertEqual(thread_layout_js_response.status_code, 200)
@@ -3953,6 +3960,12 @@ class AppHttpIntegrationTests(unittest.TestCase):
             "createConversationNavigationCoordinator",
             conversation_navigation_js_response.text,
         )
+        self.assertEqual(list_windowing_js_response.status_code, 200)
+        self.assertEqual(
+            list_windowing_js_response.headers["cache-control"],
+            "no-store",
+        )
+        self.assertIn("nextVisibleCount", list_windowing_js_response.text)
         self.assertIn("loadConversations", inbox_js_response.text)
         self.assertIn("hasCachedMessage", inbox_js_response.text)
         self.assertIn("conversation?.chat_type === \"group\" && displayName", inbox_js_response.text)
@@ -3989,7 +4002,14 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("pending.providerText", inbox_js_response.text)
         self.assertIn("event.stopPropagation()", inbox_js_response.text)
         self.assertIn('query.set("fast", "true")', inbox_js_response.text)
-        self.assertIn("CONVERSATION_RENDER_BATCH = 120", inbox_js_response.text)
+        self.assertIn(
+            "CONVERSATION_RENDER_BATCH = renderWindows.conversations",
+            inbox_js_response.text,
+        )
+        self.assertIn(
+            "FILE_RENDER_BATCH = renderWindows.files",
+            inbox_js_response.text,
+        )
         self.assertIn("MESSAGE_RENDER_WINDOW = 60", inbox_js_response.text)
         self.assertIn("MESSAGE_INITIAL_BATCH = 120", inbox_js_response.text)
         self.assertIn("SLACK_MESSAGE_INITIAL_BATCH = 300", inbox_js_response.text)
