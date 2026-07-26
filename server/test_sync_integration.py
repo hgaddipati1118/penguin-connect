@@ -2183,6 +2183,71 @@ class SyncIntegrationTests(unittest.TestCase):
         self.assertEqual(sync_state["conversation_id"], target_id)
         self.assertEqual(sync_state["last_gmail_ts"], "2026-03-01T10:05:00+00:00")
 
+    def test_init_db_repairs_mislabeled_local_slack_thread_rows(self):
+        conn = db.get_connection()
+        try:
+            conn.execute(
+                """INSERT INTO penguin_connect_conversations
+                   (gmail_email, source_provider, conversation_id, source_chat_id,
+                    source_chat_identifier, source_service_name, display_name,
+                    chat_type, participants, status)
+                   VALUES ('owner@gmail.com', 'slack', 'synthetic-slack-cache',
+                           'C_SYNTHETIC', 'C_SYNTHETIC', 'Slack', '#synthetic',
+                           'channel', '[]', 'active')"""
+            )
+            conn.executemany(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction,
+                    body_text, message_timestamp, metadata)
+                   VALUES ('synthetic-slack-cache', ?, ?, ?, 'synthetic', ?, ?)""",
+                [
+                    (
+                        "imessage",
+                        "slack:synthetic-root",
+                        "imessage_local",
+                        "2026-03-01T10:00:00+00:00",
+                        json.dumps(
+                            {
+                                "local_cache_only": True,
+                                "native_message_id": "synthetic-root",
+                            }
+                        ),
+                    ),
+                    (
+                        "manual",
+                        "manual:synthetic-send",
+                        "manual_to_imessage",
+                        "2026-03-01T10:01:00+00:00",
+                        json.dumps({"thread_ts": "synthetic-root"}),
+                    ),
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        db.init_db()
+
+        repaired_conn = db.get_connection()
+        try:
+            rows = repaired_conn.execute(
+                """SELECT provider_message_id, provider, direction
+                   FROM penguin_connect_messages
+                   WHERE provider_message_id IN (
+                       'slack:synthetic-root',
+                       'manual:synthetic-send'
+                   )
+                   ORDER BY provider_message_id"""
+            ).fetchall()
+        finally:
+            repaired_conn.close()
+
+        by_id = {row["provider_message_id"]: row for row in rows}
+        repaired = by_id["slack:synthetic-root"]
+        self.assertEqual((repaired["provider"], repaired["direction"]), ("slack", "slack_local"))
+        manual = by_id["manual:synthetic-send"]
+        self.assertEqual((manual["provider"], manual["direction"]), ("manual", "manual_to_imessage"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1430,6 +1430,39 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+def _repair_cached_message_provider_identity(conn: sqlite3.Connection) -> int:
+    repaired = 0
+    for source_provider in ("slack", "whatsapp", "telegram"):
+        expected_direction = f"{source_provider}_local"
+        cursor = conn.execute(
+            """UPDATE penguin_connect_messages AS m
+               SET provider = ?,
+                   direction = ?
+               WHERE EXISTS (
+                   SELECT 1
+                   FROM penguin_connect_conversations AS c
+                   WHERE c.conversation_id = m.conversation_id
+                     AND lower(COALESCE(c.source_provider, '')) = ?
+               )
+                 AND json_valid(COALESCE(m.metadata, ''))
+                 AND COALESCE(json_extract(m.metadata, '$.local_cache_only'), 0) = 1
+                 AND m.provider IN ('imessage', ?)
+                 AND m.direction IN ('imessage_local', ?)
+                 AND (m.provider <> ? OR m.direction <> ?)""",
+            (
+                source_provider,
+                expected_direction,
+                source_provider,
+                source_provider,
+                expected_direction,
+                source_provider,
+                expected_direction,
+            ),
+        )
+        repaired += max(0, int(cursor.rowcount or 0))
+    return repaired
+
+
 def init_db() -> None:
     conn = get_connection()
     try:
@@ -1529,6 +1562,7 @@ def init_db() -> None:
         )
         _migrate_legacy_conversation_ids(conn)
         _migrate_apple_messages_conversation_routes(conn)
+        _repair_cached_message_provider_identity(conn)
         conn.execute(
             """CREATE INDEX IF NOT EXISTS idx_penguin_connect_conv_provider_status
                ON penguin_connect_conversations(gmail_email, source_provider, status)"""

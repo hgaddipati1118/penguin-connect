@@ -3598,8 +3598,14 @@ def _search_messages(
             """(
                 m.direction IN ('manual_to_imessage', 'email_to_imessage')
                 OR (
-                    m.direction = 'imessage_local'
-                    AND lower(COALESCE(m.metadata, '')) LIKE '%"is_from_me": true%'
+                    m.direction IN (
+                        'imessage_local',
+                        'whatsapp_local',
+                        'slack_local',
+                        'telegram_local'
+                    )
+                    AND json_valid(COALESCE(m.metadata, ''))
+                    AND COALESCE(json_extract(m.metadata, '$.is_from_me'), 0) = 1
                 )
             )"""
         )

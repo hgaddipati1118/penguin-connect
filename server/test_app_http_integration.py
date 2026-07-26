@@ -1441,6 +1441,103 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(body["messages"][0]["direction"], "imessage_local")
         self.assertEqual(body["messages"][0]["sender_name"], "Me")
 
+    def test_message_search_mine_view_includes_self_authored_provider_threads(self):
+        conn = self._get_connection()
+        try:
+            conn.executemany(
+                """INSERT INTO penguin_connect_conversations
+                   (gmail_email, source_provider, conversation_id, source_chat_id,
+                    source_chat_identifier, source_service_name, display_name,
+                    chat_type, participants, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'channel', '[]', 'active')""",
+                [
+                    (
+                        "owner@gmail.com",
+                        "slack",
+                        "synthetic-slack-thread",
+                        "C_SYNTHETIC",
+                        "C_SYNTHETIC",
+                        "Slack",
+                        "#synthetic",
+                    ),
+                    (
+                        "owner@gmail.com",
+                        "whatsapp",
+                        "synthetic-whatsapp-thread",
+                        "15550000000@s.whatsapp.net",
+                        "15550000000@s.whatsapp.net",
+                        "WhatsApp",
+                        "Synthetic chat",
+                    ),
+                ],
+            )
+            conn.executemany(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction,
+                    sender_name, subject, body_text, message_timestamp, is_read, metadata)
+                   VALUES (?, ?, ?, ?, 'Me', ?, ?, ?, 1, ?)""",
+                [
+                    (
+                        "synthetic-slack-thread",
+                        "slack",
+                        "slack:synthetic-reply",
+                        "slack_local",
+                        "Slack · #synthetic",
+                        "provider authored needle",
+                        "2026-03-11T13:06:00+00:00",
+                        json.dumps(
+                            {
+                                "is_from_me": True,
+                                "local_cache_only": True,
+                                "thread_ts": "synthetic-root",
+                                "is_thread_reply": True,
+                            }
+                        ),
+                    ),
+                    (
+                        "synthetic-whatsapp-thread",
+                        "whatsapp",
+                        "whatsapp:synthetic-reply",
+                        "whatsapp_local",
+                        "WhatsApp · Synthetic chat",
+                        "provider authored needle",
+                        "2026-03-11T13:05:00+00:00",
+                        json.dumps(
+                            {
+                                "is_from_me": True,
+                                "local_cache_only": True,
+                                "reply_context": {"message_id": "synthetic-root"},
+                            }
+                        ),
+                    ),
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with TestClient(app_module.app) as client:
+            response = client.get(
+                "/penguin-connect/messages/search",
+                params={
+                    "query": "provider authored needle",
+                    "view": "mine",
+                    "limit": 10,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            {
+                (message["source_provider"], message["direction"])
+                for message in response.json()["messages"]
+            },
+            {
+                ("slack", "slack_local"),
+                ("whatsapp", "whatsapp_local"),
+            },
+        )
+
     def test_message_search_endpoint_searches_attachment_metadata(self):
         conn = self._get_connection()
         try:

@@ -206,6 +206,13 @@ def _normalize_source_provider(value: Optional[str]) -> str:
     return (value or "imessage").strip().lower() or "imessage"
 
 
+def _local_message_storage_identity(source_provider: Optional[str]) -> tuple[str, str]:
+    normalized = _normalize_source_provider(source_provider)
+    if normalized in {"imessage", "apple_messages", "sms", "rcs"}:
+        return "imessage", "imessage_local"
+    return normalized, f"{normalized}_local"
+
+
 def _sanitize_header_value(value: Optional[str], *, fallback: str = "") -> str:
     normalized = str(value or "").replace("\r", " ").replace("\n", " ").replace("\x00", " ").strip()
     normalized = re.sub(r"\s+", " ", normalized)
@@ -4470,6 +4477,7 @@ def _cache_local_source_messages_for_view(
     last_ts = state["last_source_ts"] if state else None
     last_native_message_id = since_native_message_id
     stored = 0
+    stored_provider, stored_direction = _local_message_storage_identity(source_provider)
 
     for msg in messages:
         ts = msg.get("timestamp")
@@ -4486,7 +4494,7 @@ def _cache_local_source_messages_for_view(
         sender_name, subject_name = _resolve_sender_and_subject(conn, conv, msg)
         desired_subject = _provider_subject(source_provider, subject_name)
         existing = conn.execute(
-            """SELECT metadata, sender_name, subject, body_text
+            """SELECT provider, direction, metadata, sender_name, subject, body_text
                FROM penguin_connect_messages
                WHERE conversation_id = ? AND provider_message_id = ?
                LIMIT 1""",
@@ -4518,12 +4526,19 @@ def _cache_local_source_messages_for_view(
                 changed = True
             if existing["body_text"] != stored_text[:20000]:
                 changed = True
+            if existing["provider"] != stored_provider:
+                changed = True
+            if existing["direction"] != stored_direction:
+                changed = True
             if changed:
                 conn.execute(
                     """UPDATE penguin_connect_messages
-                       SET metadata = ?, sender_name = ?, subject = ?, body_text = ?
+                       SET provider = ?, direction = ?, metadata = ?,
+                           sender_name = ?, subject = ?, body_text = ?
                        WHERE conversation_id = ? AND provider_message_id = ?""",
                     (
+                        stored_provider,
+                        stored_direction,
                         json.dumps(existing_metadata),
                         sender_name,
                         desired_subject,
@@ -4545,8 +4560,6 @@ def _cache_local_source_messages_for_view(
             "local_cache_only": True,
             **_source_message_native_metadata(msg),
         }
-        stored_provider = "whatsapp" if source_provider == "whatsapp" else "imessage"
-        stored_direction = "whatsapp_local" if source_provider == "whatsapp" else "imessage_local"
         try:
             cursor = conn.execute(
                 """INSERT OR IGNORE INTO penguin_connect_messages
@@ -5078,6 +5091,7 @@ def get_conversation_messages(
     )
 
     messages = []
+    source_provider = _conversation_source_provider(conv)
     for row in rows:
         metadata = {}
         try:
@@ -5098,6 +5112,7 @@ def get_conversation_messages(
         messages.append(
             {
                 "provider": row["provider"],
+                "source_provider": source_provider,
                 "provider_message_id": row["provider_message_id"],
                 "direction": row["direction"],
                 "sender_email": row["sender_email"],
@@ -5118,7 +5133,7 @@ def get_conversation_messages(
     return {
         "found": True,
         "conversation_id": conv["conversation_id"],
-        "source_provider": conv["source_provider"] or "imessage",
+        "source_provider": source_provider,
         "display_name": conv["display_name"],
         "status": conv["status"],
         "excluded": bool(conv["exclude_from_sync"]),

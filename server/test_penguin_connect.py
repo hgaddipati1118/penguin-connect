@@ -2579,6 +2579,89 @@ class PenguinConnectTests(unittest.TestCase):
             since_native_message_id=None,
         )
 
+    def test_get_conversation_messages_caches_slack_threads_with_native_provider_identity(self):
+        self.conn.execute("DELETE FROM penguin_connect_messages")
+        self.conn.execute("DELETE FROM penguin_connect_accounts")
+        self.conn.execute(
+            """UPDATE penguin_connect_conversations
+               SET gmail_email = ?, source_provider = 'slack',
+                   source_chat_id = ?, source_chat_identifier = ?,
+                   source_service_name = 'Slack', alias_email = NULL
+               WHERE conversation_id = ?""",
+            (
+                penguin_connect.LOCAL_MESSAGES_ACCOUNT_EMAIL,
+                "C_TEST",
+                "C_TEST",
+                "amc_test",
+            ),
+        )
+        fake_channel = mock.Mock()
+        fake_channel.fetch_messages.return_value = [
+            {
+                "native_message_id": "1785000001.000100",
+                "timestamp": "2026-03-04T09:00:00+00:00",
+                "text": "Synthetic root",
+                "is_from_me": False,
+                "sender_name": "Synthetic Person",
+                "attachments": [],
+                "reply_count": 1,
+            },
+            {
+                "native_message_id": "1785000002.000100",
+                "timestamp": "2026-03-04T09:01:00+00:00",
+                "text": "Synthetic reply",
+                "is_from_me": True,
+                "sender_name": "Owner",
+                "attachments": [],
+                "thread_ts": "1785000001.000100",
+                "is_thread_reply": True,
+            },
+        ]
+        fake_channel.resolve_sender_and_subject.side_effect = [
+            ("Synthetic Person", "Synthetic Person"),
+            ("Owner", "Synthetic Person"),
+        ]
+
+        with mock.patch(
+            "penguin_connect._source_adapter_for_provider",
+            return_value=fake_channel,
+        ):
+            result = penguin_connect.get_conversation_messages(
+                self.conn,
+                "amc_test",
+                limit=50,
+            )
+
+        self.assertTrue(result["found"])
+        self.assertEqual(result["source_provider"], "slack")
+        self.assertEqual(
+            {
+                (message["provider"], message["direction"])
+                for message in result["messages"]
+            },
+            {("slack", "slack_local")},
+        )
+        self.assertEqual(
+            {message["source_provider"] for message in result["messages"]},
+            {"slack"},
+        )
+        thread_reply = next(
+            message
+            for message in result["messages"]
+            if message["metadata"].get("is_thread_reply")
+        )
+        self.assertEqual(
+            thread_reply["metadata"]["thread_ts"],
+            "1785000001.000100",
+        )
+        stored = self.conn.execute(
+            """SELECT provider, direction
+               FROM penguin_connect_messages
+               WHERE provider_message_id = ?""",
+            ("slack:1785000002.000100",),
+        ).fetchone()
+        self.assertEqual((stored["provider"], stored["direction"]), ("slack", "slack_local"))
+
     def test_whatsapp_local_cache_backfill_resumes_from_durable_cursor(self):
         self.conn.execute("DELETE FROM penguin_connect_messages")
         self.conn.execute("DELETE FROM penguin_connect_sync_state")
