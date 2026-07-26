@@ -114,6 +114,80 @@ class SlackChannelAdapterTests(unittest.TestCase):
         self.assertTrue(messages[1]["is_from_me"])
         self.assertEqual(sent, (True, None))
 
+    def test_empty_incremental_fetch_preserves_latest_history_checkpoint(self):
+        state_path = Path(os.environ["PENGUIN_CONNECT_SLACK_STATE_PATH"])
+        state_path.write_text(json.dumps({
+            "last_history_channel": "C_PRODUCT",
+            "last_history_message_at": "2026-07-26T10:36:42+00:00",
+            "workspace": "Slashy",
+        }))
+        adapter = SlackChannelAdapter()
+        adapter._self_user_id = "USELF"
+        adapter._workspace_name = "Slashy"
+
+        with mock.patch.object(
+            adapter,
+            "_api",
+            return_value={
+                "ok": True,
+                "messages": [],
+                "response_metadata": {"next_cursor": ""},
+            },
+        ):
+            self.assertEqual(
+                adapter.fetch_messages(
+                    "C_PRODUCT",
+                    limit=15,
+                    since="2026-07-26T10:36:42+00:00",
+                ),
+                [],
+            )
+
+        state = json.loads(state_path.read_text())
+        self.assertEqual(
+            state["last_history_message_at"],
+            "2026-07-26T10:36:42+00:00",
+        )
+        self.assertNotIn("updated_at", state)
+
+    def test_new_slack_message_advances_latest_history_checkpoint(self):
+        state_path = Path(os.environ["PENGUIN_CONNECT_SLACK_STATE_PATH"])
+        state_path.write_text(json.dumps({
+            "last_history_channel": "C_PRODUCT",
+            "last_history_message_at": "2026-07-26T10:36:42+00:00",
+            "workspace": "Slashy",
+        }))
+        adapter = SlackChannelAdapter()
+        adapter._self_user_id = "USELF"
+        adapter._workspace_name = "Slashy"
+
+        with mock.patch.object(
+            adapter,
+            "_api",
+            return_value={
+                "ok": True,
+                "messages": [{
+                    "ts": "1785062263.000100",
+                    "user": "UANH",
+                    "text": "New activity",
+                }],
+                "response_metadata": {"next_cursor": ""},
+            },
+        ):
+            messages = adapter.fetch_messages(
+                "C_PRODUCT",
+                limit=15,
+                since="2026-07-26T10:36:42+00:00",
+            )
+
+        self.assertEqual([message["text"] for message in messages], ["New activity"])
+        state = json.loads(state_path.read_text())
+        self.assertEqual(
+            state["last_history_message_at"],
+            messages[0]["timestamp"],
+        )
+        self.assertIn("updated_at", state)
+
     def test_lists_channel_participants_with_native_ids_and_caches_the_result(self):
         adapter = SlackChannelAdapter()
         adapter._self_user_id = "USELF"

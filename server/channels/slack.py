@@ -894,10 +894,18 @@ class SlackChannelAdapter:
                     key=lambda message: message.get("timestamp") or "",
                 )
             self._history_cache[cache_key] = (time.monotonic(), result)
+            state_updates = {
+                "workspace": self._workspace_name,
+                "last_history_channel": chat_id,
+            }
+            latest_history_message_at = max(
+                (item.get("timestamp") or "" for item in messages),
+                default="",
+            )
+            if latest_history_message_at:
+                state_updates["last_history_message_at"] = latest_history_message_at
             self._touch_state(
-                workspace=self._workspace_name,
-                last_history_channel=chat_id,
-                last_history_message_at=max((item.get("timestamp") or "" for item in messages), default=""),
+                **state_updates,
             )
             return [dict(message) for message in result]
 
