@@ -191,6 +191,46 @@ class SearchIndexTests(unittest.TestCase):
         self.assertTrue(second["semantic_enabled"])
         self.assertEqual(second["vectors_indexed"], 1)
 
+    def test_message_refresh_commits_lexical_text_before_bounded_vectors(self):
+        fake_vector = [0.0] * search_index.DEFAULT_EMBEDDING_DIMENSIONS
+        with mock.patch.object(
+            search_index,
+            "_ollama_embeddings",
+            side_effect=lambda texts: [fake_vector for _ in texts],
+        ):
+            search_index.rebuild_search_index(
+                include_messages=True,
+                include_files=False,
+                semantic=True,
+            )
+            conn = sqlite3.connect(self.cache_db)
+            conn.execute(
+                """UPDATE penguin_connect_messages
+                   SET body_text = 'Distinctive narwhal launch details'
+                   WHERE id = 1"""
+            )
+            conn.commit()
+            conn.close()
+
+            lexical_only = search_index.refresh_message_search_index(
+                vector_refresh_limit=0,
+            )
+            lexical_result = search_index.hybrid_search(
+                "distinctive narwhal",
+                limit=10,
+            )
+            vector_catchup = search_index.refresh_message_search_index(
+                vector_refresh_limit=1,
+            )
+
+        self.assertEqual(lexical_only["messages_changed"], 1)
+        self.assertEqual(lexical_only["vectors_refreshed"], 0)
+        self.assertEqual(lexical_only["vectors_pending"], 1)
+        self.assertEqual(lexical_result["count"], 1)
+        self.assertEqual(vector_catchup["messages_changed"], 0)
+        self.assertEqual(vector_catchup["vectors_refreshed"], 1)
+        self.assertEqual(vector_catchup["vectors_pending"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -529,7 +529,11 @@ def rebuild_search_index(
         conn.close()
 
 
-def refresh_message_search_index(*, message_limit: int = 100_000) -> dict[str, Any]:
+def refresh_message_search_index(
+    *,
+    message_limit: int = 100_000,
+    vector_refresh_limit: int = 128,
+) -> dict[str, Any]:
     """Incrementally refresh cached-message documents without rebuilding file documents."""
     documents = list(_message_documents(message_limit))
     conn = _search_connection()
@@ -578,6 +582,11 @@ def refresh_message_search_index(*, message_limit: int = 100_000) -> dict[str, A
                     ),
                 )
                 conn.execute("DELETE FROM search_documents_fts WHERE rowid = ?", (document_id,))
+                if vector_ready:
+                    conn.execute(
+                        "DELETE FROM search_document_vectors WHERE rowid = ?",
+                        (document_id,),
+                    )
             else:
                 cursor = conn.execute(
                     """INSERT INTO search_documents
@@ -609,26 +618,56 @@ def refresh_message_search_index(*, message_limit: int = 100_000) -> dict[str, A
                 conn.execute("DELETE FROM search_document_vectors WHERE rowid = ?", (document_id,))
             conn.execute("DELETE FROM search_documents WHERE id = ?", (document_id,))
 
+        # Make lexical updates available before potentially slow local embedding
+        # requests. Missing vectors are a durable semantic-refresh queue.
+        conn.commit()
         embedded = 0
         if vector_ready:
-            for start in range(0, len(changed_rows), 16):
-                batch = changed_rows[start : start + 16]
+            vector_candidates = conn.execute(
+                """SELECT d.id, d.title, d.body
+                   FROM search_documents d
+                   WHERE d.kind = 'message'
+                     AND NOT EXISTS (
+                         SELECT 1
+                         FROM search_document_vectors v
+                         WHERE v.rowid = d.id
+                     )
+                   ORDER BY d.timestamp DESC, d.id DESC
+                   LIMIT ?""",
+                (max(0, min(int(vector_refresh_limit), 2000)),),
+            ).fetchall()
+            for start in range(0, len(vector_candidates), 16):
+                batch = vector_candidates[start : start + 16]
                 vectors = _ollama_embeddings([
-                    _embedding_document_text(title, body) for _, title, body in batch
+                    _embedding_document_text(row["title"], row["body"])
+                    for row in batch
                 ])
-                for (document_id, _title, _body), vector in zip(batch, vectors):
-                    conn.execute("DELETE FROM search_document_vectors WHERE rowid = ?", (document_id,))
+                for row, vector in zip(batch, vectors):
                     conn.execute(
                         "INSERT INTO search_document_vectors(rowid, embedding) VALUES (?, ?)",
-                        (document_id, json.dumps(vector)),
+                        (row["id"], json.dumps(vector)),
                     )
                     embedded += 1
+                conn.commit()
+        vector_backlog = (
+            int(conn.execute(
+                """SELECT COUNT(*)
+                   FROM search_documents d
+                   WHERE d.kind = 'message'
+                     AND NOT EXISTS (
+                         SELECT 1 FROM search_document_vectors v WHERE v.rowid = d.id
+                     )"""
+            ).fetchone()[0])
+            if vector_ready
+            else 0
+        )
         conn.commit()
         return {
             "success": True,
             "messages_indexed": len(documents),
             "messages_changed": len(changed_rows),
             "vectors_refreshed": embedded,
+            "vectors_pending": vector_backlog,
             "semantic_enabled": vector_ready,
         }
     finally:
