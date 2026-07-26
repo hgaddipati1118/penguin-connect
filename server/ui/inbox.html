@@ -72,6 +72,14 @@
       <symbol id="i-pin" viewBox="0 0 24 24">
         <path d="M8 3.5h8M9 3.5l1 6-4 3v2h12v-2l-4-3 1-6M12 14.5v6" />
       </symbol>
+      <symbol id="i-more" viewBox="0 0 24 24">
+        <circle cx="5" cy="12" r="1" />
+        <circle cx="12" cy="12" r="1" />
+        <circle cx="19" cy="12" r="1" />
+      </symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24">
+        <path d="M4.5 7h15M9 3.5h6l1 3.5H8l1-3.5ZM7 7l.75 13.5h8.5L17 7M10 10.5v6M14 10.5v6" />
+      </symbol>
     </svg>
 
     <main class="app-shell">
@@ -233,6 +241,22 @@
               <button type="button" data-reaction-name="white_check_mark" data-reaction-emoji="✅" title="Done">✅</button>
             </div>
             <button class="reaction-more-button" id="reactionMoreButton" type="button">More in Slack</button>
+          </div>
+          <div
+            class="message-action-popover"
+            id="messageActionPopover"
+            role="menu"
+            aria-label="Slack message actions"
+            hidden
+          >
+            <button type="button" role="menuitem" data-message-operation="edit">
+              <svg><use href="#i-compose"></use></svg>
+              Edit message
+            </button>
+            <button class="destructive" type="button" role="menuitem" data-message-operation="delete">
+              <svg><use href="#i-trash"></use></svg>
+              Delete message
+            </button>
           </div>
 
           <div class="composer-wrap">
@@ -411,6 +435,59 @@
         <div class="compose-results" id="composeResults" role="list"></div>
         <p class="dialog-note">New outbound threads use an existing safe route. The power console can stage a brand-new Apple Messages draft.</p>
       </form>
+    </dialog>
+
+    <dialog class="compose-dialog message-edit-dialog" id="messageEditDialog" aria-labelledby="messageEditDialogTitle">
+      <form id="messageEditForm">
+        <header>
+          <div>
+            <p class="overline">Slack</p>
+            <h2 id="messageEditDialogTitle">Edit message</h2>
+          </div>
+          <button class="icon-button" type="button" id="closeMessageEditButton" title="Close" aria-label="Close edit message">
+            <svg><use href="#i-close"></use></svg>
+          </button>
+        </header>
+        <div class="message-mutation-body">
+          <label for="messageEditText">Message</label>
+          <textarea id="messageEditText" rows="6" maxlength="20000" required></textarea>
+          <p class="message-mutation-status" id="messageEditStatus" aria-live="polite"></p>
+        </div>
+        <div class="conversation-meta-actions">
+          <button class="secondary-button" type="button" id="cancelMessageEditButton">Cancel</button>
+          <button class="agent-send-button" type="submit" id="saveMessageEditButton">Save edit</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog
+      class="compose-dialog message-delete-dialog"
+      id="messageDeleteDialog"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="messageDeleteDialogTitle"
+      aria-describedby="messageDeleteDialogDescription"
+    >
+      <div class="message-delete-sheet">
+        <header>
+          <div>
+            <p class="overline">Slack</p>
+            <h2 id="messageDeleteDialogTitle">Delete message?</h2>
+          </div>
+          <button class="icon-button" type="button" id="closeMessageDeleteButton" title="Close" aria-label="Close delete confirmation">
+            <svg><use href="#i-close"></use></svg>
+          </button>
+        </header>
+        <div class="message-mutation-body">
+          <p id="messageDeleteDialogDescription">This removes the message from Slack for everyone. It cannot be undone here.</p>
+          <blockquote id="messageDeletePreview"></blockquote>
+          <p class="message-mutation-status" id="messageDeleteStatus" aria-live="polite"></p>
+        </div>
+        <div class="conversation-meta-actions">
+          <button class="secondary-button" type="button" id="cancelMessageDeleteButton">Cancel</button>
+          <button class="agent-send-button destructive-button" type="button" id="confirmMessageDeleteButton">Delete from Slack</button>
+        </div>
+      </div>
     </dialog>
 
     <dialog class="compose-dialog gif-dialog" id="gifDialog" aria-labelledby="gifDialogTitle">

@@ -3829,6 +3829,15 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn('id="reactionPopover"', inbox_response.text)
         self.assertIn(".reaction-popover", inbox_css_response.text)
         self.assertIn(".message-reaction-chip.reacted-by-me", inbox_css_response.text)
+        self.assertIn("openMessageActionPopover", inbox_js_response.text)
+        self.assertIn("submitMessageEdit", inbox_js_response.text)
+        self.assertIn("confirmMessageDelete", inbox_js_response.text)
+        self.assertIn('id="messageActionPopover"', inbox_response.text)
+        self.assertIn('id="messageEditDialog"', inbox_response.text)
+        self.assertIn('id="messageDeleteDialog"', inbox_response.text)
+        self.assertIn('role="alertdialog"', inbox_response.text)
+        self.assertIn(".message-action-popover", inbox_css_response.text)
+        self.assertIn(".message-more-button", inbox_css_response.text)
         self.assertIn('event.key.toLowerCase() === "j"', inbox_js_response.text)
         self.assertIn("openGifDialog", inbox_js_response.text)
         self.assertIn("queueMessageTranslation", inbox_js_response.text)
@@ -5452,6 +5461,154 @@ class AppHttpIntegrationTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json()["detail"], "reaction_message_not_found")
+        mock_adapter.assert_not_called()
+
+    def test_edit_endpoint_updates_owned_slack_message_and_local_cache(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """UPDATE penguin_connect_conversations
+                   SET source_provider = 'slack', source_chat_id = 'C_PRODUCT'
+                   WHERE conversation_id = 'amc_test'"""
+            )
+            conn.execute(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction,
+                    sender_name, subject, body_text, message_timestamp, is_read, metadata)
+                   VALUES (?, 'slack', ?, 'slack_local', 'Me', 'Slack · Product',
+                           'Original synthetic text', '2026-03-11T11:00:00+00:00',
+                           1, ?)""",
+                (
+                    "amc_test",
+                    "slack:1785000001.000100",
+                    '{"native_message_id":"1785000001.000100","is_from_me":true}',
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        adapter = mock.Mock()
+        adapter.edit_message.return_value = (True, None)
+        with mock.patch(
+            "app.get_channel_adapter",
+            return_value=adapter,
+        ), TestClient(app_module.app) as client:
+            response = client.patch(
+                "/penguin-connect/conversations/amc_test/messages/slack%3A1785000001.000100",
+                json={"message": "Updated synthetic text"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["message"], "Updated synthetic text")
+        adapter.edit_message.assert_called_once_with(
+            "C_PRODUCT",
+            "1785000001.000100",
+            "Updated synthetic text",
+        )
+        verify_conn = self._get_connection()
+        try:
+            row = verify_conn.execute(
+                """SELECT body_text, metadata
+                   FROM penguin_connect_messages
+                   WHERE provider_message_id = 'slack:1785000001.000100'"""
+            ).fetchone()
+        finally:
+            verify_conn.close()
+        self.assertEqual(row["body_text"], "Updated synthetic text")
+        self.assertTrue(json.loads(row["metadata"])["provider_edited"])
+
+    def test_delete_endpoint_removes_owned_slack_message_from_local_cache(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """UPDATE penguin_connect_conversations
+                   SET source_provider = 'slack', source_chat_id = 'C_PRODUCT'
+                   WHERE conversation_id = 'amc_test'"""
+            )
+            conn.execute(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction,
+                    sender_name, subject, body_text, message_timestamp, is_read, metadata)
+                   VALUES (?, 'slack', ?, 'slack_local', 'Me', 'Slack · Product',
+                           'Delete synthetic text', '2026-03-11T11:00:00+00:00',
+                           1, ?)""",
+                (
+                    "amc_test",
+                    "slack:1785000002.000100",
+                    '{"native_message_id":"1785000002.000100","is_from_me":true}',
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        adapter = mock.Mock()
+        adapter.delete_message.return_value = (True, None)
+        with mock.patch(
+            "app.get_channel_adapter",
+            return_value=adapter,
+        ), TestClient(app_module.app) as client:
+            response = client.delete(
+                "/penguin-connect/conversations/amc_test/messages/slack%3A1785000002.000100",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["deleted"])
+        adapter.delete_message.assert_called_once_with(
+            "C_PRODUCT",
+            "1785000002.000100",
+        )
+        verify_conn = self._get_connection()
+        try:
+            row = verify_conn.execute(
+                """SELECT 1 FROM penguin_connect_messages
+                   WHERE provider_message_id = 'slack:1785000002.000100'"""
+            ).fetchone()
+        finally:
+            verify_conn.close()
+        self.assertIsNone(row)
+
+    def test_message_mutation_endpoints_reject_unowned_slack_message(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """UPDATE penguin_connect_conversations
+                   SET source_provider = 'slack', source_chat_id = 'C_PRODUCT'
+                   WHERE conversation_id = 'amc_test'"""
+            )
+            conn.execute(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction,
+                    sender_name, subject, body_text, message_timestamp, is_read, metadata)
+                   VALUES (?, 'slack', ?, 'slack_local', 'Teammate',
+                           'Slack · Product', 'Other person synthetic text',
+                           '2026-03-11T11:00:00+00:00', 1, ?)""",
+                (
+                    "amc_test",
+                    "slack:1785000003.000100",
+                    '{"native_message_id":"1785000003.000100","is_from_me":false}',
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with mock.patch(
+            "app.get_channel_adapter",
+        ) as mock_adapter, TestClient(app_module.app) as client:
+            edit_response = client.patch(
+                "/penguin-connect/conversations/amc_test/messages/slack%3A1785000003.000100",
+                json={"message": "Forged edit"},
+            )
+            delete_response = client.delete(
+                "/penguin-connect/conversations/amc_test/messages/slack%3A1785000003.000100",
+            )
+
+        self.assertEqual(edit_response.status_code, 403)
+        self.assertEqual(edit_response.json()["detail"], "message_not_owned")
+        self.assertEqual(delete_response.status_code, 403)
+        self.assertEqual(delete_response.json()["detail"], "message_not_owned")
         mock_adapter.assert_not_called()
 
     def test_send_endpoint_forwards_attachment_paths(self):

@@ -1239,7 +1239,8 @@ kbd {
   outline-offset: 2px;
 }
 
-.message-row.message-focused .message-reply-button {
+.message-row.message-focused .message-reply-button,
+.message-row.message-focused .message-more-button {
   opacity: 1;
 }
 
@@ -1497,6 +1498,10 @@ kbd {
   color: #b54830;
 }
 
+.message-edited-label {
+  color: var(--ink-faint);
+}
+
 .message-receipt {
   color: #5f776b;
 }
@@ -1643,9 +1648,63 @@ button.message-reaction-chip:hover {
   color: var(--ink);
 }
 
+.message-action-popover {
+  position: fixed;
+  z-index: 21;
+  display: grid;
+  width: 178px;
+  gap: 3px;
+  padding: 6px;
+  border: 1px solid #d8d1dd;
+  border-radius: 12px;
+  background: var(--paper-strong);
+  box-shadow: 0 14px 34px rgba(35, 28, 39, 0.18);
+}
+
+.message-action-popover[hidden] {
+  display: none;
+}
+
+.message-action-popover button {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 9px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
+  text-align: left;
+}
+
+.message-action-popover button:hover,
+.message-action-popover button:focus-visible {
+  background: #f1efeb;
+  outline: none;
+}
+
+.message-action-popover button.destructive {
+  color: #a63f2c;
+}
+
+.message-action-popover button.destructive:hover,
+.message-action-popover button.destructive:focus-visible {
+  background: #f9ebe7;
+}
+
+.message-action-popover svg {
+  width: 15px;
+  height: 15px;
+}
+
 .message-pin-button,
 .message-react-button,
-.message-reply-button {
+.message-reply-button,
+.message-more-button {
   display: grid;
   width: 28px;
   height: 28px;
@@ -1664,10 +1723,12 @@ button.message-reaction-chip:hover {
 .message-row:hover .message-translate-button,
 .message-row:hover .message-react-button,
 .message-row:hover .message-reply-button,
+.message-row:hover .message-more-button,
 .message-pin-button:focus-visible,
 .message-translate-button:focus-visible,
 .message-react-button:focus-visible,
 .message-reply-button:focus-visible,
+.message-more-button:focus-visible,
 .message-pin-button[aria-pressed="true"] {
   opacity: 1;
 }
@@ -1700,6 +1761,16 @@ button.message-reaction-chip:hover {
 .message-reply-button:hover {
   background: #eee9f1;
   color: #68467f;
+}
+
+.message-more-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.message-more-button:hover {
+  background: #f2f1ec;
+  color: var(--ink);
 }
 
 .message-thread-actions {
@@ -3352,6 +3423,94 @@ button.message-reaction-chip:hover {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   max-height: min(660px, calc(100dvh - 40px));
+}
+
+.message-edit-dialog {
+  width: min(560px, calc(100vw - 32px));
+}
+
+.message-edit-dialog form,
+.message-delete-sheet {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: min(660px, calc(100dvh - 40px));
+}
+
+.message-delete-dialog {
+  width: min(500px, calc(100vw - 32px));
+}
+
+.message-mutation-body {
+  display: grid;
+  gap: 9px;
+  padding: 8px 18px 20px;
+}
+
+.message-mutation-body > label {
+  color: var(--ink-faint);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.message-mutation-body textarea {
+  min-height: 150px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--paper-strong);
+  color: var(--ink);
+  font: inherit;
+  line-height: 1.5;
+  outline: none;
+  resize: vertical;
+}
+
+.message-mutation-body textarea:focus {
+  border-color: var(--slack);
+  box-shadow: 0 0 0 3px rgba(97, 31, 105, 0.1);
+}
+
+.message-mutation-body > p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.message-mutation-body blockquote {
+  max-height: 150px;
+  margin: 4px 0 0;
+  padding: 11px 12px;
+  overflow: auto;
+  border-left: 3px solid color-mix(in srgb, var(--slack) 50%, var(--line));
+  border-radius: 0 9px 9px 0;
+  background: #f4f1f4;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.message-mutation-status {
+  min-height: 16px;
+  color: #a63f2c !important;
+}
+
+.destructive-button {
+  background: #b44934;
+}
+
+.destructive-button:hover {
+  background: #9e3b29;
+}
+
+.message-mutation-body textarea:disabled,
+.conversation-meta-actions button:disabled {
+  cursor: wait;
+  opacity: 0.58;
 }
 
 .contact-card {

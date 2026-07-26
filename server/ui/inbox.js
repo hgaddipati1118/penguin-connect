@@ -62,6 +62,10 @@ const state = {
     messageId: "",
     busy: false,
   },
+  messageMutation: {
+    messageId: "",
+    busy: false,
+  },
   collapsedSlackThreads: new Set(),
   expandedSlackThreads: new Set(),
   defaultCollapsedSlackThreads: new Set(),
@@ -136,6 +140,20 @@ const el = {
   messageList: document.querySelector("#messageList"),
   reactionPopover: document.querySelector("#reactionPopover"),
   reactionMoreButton: document.querySelector("#reactionMoreButton"),
+  messageActionPopover: document.querySelector("#messageActionPopover"),
+  messageEditDialog: document.querySelector("#messageEditDialog"),
+  messageEditForm: document.querySelector("#messageEditForm"),
+  messageEditText: document.querySelector("#messageEditText"),
+  messageEditStatus: document.querySelector("#messageEditStatus"),
+  closeMessageEditButton: document.querySelector("#closeMessageEditButton"),
+  cancelMessageEditButton: document.querySelector("#cancelMessageEditButton"),
+  saveMessageEditButton: document.querySelector("#saveMessageEditButton"),
+  messageDeleteDialog: document.querySelector("#messageDeleteDialog"),
+  messageDeletePreview: document.querySelector("#messageDeletePreview"),
+  messageDeleteStatus: document.querySelector("#messageDeleteStatus"),
+  closeMessageDeleteButton: document.querySelector("#closeMessageDeleteButton"),
+  cancelMessageDeleteButton: document.querySelector("#cancelMessageDeleteButton"),
+  confirmMessageDeleteButton: document.querySelector("#confirmMessageDeleteButton"),
   messageComposer: document.querySelector("#messageComposer"),
   messageComposerShell: document.querySelector("#messageComposerShell"),
   composerReplyContext: document.querySelector("#composerReplyContext"),
@@ -364,6 +382,7 @@ let linkSearchRequestToken = 0;
 let contactsLoadToken = 0;
 let detailedContactsPromise = null;
 let reactionPopoverAnchor = null;
+let messageActionPopoverAnchor = null;
 
 function apiErrorMessage(payload, response) {
   const detail = payload?.detail;
@@ -3321,6 +3340,253 @@ async function submitSlackReaction(message, {
   }
 }
 
+function canMutateSlackMessage(message) {
+  const messageProvider = providerKey(
+    message?.source_provider || message?.provider || state.selected?.source_provider,
+  );
+  return messageProvider === "slack"
+    && message?.metadata?.is_from_me === true
+    && !message?.metadata?.pending_send
+    && Boolean(slackNativeMessageId(message));
+}
+
+function closeMessageActionPopover({
+  restoreFocus = false,
+  clearSelection = true,
+} = {}) {
+  if (!el.messageActionPopover.hidden) el.messageActionPopover.hidden = true;
+  if (restoreFocus && messageActionPopoverAnchor?.isConnected) {
+    messageActionPopoverAnchor.focus({ preventScroll: true });
+  }
+  messageActionPopoverAnchor = null;
+  if (clearSelection) state.messageMutation.messageId = "";
+}
+
+function positionMessageActionPopover(anchor) {
+  const anchorRect = anchor.getBoundingClientRect();
+  const popoverRect = el.messageActionPopover.getBoundingClientRect();
+  const viewportPadding = 10;
+  const preferredLeft = anchorRect.right - popoverRect.width;
+  const left = Math.min(
+    window.innerWidth - popoverRect.width - viewportPadding,
+    Math.max(viewportPadding, preferredLeft),
+  );
+  const belowTop = anchorRect.bottom + 7;
+  const top = belowTop + popoverRect.height <= window.innerHeight - viewportPadding
+    ? belowTop
+    : Math.max(viewportPadding, anchorRect.top - popoverRect.height - 7);
+  el.messageActionPopover.style.left = `${Math.round(left)}px`;
+  el.messageActionPopover.style.top = `${Math.round(top)}px`;
+}
+
+function openMessageActionPopover(message, anchor) {
+  if (!canMutateSlackMessage(message) || !anchor) return;
+  closeReactionPicker();
+  closeMessageActionPopover();
+  state.messageMutation.messageId = String(message.provider_message_id || "");
+  messageActionPopoverAnchor = anchor;
+  el.messageActionPopover.hidden = false;
+  positionMessageActionPopover(anchor);
+  el.messageActionPopover.querySelector("[data-message-operation]")?.focus({
+    preventScroll: true,
+  });
+}
+
+function mutationMessage() {
+  return currentMessageById(state.messageMutation.messageId);
+}
+
+function closeMessageEditDialog() {
+  if (state.messageMutation.busy) return;
+  if (el.messageEditDialog.open) el.messageEditDialog.close();
+  el.messageEditStatus.textContent = "";
+  state.messageMutation.messageId = "";
+}
+
+function openMessageEditDialog() {
+  const message = mutationMessage();
+  if (!canMutateSlackMessage(message)) return;
+  closeMessageActionPopover({ clearSelection: false });
+  el.messageEditText.value = String(message.body_text || "");
+  el.messageEditStatus.textContent = "";
+  el.messageEditDialog.showModal();
+  el.messageEditText.focus();
+  el.messageEditText.select();
+}
+
+function closeMessageDeleteDialog() {
+  if (state.messageMutation.busy) return;
+  if (el.messageDeleteDialog.open) el.messageDeleteDialog.close();
+  el.messageDeleteStatus.textContent = "";
+  state.messageMutation.messageId = "";
+}
+
+function openMessageDeleteDialog() {
+  const message = mutationMessage();
+  if (!canMutateSlackMessage(message)) return;
+  closeMessageActionPopover({ clearSelection: false });
+  const messageText = String(message.body_text || "").trim();
+  const attachment = messageAttachments(message)[0];
+  el.messageDeletePreview.textContent = messageText
+    ? messageText.slice(0, 320)
+    : attachment
+      ? `Attachment: ${attachmentLabel(attachment)}`
+      : "This message has no text preview.";
+  el.messageDeleteStatus.textContent = "";
+  el.messageDeleteDialog.showModal();
+  el.cancelMessageDeleteButton.focus();
+}
+
+function replaceCachedMessage(conversationId, messageId, updater) {
+  const isCurrent = state.selected?.conversation_id === conversationId;
+  const sourceMessages = isCurrent
+    ? state.messages
+    : state.messageCache.get(conversationId) || [];
+  const nextMessages = sourceMessages.map((message) => (
+    String(message.provider_message_id || "") === messageId
+      ? updater(message)
+      : message
+  ));
+  const metadata = isCurrent
+    ? state.messagePagination
+    : state.messageCacheMetadata.get(conversationId) || {};
+  if (isCurrent) state.messages = nextMessages;
+  rememberConversationMessages(conversationId, nextMessages, metadata);
+  if (isCurrent) renderMessages({ preserveScroll: true });
+  return nextMessages;
+}
+
+async function submitMessageEdit(event) {
+  event.preventDefault();
+  if (state.messageMutation.busy || !state.selected) return;
+  const message = mutationMessage();
+  if (!canMutateSlackMessage(message)) {
+    el.messageEditStatus.textContent = "This Slack message can no longer be edited.";
+    return;
+  }
+  const nextText = el.messageEditText.value.replace(/\r\n?/g, "\n").trim();
+  if (!nextText) {
+    el.messageEditStatus.textContent = "Enter a message before saving.";
+    el.messageEditText.focus();
+    return;
+  }
+  if (nextText.length > 20000) {
+    el.messageEditStatus.textContent = "Slack messages can be at most 20,000 characters here.";
+    el.messageEditText.focus();
+    return;
+  }
+  const conversationId = state.selected.conversation_id;
+  const messageId = String(message.provider_message_id || "");
+  const previousBody = String(message.body_text || "");
+  const previousMetadata = { ...(message.metadata || {}) };
+  state.messageMutation.busy = true;
+  el.saveMessageEditButton.disabled = true;
+  el.cancelMessageEditButton.disabled = true;
+  el.closeMessageEditButton.disabled = true;
+  el.messageEditText.disabled = true;
+  el.messageEditStatus.textContent = "Saving to Slack…";
+  replaceCachedMessage(conversationId, messageId, (current) => ({
+    ...current,
+    body_text: nextText,
+    metadata: {
+      ...(current.metadata || {}),
+      provider_edited: true,
+    },
+  }));
+  try {
+    const result = await api(
+      `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ message: nextText }),
+      },
+    );
+    replaceCachedMessage(conversationId, messageId, (current) => ({
+      ...current,
+      body_text: result.message || nextText,
+      metadata: {
+        ...(current.metadata || {}),
+        provider_edited: true,
+        provider_edited_at: result.edited_at || new Date().toISOString(),
+      },
+    }));
+    el.messageEditDialog.close();
+    state.messageMutation.messageId = "";
+    toast("Message edited in Slack");
+    loadConversations({ keepSelection: true }).catch(() => {});
+  } catch (error) {
+    replaceCachedMessage(conversationId, messageId, (current) => ({
+      ...current,
+      body_text: previousBody,
+      metadata: previousMetadata,
+    }));
+    el.messageEditStatus.textContent = `Could not edit: ${error.message}`;
+  } finally {
+    state.messageMutation.busy = false;
+    el.saveMessageEditButton.disabled = false;
+    el.cancelMessageEditButton.disabled = false;
+    el.closeMessageEditButton.disabled = false;
+    el.messageEditText.disabled = false;
+    if (el.messageEditDialog.open) el.messageEditText.focus();
+  }
+}
+
+async function confirmMessageDelete() {
+  if (state.messageMutation.busy || !state.selected) return;
+  const message = mutationMessage();
+  if (!canMutateSlackMessage(message)) {
+    el.messageDeleteStatus.textContent = "This Slack message can no longer be deleted.";
+    return;
+  }
+  const conversationId = state.selected.conversation_id;
+  const messageId = String(message.provider_message_id || "");
+  state.messageMutation.busy = true;
+  el.confirmMessageDeleteButton.disabled = true;
+  el.cancelMessageDeleteButton.disabled = true;
+  el.closeMessageDeleteButton.disabled = true;
+  el.messageDeleteStatus.textContent = "Deleting from Slack…";
+  try {
+    await api(
+      `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}`,
+      { method: "DELETE" },
+    );
+    const isCurrent = state.selected?.conversation_id === conversationId;
+    const sourceMessages = isCurrent
+      ? state.messages
+      : state.messageCache.get(conversationId) || [];
+    const nextMessages = sourceMessages.filter(
+      (item) => String(item.provider_message_id || "") !== messageId,
+    );
+    const previousMetadata = isCurrent
+      ? state.messagePagination
+      : state.messageCacheMetadata.get(conversationId) || {};
+    const nextMetadata = {
+      ...previousMetadata,
+      total: Math.max(nextMessages.length, Number(previousMetadata.total || 0) - 1),
+    };
+    if (isCurrent) {
+      state.messages = nextMessages;
+      state.messagePagination = {
+        ...state.messagePagination,
+        total: nextMetadata.total,
+      };
+      renderMessages({ preserveScroll: true });
+    }
+    rememberConversationMessages(conversationId, nextMessages, nextMetadata);
+    el.messageDeleteDialog.close();
+    state.messageMutation.messageId = "";
+    toast("Message deleted from Slack");
+    loadConversations({ keepSelection: true }).catch(() => {});
+  } catch (error) {
+    el.messageDeleteStatus.textContent = `Could not delete: ${error.message}`;
+  } finally {
+    state.messageMutation.busy = false;
+    el.confirmMessageDeleteButton.disabled = false;
+    el.cancelMessageDeleteButton.disabled = false;
+    el.closeMessageDeleteButton.disabled = false;
+  }
+}
+
 function currentMessageById(messageId) {
   const cleanId = String(messageId || "");
   return state.messages.find(
@@ -3371,6 +3637,8 @@ function handleMessageListAction(event) {
     queueMessageTranslation(message, { notify: true, priority: true });
   } else if (actionName === "react") {
     openReactionPicker(message, action);
+  } else if (actionName === "more") {
+    openMessageActionPopover(message, action);
   } else if (actionName === "react-existing") {
     submitSlackReaction(message, {
       name: action.dataset.reactionName,
@@ -3755,6 +4023,12 @@ function renderMessages({
         meta.append(receipt);
       }
     }
+    if (message.metadata?.provider_edited) {
+      const edited = document.createElement("span");
+      edited.className = "message-edited-label";
+      edited.textContent = "Edited";
+      meta.append(edited);
+    }
     if (!message.is_read && !mine) {
       const unread = document.createElement("span");
       unread.textContent = "Unread";
@@ -3806,7 +4080,15 @@ function renderMessages({
     reply.setAttribute("aria-label", `Reply to ${message.sender_name || "message"}`);
     reply.hidden = !["slack", "whatsapp"].includes(replyProvider)
       || Boolean(message.metadata?.pending_send);
-    if (mine) row.append(reply, translate, pin, react, stack);
+    const more = document.createElement("button");
+    more.type = "button";
+    more.className = "message-more-button";
+    more.dataset.messageAction = "more";
+    more.append(createIcon("i-more"));
+    more.title = "More message actions";
+    more.setAttribute("aria-label", "More message actions");
+    more.hidden = !canMutateSlackMessage(message);
+    if (mine) row.append(more, reply, translate, pin, react, stack);
     else row.append(stack, reply, react, pin, translate);
     messageRowFingerprints.set(row, renderFingerprint);
     messageChildren.push(row);
@@ -6629,6 +6911,7 @@ el.autoTranslateToggle.addEventListener("change", () => {
 el.messageList.addEventListener("click", handleMessageListAction);
 el.messageList.addEventListener("scroll", (event) => {
   closeReactionPicker();
+  closeMessageActionPopover();
   if (!event.isTrusted) return;
   const bottomDistance = el.messageList.scrollHeight - el.messageList.clientHeight - el.messageList.scrollTop;
   state.followLatest = bottomDistance < 100;
@@ -6652,6 +6935,24 @@ el.reactionMoreButton.addEventListener("click", () => {
   closeReactionPicker();
   if (message) openProviderToReact(message);
 });
+el.messageActionPopover.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-message-operation]");
+  if (!button) return;
+  if (button.dataset.messageOperation === "edit") openMessageEditDialog();
+  if (button.dataset.messageOperation === "delete") openMessageDeleteDialog();
+});
+el.messageActionPopover.addEventListener("keydown", (event) => {
+  const buttons = [...el.messageActionPopover.querySelectorAll("[data-message-operation]")];
+  const currentIndex = buttons.indexOf(document.activeElement);
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeMessageActionPopover({ restoreFocus: true });
+  } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    const offset = event.key === "ArrowDown" ? 1 : -1;
+    buttons[(currentIndex + offset + buttons.length) % buttons.length]?.focus();
+  }
+});
 document.addEventListener("pointerdown", (event) => {
   if (
     !el.reactionPopover.hidden
@@ -6660,8 +6961,38 @@ document.addEventListener("pointerdown", (event) => {
   ) {
     closeReactionPicker();
   }
+  if (
+    !el.messageActionPopover.hidden
+    && !el.messageActionPopover.contains(event.target)
+    && !messageActionPopoverAnchor?.contains(event.target)
+  ) {
+    closeMessageActionPopover();
+  }
 });
-window.addEventListener("resize", () => closeReactionPicker());
+window.addEventListener("resize", () => {
+  closeReactionPicker();
+  closeMessageActionPopover();
+});
+el.messageEditForm.addEventListener("submit", submitMessageEdit);
+el.closeMessageEditButton.addEventListener("click", closeMessageEditDialog);
+el.cancelMessageEditButton.addEventListener("click", closeMessageEditDialog);
+el.messageEditDialog.addEventListener("cancel", (event) => {
+  if (state.messageMutation.busy) event.preventDefault();
+  else state.messageMutation.messageId = "";
+});
+el.messageEditDialog.addEventListener("click", (event) => {
+  if (event.target === el.messageEditDialog) closeMessageEditDialog();
+});
+el.confirmMessageDeleteButton.addEventListener("click", confirmMessageDelete);
+el.closeMessageDeleteButton.addEventListener("click", closeMessageDeleteDialog);
+el.cancelMessageDeleteButton.addEventListener("click", closeMessageDeleteDialog);
+el.messageDeleteDialog.addEventListener("cancel", (event) => {
+  if (state.messageMutation.busy) event.preventDefault();
+  else state.messageMutation.messageId = "";
+});
+el.messageDeleteDialog.addEventListener("click", (event) => {
+  if (event.target === el.messageDeleteDialog) closeMessageDeleteDialog();
+});
 el.messageComposer.addEventListener("keydown", (event) => {
   if (!el.mentionSuggestions.hidden) {
     const options = [...el.mentionSuggestions.querySelectorAll("button")];
@@ -6951,6 +7282,11 @@ document.addEventListener("keydown", (event) => {
   }
   if (event.metaKey || event.ctrlKey || event.altKey || shortcutTargetIsEditable(event.target)) return;
   if (event.key === "Escape") {
+    if (!el.messageActionPopover.hidden) {
+      event.preventDefault();
+      closeMessageActionPopover({ restoreFocus: true });
+      return;
+    }
     if (!el.reactionPopover.hidden) {
       event.preventDefault();
       closeReactionPicker({ restoreFocus: true });

@@ -917,6 +917,63 @@ class SlackChannelAdapter:
         self._thread_cache.clear()
         return True, None
 
+    def edit_message(
+        self,
+        chat_identifier: str,
+        message_id: str,
+        message_text: str,
+    ) -> tuple[bool, Optional[str]]:
+        channel_id = str(chat_identifier or "").strip()
+        timestamp = str(message_id or "").strip()
+        if timestamp.startswith("slack:"):
+            timestamp = timestamp.split(":", 1)[1]
+        text = str(message_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not channel_id or not timestamp:
+            return False, "slack_message_target_required"
+        if not text:
+            return False, "slack_edit_text_required"
+        if len(text) > 20_000:
+            return False, "slack_edit_text_too_long"
+        payload = self._api(
+            "chat.update",
+            json_body={
+                "channel": channel_id,
+                "ts": timestamp,
+                "text": text,
+            },
+        )
+        if not payload.get("ok"):
+            return False, str(payload.get("error") or "slack_edit_failed")
+        self._conversation_cache.clear()
+        self._history_cache.clear()
+        self._thread_cache.clear()
+        return True, None
+
+    def delete_message(
+        self,
+        chat_identifier: str,
+        message_id: str,
+    ) -> tuple[bool, Optional[str]]:
+        channel_id = str(chat_identifier or "").strip()
+        timestamp = str(message_id or "").strip()
+        if timestamp.startswith("slack:"):
+            timestamp = timestamp.split(":", 1)[1]
+        if not channel_id or not timestamp:
+            return False, "slack_message_target_required"
+        payload = self._api(
+            "chat.delete",
+            json_body={
+                "channel": channel_id,
+                "ts": timestamp,
+            },
+        )
+        if not payload.get("ok"):
+            return False, str(payload.get("error") or "slack_delete_failed")
+        self._conversation_cache.clear()
+        self._history_cache.clear()
+        self._thread_cache.clear()
+        return True, None
+
     def get_unread_count(self, chat_identifier: str) -> Optional[int]:
         del chat_identifier
         return None

@@ -232,6 +232,70 @@ class SlackChannelAdapterTests(unittest.TestCase):
         self.assertEqual(result, (False, "slack_invalid_reaction"))
         mock_api.assert_not_called()
 
+    def test_edits_and_deletes_native_slack_messages(self):
+        adapter = SlackChannelAdapter()
+        calls = []
+
+        def fake_api(method, **kwargs):
+            calls.append((method, kwargs))
+            if method == "chat.update":
+                return {"ok": True, "ts": "1785000001.000100"}
+            if method == "chat.delete":
+                return {"ok": True, "ts": "1785000001.000100"}
+            raise AssertionError(method)
+
+        with mock.patch.object(adapter, "_api", side_effect=fake_api):
+            edited = adapter.edit_message(
+                "C_PRODUCT",
+                "slack:1785000001.000100",
+                "  Updated synthetic message  ",
+            )
+            deleted = adapter.delete_message(
+                "C_PRODUCT",
+                "1785000001.000100",
+            )
+
+        self.assertEqual(edited, (True, None))
+        self.assertEqual(deleted, (True, None))
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "chat.update",
+                    {
+                        "json_body": {
+                            "channel": "C_PRODUCT",
+                            "ts": "1785000001.000100",
+                            "text": "Updated synthetic message",
+                        }
+                    },
+                ),
+                (
+                    "chat.delete",
+                    {
+                        "json_body": {
+                            "channel": "C_PRODUCT",
+                            "ts": "1785000001.000100",
+                        }
+                    },
+                ),
+            ],
+        )
+
+    def test_rejects_invalid_slack_message_mutations_before_api_calls(self):
+        adapter = SlackChannelAdapter()
+        with mock.patch.object(adapter, "_api") as mock_api:
+            missing_text = adapter.edit_message(
+                "C_PRODUCT",
+                "1785000001.000100",
+                "   ",
+            )
+            missing_target = adapter.delete_message("", "")
+
+        self.assertEqual(missing_text, (False, "slack_edit_text_required"))
+        self.assertEqual(missing_target, (False, "slack_message_target_required"))
+        mock_api.assert_not_called()
+
     def test_fetches_thread_replies_with_author_and_parent_metadata(self):
         adapter = SlackChannelAdapter()
         adapter._self_user_id = "USELF"

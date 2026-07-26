@@ -34,7 +34,7 @@ flowchart LR
 ## Current Status
 
 - Shipping source adapters: **Apple Messages** (`iMessage`, `SMS`, `RCS`), **WhatsApp**, and **Slack**
-- Slack channels retain human-readable authors, keep the newest active thread open while collapsing older reply trees with a latest-reply preview, support inline emoji reactions, and can send or schedule replies back into the native Slack thread while preserving the exact clicked message as local quoted context
+- Slack channels retain human-readable authors, keep the newest active thread open while collapsing older reply trees with a latest-reply preview, support inline emoji reactions plus native edit/delete for your own messages, and can send or schedule replies back into the native Slack thread while preserving the exact clicked message as local quoted context
 - Primary operator surfaces: **local messaging workspace**, **power console**, **local CLI**, and **MCP server**
 - Optional legacy bridge surface: **Gmail aliases**
 - Additional adapter available: **Telegram**
