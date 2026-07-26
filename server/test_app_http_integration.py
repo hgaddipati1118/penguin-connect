@@ -613,6 +613,111 @@ class AppHttpIntegrationTests(unittest.TestCase):
         sleep.assert_called_once()
         refresh_index.assert_called_once_with()
 
+    def test_metadata_only_local_image_is_requeued_once_for_versioned_ocr(self):
+        image_path = Path(self.tmpdir.name) / "synthetic-screenshot.png"
+        image_path.write_bytes(b"synthetic image bytes")
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """UPDATE penguin_connect_messages
+                   SET metadata = ?
+                   WHERE conversation_id = 'amc_test'
+                     AND provider_message_id = 'imsg-latest'""",
+                (
+                    json.dumps({
+                        "attachments": [{
+                            "filename": str(image_path),
+                            "transfer_name": "synthetic-screenshot.png",
+                            "mime_type": "image/png",
+                        }],
+                    }),
+                ),
+            )
+            conn.execute(
+                """INSERT INTO penguin_connect_attachment_intelligence
+                   (conversation_id, provider_message_id, attachment_index, file_path,
+                    filename, mime_type, content_hash, status)
+                   VALUES ('amc_test', 'imsg-latest', 0, ?,
+                           'synthetic-screenshot.png', 'image/png', 'legacy-hash',
+                           'metadata_only')""",
+                (str(image_path),),
+            )
+            conn.commit()
+
+            app_module._queue_attachment_intelligence(conn, limit=1)
+            first_status = conn.execute(
+                """SELECT status
+                   FROM penguin_connect_attachment_intelligence
+                   WHERE conversation_id = 'amc_test'
+                     AND provider_message_id = 'imsg-latest'
+                     AND attachment_index = 0"""
+            ).fetchone()["status"]
+            conn.execute(
+                """UPDATE penguin_connect_attachment_intelligence
+                   SET status = 'metadata_only', content_hash = 'vision-v1:complete'
+                   WHERE conversation_id = 'amc_test'
+                     AND provider_message_id = 'imsg-latest'
+                     AND attachment_index = 0"""
+            )
+            conn.commit()
+            app_module._queue_attachment_intelligence(conn, limit=1)
+            second_status = conn.execute(
+                """SELECT status
+                   FROM penguin_connect_attachment_intelligence
+                   WHERE conversation_id = 'amc_test'
+                     AND provider_message_id = 'imsg-latest'
+                     AND attachment_index = 0"""
+            ).fetchone()["status"]
+        finally:
+            conn.close()
+
+        self.assertEqual(first_status, "queued")
+        self.assertEqual(second_status, "metadata_only")
+
+    def test_image_ocr_is_indexed_without_running_codex_per_image(self):
+        image_path = Path(self.tmpdir.name) / "synthetic-screenshot.png"
+        image_path.write_bytes(b"synthetic image bytes")
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """INSERT INTO penguin_connect_attachment_intelligence
+                   (conversation_id, provider_message_id, attachment_index, file_path,
+                    filename, mime_type, status)
+                   VALUES ('amc_test', 'imsg-latest', 0, ?,
+                           'synthetic-screenshot.png', 'image/png', 'queued')""",
+                (str(image_path),),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with mock.patch(
+            "app.extract_file_text",
+            return_value="Project Cedar launch review Friday",
+        ), mock.patch(
+            "app._run_codex_prompt",
+        ) as codex:
+            result = app_module._run_attachment_intelligence_batch()
+
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                """SELECT status, content_hash, extracted_text, summary
+                   FROM penguin_connect_attachment_intelligence
+                   WHERE conversation_id = 'amc_test'
+                     AND provider_message_id = 'imsg-latest'
+                     AND attachment_index = 0"""
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertEqual(result["processed"], 1)
+        self.assertEqual(row["status"], "extracted")
+        self.assertTrue(row["content_hash"].startswith("vision-v1:"))
+        self.assertIn("Project Cedar", row["extracted_text"])
+        self.assertIn("Project Cedar", row["summary"])
+        codex.assert_not_called()
+
     def test_attachment_intelligence_queue_reaches_older_missing_rows(self):
         conn = self._get_connection()
         attachment_metadata = json.dumps({
@@ -2321,9 +2426,12 @@ class AppHttpIntegrationTests(unittest.TestCase):
         adapter = mock.Mock()
         adapter.download_attachment.return_value = str(downloaded_path)
 
-        with mock.patch("app.get_channel_adapter", return_value=adapter), TestClient(
-            app_module.app
-        ) as client:
+        with mock.patch(
+            "app.get_channel_adapter",
+            return_value=adapter,
+        ), mock.patch(
+            "app._start_attachment_intelligence_worker",
+        ) as start_worker, TestClient(app_module.app) as client:
             response = client.get(
                 "/penguin-connect/conversations/amc_test/attachments/0",
                 params={
@@ -2338,6 +2446,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
             "15551234567@s.whatsapp.net",
             "legacy-download",
         )
+        start_worker.assert_called_once_with()
 
     def test_attachment_endpoint_downloads_slack_private_file_on_demand(self):
         downloaded_path = Path(self.tmpdir.name) / "downloaded-slack-image.png"
@@ -2381,9 +2490,12 @@ class AppHttpIntegrationTests(unittest.TestCase):
         adapter = mock.Mock()
         adapter.download_attachment.return_value = str(downloaded_path)
 
-        with mock.patch("app.get_channel_adapter", return_value=adapter), TestClient(
-            app_module.app
-        ) as client:
+        with mock.patch(
+            "app.get_channel_adapter",
+            return_value=adapter,
+        ), mock.patch(
+            "app._start_attachment_intelligence_worker",
+        ) as start_worker, TestClient(app_module.app) as client:
             response = client.get(
                 "/penguin-connect/conversations/amc_test/attachments/0",
                 params={
@@ -2400,6 +2512,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
             "F_TEST",
             "slack-image.png",
         )
+        start_worker.assert_called_once_with()
         conn = self._get_connection()
         try:
             row = conn.execute(

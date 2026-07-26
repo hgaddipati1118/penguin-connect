@@ -59,6 +59,8 @@ from channels.whatsapp import whatsapp_attachment_count, whatsapp_source_paths
 from db import DB_PATH, get_connection, init_db
 from startup_checks import StartupReadinessError, assert_startup_ready
 from search_index import (
+    IMAGE_FILE_EXTENSIONS,
+    VISION_OCR_VERSION,
     extract_file_text,
     hybrid_search,
     refresh_message_search_index,
@@ -2997,6 +2999,7 @@ def _reconcile_missing_attachment_intelligence(conn: sqlite3.Connection) -> int:
 
 def _queue_attachment_intelligence(conn: sqlite3.Connection, *, limit: int = 10000) -> int:
     _reconcile_missing_attachment_intelligence(conn)
+    requeued = _requeue_local_images_for_ocr(conn)
     conn.execute(
         """UPDATE penguin_connect_attachment_intelligence
            SET status = 'retry', updated_at = datetime('now')
@@ -3055,7 +3058,70 @@ def _queue_attachment_intelligence(conn: sqlite3.Connection, *, limit: int = 100
             )
             queued += max(0, cursor.rowcount)
     conn.commit()
-    return queued
+    return queued + requeued
+
+
+def _attachment_row_is_image(row: sqlite3.Row | dict) -> bool:
+    mime_type = str(row["mime_type"] or "").strip().lower()
+    suffix = Path(
+        str(row["file_path"] or row["filename"] or "").strip()
+    ).suffix.lower()
+    return mime_type.startswith("image/") or suffix in IMAGE_FILE_EXTENSIONS
+
+
+def _requeue_local_images_for_ocr(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 250,
+) -> int:
+    candidate_limit = max(1000, min(limit * 20, 10000))
+    rows = conn.execute(
+        """SELECT conversation_id, provider_message_id, attachment_index,
+                  file_path, filename, mime_type
+           FROM penguin_connect_attachment_intelligence
+           WHERE status = 'metadata_only'
+             AND COALESCE(content_hash, '') NOT LIKE ?
+             AND (
+                 LOWER(mime_type) LIKE 'image/%'
+                 OR LOWER(filename) GLOB '*.png'
+                 OR LOWER(filename) GLOB '*.jpg'
+                 OR LOWER(filename) GLOB '*.jpeg'
+                 OR LOWER(filename) GLOB '*.heic'
+                 OR LOWER(filename) GLOB '*.heif'
+                 OR LOWER(filename) GLOB '*.webp'
+                 OR LOWER(filename) GLOB '*.tif'
+                 OR LOWER(filename) GLOB '*.tiff'
+                 OR LOWER(filename) GLOB '*.gif'
+             )
+           ORDER BY updated_at DESC, rowid DESC
+           LIMIT ?""",
+        (f"{VISION_OCR_VERSION}:%", candidate_limit),
+    ).fetchall()
+    keys = []
+    for row in rows:
+        try:
+            _message_attachment_path(str(row["file_path"] or ""))
+            keys.append(
+                (
+                    row["conversation_id"],
+                    row["provider_message_id"],
+                    row["attachment_index"],
+                )
+            )
+            if len(keys) >= limit:
+                break
+        except (HTTPException, OSError):
+            continue
+    if not keys:
+        return 0
+    conn.executemany(
+        """UPDATE penguin_connect_attachment_intelligence
+           SET status = 'queued', last_error = '', updated_at = datetime('now')
+           WHERE conversation_id = ? AND provider_message_id = ? AND attachment_index = ?""",
+        keys,
+    )
+    conn.commit()
+    return len(keys)
 
 
 def _attachment_intelligence_batch_size() -> int:
@@ -3208,11 +3274,23 @@ def _run_attachment_intelligence_batch() -> dict:
             try:
                 path = _message_attachment_path(row["file_path"])
                 stat = path.stat()
-                content_hash = hashlib.sha256(
+                raw_content_hash = hashlib.sha256(
                     f"{path}:{stat.st_size}:{stat.st_mtime_ns}".encode()
                 ).hexdigest()
+                is_image = _attachment_row_is_image(row)
+                content_hash = (
+                    f"{VISION_OCR_VERSION}:{raw_content_hash}"
+                    if is_image
+                    else raw_content_hash
+                )
                 extracted = extract_file_text(path)
-                if extracted:
+                if extracted and is_image:
+                    metadata_summary = _attachment_metadata_summary(row)
+                    summary = (
+                        f"{metadata_summary} Recognized text: {extracted[:1800]}"
+                    )[:4000]
+                    status = "extracted"
+                elif extracted:
                     result = _run_codex_prompt(
                         "\n".join([
                             "Summarize this locally extracted message attachment for private search.",
@@ -3404,13 +3482,33 @@ def _stored_message_attachment(
             (json.dumps(metadata), conversation_id, provider_message_id),
         )
         conn.execute(
-            """UPDATE penguin_connect_attachment_intelligence
-               SET file_path = ?, status = 'queued', last_error = '',
-                   updated_at = datetime('now')
-               WHERE conversation_id = ? AND provider_message_id = ? AND attachment_index = ?""",
-            (downloaded, conversation_id, provider_message_id, attachment_index),
+            """INSERT INTO penguin_connect_attachment_intelligence
+               (conversation_id, provider_message_id, attachment_index, file_path,
+                filename, mime_type, status, last_error, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, 'queued', '', datetime('now'))
+               ON CONFLICT(conversation_id, provider_message_id, attachment_index)
+               DO UPDATE SET
+                   file_path = excluded.file_path,
+                   filename = excluded.filename,
+                   mime_type = excluded.mime_type,
+                   status = 'queued',
+                   last_error = '',
+                   updated_at = datetime('now')""",
+            (
+                conversation_id,
+                provider_message_id,
+                attachment_index,
+                downloaded,
+                str(
+                    attachment.get("transfer_name")
+                    or Path(downloaded).name
+                    or "attachment"
+                )[:500],
+                str(attachment.get("mime_type") or "")[:200],
+            ),
         )
         conn.commit()
+        _start_attachment_intelligence_worker()
         path = _message_attachment_path(downloaded)
     display_name = _safe_ui_attachment_filename(
         str(attachment.get("transfer_name") or path.name or "attachment"),

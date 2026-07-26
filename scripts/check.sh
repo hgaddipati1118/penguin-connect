@@ -67,6 +67,11 @@ node --check "$ROOT_DIR/server/ui/composer-mentions.js"
 node --check "$ROOT_DIR/server/ui/conversation-navigation.js"
 node --test "$ROOT_DIR/server/ui/"*.test.cjs
 
+if [ "$(uname -s)" = "Darwin" ] && command -v swiftc >/dev/null 2>&1; then
+  echo "[check] macOS Vision OCR helper"
+  swiftc -typecheck "$ROOT_DIR/server/macos_vision_ocr.swift"
+fi
+
 echo "[check] shell script syntax"
 for script in "${SHELL_SOURCES[@]}"; do
   bash -n "$ROOT_DIR/$script"

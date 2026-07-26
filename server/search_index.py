@@ -13,6 +13,8 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import sys
+import threading
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -29,6 +31,18 @@ SEARCH_DB_PATH = Path(
 DEFAULT_EMBEDDING_MODEL = "nomic-embed-text"
 DEFAULT_EMBEDDING_DIMENSIONS = 768
 DEFAULT_EMBEDDING_INPUT_CHARS = 1_500
+VISION_OCR_VERSION = "vision-v1"
+IMAGE_FILE_EXTENSIONS = {
+    ".gif",
+    ".heic",
+    ".heif",
+    ".jpeg",
+    ".jpg",
+    ".png",
+    ".tif",
+    ".tiff",
+    ".webp",
+}
 TEXT_FILE_EXTENSIONS = {
     ".c",
     ".cc",
@@ -62,6 +76,7 @@ TEXT_FILE_EXTENSIONS = {
     ".yaml",
     ".yml",
 }
+_vision_ocr_compile_lock = threading.Lock()
 
 
 def _embedding_model() -> str:
@@ -364,6 +379,22 @@ def _extract_file_text(path: Path) -> str:
     except OSError:
         return ""
 
+    if suffix in IMAGE_FILE_EXTENSIONS:
+        binary = _vision_ocr_binary()
+        if binary is None:
+            return ""
+        try:
+            result = subprocess.run(
+                [str(binary), str(path)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        return _clean_text(result.stdout if result.returncode == 0 else "", 40_000)
+
     command: list[str] | None = None
     if suffix == ".pdf" and shutil.which("pdftotext"):
         command = ["pdftotext", "-f", "1", "-l", "50", str(path), "-"]
@@ -382,6 +413,69 @@ def _extract_file_text(path: Path) -> str:
     except (OSError, subprocess.TimeoutExpired):
         return ""
     return _clean_text(result.stdout if result.returncode == 0 else "", 40_000)
+
+
+def _vision_ocr_binary() -> Path | None:
+    if sys.platform != "darwin":
+        return None
+    source = Path(__file__).with_name("macos_vision_ocr.swift")
+    compiler = shutil.which("swiftc")
+    if not source.is_file() or not compiler:
+        return None
+    configured_dir = (
+        os.environ.get("PENGUIN_CONNECT_VISION_OCR_CACHE_DIR") or ""
+    ).strip()
+    cache_dir = (
+        Path(configured_dir).expanduser()
+        if configured_dir
+        else DB_PATH.parent / "bin"
+    )
+    destination = cache_dir / f"penguin-vision-ocr-{VISION_OCR_VERSION}"
+
+    def current_binary() -> Path | None:
+        try:
+            if (
+                destination.is_file()
+                and os.access(destination, os.X_OK)
+                and destination.stat().st_mtime_ns >= source.stat().st_mtime_ns
+            ):
+                return destination
+        except OSError:
+            return None
+        return None
+
+    ready = current_binary()
+    if ready is not None:
+        return ready
+    with _vision_ocr_compile_lock:
+        ready = current_binary()
+        if ready is not None:
+            return ready
+        temporary = destination.with_name(
+            f".{destination.name}.{os.getpid()}.tmp"
+        )
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            result = subprocess.run(
+                [compiler, "-O", str(source), "-o", str(temporary)],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+            if result.returncode != 0 or not temporary.is_file():
+                temporary.unlink(missing_ok=True)
+                return None
+            temporary.chmod(0o700)
+            temporary.replace(destination)
+            return destination
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def extract_file_text(path: str | Path) -> str:

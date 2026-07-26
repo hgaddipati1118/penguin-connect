@@ -37,6 +37,7 @@ flowchart LR
 - Slack channels retain human-readable authors, keep the newest active thread open while collapsing older reply trees with a latest-reply preview, download private images/files into an authenticated local cache only when previewed, support inline emoji reactions plus native edit/delete for your own messages, and can send or schedule replies back into the native Slack thread while preserving the exact clicked message as local quoted context
 - WhatsApp conversations preserve native quoted replies, reconcile native reactions and edited/deleted messages from the local bridge, support inline reactions on exact cached messages, and expose native edit/delete only for messages owned by you (including WhatsApp's edit-window limit)
 - Apple Messages rows can keep local quoted-reply context and visual nesting in Penguin; the outgoing text still uses Apple's regular send path because the local bridge has no native arbitrary-message reply API
+- Downloaded and locally available images are OCR-indexed on the Mac with Apple's Vision framework, so screenshots become searchable without sending each image to Codex; processing is incremental, bounded, and cached by file version
 - Primary operator surfaces: **local messaging workspace**, **power console**, **local CLI**, and **MCP server**
 - Optional legacy bridge surface: **Gmail aliases**
 - Additional adapter available: **Telegram**
@@ -159,6 +160,11 @@ ollama pull nomic-embed-text
 Call the MCP `rebuild_local_search_index` tool with `semantic=true` and `confirm=true`.
 Without Ollama or `sqlite-vec`, PenguinConnect continues to provide exact contact/message
 search, Spotlight file search, and SQLite FTS5 search.
+
+The attachment library also extracts searchable text from locally available documents and
+images. Image OCR uses Apple's Vision framework entirely on the Mac and compiles a small
+cached helper on first use. Private Slack or WhatsApp media is processed only after the
+authenticated local bridge downloads it for preview.
 
 For the full Gmail bridge setup, run `./scripts/penguin_connect_setup.py --gmail you@gmail.com`. During guided setup, the wizard also offers an interactive Apple Messages chat exclusion step and saves selections in `./.penguin_connect_excluded_chats.json` by default.
 

@@ -122,6 +122,34 @@ class SearchIndexTests(unittest.TestCase):
             "Synthetic launch checklist",
         )
 
+    def test_image_text_is_extracted_with_local_macos_vision_helper(self):
+        file_path = Path(self.temp_dir.name) / "screenshot.png"
+        file_path.write_bytes(b"synthetic image bytes")
+        completed = mock.Mock(
+            returncode=0,
+            stdout="Project Cedar\nLaunch review Friday\n",
+        )
+
+        with mock.patch.object(
+            search_index,
+            "_vision_ocr_binary",
+            return_value=Path("/tmp/penguin-vision-ocr"),
+        ), mock.patch.object(
+            search_index.subprocess,
+            "run",
+            return_value=completed,
+        ) as run:
+            extracted = search_index._extract_file_text(file_path)
+
+        self.assertEqual(extracted, "Project Cedar\nLaunch review Friday")
+        run.assert_called_once_with(
+            ["/tmp/penguin-vision-ocr", str(file_path)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
     def test_attachment_summary_is_included_in_message_document(self):
         conn = sqlite3.connect(self.cache_db)
         conn.execute(
