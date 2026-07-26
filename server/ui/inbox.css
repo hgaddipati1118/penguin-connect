@@ -1679,8 +1679,9 @@ kbd {
 
 .missing-media-preview {
   display: grid;
+  width: min(360px, 100%);
   grid-template-columns: 30px minmax(0, 1fr) auto;
-  min-width: min(300px, 62vw);
+  min-width: 0;
   align-items: center;
   gap: 8px;
   padding: 8px;
@@ -1742,6 +1743,11 @@ kbd {
 .missing-media-preview button:hover {
   border-color: #bfc2bc;
   color: var(--ink);
+}
+
+.missing-media-preview button:disabled {
+  cursor: wait;
+  opacity: 0.65;
 }
 
 .composer-wrap {

@@ -2111,6 +2111,7 @@ function attachmentFileLink(message, attachment, index) {
 
 function missingMediaPreview(message, label, kind = "Media") {
   const provider = providerLabel(message.source_provider || message.provider);
+  const conversationId = message.conversation_id || state.selected?.conversation_id || "";
   const preview = document.createElement("div");
   preview.className = "missing-media-preview";
   const icon = document.createElement("span");
@@ -2128,7 +2129,7 @@ function missingMediaPreview(message, label, kind = "Media") {
   open.addEventListener("click", async () => {
     try {
       await api(
-        `/penguin-connect/conversations/${encodeURIComponent(message.conversation_id)}/open-provider`,
+        `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/open-provider`,
         { method: "POST", body: "{}" },
       );
       toast(`Opened ${provider} · download the media there`);
@@ -2140,10 +2141,62 @@ function missingMediaPreview(message, label, kind = "Media") {
   return preview;
 }
 
+function downloadableMediaPreview(message, attachment, index, label, kind) {
+  const provider = providerLabel(message.source_provider || message.provider);
+  const preview = document.createElement("div");
+  preview.className = "missing-media-preview downloadable-media-preview";
+  const icon = document.createElement("span");
+  icon.append(createIcon("i-paperclip"));
+  const copy = document.createElement("span");
+  const title = document.createElement("strong");
+  title.textContent = label;
+  const detail = document.createElement("small");
+  detail.textContent = `${kind} is available to download from ${provider}`;
+  copy.append(title, detail);
+  const download = document.createElement("button");
+  download.type = "button";
+  download.textContent = "Download";
+  download.title = `Download and preview this ${kind.toLowerCase()}`;
+  download.addEventListener("click", async () => {
+    download.disabled = true;
+    download.textContent = "Downloading…";
+    try {
+      const response = await fetch(attachmentUrl(message, index), {
+        headers: { Range: "bytes=0-0" },
+      });
+      if (!response.ok) throw new Error("download_failed");
+      attachment.availability = "local";
+      preview.replaceWith(renderInlineAttachment(message, attachment, index));
+      toast(`${kind} downloaded`);
+    } catch (_error) {
+      attachment.availability = "missing";
+      preview.replaceWith(missingMediaPreview(message, label, kind));
+      toast(`${kind} is no longer available to download`, "error");
+    }
+  });
+  preview.append(icon, copy, download);
+  return preview;
+}
+
 function renderInlineAttachment(message, attachment, index) {
   const mimeType = attachmentMimeType(attachment);
-  const url = attachmentUrl(message, index);
   const label = attachmentLabel(attachment);
+  const kind = mimeType.startsWith("image/")
+    ? "Image"
+    : mimeType.startsWith("video/")
+      ? "Video"
+      : mimeType.startsWith("audio/")
+        ? "Audio"
+        : mimeType === "application/pdf"
+          ? "PDF"
+          : "File";
+  if (attachment?.availability === "missing") {
+    return missingMediaPreview(message, label, kind);
+  }
+  if (attachment?.availability === "downloadable") {
+    return downloadableMediaPreview(message, attachment, index, label, kind);
+  }
+  const url = attachmentUrl(message, index);
   const wrapper = document.createElement("div");
   wrapper.className = "message-attachment-preview";
 
@@ -2160,6 +2213,7 @@ function renderInlineAttachment(message, attachment, index) {
       if (state.followLatest && !NATIVE_SCROLL_ANCHORING) queueThreadBottomAnchor();
     });
     image.addEventListener("error", () => {
+      attachment.availability = "missing";
       wrapper.replaceWith(missingMediaPreview(message, label, "Image"));
       if (state.followLatest && !NATIVE_SCROLL_ANCHORING) queueThreadBottomAnchor();
     });
@@ -2178,6 +2232,7 @@ function renderInlineAttachment(message, attachment, index) {
       if (state.followLatest && !NATIVE_SCROLL_ANCHORING) queueThreadBottomAnchor();
     });
     video.addEventListener("error", () => {
+      attachment.availability = "missing";
       wrapper.replaceWith(missingMediaPreview(message, label, "Video"));
       if (state.followLatest && !NATIVE_SCROLL_ANCHORING) queueThreadBottomAnchor();
     });
@@ -2190,7 +2245,10 @@ function renderInlineAttachment(message, attachment, index) {
     audio.controls = true;
     audio.preload = "metadata";
     audio.setAttribute("aria-label", label);
-    audio.addEventListener("error", () => wrapper.replaceWith(attachmentFileLink(message, attachment, index)));
+    audio.addEventListener("error", () => {
+      attachment.availability = "missing";
+      wrapper.replaceWith(missingMediaPreview(message, label, "Audio"));
+    });
     wrapper.append(audio, attachmentFileLink(message, attachment, index));
     return wrapper;
   }
@@ -2201,6 +2259,10 @@ function renderInlineAttachment(message, attachment, index) {
     frame.loading = "lazy";
     frame.addEventListener("load", () => {
       if (state.followLatest && !NATIVE_SCROLL_ANCHORING) queueThreadBottomAnchor();
+    });
+    frame.addEventListener("error", () => {
+      attachment.availability = "missing";
+      wrapper.replaceWith(missingMediaPreview(message, label, "PDF"));
     });
     wrapper.append(frame, attachmentFileLink(message, attachment, index));
     return wrapper;

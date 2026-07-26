@@ -540,6 +540,8 @@ class WhatsAppChannelAdapter:
                             "mime_type": media_type,
                             "size": 0,
                             "transfer_name": filename,
+                            "whatsapp_chat_jid": chat_id,
+                            "whatsapp_message_id": str(row["id"]),
                         }
                     ]
 

@@ -277,6 +277,8 @@ class WhatsAppAdapterTests(unittest.TestCase):
         att = attachment_msgs[0]["attachments"][0]
         self.assertEqual(att["mime_type"], "image/jpeg")
         self.assertEqual(att["filename"], "photo.jpg")
+        self.assertEqual(att["whatsapp_chat_jid"], "14155551234@s.whatsapp.net")
+        self.assertEqual(att["whatsapp_message_id"], "msg4")
 
     def test_fetch_messages_resolves_push_name(self):
         messages = self.adapter.fetch_messages("14155551234@s.whatsapp.net", limit=50)

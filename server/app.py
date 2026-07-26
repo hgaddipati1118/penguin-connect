@@ -2811,6 +2811,55 @@ def _message_attachment_path(raw_path: str) -> Path:
     return candidate
 
 
+def _attachment_preview_availability(attachment: dict, message: dict | None = None) -> str:
+    raw_path = ""
+    for key in ("filename", "path", "file_path", "local_path"):
+        raw_path = str(attachment.get(key) or "").strip()
+        if raw_path:
+            break
+    if raw_path:
+        try:
+            _message_attachment_path(raw_path)
+            return "local"
+        except HTTPException:
+            pass
+    if (
+        str(attachment.get("whatsapp_chat_jid") or "").strip()
+        and str(attachment.get("whatsapp_message_id") or "").strip()
+    ):
+        return "downloadable"
+    metadata = message.get("metadata") if isinstance(message, dict) else {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    if (
+        str((message or {}).get("provider") or "").strip().lower() == "whatsapp"
+        and str(metadata.get("source_chat_id") or "").strip()
+        and str(metadata.get("native_message_id") or "").strip()
+    ):
+        return "downloadable"
+    return "missing"
+
+
+def _annotate_message_attachment_availability(result: dict) -> dict:
+    for message in result.get("messages") or []:
+        attachments = message.get("attachments")
+        if not isinstance(attachments, list):
+            continue
+        message["attachments"] = [
+            {
+                **attachment,
+                "availability": _attachment_preview_availability(attachment, message),
+            }
+            if isinstance(attachment, dict)
+            else {
+                "transfer_name": str(attachment or "Attachment"),
+                "availability": "missing",
+            }
+            for attachment in attachments
+        ]
+    return result
+
+
 def _attachment_metadata_summary(row: sqlite3.Row | dict) -> str:
     filename = str(row["filename"] or "attachment").strip()
     mime_type = str(row["mime_type"] or "").strip()
@@ -3215,7 +3264,7 @@ def _stored_message_attachment(
     if attachment_index < 0:
         raise HTTPException(status_code=404, detail="attachment_not_found")
     row = conn.execute(
-        """SELECT metadata
+        """SELECT provider, metadata
            FROM penguin_connect_messages
            WHERE conversation_id = ? AND provider_message_id = ?
            LIMIT 1""",
@@ -3237,8 +3286,17 @@ def _stored_message_attachment(
     try:
         path = _message_attachment_path(raw_path)
     except HTTPException:
-        whatsapp_chat_jid = str(attachment.get("whatsapp_chat_jid") or "").strip()
-        whatsapp_message_id = str(attachment.get("whatsapp_message_id") or "").strip()
+        is_whatsapp = str(row["provider"] or "").strip().lower() == "whatsapp"
+        whatsapp_chat_jid = str(
+            attachment.get("whatsapp_chat_jid")
+            or (metadata.get("source_chat_id") if is_whatsapp else "")
+            or ""
+        ).strip()
+        whatsapp_message_id = str(
+            attachment.get("whatsapp_message_id")
+            or (metadata.get("native_message_id") if is_whatsapp else "")
+            or ""
+        ).strip()
         adapter = get_channel_adapter("whatsapp")
         downloaded = (
             adapter.download_attachment(whatsapp_chat_jid, whatsapp_message_id)
@@ -5187,7 +5245,7 @@ def get_penguinconnect_conversation_messages(
         )
         if not result.get("found"):
             raise HTTPException(status_code=404, detail="conversation_not_found")
-        return result
+        return _annotate_message_attachment_availability(result)
     finally:
         conn.close()
 

@@ -228,6 +228,101 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(older["offset"], 1)
         self.assertNotEqual(older["messages"][0]["provider_message_id"], "imsg-latest")
 
+    def test_messages_endpoint_marks_attachment_preview_availability(self):
+        local_attachment = Path(self.tmpdir.name) / "available-image.png"
+        local_attachment.write_bytes(b"synthetic-image")
+        missing_attachment = Path(self.tmpdir.name) / "missing-image.png"
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction, sender_name,
+                    body_text, message_timestamp, is_read, metadata)
+                   VALUES (?, 'imessage', ?, 'imessage_local', ?, '', ?, 1, ?)""",
+                (
+                    "amc_test",
+                    "imessage:attachment-availability",
+                    "Taylor",
+                    "2026-03-12T12:00:00+00:00",
+                    json.dumps(
+                        {
+                            "attachments": [
+                                {
+                                    "filename": str(local_attachment),
+                                    "transfer_name": "available-image.png",
+                                    "mime_type": "image/png",
+                                },
+                                {
+                                    "filename": str(missing_attachment),
+                                    "transfer_name": "missing-image.png",
+                                    "mime_type": "image/png",
+                                },
+                                {
+                                    "transfer_name": "remote-image.jpg",
+                                    "mime_type": "image/jpeg",
+                                    "whatsapp_chat_jid": "15551234567@s.whatsapp.net",
+                                    "whatsapp_message_id": "remote-message-id",
+                                },
+                            ],
+                        }
+                    ),
+                ),
+            )
+            conn.execute(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction, sender_name,
+                    body_text, message_timestamp, is_read, metadata)
+                   VALUES (?, 'whatsapp', ?, 'whatsapp_local', ?, '', ?, 1, ?)""",
+                (
+                    "amc_test",
+                    "whatsapp:legacy-remote-media",
+                    "Taylor",
+                    "2026-03-12T12:01:00+00:00",
+                    json.dumps(
+                        {
+                            "source_chat_id": "15551234567@s.whatsapp.net",
+                            "native_message_id": "legacy-remote-media",
+                            "attachments": [
+                                {
+                                    "transfer_name": "legacy-image.jpg",
+                                    "mime_type": "image/jpeg",
+                                }
+                            ],
+                        }
+                    ),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with TestClient(app_module.app) as client:
+            response = client.get(
+                "/penguin-connect/conversations/amc_test/messages",
+                params={"limit": 20, "refresh": "false"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        message = next(
+            item
+            for item in response.json()["messages"]
+            if item["provider_message_id"] == "imessage:attachment-availability"
+        )
+        self.assertEqual(
+            [attachment["availability"] for attachment in message["attachments"]],
+            ["local", "missing", "downloadable"],
+        )
+        self.assertNotIn("availability", message["metadata"]["attachments"][0])
+        legacy_message = next(
+            item
+            for item in response.json()["messages"]
+            if item["provider_message_id"] == "whatsapp:legacy-remote-media"
+        )
+        self.assertEqual(
+            legacy_message["attachments"][0]["availability"],
+            "downloadable",
+        )
+
     def test_attachment_library_returns_paginated_files_with_intelligence(self):
         conn = self._get_connection()
         try:
@@ -1633,6 +1728,59 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(inline_response.status_code, 200)
         self.assertEqual(inline_response.headers["content-disposition"], "inline")
 
+    def test_attachment_endpoint_downloads_legacy_whatsapp_media_on_demand(self):
+        downloaded_path = Path(self.tmpdir.name) / "downloaded-photo.jpg"
+        downloaded_path.write_bytes(b"synthetic-photo")
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction, sender_name,
+                    body_text, message_timestamp, is_read, metadata)
+                   VALUES (?, 'whatsapp', ?, 'whatsapp_local', ?, '', ?, 1, ?)""",
+                (
+                    "amc_test",
+                    "whatsapp:legacy-download",
+                    "Taylor",
+                    "2026-03-12T12:02:00+00:00",
+                    json.dumps(
+                        {
+                            "source_chat_id": "15551234567@s.whatsapp.net",
+                            "native_message_id": "legacy-download",
+                            "attachments": [
+                                {
+                                    "transfer_name": "downloaded-photo.jpg",
+                                    "mime_type": "image/jpeg",
+                                }
+                            ],
+                        }
+                    ),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        adapter = mock.Mock()
+        adapter.download_attachment.return_value = str(downloaded_path)
+
+        with mock.patch("app.get_channel_adapter", return_value=adapter), TestClient(
+            app_module.app
+        ) as client:
+            response = client.get(
+                "/penguin-connect/conversations/amc_test/attachments/0",
+                params={
+                    "provider_message_id": "whatsapp:legacy-download",
+                    "inline": "true",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"synthetic-photo")
+        adapter.download_attachment.assert_called_once_with(
+            "15551234567@s.whatsapp.net",
+            "legacy-download",
+        )
+
     def test_attachment_endpoint_rejects_unknown_attachment(self):
         with TestClient(app_module.app) as client:
             response = client.get(
@@ -2927,6 +3075,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("Primary context — currently selected conversation", inbox_js_response.text)
         self.assertIn("renderInlineAttachment", inbox_js_response.text)
         self.assertIn("missingMediaPreview", inbox_js_response.text)
+        self.assertIn('attachment?.availability === "missing"', inbox_js_response.text)
+        self.assertIn('attachment?.availability === "downloadable"', inbox_js_response.text)
+        self.assertIn("downloadableMediaPreview", inbox_js_response.text)
         self.assertIn("message-attachment-preview", inbox_js_response.text)
         self.assertIn("&inline=true", inbox_js_response.text)
         self.assertIn("renderFilesList", inbox_js_response.text)
