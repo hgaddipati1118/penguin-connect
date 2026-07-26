@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
 import sqlite3
+import subprocess
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -18,12 +20,48 @@ from .base import LookupContactName, LooksLikeUnresolvedHandle
 
 _API_BASE = "https://slack.com/api"
 _STATE_PATH = Path.home() / "penguin-connect-data" / "slack-state.json"
+_KEYCHAIN_SERVICE = "com.penguinconnect.slack.oauth-token"
+_KEYCHAIN_ACCOUNT = "penguin-connect-slack-user"
 _USER_MENTION_RE = re.compile(r"<@([A-Z0-9]+)>")
 _CHANNEL_MENTION_RE = re.compile(r"<#([A-Z0-9]+)\|([^>]+)>")
+_keychain_token_cache = ""
+
+
+def _read_slack_keychain_token() -> str:
+    global _keychain_token_cache
+    if _keychain_token_cache:
+        return _keychain_token_cache
+    if os.environ.get("PENGUIN_CONNECT_SLACK_DISABLE_KEYCHAIN", "").strip() == "1":
+        return ""
+    try:
+        result = subprocess.run(
+            [
+                "security",
+                "find-generic-password",
+                "-a",
+                _KEYCHAIN_ACCOUNT,
+                "-s",
+                _KEYCHAIN_SERVICE,
+                "-w",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if result.returncode != 0:
+        return ""
+    token = (result.stdout or "").strip()
+    if token.startswith("xoxp-"):
+        _keychain_token_cache = token
+        return token
+    return ""
 
 
 def _slack_token() -> str:
-    return os.environ.get("PENGUIN_CONNECT_SLACK_TOKEN", "").strip()
+    configured = os.environ.get("PENGUIN_CONNECT_SLACK_TOKEN", "").strip()
+    return configured or _read_slack_keychain_token()
 
 
 def slack_source_paths() -> tuple[Path, ...]:
@@ -74,6 +112,10 @@ class SlackChannelAdapter:
         self._self_user_id = ""
         self._workspace_name = ""
         self._history_cache: dict[tuple[str, str, str], tuple[float, list[dict[str, Any]]]] = {}
+        self._conversation_cache: dict[
+            tuple[str, int],
+            tuple[float, dict[str, Any]],
+        ] = {}
 
     def _api(
         self,
@@ -246,10 +288,21 @@ class SlackChannelAdapter:
         if not _slack_token():
             return {"available": False, "reason": "PENGUIN_CONNECT_SLACK_TOKEN not set"}
         with self._lock:
+            safe_limit = _safe_limit(limit)
+            query = str(search or "").strip().lower()
+            cache_key = (query, safe_limit)
+            cache_ttl = _env_int(
+                "PENGUIN_CONNECT_SLACK_DISCOVERY_MIN_SECONDS",
+                45,
+                5,
+                3600,
+            )
+            cached = self._conversation_cache.get(cache_key)
+            if cached and time.monotonic() - cached[0] < cache_ttl:
+                return copy.deepcopy(cached[1])
             if not self._load_identity():
                 return {"available": False, "reason": "Slack authentication failed"}
             self._load_users()
-            safe_limit = _safe_limit(limit)
             channels: list[dict[str, Any]] = []
             cursor = ""
             while len(channels) < safe_limit:
@@ -272,10 +325,9 @@ class SlackChannelAdapter:
 
             recent = self._recent_message_seed(
                 days=_env_int("PENGUIN_CONNECT_SLACK_SEED_DAYS", 30, 1, 365),
-                max_messages=_env_int("PENGUIN_CONNECT_SLACK_SEED_MESSAGES", 500, 1, 1000),
+                max_messages=_env_int("PENGUIN_CONNECT_SLACK_SEED_MESSAGES", 200, 1, 1000),
             )
             rows = []
-            query = str(search or "").strip().lower()
             for channel in channels[:safe_limit]:
                 channel_id = str(channel.get("id") or "").strip()
                 if not channel_id:
@@ -320,7 +372,9 @@ class SlackChannelAdapter:
                 conversation_count=len(rows),
                 latest_message_at=max((row.get("last_message_at") or "" for row in rows), default=""),
             )
-            return {"available": True, "chats": rows, "workspace": self._workspace_name}
+            result = {"available": True, "chats": rows, "workspace": self._workspace_name}
+            self._conversation_cache[cache_key] = (time.monotonic(), copy.deepcopy(result))
+            return result
 
     def list_recent_activity(self, since: str, limit: int = 500) -> dict[str, Any]:
         discovered = self.list_conversations(limit=limit)
@@ -416,6 +470,8 @@ class SlackChannelAdapter:
         )
         if not payload.get("ok"):
             return False, str(payload.get("error") or "slack_send_failed")
+        self._conversation_cache.clear()
+        self._history_cache.clear()
         self._touch_state(last_sent_channel=chat_identifier, last_sent_ts=str(payload.get("ts") or ""))
         return True, None
 

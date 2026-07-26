@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 IMESSAGE_DB = Path.home() / "Library" / "Messages" / "chat.db"
 _DEFAULT_WHATSAPP_DB = Path.home() / "whatsapp-mcp" / "whatsapp-bridge" / "store" / "messages.db"
 _DEFAULT_TELEGRAM_SESSION = Path.home() / "penguin-connect-data" / "telegram.session"
+_SLACK_KEYCHAIN_SERVICE = "com.penguinconnect.slack.oauth-token"
+_SLACK_KEYCHAIN_ACCOUNT = "penguin-connect-slack-user"
 
 
 @dataclass
@@ -167,6 +170,52 @@ def _check_telegram_auth() -> CheckResult:
         return CheckResult("telegram_auth", False, str(exc))
 
 
+def _slack_token() -> str:
+    configured = os.environ.get("PENGUIN_CONNECT_SLACK_TOKEN", "").strip()
+    if configured:
+        return configured
+    try:
+        result = subprocess.run(
+            [
+                "security",
+                "find-generic-password",
+                "-a",
+                _SLACK_KEYCHAIN_ACCOUNT,
+                "-s",
+                _SLACK_KEYCHAIN_SERVICE,
+                "-w",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return (result.stdout or "").strip() if result.returncode == 0 else ""
+
+
+def _check_slack_auth() -> CheckResult:
+    token = _slack_token()
+    if not token:
+        return CheckResult(
+            "slack_auth",
+            False,
+            "not connected — install Penguin in Slack and store its user token in Keychain",
+        )
+    try:
+        response = requests.get(
+            "https://slack.com/api/auth.test",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=5,
+        )
+        payload = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        return CheckResult("slack_auth", False, str(exc))
+    if not payload.get("ok"):
+        return CheckResult("slack_auth", False, str(payload.get("error") or "Slack rejected token"))
+    return CheckResult("slack_auth", True, f"connected: {payload.get('team') or 'unknown workspace'}")
+
+
 def _check_required_env() -> CheckResult:
     val = os.environ.get("PENGUIN_CONNECT_POLL_SECONDS", "30")
     try:
@@ -186,6 +235,7 @@ def run_checks(api_base: str) -> list[CheckResult]:
         _check_whatsapp_bridge,
         _check_whatsapp_api,
         _check_telegram_auth,
+        _check_slack_auth,
         _check_cache_db,
         lambda: _check_backend(api_base),
         lambda: _check_gmail_status(api_base),

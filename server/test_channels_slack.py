@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 import penguin_connect
-from channels.slack import SlackChannelAdapter
+from channels.slack import SlackChannelAdapter, _slack_token
 from db import SCHEMA
 
 
@@ -113,11 +113,58 @@ class SlackChannelAdapterTests(unittest.TestCase):
         self.assertTrue(messages[1]["is_from_me"])
         self.assertEqual(sent, (True, None))
 
+    def test_reuses_recent_workspace_discovery(self):
+        adapter = SlackChannelAdapter()
+
+        def fake_api(method, **_kwargs):
+            if method == "auth.test":
+                return {"ok": True, "user_id": "USELF", "team": "Slashy"}
+            if method == "users.list":
+                return {"ok": True, "members": [], "response_metadata": {"next_cursor": ""}}
+            if method == "conversations.list":
+                return {
+                    "ok": True,
+                    "channels": [{"id": "C_PRODUCT", "name": "product"}],
+                    "response_metadata": {"next_cursor": ""},
+                }
+            if method == "search.messages":
+                return {"ok": True, "messages": {"matches": [], "pagination": {}}}
+            raise AssertionError(method)
+
+        with mock.patch.object(adapter, "_api", side_effect=fake_api) as api:
+            first = adapter.list_conversations(limit=100)
+            second = adapter.list_conversations(limit=100)
+
+        self.assertEqual(second, first)
+        self.assertEqual(api.call_count, 4)
+
     def test_is_gracefully_unavailable_without_token(self):
         adapter = SlackChannelAdapter()
-        with mock.patch.dict(os.environ, {"PENGUIN_CONNECT_SLACK_TOKEN": ""}, clear=False):
+        with mock.patch.dict(
+            os.environ,
+            {"PENGUIN_CONNECT_SLACK_TOKEN": ""},
+            clear=False,
+        ), mock.patch("channels.slack._read_slack_keychain_token", return_value=""):
             self.assertFalse(adapter.list_conversations()["available"])
             self.assertEqual(adapter.fetch_messages("C_PRODUCT"), [])
+
+    def test_reads_user_token_from_keychain_when_env_is_unset(self):
+        with mock.patch.dict(
+            os.environ,
+            {"PENGUIN_CONNECT_SLACK_TOKEN": ""},
+            clear=False,
+        ), mock.patch(
+            "channels.slack._read_slack_keychain_token",
+            return_value="xoxp-keychain-token",
+        ):
+            self.assertEqual(_slack_token(), "xoxp-keychain-token")
+
+    def test_environment_token_takes_precedence_over_keychain(self):
+        with mock.patch(
+            "channels.slack._read_slack_keychain_token"
+        ) as read_keychain:
+            self.assertEqual(_slack_token(), "xoxp-test-token")
+        read_keychain.assert_not_called()
 
 
 class SlackBridgeIntegrationTests(unittest.TestCase):

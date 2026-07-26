@@ -86,6 +86,20 @@ The workspace explicitly discovers WhatsApp whenever it refreshes. For a headles
 process that should also discover WhatsApp and Telegram before any UI or MCP request, set
 `PENGUIN_CONNECT_DISCOVER_SECONDARY_CHANNELS_DURING_SYNC=true`.
 
+For Slack, create an app from [`slack_manifest.example.json`](slack_manifest.example.json)
+and install it into the intended workspace. The manifest requests user scopes for channel,
+private-channel, DM, and group-DM read/history access plus `users:read`, `files:read`,
+`search:read`, and `chat:write`. Copy the resulting `xoxp-` user token, then store it without
+putting it in `.env`:
+
+```bash
+./scripts/penguin_connect_slack_auth.py --store-from-clipboard
+./scripts/penguin_connect_slack_auth.py --status
+```
+
+Penguin reads that credential from macOS Keychain. `PENGUIN_CONNECT_SLACK_TOKEN` remains
+available as a local development override.
+
 ### Native desktop app
 
 Build the lightweight macOS app bundle, install it in Applications, and open it:
