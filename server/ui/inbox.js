@@ -24,6 +24,10 @@ const state = {
   links: [],
   linksVisible: 150,
   linksQuery: "",
+  linksLoadedQuery: "",
+  linksHasMore: false,
+  linksLoading: false,
+  linksMessageOffset: 0,
   queue: [],
   selected: null,
   messages: [],
@@ -347,6 +351,7 @@ let threadSearchTimer = 0;
 let threadSearchRequestToken = 0;
 let threadSearchRestoreVisible = MESSAGE_RENDER_WINDOW;
 let searchAbortController = null;
+let linkSearchRequestToken = 0;
 let contactsLoadToken = 0;
 let detailedContactsPromise = null;
 
@@ -1937,8 +1942,16 @@ function renderLinksList() {
   el.linksList.replaceChildren();
   const matching = visibleLinks();
   const visible = matching.slice(0, state.linksVisible);
-  el.listSummary.textContent = `${matching.length} shared link${matching.length === 1 ? "" : "s"}`;
+  const moreLabel = state.linksHasMore ? "+" : "";
+  const loadingLabel = state.linksLoading ? " · searching" : "";
+  el.listSummary.textContent = `${matching.length.toLocaleString()}${moreLabel} shared link${
+    matching.length === 1 && !state.linksHasMore ? "" : "s"
+  }${loadingLabel}`;
   if (!visible.length) {
+    if (state.linksLoading) {
+      skeletonRows(el.linksList, 7);
+      return;
+    }
     const empty = document.createElement("div");
     empty.className = "pane-empty";
     empty.textContent = state.linksQuery ? "No shared links match that search." : "No cached shared links yet.";
@@ -1981,10 +1994,16 @@ function renderLinksList() {
     row.append(favicon, copy, open);
     el.linksList.append(row);
   }
-  if (state.linksVisible < matching.length) {
+  if (state.linksVisible < matching.length || state.linksHasMore) {
     appendInfiniteSentinel(el.linksList, "Loading more links…", () => {
       state.linksVisible += 150;
-      renderLinksList();
+      if (state.linksVisible <= matching.length || !state.linksHasMore) {
+        renderLinksList();
+        return;
+      }
+      loadLinks({ append: true, query: state.linksQuery }).catch((error) => {
+        toast(`Could not load more links: ${error.message}`, "error");
+      });
     });
   }
   restoreInfiniteListScroll(el.linksList, previousScrollTop);
@@ -4593,6 +4612,9 @@ async function refreshWorkspaceIfChanged() {
         : Promise.resolve(),
       loadScheduledMessages(),
       state.view === "queue" ? loadQueue() : Promise.resolve(),
+      state.view === "links"
+        ? loadLinks({ query: state.linksQuery })
+        : Promise.resolve(),
     ]);
     const settledRevision = await loadWorkspaceRevision().catch(() => revision);
     const sourcesStayedStable = (
@@ -4756,11 +4778,9 @@ async function refreshFileIntelligenceStatus() {
   renderFilesList();
 }
 
-async function loadLinks() {
-  if (!state.links.length) skeletonRows(el.linksList, 7);
-  const payload = await api("/penguin-connect/messages/search?query=&limit=500&view=links");
+function linksFromMessages(messages) {
   const links = [];
-  for (const message of payload.messages || []) {
+  for (const message of messages || []) {
     const conversation = state.conversations.find(
       (item) => item.conversation_id === message.conversation_id,
     );
@@ -4776,9 +4796,64 @@ async function loadLinks() {
       });
     }
   }
-  state.links = links;
-  state.linksVisible = 150;
   return links;
+}
+
+async function loadLinks({ append = false, query = state.linksQuery } = {}) {
+  if (state.linksLoading && append) return state.links;
+  const cleanQuery = String(query || "").trim();
+  const token = ++linkSearchRequestToken;
+  const offset = append && cleanQuery === state.linksLoadedQuery
+    ? state.linksMessageOffset
+    : 0;
+  state.linksLoading = true;
+  if (!append) {
+    state.linksVisible = 150;
+    state.linksHasMore = false;
+    el.linksList.scrollTop = 0;
+    renderLinksList();
+  }
+  const queryParams = new URLSearchParams();
+  queryParams.set("query", cleanQuery);
+  queryParams.set("limit", "500");
+  queryParams.set("view", "links");
+  queryParams.set("offset", String(offset));
+  queryParams.set("refresh_source", "false");
+  try {
+    const payload = await api(`/penguin-connect/messages/search?${queryParams.toString()}`);
+    if (token !== linkSearchRequestToken) return state.links;
+    const page = linksFromMessages(payload.messages || []);
+    const merged = new Map();
+    if (append) {
+      for (const link of state.links) {
+        merged.set(
+          `${link.message.conversation_id}:${link.message.provider_message_id}:${link.url}`,
+          link,
+        );
+      }
+    }
+    for (const link of page) {
+      merged.set(
+        `${link.message.conversation_id}:${link.message.provider_message_id}:${link.url}`,
+        link,
+      );
+    }
+    state.links = [...merged.values()];
+    state.linksLoadedQuery = cleanQuery;
+    state.linksMessageOffset = Number(
+      payload.next_offset ?? (offset + (payload.messages || []).length),
+    );
+    state.linksHasMore = Boolean(payload.has_more);
+    return state.links;
+  } catch (error) {
+    if (token === linkSearchRequestToken) state.linksHasMore = false;
+    throw error;
+  } finally {
+    if (token === linkSearchRequestToken) {
+      state.linksLoading = false;
+      renderLinksList();
+    }
+  }
 }
 
 async function loadQueue() {
@@ -4803,6 +4878,8 @@ async function loadHealth() {
 
 function cancelSearchRequest() {
   state.search.token += 1;
+  linkSearchRequestToken += 1;
+  state.linksLoading = false;
   const controller = searchAbortController;
   searchAbortController = null;
   controller?.abort();
@@ -4878,8 +4955,16 @@ function scheduleSearch() {
   const query = el.globalSearch.value;
   if (state.view === "links") {
     state.linksQuery = query;
+    state.linksVisible = 150;
+    state.linksHasMore = false;
     state.search.query = "";
+    el.linksList.scrollTop = 0;
     renderLinksList();
+    searchTimer = window.setTimeout(() => {
+      loadLinks({ query }).catch((error) => {
+        toast(`Could not search links: ${error.message}`, "error");
+      });
+    }, 220);
     return;
   }
   if (!query.trim()) {
@@ -4915,8 +5000,8 @@ function setView(view) {
   if (state.view === "files" && !state.files.length) {
     loadFiles().then(renderFilesList).catch((error) => toast(error.message, "error"));
   }
-  if (state.view === "links" && !state.links.length) {
-    loadLinks().then(renderLinksList).catch((error) => toast(error.message, "error"));
+  if (state.view === "links" && (!state.links.length || state.linksLoadedQuery)) {
+    loadLinks({ query: "" }).catch((error) => toast(error.message, "error"));
   }
   if (state.view === "queue") {
     loadQueue().then(renderQueueList).catch((error) => toast(error.message, "error"));
@@ -6065,6 +6150,9 @@ async function refreshAll() {
       loadConversations({ keepSelection: true, discoverWhatsApp: true, discoverSlack: true }),
       loadContacts(),
       loadHealth(),
+      state.view === "links"
+        ? loadLinks({ query: state.linksQuery })
+        : Promise.resolve(),
     ]);
     if (state.selected) await selectConversation(state.selected);
     toast("Inbox refreshed");
@@ -6094,7 +6182,7 @@ el.globalSearch.addEventListener("keydown", (event) => {
     el.globalSearch.value = "";
     if (state.view === "links") {
       state.linksQuery = "";
-      renderLinksList();
+      loadLinks({ query: "" }).catch((error) => toast(error.message, "error"));
     } else {
       runSearch("");
     }

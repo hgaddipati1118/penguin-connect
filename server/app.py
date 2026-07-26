@@ -3530,6 +3530,7 @@ def _search_messages(
     query: str,
     *,
     limit: int,
+    offset: int = 0,
     view: str = "all",
     conversation_id: str = "",
     date_from: str = "",
@@ -3537,6 +3538,8 @@ def _search_messages(
     refresh_source: bool = True,
 ) -> dict:
     search = (query or "").strip()
+    page_limit = max(1, min(limit, 500))
+    page_offset = max(0, offset)
     normalized_view = (view or "all").strip().lower()
     if normalized_view not in {"all", "recent", "current", "unread", "starred", "noted", "files", "links", "audio", "mine"}:
         normalized_view = "all"
@@ -3551,6 +3554,9 @@ def _search_messages(
             "conversation_id": "",
             "date_from": "",
             "date_to": "",
+            "offset": page_offset,
+            "next_offset": page_offset,
+            "has_more": False,
             "count": 0,
             "messages": [],
         }
@@ -3561,6 +3567,9 @@ def _search_messages(
             "conversation_id": "",
             "date_from": start_bound.get("display") if start_bound else "",
             "date_to": end_bound.get("display") if end_bound else "",
+            "offset": page_offset,
+            "next_offset": page_offset,
+            "has_more": False,
             "count": 0,
             "messages": [],
         }
@@ -3613,8 +3622,9 @@ def _search_messages(
                 lower(COALESCE(m.body_text, '')) LIKE '%http://%'
                 OR lower(COALESCE(m.body_text, '')) LIKE '%https://%'
                 OR lower(COALESCE(m.body_text, '')) LIKE '%www.%'
-                OR lower(COALESCE(m.metadata, '')) LIKE '%http://%'
-                OR lower(COALESCE(m.metadata, '')) LIKE '%https://%'
+                OR lower(COALESCE(m.subject, '')) LIKE '%http://%'
+                OR lower(COALESCE(m.subject, '')) LIKE '%https://%'
+                OR lower(COALESCE(m.subject, '')) LIKE '%www.%'
             )"""
         )
     elif normalized_view == "audio":
@@ -3649,7 +3659,7 @@ def _search_messages(
         )
 
     where_clause = " AND ".join(f"({condition})" for condition in conditions) or "1 = 1"
-    params.append(max(1, min(limit, 500)))
+    params.extend((page_limit + 1, page_offset))
 
     rows = conn.execute(
         f"""
@@ -3694,10 +3704,12 @@ def _search_messages(
          AND mm.provider_message_id = m.provider_message_id
         WHERE {where_clause}
         ORDER BY m.message_timestamp DESC, m.id DESC
-        LIMIT ?
+        LIMIT ? OFFSET ?
         """,
         params,
     ).fetchall()
+    has_more = len(rows) > page_limit
+    rows = rows[:page_limit]
 
     messages = []
     for row in rows:
@@ -3719,6 +3731,9 @@ def _search_messages(
         "conversation_id": target_conversation_id if normalized_view == "current" else "",
         "date_from": start_bound.get("display") if start_bound else "",
         "date_to": end_bound.get("display") if end_bound else "",
+        "offset": page_offset,
+        "next_offset": page_offset + len(messages),
+        "has_more": has_more,
         "count": len(messages),
         "messages": messages,
     }
@@ -4608,6 +4623,7 @@ def refresh_penguinconnect_contacts():
 def search_penguinconnect_messages(
     query: str = "",
     limit: int = Query(25, ge=1, le=500),
+    offset: int = Query(0, ge=0, le=1_000_000),
     view: str = "all",
     conversation_id: str = "",
     date_from: str = "",
@@ -4620,6 +4636,7 @@ def search_penguinconnect_messages(
             conn,
             query,
             limit=limit,
+            offset=offset,
             view=view,
             conversation_id=conversation_id,
             date_from=date_from,

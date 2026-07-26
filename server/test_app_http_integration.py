@@ -1616,6 +1616,73 @@ class AppHttpIntegrationTests(unittest.TestCase):
             ["imsg-latest", "imsg-older"],
         )
 
+    def test_message_search_endpoint_paginates_links_without_repeating_rows(self):
+        conn = self._get_connection()
+        try:
+            conn.executemany(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction, sender_name,
+                    body_text, message_timestamp, is_read, metadata)
+                   VALUES (?, 'imessage', ?, 'imessage_local', ?, ?, ?, 1, '{}')""",
+                [
+                    (
+                        "amc_test",
+                        f"link-page-{index}",
+                        "Taylor",
+                        f"Reference https://pagination.example/item-{index}",
+                        f"2026-03-12T12:0{index}:00+00:00",
+                    )
+                    for index in range(1, 4)
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with TestClient(app_module.app) as client:
+            first_response = client.get(
+                "/penguin-connect/messages/search",
+                params={
+                    "query": "pagination.example",
+                    "view": "links",
+                    "limit": 2,
+                    "offset": 0,
+                    "refresh_source": "false",
+                },
+            )
+            second_response = client.get(
+                "/penguin-connect/messages/search",
+                params={
+                    "query": "pagination.example",
+                    "view": "links",
+                    "limit": 2,
+                    "offset": 2,
+                    "refresh_source": "false",
+                },
+            )
+
+        self.assertEqual(first_response.status_code, 200)
+        first = first_response.json()
+        self.assertEqual(
+            [message["provider_message_id"] for message in first["messages"]],
+            ["link-page-3", "link-page-2"],
+        )
+        self.assertEqual(first["count"], 2)
+        self.assertEqual(first["offset"], 0)
+        self.assertEqual(first["next_offset"], 2)
+        self.assertTrue(first["has_more"])
+
+        self.assertEqual(second_response.status_code, 200)
+        second = second_response.json()
+        self.assertEqual(
+            [message["provider_message_id"] for message in second["messages"]],
+            ["link-page-1"],
+        )
+        self.assertEqual(second["count"], 1)
+        self.assertEqual(second["offset"], 2)
+        self.assertEqual(second["next_offset"], 3)
+        self.assertFalse(second["has_more"])
+
     def test_message_search_endpoint_can_skip_native_refresh(self):
         with mock.patch(
             "app.penguinconnect_import_local_imessage_search_results",
@@ -3586,7 +3653,14 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn(".label-filter-select", inbox_css_response.text)
         self.assertIn("renderLinksList", inbox_js_response.text)
         self.assertIn("loadLinks", inbox_js_response.text)
-        self.assertIn("view=links", inbox_js_response.text)
+        self.assertIn('queryParams.set("view", "links")', inbox_js_response.text)
+        self.assertIn("linksHasMore", inbox_js_response.text)
+        self.assertIn("linksMessageOffset", inbox_js_response.text)
+        self.assertIn("linkSearchRequestToken", inbox_js_response.text)
+        self.assertIn("loadLinks({ append: true", inbox_js_response.text)
+        self.assertIn('state.view === "links"', inbox_js_response.text)
+        self.assertIn("loadLinks({ query: state.linksQuery })", inbox_js_response.text)
+        self.assertIn('queryParams.set("offset", String(offset))', inbox_js_response.text)
         self.assertIn("renderLabelBar", inbox_js_response.text)
         self.assertIn("conversationLabels", inbox_js_response.text)
         self.assertIn("refreshSelectedMessages", inbox_js_response.text)
