@@ -1193,6 +1193,24 @@ class AppHttpIntegrationTests(unittest.TestCase):
             ["imsg-latest", "imsg-older"],
         )
 
+    def test_message_search_endpoint_can_skip_native_refresh(self):
+        with mock.patch(
+            "app.penguinconnect_import_local_imessage_search_results",
+            side_effect=AssertionError("cached search must not touch the native source"),
+        ) as mock_import, TestClient(app_module.app) as client:
+            response = client.get(
+                "/penguin-connect/messages/search",
+                params={
+                    "query": "latest",
+                    "limit": 10,
+                    "refresh_source": "false",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["count"], 1)
+        mock_import.assert_not_called()
+
     def test_message_search_endpoint_imports_raw_local_imessage_hits_without_gmail_account(self):
         conn = self._get_connection()
         try:
@@ -1889,6 +1907,31 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(empty_favorites_response.json()["count"], 0)
         self.assertEqual(empty_favorites_response.json()["source_counts"]["favorites"], 0)
         self.assertEqual(empty_favorites_response.json()["source_counts"]["noted"], 1)
+
+    def test_contacts_endpoint_can_skip_source_count_aggregation(self):
+        with mock.patch(
+            "app._contact_source_counts",
+            side_effect=AssertionError("quick contact search must not aggregate source counts"),
+        ) as mock_counts, mock.patch(
+            "app._conversation_contact_thread_stats",
+            side_effect=AssertionError("quick contact search must not aggregate thread stats"),
+        ) as mock_thread_stats, TestClient(app_module.app) as client:
+            response = client.get(
+                "/penguin-connect/contacts",
+                params={
+                    "search": "taylor",
+                    "limit": 10,
+                    "include_counts": "false",
+                    "include_thread_stats": "false",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["source_counts"], {})
+        mock_counts.assert_not_called()
+        mock_thread_stats.assert_not_called()
 
     def test_contacts_endpoint_accepts_full_directory_limit(self):
         with TestClient(app_module.app) as client:
@@ -2876,7 +2919,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("hasCachedMessage", inbox_js_response.text)
         self.assertIn("conversation?.chat_type === \"group\" && displayName", inbox_js_response.text)
         self.assertIn("peopleVisible", inbox_js_response.text)
-        self.assertIn("limit=${limit}&source=all", inbox_js_response.text)
+        self.assertIn("resolvedLimit", inbox_js_response.text)
+        self.assertIn('params.set("include_counts", "false")', inbox_js_response.text)
+        self.assertIn('params.set("include_thread_stats", "false")', inbox_js_response.text)
         self.assertIn("moveConversationSelection", inbox_js_response.text)
         self.assertIn("openConversationMeta", inbox_js_response.text)
         self.assertIn("Primary context — currently selected conversation", inbox_js_response.text)
@@ -2951,6 +2996,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("visibleConversationIndex", inbox_js_response.text)
         self.assertIn("reconcileConversationSelection", inbox_js_response.text)
         self.assertIn("selectConversation(rows[0], { markRead: false })", inbox_js_response.text)
+        self.assertIn("cancelSearchRequest", inbox_js_response.text)
+        self.assertIn("&refresh_source=false", inbox_js_response.text)
+        self.assertIn("&refresh_source=true", inbox_js_response.text)
         self.assertIn("updateConversationSelectionUI", inbox_js_response.text)
         self.assertIn("focusMessageComposer", inbox_js_response.text)
         self.assertIn("scrollCurrentThread", inbox_js_response.text)

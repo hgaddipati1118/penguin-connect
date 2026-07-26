@@ -2227,7 +2227,11 @@ def _contact_has_handle_type(contact: dict, handle_type: str) -> bool:
     return str(contact.get("handle_type") or "").strip().lower() == normalized
 
 
-def _contact_source_counts(conn: sqlite3.Connection) -> dict[str, int]:
+def _contact_source_counts(
+    conn: sqlite3.Connection,
+    *,
+    thread_stats_by_key: dict[str, dict] | None = None,
+) -> dict[str, int]:
     saved_rows = conn.execute(
         """
         SELECT id, first_name, last_name, organization, phone, phone_normalized, email, imported_at
@@ -2237,7 +2241,8 @@ def _contact_source_counts(conn: sqlite3.Connection) -> dict[str, int]:
     saved_contacts = [_contact_to_dict(row) for row in saved_rows]
     saved_count = len(saved_contacts)
     saved_keys = _all_contact_keys(conn)
-    thread_stats_by_key = _conversation_contact_thread_stats(conn)
+    if thread_stats_by_key is None:
+        thread_stats_by_key = _conversation_contact_thread_stats(conn)
     threaded_keys = set(thread_stats_by_key)
     direct_keys = {
         key
@@ -2520,7 +2525,15 @@ def _set_contact_management(
     }
 
 
-def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, source: str = "all") -> dict:
+def _search_contacts(
+    conn: sqlite3.Connection,
+    search: str,
+    *,
+    limit: int,
+    source: str = "all",
+    include_counts: bool = True,
+    include_thread_stats: bool = True,
+) -> dict:
     query = (search or "").strip()
     normalized_source = (source or "all").strip().lower()
     if normalized_source not in {
@@ -2539,8 +2552,23 @@ def _search_contacts(conn: sqlite3.Connection, search: str, *, limit: int, sourc
         "emails",
     }:
         normalized_source = "all"
-    source_counts = _contact_source_counts(conn)
-    thread_stats_by_key = _conversation_contact_thread_stats(conn)
+    thread_stats_by_key = (
+        _conversation_contact_thread_stats(conn)
+        if include_counts or include_thread_stats or normalized_source in {
+            "threaded",
+            "direct",
+            "groups",
+            "unread",
+            "needs_reply",
+            "followup",
+        }
+        else {}
+    )
+    source_counts = (
+        _contact_source_counts(conn, thread_stats_by_key=thread_stats_by_key)
+        if include_counts
+        else {}
+    )
     threaded_keys = set(thread_stats_by_key)
     direct_keys = {
         key
@@ -3391,6 +3419,7 @@ def _search_messages(
     conversation_id: str = "",
     date_from: str = "",
     date_to: str = "",
+    refresh_source: bool = True,
 ) -> dict:
     search = (query or "").strip()
     normalized_view = (view or "all").strip().lower()
@@ -3421,7 +3450,7 @@ def _search_messages(
             "messages": [],
         }
 
-    if search and normalized_view != "current":
+    if search and normalized_view != "current" and refresh_source:
         for term in _message_search_terms(search) or [search]:
             penguinconnect_import_local_imessage_search_results(conn, term, limit=limit)
 
@@ -4372,10 +4401,23 @@ def get_penguinconnect_health():
 
 @app.get("/api/penguin-connect/contacts")
 @app.get("/penguin-connect/contacts")
-def search_penguinconnect_contacts(search: str = "", limit: int = Query(25, ge=1, le=5000), source: str = "all"):
+def search_penguinconnect_contacts(
+    search: str = "",
+    limit: int = Query(25, ge=1, le=5000),
+    source: str = "all",
+    include_counts: bool = True,
+    include_thread_stats: bool = True,
+):
     conn = get_connection()
     try:
-        return _search_contacts(conn, search, limit=limit, source=source)
+        return _search_contacts(
+            conn,
+            search,
+            limit=limit,
+            source=source,
+            include_counts=include_counts,
+            include_thread_stats=include_thread_stats,
+        )
     finally:
         conn.close()
 
@@ -4438,6 +4480,7 @@ def search_penguinconnect_messages(
     conversation_id: str = "",
     date_from: str = "",
     date_to: str = "",
+    refresh_source: bool = True,
 ):
     conn = get_connection()
     try:
@@ -4449,6 +4492,7 @@ def search_penguinconnect_messages(
             conversation_id=conversation_id,
             date_from=date_from,
             date_to=date_to,
+            refresh_source=refresh_source,
         )
     finally:
         conn.close()

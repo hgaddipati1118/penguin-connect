@@ -305,6 +305,7 @@ const cacheRepairRequests = new Map();
 let threadSearchTimer = 0;
 let threadSearchRequestToken = 0;
 let threadSearchRestoreVisible = MESSAGE_RENDER_WINDOW;
+let searchAbortController = null;
 
 function apiErrorMessage(payload, response) {
   const detail = payload?.detail;
@@ -1225,6 +1226,7 @@ function openContactCard(contact) {
     row.append(nameNode, meta, preview);
     row.addEventListener("click", () => {
       el.contactCardDialog.close();
+      cancelSearchRequest();
       state.view = "inbox";
       state.search.query = "";
       el.globalSearch.value = "";
@@ -1607,6 +1609,7 @@ function appendSearchTitle(label, count) {
 }
 
 function openSearchConversation(conversation, messageId = "") {
+  cancelSearchRequest();
   state.search.query = "";
   el.globalSearch.value = "";
   state.view = "inbox";
@@ -3192,11 +3195,24 @@ async function refreshWorkspaceIfChanged() {
   }
 }
 
-async function loadContacts(query = "") {
+async function loadContacts(query = "", {
+  signal = null,
+  limit = null,
+  includeCounts = true,
+  includeThreadStats = true,
+} = {}) {
   if (state.view === "people" && !state.contacts.length && !query) skeletonRows(el.peopleList, 7);
-  const limit = query ? 500 : 5000;
+  const resolvedLimit = limit ?? (query ? 500 : 5000);
+  const params = new URLSearchParams({
+    search: query,
+    limit: String(resolvedLimit),
+    source: "all",
+  });
+  if (!includeCounts) params.set("include_counts", "false");
+  if (!includeThreadStats) params.set("include_thread_stats", "false");
   const payload = await api(
-    `/penguin-connect/contacts?search=${encodeURIComponent(query)}&limit=${limit}&source=all`,
+    `/penguin-connect/contacts?${params.toString()}`,
+    signal ? { signal } : {},
   );
   if (!query) {
     state.contacts = payload.contacts || [];
@@ -3354,34 +3370,68 @@ async function loadHealth() {
   }
 }
 
+function cancelSearchRequest() {
+  state.search.token += 1;
+  const controller = searchAbortController;
+  searchAbortController = null;
+  controller?.abort();
+}
+
+function applyMessageSearchResults(payload) {
+  state.search.messages = (payload.messages || []).filter((message) => (
+    state.source === "all" || providerKey(message.source_provider) === state.source
+  ));
+}
+
 async function runSearch(query) {
   const clean = query.trim();
+  cancelSearchRequest();
+  const token = state.search.token;
   state.search.query = clean;
   state.search.conversations = searchConversationRows(clean);
   state.search.contacts = [];
   state.search.messages = [];
   state.search.loading = Boolean(clean);
-  const token = state.search.token + 1;
-  state.search.token = token;
   renderView();
   if (!clean) return;
 
+  const controller = new AbortController();
+  searchAbortController = controller;
+  const messageSearchPath = (
+    `/penguin-connect/messages/search?query=${encodeURIComponent(clean)}&limit=50&view=all`
+  );
   try {
-    const calls = [loadContacts(clean)];
+    const calls = [loadContacts(clean, {
+      signal: controller.signal,
+      limit: 80,
+      includeCounts: false,
+      includeThreadStats: false,
+    })];
     if (clean.length >= 2) {
-      calls.push(api(`/penguin-connect/messages/search?query=${encodeURIComponent(clean)}&limit=50&view=all`));
+      calls.push(api(`${messageSearchPath}&refresh_source=false`, {
+        signal: controller.signal,
+      }));
     } else {
       calls.push(Promise.resolve({ messages: [] }));
     }
     const [contacts, messages] = await Promise.all(calls);
     if (state.search.token !== token) return;
     state.search.contacts = contacts;
-    state.search.messages = (messages.messages || []).filter((message) => (
-      state.source === "all" || providerKey(message.source_provider) === state.source
-    ));
+    applyMessageSearchResults(messages);
+    renderSearchResults();
+    if (clean.length >= 2) {
+      const refreshed = await api(`${messageSearchPath}&refresh_source=true`, {
+        signal: controller.signal,
+      });
+      if (state.search.token !== token) return;
+      applyMessageSearchResults(refreshed);
+    }
   } catch (error) {
-    if (state.search.token === token) toast(`Search problem: ${error.message}`, "error");
+    if (error?.name !== "AbortError" && state.search.token === token) {
+      toast(`Search problem: ${error.message}`, "error");
+    }
   } finally {
+    if (searchAbortController === controller) searchAbortController = null;
     if (state.search.token === token) {
       state.search.loading = false;
       renderSearchResults();
@@ -3393,6 +3443,7 @@ let searchTimer = 0;
 
 function scheduleSearch() {
   window.clearTimeout(searchTimer);
+  cancelSearchRequest();
   const query = el.globalSearch.value;
   if (state.view === "links") {
     state.linksQuery = query;
@@ -3406,12 +3457,15 @@ function scheduleSearch() {
   }
   state.search.query = query.trim();
   state.search.conversations = searchConversationRows(query);
+  state.search.contacts = [];
+  state.search.messages = [];
   state.search.loading = true;
   renderView();
   searchTimer = window.setTimeout(() => runSearch(query), 280);
 }
 
 function setView(view) {
+  cancelSearchRequest();
   state.view = ["people", "files", "links", "queue"].includes(view) ? view : "inbox";
   state.search.query = "";
   state.linksQuery = "";
@@ -3440,6 +3494,7 @@ function setView(view) {
 }
 
 function setInboxSmartView(view = "all") {
+  cancelSearchRequest();
   state.view = "inbox";
   state.smartView = ["all", "unread", "starred", "reminders", "archived"].includes(view)
     ? view
