@@ -114,6 +114,124 @@ class SlackChannelAdapterTests(unittest.TestCase):
         self.assertTrue(messages[1]["is_from_me"])
         self.assertEqual(sent, (True, None))
 
+    def test_normalizes_slack_reactions_with_counts_and_own_state(self):
+        adapter = SlackChannelAdapter()
+        adapter._self_user_id = "USELF"
+        adapter._users = {"USELF": "Owner", "UANH": "Teammate"}
+
+        def fake_api(method, **_kwargs):
+            if method == "conversations.history":
+                return {
+                    "ok": True,
+                    "messages": [
+                        {
+                            "ts": "1785000001.000100",
+                            "user": "UANH",
+                            "text": "Ready to ship",
+                            "reactions": [
+                                {
+                                    "name": "+1",
+                                    "count": 2,
+                                    "users": ["USELF", "UANH"],
+                                },
+                                {
+                                    "name": "custom_penguin",
+                                    "count": 1,
+                                    "users": ["UANH"],
+                                },
+                            ],
+                        },
+                    ],
+                    "response_metadata": {"next_cursor": ""},
+                }
+            raise AssertionError(method)
+
+        with mock.patch.object(adapter, "_api", side_effect=fake_api):
+            messages = adapter.fetch_messages("C_PRODUCT", limit=15)
+
+        self.assertEqual(
+            messages[0]["provider_reactions"],
+            [
+                {
+                    "name": "+1",
+                    "emoji": "👍",
+                    "count": 2,
+                    "reacted_by_me": True,
+                },
+                {
+                    "name": "custom_penguin",
+                    "emoji": ":custom_penguin:",
+                    "count": 1,
+                    "reacted_by_me": False,
+                },
+            ],
+        )
+
+    def test_adds_and_removes_native_slack_reactions_idempotently(self):
+        adapter = SlackChannelAdapter()
+        calls = []
+
+        def fake_api(method, **kwargs):
+            calls.append((method, kwargs))
+            if method == "reactions.add":
+                return {"ok": False, "error": "already_reacted"}
+            if method == "reactions.remove":
+                return {"ok": False, "error": "no_reaction"}
+            raise AssertionError(method)
+
+        with mock.patch.object(adapter, "_api", side_effect=fake_api):
+            added = adapter.set_reaction(
+                "C_PRODUCT",
+                "slack:1785000001.000100",
+                "👍",
+            )
+            removed = adapter.set_reaction(
+                "C_PRODUCT",
+                "1785000001.000100",
+                "+1",
+                remove=True,
+            )
+
+        self.assertEqual(added, (True, None))
+        self.assertEqual(removed, (True, None))
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "reactions.add",
+                    {
+                        "json_body": {
+                            "channel": "C_PRODUCT",
+                            "timestamp": "1785000001.000100",
+                            "name": "+1",
+                        }
+                    },
+                ),
+                (
+                    "reactions.remove",
+                    {
+                        "json_body": {
+                            "channel": "C_PRODUCT",
+                            "timestamp": "1785000001.000100",
+                            "name": "+1",
+                        }
+                    },
+                ),
+            ],
+        )
+
+    def test_rejects_invalid_slack_reaction_before_calling_api(self):
+        adapter = SlackChannelAdapter()
+        with mock.patch.object(adapter, "_api") as mock_api:
+            result = adapter.set_reaction(
+                "C_PRODUCT",
+                "slack:1785000001.000100",
+                "not a valid reaction",
+            )
+
+        self.assertEqual(result, (False, "slack_invalid_reaction"))
+        mock_api.assert_not_called()
+
     def test_fetches_thread_replies_with_author_and_parent_metadata(self):
         adapter = SlackChannelAdapter()
         adapter._self_user_id = "USELF"

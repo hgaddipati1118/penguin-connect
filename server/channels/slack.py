@@ -26,6 +26,28 @@ _KEYCHAIN_SERVICE = "com.penguinconnect.slack.oauth-token"
 _KEYCHAIN_ACCOUNT = "penguin-connect-slack-user"
 _USER_MENTION_RE = re.compile(r"<@([A-Z0-9]+)>")
 _CHANNEL_MENTION_RE = re.compile(r"<#([A-Z0-9]+)\|([^>]+)>")
+_REACTION_NAME_RE = re.compile(r"^[a-z0-9_+\-]+(?::skin-tone-[2-6])?$")
+_REACTION_NAMES_BY_EMOJI = {
+    "👍": "+1",
+    "👎": "-1",
+    "❤️": "heart",
+    "❤": "heart",
+    "😂": "joy",
+    "🎉": "tada",
+    "👀": "eyes",
+    "✅": "white_check_mark",
+}
+_REACTION_EMOJI_BY_NAME = {
+    "+1": "👍",
+    "thumbsup": "👍",
+    "-1": "👎",
+    "thumbsdown": "👎",
+    "heart": "❤️",
+    "joy": "😂",
+    "tada": "🎉",
+    "eyes": "👀",
+    "white_check_mark": "✅",
+}
 _keychain_token_cache = ""
 
 
@@ -140,6 +162,47 @@ def _slack_fallback_text(message: dict[str, Any]) -> str:
     if not parts:
         collect(message.get("blocks"))
     return "\n".join(parts)
+
+
+def _slack_reaction_name(value: Any) -> str:
+    clean_value = str(value or "").strip()
+    if clean_value in _REACTION_NAMES_BY_EMOJI:
+        return _REACTION_NAMES_BY_EMOJI[clean_value]
+    if clean_value.startswith(":") and clean_value.endswith(":"):
+        clean_value = clean_value[1:-1]
+    clean_value = clean_value.lower()
+    if len(clean_value) > 100 or not _REACTION_NAME_RE.fullmatch(clean_value):
+        return ""
+    return clean_value
+
+
+def _slack_reactions(message: dict[str, Any], self_user_id: str) -> list[dict[str, Any]]:
+    normalized = []
+    raw_reactions = message.get("reactions")
+    if not isinstance(raw_reactions, list):
+        return normalized
+    for item in raw_reactions:
+        if not isinstance(item, dict):
+            continue
+        name = _slack_reaction_name(item.get("name"))
+        if not name:
+            continue
+        try:
+            count = max(0, int(item.get("count") or 0))
+        except (TypeError, ValueError):
+            count = 0
+        if count <= 0:
+            continue
+        users = item.get("users") if isinstance(item.get("users"), list) else []
+        normalized.append(
+            {
+                "name": name,
+                "emoji": _REACTION_EMOJI_BY_NAME.get(name, f":{name}:"),
+                "count": count,
+                "reacted_by_me": bool(self_user_id and self_user_id in users),
+            }
+        )
+    return normalized
 
 
 class SlackChannelAdapter:
@@ -375,6 +438,7 @@ class SlackChannelAdapter:
             "reply_count": max(0, int(message.get("reply_count") or 0)),
             "reply_users_count": max(0, int(message.get("reply_users_count") or 0)),
             "latest_reply": str(message.get("latest_reply") or "").strip(),
+            "provider_reactions": _slack_reactions(message, self._self_user_id),
         }
 
     def _fetch_thread_replies(
@@ -816,6 +880,41 @@ class SlackChannelAdapter:
         self._history_cache.clear()
         self._thread_cache.clear()
         self._touch_state(last_sent_channel=chat_identifier, last_sent_ts=str(payload.get("ts") or ""))
+        return True, None
+
+    def set_reaction(
+        self,
+        chat_identifier: str,
+        message_id: str,
+        emoji: str,
+        *,
+        remove: bool = False,
+    ) -> tuple[bool, Optional[str]]:
+        channel_id = str(chat_identifier or "").strip()
+        timestamp = str(message_id or "").strip()
+        if timestamp.startswith("slack:"):
+            timestamp = timestamp.split(":", 1)[1]
+        reaction_name = _slack_reaction_name(emoji)
+        if not channel_id or not timestamp:
+            return False, "slack_reaction_target_required"
+        if not reaction_name:
+            return False, "slack_invalid_reaction"
+        method = "reactions.remove" if remove else "reactions.add"
+        payload = self._api(
+            method,
+            json_body={
+                "channel": channel_id,
+                "timestamp": timestamp,
+                "name": reaction_name,
+            },
+        )
+        error = str(payload.get("error") or "").strip()
+        idempotent_error = "no_reaction" if remove else "already_reacted"
+        if not payload.get("ok") and error != idempotent_error:
+            return False, error or "slack_reaction_failed"
+        self._conversation_cache.clear()
+        self._history_cache.clear()
+        self._thread_cache.clear()
         return True, None
 
     def get_unread_count(self, chat_identifier: str) -> Optional[int]:

@@ -34,7 +34,7 @@ flowchart LR
 ## Current Status
 
 - Shipping source adapters: **Apple Messages** (`iMessage`, `SMS`, `RCS`), **WhatsApp**, and **Slack**
-- Slack channels retain human-readable authors, render collapsible replies beneath their parent message, and can send or schedule replies back into the native Slack thread
+- Slack channels retain human-readable authors, render collapsible replies beneath their parent message, support inline emoji reactions, and can send or schedule replies back into the native Slack thread
 - Primary operator surfaces: **local messaging workspace**, **power console**, **local CLI**, and **MCP server**
 - Optional legacy bridge surface: **Gmail aliases**
 - Additional adapter available: **Telegram**
@@ -90,8 +90,8 @@ process that should also discover WhatsApp and Telegram before any UI or MCP req
 For Slack, create an app from [`slack_manifest.example.json`](slack_manifest.example.json)
 and install it into the intended workspace. The manifest requests user scopes for channel,
 private-channel, DM, and group-DM read/history access plus `users:read`, `files:read`,
-`search:read`, and `chat:write`. Copy the resulting `xoxp-` user token, then store it without
-putting it in `.env`:
+`search:read`, `chat:write`, and `reactions:write`. Copy the resulting `xoxp-` user token,
+then store it without putting it in `.env`:
 
 ```bash
 ./scripts/penguin_connect_slack_auth.py --store-from-clipboard
@@ -100,6 +100,11 @@ putting it in `.env`:
 
 Penguin reads that credential from macOS Keychain. `PENGUIN_CONNECT_SLACK_TOKEN` remains
 available as a local development override.
+
+If Penguin was installed before inline reactions were added, update the app from the
+manifest and reinstall it once so Slack grants `reactions:write`, then store the replacement
+user token with the same command above. Reading and replying continue to work while that
+scope is absent; reaction attempts show the missing-scope guidance in the workspace.
 
 ### Native desktop app
 

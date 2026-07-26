@@ -58,6 +58,10 @@ const state = {
   scheduledMessages: [],
   replyTarget: null,
   focusedMessageId: "",
+  reaction: {
+    messageId: "",
+    busy: false,
+  },
   collapsedSlackThreads: new Set(),
   conversationAvatarDraft: "",
   followLatest: true,
@@ -128,6 +132,8 @@ const el = {
   closeThreadSearchButton: document.querySelector("#closeThreadSearchButton"),
   pinnedMessagesBar: document.querySelector("#pinnedMessagesBar"),
   messageList: document.querySelector("#messageList"),
+  reactionPopover: document.querySelector("#reactionPopover"),
+  reactionMoreButton: document.querySelector("#reactionMoreButton"),
   messageComposer: document.querySelector("#messageComposer"),
   messageComposerShell: document.querySelector("#messageComposerShell"),
   composerReplyContext: document.querySelector("#composerReplyContext"),
@@ -355,6 +361,7 @@ let searchAbortController = null;
 let linkSearchRequestToken = 0;
 let contactsLoadToken = 0;
 let detailedContactsPromise = null;
+let reactionPopoverAnchor = null;
 
 function apiErrorMessage(payload, response) {
   const detail = payload?.detail;
@@ -2766,6 +2773,24 @@ function reactionsByTarget(messages) {
   return grouped;
 }
 
+function providerReactions(message) {
+  const reactions = message?.metadata?.provider_reactions;
+  if (!Array.isArray(reactions)) return [];
+  return reactions
+    .filter((reaction) => (
+      reaction
+      && typeof reaction === "object"
+      && String(reaction.name || "").trim()
+      && Number(reaction.count || 0) > 0
+    ))
+    .map((reaction) => ({
+      name: String(reaction.name || "").trim(),
+      emoji: String(reaction.emoji || `:${reaction.name}:`).trim(),
+      count: Math.max(1, Number(reaction.count || 1)),
+      reacted_by_me: Boolean(reaction.reacted_by_me),
+    }));
+}
+
 function nativeReceiptLabel(message) {
   if (!isOwnMessage(message) || message.metadata?.pending_send) return "";
   if (message.metadata?.date_read) {
@@ -3071,6 +3096,172 @@ async function openProviderToReact(message) {
   }
 }
 
+function closeReactionPicker({ restoreFocus = false } = {}) {
+  if (el.reactionPopover.hidden) return;
+  el.reactionPopover.hidden = true;
+  state.reaction.messageId = "";
+  if (restoreFocus && reactionPopoverAnchor?.isConnected) {
+    reactionPopoverAnchor.focus({ preventScroll: true });
+  }
+  reactionPopoverAnchor = null;
+}
+
+function positionReactionPicker(anchor) {
+  const anchorRect = anchor.getBoundingClientRect();
+  const popoverRect = el.reactionPopover.getBoundingClientRect();
+  const viewportPadding = 10;
+  const preferredLeft = anchorRect.left + (anchorRect.width / 2) - (popoverRect.width / 2);
+  const left = Math.min(
+    window.innerWidth - popoverRect.width - viewportPadding,
+    Math.max(viewportPadding, preferredLeft),
+  );
+  const belowTop = anchorRect.bottom + 7;
+  const top = belowTop + popoverRect.height <= window.innerHeight - viewportPadding
+    ? belowTop
+    : Math.max(viewportPadding, anchorRect.top - popoverRect.height - 7);
+  el.reactionPopover.style.left = `${Math.round(left)}px`;
+  el.reactionPopover.style.top = `${Math.round(top)}px`;
+}
+
+function openReactionPicker(message, anchor) {
+  if (providerKey(state.selected?.source_provider) !== "slack") {
+    openProviderToReact(message);
+    return;
+  }
+  if (!message || message.metadata?.pending_send || !anchor) return;
+  const messageId = String(message.provider_message_id || "").trim();
+  if (!messageId) {
+    toast("This Slack message cannot be reacted to yet.", "error");
+    return;
+  }
+  state.reaction.messageId = messageId;
+  reactionPopoverAnchor = anchor;
+  const ownReactionNames = new Set(
+    providerReactions(message)
+      .filter((reaction) => reaction.reacted_by_me)
+      .map((reaction) => reaction.name),
+  );
+  for (const button of el.reactionPopover.querySelectorAll("[data-reaction-name]")) {
+    const selected = ownReactionNames.has(button.dataset.reactionName);
+    button.setAttribute("aria-pressed", selected ? "true" : "false");
+    button.setAttribute(
+      "aria-label",
+      `${selected ? "Remove" : "Add"} ${button.title || button.dataset.reactionEmoji} reaction`,
+    );
+  }
+  el.reactionPopover.hidden = false;
+  positionReactionPicker(anchor);
+  el.reactionPopover.querySelector("[data-reaction-name]")?.focus({ preventScroll: true });
+}
+
+function updateOptimisticProviderReaction(message, {
+  name,
+  emoji,
+  remove,
+}) {
+  const reactions = providerReactions(message);
+  const existingIndex = reactions.findIndex((reaction) => reaction.name === name);
+  if (existingIndex >= 0) {
+    const existing = reactions[existingIndex];
+    if (remove) {
+      existing.count = Math.max(0, existing.count - (existing.reacted_by_me ? 1 : 0));
+      existing.reacted_by_me = false;
+      if (existing.count <= 0) reactions.splice(existingIndex, 1);
+    } else if (!existing.reacted_by_me) {
+      existing.count += 1;
+      existing.reacted_by_me = true;
+    }
+  } else if (!remove) {
+    reactions.push({
+      name,
+      emoji,
+      count: 1,
+      reacted_by_me: true,
+    });
+  }
+  message.metadata = {
+    ...(message.metadata || {}),
+    provider_reactions: reactions,
+  };
+}
+
+async function submitSlackReaction(message, {
+  name,
+  emoji,
+  remove,
+} = {}) {
+  if (
+    state.reaction.busy
+    || !state.selected
+    || providerKey(state.selected.source_provider) !== "slack"
+  ) return;
+  const reactionName = String(name || "").trim();
+  const reactionEmoji = String(emoji || `:${reactionName}:`).trim();
+  if (!reactionName || !message?.provider_message_id) return;
+  const conversationId = state.selected.conversation_id;
+  const conversationMessages = state.messages;
+  const paginationSnapshot = { ...state.messagePagination };
+  const existing = providerReactions(message).find(
+    (reaction) => reaction.name === reactionName,
+  );
+  const shouldRemove = typeof remove === "boolean"
+    ? remove
+    : Boolean(existing?.reacted_by_me);
+  const previousReactions = providerReactions(message);
+  state.reaction.busy = true;
+  updateOptimisticProviderReaction(message, {
+    name: reactionName,
+    emoji: reactionEmoji,
+    remove: shouldRemove,
+  });
+  renderMessages({ preserveScroll: true });
+  closeReactionPicker();
+  try {
+    await api(
+      `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/messages/reaction`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          message_id: message.provider_message_id,
+          emoji: reactionName,
+          remove: shouldRemove,
+        }),
+      },
+    );
+    rememberConversationMessages(
+      conversationId,
+      conversationMessages,
+      paginationSnapshot,
+    );
+    toast(`${shouldRemove ? "Removed" : "Added"} ${reactionEmoji} reaction`);
+    if (state.selected?.conversation_id === conversationId) {
+      refreshSelectedMessages({ incremental: false }).catch(() => {});
+    }
+  } catch (error) {
+    message.metadata = {
+      ...(message.metadata || {}),
+      provider_reactions: previousReactions,
+    };
+    rememberConversationMessages(
+      conversationId,
+      conversationMessages,
+      paginationSnapshot,
+    );
+    if (state.selected?.conversation_id === conversationId) {
+      renderMessages({ preserveScroll: true });
+    }
+    const needsScope = String(error.message || "").includes("missing scope");
+    toast(
+      needsScope
+        ? "Slack reactions need the reactions:write scope. Reinstall Penguin’s Slack app, then store the new token."
+        : `Could not update reaction: ${error.message}`,
+      "error",
+    );
+  } finally {
+    state.reaction.busy = false;
+  }
+}
+
 function currentMessageById(messageId) {
   const cleanId = String(messageId || "");
   return state.messages.find(
@@ -3118,7 +3309,13 @@ function handleMessageListAction(event) {
   } else if (actionName === "translate") {
     queueMessageTranslation(message, { notify: true, priority: true });
   } else if (actionName === "react") {
-    openProviderToReact(message);
+    openReactionPicker(message, action);
+  } else if (actionName === "react-existing") {
+    submitSlackReaction(message, {
+      name: action.dataset.reactionName,
+      emoji: action.dataset.reactionEmoji,
+      remove: action.dataset.reactedByMe === "true",
+    });
   } else if (actionName === "reply") {
     startNativeReply(message);
   }
@@ -3253,9 +3450,16 @@ function renderMessages({
     const parentMessage = replyContext?.message_id
       ? messagesByNativeId.get(String(replyContext.message_id))
       : null;
-    const reactions = nativeReactions.get(
+    const nativeMessageReactions = nativeReactions.get(
       normalizeReactionTargetGuid(message.metadata?.native_guid),
     ) || [];
+    const reactions = [
+      ...nativeMessageReactions,
+      ...providerReactions(message).map((reaction) => ({
+        ...reaction,
+        provider: "slack",
+      })),
+    ];
     const showNativeReceipt = (
       message.provider_message_id === latestReceiptMessageId
       && Boolean(nativeReceiptLabel(message))
@@ -3410,9 +3614,32 @@ function renderMessages({
       const reactionList = document.createElement("div");
       reactionList.className = "message-reactions";
       for (const reaction of reactions) {
-        const badge = document.createElement("span");
-        badge.textContent = reaction.emoji || "Reacted";
-        badge.title = `${reaction.actor} reacted`;
+        const isProviderReaction = reaction.provider === "slack";
+        const badge = document.createElement(isProviderReaction ? "button" : "span");
+        badge.className = "message-reaction-chip";
+        if (isProviderReaction) {
+          badge.type = "button";
+          badge.dataset.messageAction = "react-existing";
+          badge.dataset.reactionName = reaction.name;
+          badge.dataset.reactionEmoji = reaction.emoji;
+          badge.dataset.reactedByMe = reaction.reacted_by_me ? "true" : "false";
+          badge.classList.toggle("reacted-by-me", reaction.reacted_by_me);
+          badge.title = reaction.reacted_by_me
+            ? `Remove your ${reaction.emoji} reaction`
+            : `Add ${reaction.emoji} reaction`;
+          badge.setAttribute("aria-pressed", reaction.reacted_by_me ? "true" : "false");
+        } else {
+          badge.title = `${reaction.actor} reacted`;
+        }
+        const glyph = document.createElement("span");
+        glyph.textContent = reaction.emoji || "Reacted";
+        badge.append(glyph);
+        if (isProviderReaction) {
+          const count = document.createElement("span");
+          count.className = "message-reaction-count";
+          count.textContent = String(reaction.count);
+          badge.append(count);
+        }
         reactionList.append(badge);
       }
       bubble.append(reactionList);
@@ -3471,7 +3698,9 @@ function renderMessages({
     react.className = "message-react-button";
     react.dataset.messageAction = "react";
     react.textContent = "☺";
-    react.title = `Open ${providerLabel(state.selected?.source_provider)} to react`;
+    react.title = messageProvider === "slack"
+      ? "React in Slack"
+      : `Open ${providerLabel(state.selected?.source_provider)} to react`;
     react.setAttribute("aria-label", react.title);
     if (message.metadata?.pending_send) react.hidden = true;
     const reply = document.createElement("button");
@@ -3705,6 +3934,7 @@ async function selectConversation(
   window.cancelAnimationFrame(selectionRenderFrame);
   window.clearTimeout(selectionHydrationTimer);
   window.clearTimeout(selectionPreloadTimer);
+  closeReactionPicker();
   state.selected = conversation;
   if (previousConversationId !== conversation.conversation_id) {
     state.focusedMessageId = "";
@@ -3793,6 +4023,7 @@ function messagesFingerprint(messages) {
     message.metadata?.reaction?.target_guid,
     message.metadata?.reaction?.type,
     message.metadata?.reaction?.removed,
+    JSON.stringify(message.metadata?.provider_reactions || []),
     message.metadata?.thread_ts,
     message.metadata?.is_thread_reply,
     message.metadata?.reply_count,
@@ -6294,11 +6525,40 @@ el.autoTranslateToggle.addEventListener("change", () => {
 });
 el.messageList.addEventListener("click", handleMessageListAction);
 el.messageList.addEventListener("scroll", (event) => {
+  closeReactionPicker();
   if (!event.isTrusted) return;
   const bottomDistance = el.messageList.scrollHeight - el.messageList.clientHeight - el.messageList.scrollTop;
   state.followLatest = bottomDistance < 100;
   if (el.messageList.scrollTop < 180) loadOlderMessages();
 }, { passive: true });
+el.reactionPopover.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-reaction-name]");
+  if (!button) return;
+  const message = currentMessageById(state.reaction.messageId);
+  if (!message) {
+    closeReactionPicker();
+    return;
+  }
+  submitSlackReaction(message, {
+    name: button.dataset.reactionName,
+    emoji: button.dataset.reactionEmoji,
+  });
+});
+el.reactionMoreButton.addEventListener("click", () => {
+  const message = currentMessageById(state.reaction.messageId);
+  closeReactionPicker();
+  if (message) openProviderToReact(message);
+});
+document.addEventListener("pointerdown", (event) => {
+  if (
+    !el.reactionPopover.hidden
+    && !el.reactionPopover.contains(event.target)
+    && !reactionPopoverAnchor?.contains(event.target)
+  ) {
+    closeReactionPicker();
+  }
+});
+window.addEventListener("resize", () => closeReactionPicker());
 el.messageComposer.addEventListener("keydown", (event) => {
   if (!el.mentionSuggestions.hidden) {
     const options = [...el.mentionSuggestions.querySelectorAll("button")];
@@ -6588,6 +6848,11 @@ document.addEventListener("keydown", (event) => {
   }
   if (event.metaKey || event.ctrlKey || event.altKey || shortcutTargetIsEditable(event.target)) return;
   if (event.key === "Escape") {
+    if (!el.reactionPopover.hidden) {
+      event.preventDefault();
+      closeReactionPicker({ restoreFocus: true });
+      return;
+    }
     clearShortcutPrefix();
     if (window.innerWidth <= 800 && el.shell.classList.contains("thread-open")) {
       el.shell.classList.remove("thread-open");

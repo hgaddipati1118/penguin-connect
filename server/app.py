@@ -117,6 +117,11 @@ class PenguinConnectScheduledSendRequest(BaseModel):
     attachment_paths: list[str] | None = None
     attachments: list[PenguinConnectBrowserAttachment] | None = None
 
+class PenguinConnectReactionRequest(BaseModel):
+    message_id: str = ""
+    emoji: str = ""
+    remove: bool = False
+
 class PenguinConnectContactCreateRequest(BaseModel):
     match_handle: str = ""
     first_name: str = ""
@@ -334,7 +339,7 @@ def _list_all_scheduled_messages(conn: sqlite3.Connection, limit: int = 500) -> 
 
 def _require_existing_conversation(conn: sqlite3.Connection, conversation_id: str) -> sqlite3.Row:
     row = conn.execute(
-        """SELECT conversation_id, source_provider, status, exclude_from_sync
+        """SELECT conversation_id, source_provider, source_chat_id, status, exclude_from_sync
            FROM penguin_connect_conversations
            WHERE conversation_id = ?""",
         (conversation_id,),
@@ -5316,6 +5321,7 @@ _COMPACT_MESSAGE_METADATA_FIELDS = (
     "reply_users_count",
     "latest_reply",
     "thread_parent_name",
+    "provider_reactions",
     "sender_avatar_url",
 )
 
@@ -5353,6 +5359,7 @@ _SPARSE_COMPACT_MESSAGE_METADATA_DEFAULTS = {
     "reply_users_count": (0, None),
     "latest_reply": ("", None),
     "thread_parent_name": ("", None),
+    "provider_reactions": ([], None),
     "sender_avatar_url": ("", None),
 }
 
@@ -5845,6 +5852,71 @@ def cancel_penguinconnect_scheduled_message(scheduled_id: str):
 @app.post("/penguin-connect/scheduled-messages/run-due")
 def run_due_penguinconnect_scheduled_messages(limit: int = Query(25, ge=1, le=100)):
     return run_due_scheduled_messages(limit=limit)
+
+@app.post("/api/penguin-connect/conversations/{conversation_id}/messages/reaction")
+@app.post("/penguin-connect/conversations/{conversation_id}/messages/reaction")
+def set_penguinconnect_message_reaction(
+    conversation_id: str,
+    req: PenguinConnectReactionRequest,
+):
+    message_id = str(req.message_id or "").strip()
+    emoji = str(req.emoji or "").strip()
+    if not message_id:
+        raise HTTPException(status_code=400, detail="reaction_message_required")
+    if not emoji:
+        raise HTTPException(status_code=400, detail="reaction_emoji_required")
+    conn = get_connection()
+    try:
+        conversation = _require_schedulable_conversation(conn, conversation_id)
+        source_provider = str(conversation["source_provider"] or "").strip().lower()
+        if source_provider != "slack":
+            raise HTTPException(
+                status_code=400,
+                detail=f"native_reactions_not_supported_for_{source_provider or 'unknown'}",
+            )
+        message = conn.execute(
+            """SELECT provider_message_id, metadata
+               FROM penguin_connect_messages
+               WHERE conversation_id = ? AND provider_message_id = ?
+               LIMIT 1""",
+            (conversation_id, message_id),
+        ).fetchone()
+        if message is None:
+            raise HTTPException(status_code=404, detail="reaction_message_not_found")
+        try:
+            metadata = json.loads(message["metadata"] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            metadata = {}
+        native_message_id = str(metadata.get("native_message_id") or "").strip()
+        if not native_message_id:
+            native_message_id = message_id.split(":", 1)[1] if message_id.startswith("slack:") else message_id
+        adapter = get_channel_adapter("slack")
+        set_reaction = getattr(adapter, "set_reaction", None)
+        if not callable(set_reaction):
+            raise HTTPException(status_code=503, detail="slack_reactions_unavailable")
+        success, error = set_reaction(
+            str(conversation["source_chat_id"] or "").strip(),
+            native_message_id,
+            emoji,
+            remove=bool(req.remove),
+        )
+        if not success:
+            raise HTTPException(status_code=400, detail=error or "slack_reaction_failed")
+        log_action(
+            "api_message_reaction",
+            conversation_id=conversation_id,
+            provider="slack",
+            removed=bool(req.remove),
+            success=True,
+        )
+        return {
+            "success": True,
+            "message_id": message_id,
+            "emoji": emoji,
+            "removed": bool(req.remove),
+        }
+    finally:
+        conn.close()
 
 @app.post("/api/penguin-connect/conversations/{conversation_id}/send")
 @app.post("/penguin-connect/conversations/{conversation_id}/send")

@@ -212,6 +212,28 @@
           <div class="pinned-messages-bar" id="pinnedMessagesBar" hidden aria-label="Pinned messages"></div>
 
           <div class="message-list" id="messageList" role="log" aria-live="polite"></div>
+          <div
+            class="reaction-popover"
+            id="reactionPopover"
+            role="dialog"
+            aria-label="React to Slack message"
+            aria-modal="false"
+            hidden
+          >
+            <div class="reaction-popover-heading">
+              <strong>React</strong>
+              <span>Slack</span>
+            </div>
+            <div class="reaction-options" role="group" aria-label="Choose a reaction">
+              <button type="button" data-reaction-name="+1" data-reaction-emoji="👍" title="Thumbs up">👍</button>
+              <button type="button" data-reaction-name="heart" data-reaction-emoji="❤️" title="Heart">❤️</button>
+              <button type="button" data-reaction-name="joy" data-reaction-emoji="😂" title="Laugh">😂</button>
+              <button type="button" data-reaction-name="tada" data-reaction-emoji="🎉" title="Celebrate">🎉</button>
+              <button type="button" data-reaction-name="eyes" data-reaction-emoji="👀" title="Looking">👀</button>
+              <button type="button" data-reaction-name="white_check_mark" data-reaction-emoji="✅" title="Done">✅</button>
+            </div>
+            <button class="reaction-more-button" id="reactionMoreButton" type="button">More in Slack</button>
+          </div>
 
           <div class="composer-wrap">
             <div class="scheduled-queue" id="scheduledQueue" aria-label="Scheduled message queue" hidden></div>

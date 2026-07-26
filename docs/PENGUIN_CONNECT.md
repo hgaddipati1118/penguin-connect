@@ -52,7 +52,7 @@ Optional flags:
 - Reads sibling Apple Messages DM routes during source-to-Gmail sync so route changes between `iMessage`, `RCS`, and `SMS` do not silently drop messages.
 - Keeps Apple Messages group chats separate and uses the group title when one exists.
 - Polls Gmail for replies to alias addresses and sends those replies back to the source provider.
-- Schedules local sends for existing conversations through registered send adapters. Apple Messages, WhatsApp, and Telegram are registered today; Slack requires a Slack adapter before scheduled Slack delivery can run.
+- Schedules local sends for existing conversations through the registered Apple Messages, WhatsApp, Slack, and Telegram adapters, including native Slack thread replies.
 - Mirrors Apple Messages read state back into Gmail `UNREAD` labels using the conversation unread count, so the latest synced inbound source messages clear once the conversation is read in Messages.
 - Only Gmail messages from `SENT` that still target the exact conversation alias are eligible for Gmail-to-source delivery; drafts are ignored.
 - Incremental Gmail reply detection keeps a per-conversation pending sent-activity marker until that conversation is actually synced, and it falls back to a recent sent-mail scan when the global Gmail history cursor has already moved past a valid alias reply.
@@ -124,6 +124,21 @@ PENGUIN_CONNECT_WHATSAPP_API_URL=http://localhost:8080/api
 ```
 
 Look for `[OK] whatsapp_bridge` and `[OK] whatsapp_api`. Once the bridge is running, PenguinConnect discovers WhatsApp conversations automatically on server start.
+
+## Slack Setup (Optional)
+
+Create a Slack app from [`../slack_manifest.example.json`](../slack_manifest.example.json),
+install it into the intended workspace, and copy its `xoxp-` user token. Store the token in
+macOS Keychain instead of `.env`:
+
+```bash
+./scripts/penguin_connect_slack_auth.py --store-from-clipboard
+./scripts/penguin_connect_slack_auth.py --status
+```
+
+The manifest grants read/search access plus native message, file, thread, and reaction
+writes. Existing installations created before reactions were supported must update and
+reinstall the app once to grant `reactions:write`, then store the replacement token.
 
 ## Telegram Setup (Optional)
 

@@ -3805,7 +3805,14 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("showNativeReceipt", inbox_js_response.text)
         self.assertIn("message.provider_message_id === latestReceiptMessageId", inbox_js_response.text)
         self.assertIn("reactionsByTarget", inbox_js_response.text)
+        self.assertIn("providerReactions", inbox_js_response.text)
+        self.assertIn("openReactionPicker", inbox_js_response.text)
+        self.assertIn("submitSlackReaction", inbox_js_response.text)
+        self.assertIn("/messages/reaction", inbox_js_response.text)
         self.assertIn("openProviderToReact", inbox_js_response.text)
+        self.assertIn('id="reactionPopover"', inbox_response.text)
+        self.assertIn(".reaction-popover", inbox_css_response.text)
+        self.assertIn(".message-reaction-chip.reacted-by-me", inbox_css_response.text)
         self.assertIn('event.key.toLowerCase() === "j"', inbox_js_response.text)
         self.assertIn("openGifDialog", inbox_js_response.text)
         self.assertIn("queueMessageTranslation", inbox_js_response.text)
@@ -5349,6 +5356,87 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(row["sender_name"], "Me")
         self.assertEqual(row["body_text"], "Hello from local console")
         self.assertEqual(row["direction"], "manual_to_imessage")
+
+    def test_reaction_endpoint_routes_existing_slack_message_to_adapter(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """UPDATE penguin_connect_conversations
+                   SET source_provider = 'slack', source_chat_id = 'C_PRODUCT'
+                   WHERE conversation_id = 'amc_test'"""
+            )
+            conn.execute(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction, sender_name, subject,
+                    body_text, message_timestamp, is_read, metadata)
+                   VALUES (?, 'slack', ?, 'slack_local', ?, ?, ?, ?, 1, ?)""",
+                (
+                    "amc_test",
+                    "slack:1785000001.000100",
+                    "Teammate",
+                    "Slack · Product",
+                    "Synthetic message",
+                    "2026-03-11T11:00:00+00:00",
+                    '{"native_message_id":"1785000001.000100"}',
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        adapter = mock.Mock()
+        adapter.set_reaction.return_value = (True, None)
+        with mock.patch("app.get_channel_adapter", return_value=adapter), TestClient(app_module.app) as client:
+            response = client.post(
+                "/penguin-connect/conversations/amc_test/messages/reaction",
+                json={
+                    "message_id": "slack:1785000001.000100",
+                    "emoji": "👍",
+                    "remove": False,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "success": True,
+                "message_id": "slack:1785000001.000100",
+                "emoji": "👍",
+                "removed": False,
+            },
+        )
+        adapter.set_reaction.assert_called_once_with(
+            "C_PRODUCT",
+            "1785000001.000100",
+            "👍",
+            remove=False,
+        )
+
+    def test_reaction_endpoint_rejects_message_outside_conversation(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """UPDATE penguin_connect_conversations
+                   SET source_provider = 'slack', source_chat_id = 'C_PRODUCT'
+                   WHERE conversation_id = 'amc_test'"""
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with mock.patch("app.get_channel_adapter") as mock_adapter, TestClient(app_module.app) as client:
+            response = client.post(
+                "/penguin-connect/conversations/amc_test/messages/reaction",
+                json={
+                    "message_id": "slack:1785000999.000100",
+                    "emoji": "👍",
+                },
+            )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "reaction_message_not_found")
+        mock_adapter.assert_not_called()
 
     def test_send_endpoint_forwards_attachment_paths(self):
         with mock.patch("app.refresh_contacts_now", return_value={"success": True}), mock.patch(

@@ -17,6 +17,7 @@
         "im:read",
         "mpim:history",
         "mpim:read",
+        "reactions:write",
         "search:read",
         "users:read"
       ]

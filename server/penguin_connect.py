@@ -454,6 +454,13 @@ def _source_message_native_metadata(msg: dict[str, Any]) -> dict[str, Any]:
     latest_reply = str(msg.get("latest_reply") or "").strip()
     if latest_reply:
         metadata["latest_reply"] = latest_reply
+    provider_reactions = msg.get("provider_reactions")
+    if isinstance(provider_reactions, list):
+        metadata["provider_reactions"] = [
+            dict(reaction)
+            for reaction in provider_reactions[:100]
+            if isinstance(reaction, dict)
+        ]
     sender_avatar_url = str(msg.get("sender_avatar_url") or "").strip()
     if sender_avatar_url.startswith("https://") and len(sender_avatar_url) <= 2048:
         metadata["sender_avatar_url"] = sender_avatar_url

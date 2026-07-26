@@ -1513,7 +1513,7 @@ kbd {
   margin: 6px 0 -12px;
 }
 
-.message-reactions span {
+.message-reactions > * {
   display: inline-flex;
   min-width: 23px;
   min-height: 21px;
@@ -1525,6 +1525,122 @@ kbd {
   background: var(--paper-strong);
   box-shadow: 0 1px 3px rgba(31, 41, 36, 0.08);
   font-size: 12px;
+}
+
+.message-reaction-chip {
+  gap: 4px;
+  color: var(--ink-soft);
+  font: inherit;
+}
+
+button.message-reaction-chip {
+  cursor: pointer;
+}
+
+button.message-reaction-chip:hover {
+  border-color: color-mix(in srgb, var(--slack) 42%, var(--line));
+  background: var(--slack-soft);
+  color: var(--ink);
+}
+
+.message-reaction-chip.reacted-by-me {
+  border-color: color-mix(in srgb, var(--slack) 50%, var(--line));
+  background: var(--slack-soft);
+  color: #593382;
+  box-shadow: none;
+}
+
+.message-reaction-count {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.reaction-popover {
+  position: fixed;
+  z-index: 20;
+  width: 254px;
+  padding: 10px;
+  border: 1px solid #d8d1dd;
+  border-radius: 14px;
+  background: var(--paper-strong);
+  box-shadow: 0 14px 34px rgba(35, 28, 39, 0.18);
+}
+
+.reaction-popover-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1px 3px 8px;
+}
+
+.reaction-popover-heading strong {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 15px;
+}
+
+.reaction-popover-heading span {
+  color: var(--slack);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.reaction-options {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.reaction-options button {
+  position: relative;
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: #f5f3f0;
+  cursor: pointer;
+  font-size: 18px;
+}
+
+.reaction-options button:hover,
+.reaction-options button[aria-pressed="true"] {
+  border-color: #c8b5d9;
+  background: var(--slack-soft);
+}
+
+.reaction-options button[aria-pressed="true"]::after {
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  margin: 27px 0 0 25px;
+  border: 1px solid var(--paper-strong);
+  border-radius: 50%;
+  background: var(--slack);
+  content: "";
+}
+
+.reaction-more-button {
+  width: 100%;
+  min-height: 28px;
+  margin-top: 7px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.reaction-more-button:hover {
+  background: #f3f1ed;
+  color: var(--ink);
 }
 
 .message-pin-button,

@@ -134,6 +134,14 @@ class PenguinConnectTests(unittest.TestCase):
             },
         )
 
+    def test_source_message_native_metadata_preserves_empty_provider_reactions(self):
+        metadata = penguin_connect._source_message_native_metadata(
+            {"provider_reactions": []}
+        )
+
+        self.assertIn("provider_reactions", metadata)
+        self.assertEqual(metadata["provider_reactions"], [])
+
     def test_source_message_native_metadata_keeps_https_sender_avatar(self):
         metadata = penguin_connect._source_message_native_metadata(
             {"sender_avatar_url": "https://cdn.example.test/member.png"}
