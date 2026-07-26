@@ -4498,6 +4498,14 @@ def get_penguinconnect_refresh_coordinator_js():
 def get_penguinconnect_composer_mentions_js():
     return _ui_file_response("composer-mentions.js", "application/javascript; charset=utf-8")
 
+@app.get("/api/penguin-connect/ui/conversation-navigation.js")
+@app.get("/penguin-connect/ui/conversation-navigation.js")
+def get_penguinconnect_conversation_navigation_js():
+    return _ui_file_response(
+        "conversation-navigation.js",
+        "application/javascript; charset=utf-8",
+    )
+
 @app.get("/api/penguin-connect/ui/app.css")
 @app.get("/penguin-connect/ui/app.css")
 def get_penguinconnect_ui_css():

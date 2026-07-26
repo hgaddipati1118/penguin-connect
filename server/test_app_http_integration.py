@@ -3618,6 +3618,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
             composer_mentions_js_response = client.get(
                 "/penguin-connect/ui/composer-mentions.js",
             )
+            conversation_navigation_js_response = client.get(
+                "/penguin-connect/ui/conversation-navigation.js",
+            )
             html_response = client.get("/penguin-connect/console")
             css_response = client.get("/penguin-connect/ui/app.css")
             js_response = client.get("/penguin-connect/ui/app.js")
@@ -3667,6 +3670,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
             'src="/penguin-connect/ui/composer-mentions.js"',
             inbox_response.text,
         )
+        self.assertIn(
+            'src="/penguin-connect/ui/conversation-navigation.js"',
+            inbox_response.text,
+        )
         self.assertEqual(inbox_js_response.status_code, 200)
         self.assertEqual(inbox_js_response.headers["cache-control"], "no-store")
         self.assertEqual(thread_layout_js_response.status_code, 200)
@@ -3688,6 +3695,15 @@ class AppHttpIntegrationTests(unittest.TestCase):
         )
         self.assertIn("encodeProviderMentions", composer_mentions_js_response.text)
         self.assertIn("renderProviderMentions", composer_mentions_js_response.text)
+        self.assertEqual(conversation_navigation_js_response.status_code, 200)
+        self.assertEqual(
+            conversation_navigation_js_response.headers["cache-control"],
+            "no-store",
+        )
+        self.assertIn(
+            "createConversationNavigationCoordinator",
+            conversation_navigation_js_response.text,
+        )
         self.assertIn("loadConversations", inbox_js_response.text)
         self.assertIn("hasCachedMessage", inbox_js_response.text)
         self.assertIn("conversation?.chat_type === \"group\" && displayName", inbox_js_response.text)

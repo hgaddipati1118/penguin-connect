@@ -347,6 +347,24 @@ const MONTH_DAY_FORMATTER = new Intl.DateTimeFormat(undefined, {
 const selectedRefreshCoordinator = window.PenguinRefreshCoordinator.createRefreshCoordinator({
   cooldownMs: SELECTED_REFRESH_COOLDOWN_MS,
 });
+const conversationNavigationCoordinator = (
+  window.PenguinConversationNavigation.createConversationNavigationCoordinator({
+    onPreview: (next, previous) => {
+      updateConversationSelectionUI(
+        previous?.conversation_id || state.selected?.conversation_id,
+        next.conversation_id,
+      );
+    },
+    onCommit: (next) => selectConversation(next),
+    onCancel: (pending) => {
+      if (!state.selected) return;
+      updateConversationSelectionUI(
+        pending?.conversation_id,
+        state.selected.conversation_id,
+      );
+    },
+  })
+);
 const WEEKDAY_MONTH_DAY_YEAR_FORMATTER = new Intl.DateTimeFormat(undefined, {
   weekday: "short",
   month: "short",
@@ -4663,6 +4681,7 @@ async function selectConversation(
   conversation,
   { focusMessageId = "", markRead = true } = {},
 ) {
+  conversationNavigationCoordinator.cancel();
   const selectionToken = ++state.selectionToken;
   const previousConversationId = state.selected?.conversation_id || "";
   if (previousConversationId && previousConversationId !== conversation.conversation_id) {
@@ -6911,11 +6930,11 @@ function scrollCurrentThread(direction) {
 function moveConversationSelection(offset) {
   const rows = visibleConversations();
   if (!rows.length) return;
-  const currentIndex = visibleConversationIndex(state.selected?.conversation_id);
-  const nextIndex = currentIndex < 0
-    ? (offset > 0 ? 0 : rows.length - 1)
-    : Math.max(0, Math.min(rows.length - 1, currentIndex + offset));
-  selectConversation(rows[nextIndex]);
+  conversationNavigationCoordinator.move(
+    rows,
+    state.selected?.conversation_id,
+    offset,
+  );
 }
 
 function jumpConversationSelection(edge) {
