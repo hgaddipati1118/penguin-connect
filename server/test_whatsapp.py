@@ -308,6 +308,42 @@ class WhatsAppAdapterTests(unittest.TestCase):
         self.assertEqual(reply["reply_to_sender"], "14155551234")
         self.assertEqual(reply["reply_to_text"], "Hello from Alice")
 
+    def test_fetch_messages_includes_native_mutation_metadata_when_bridge_supports_it(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("ALTER TABLE messages ADD COLUMN reactions_json TEXT DEFAULT '[]'")
+        conn.execute("ALTER TABLE messages ADD COLUMN edited_at TEXT")
+        conn.execute(
+            """UPDATE messages
+               SET reactions_json = ?, edited_at = ?
+               WHERE id = ?""",
+            (
+                json.dumps([
+                    {"actor": "participant-a", "emoji": "😂", "is_from_me": False},
+                    {"actor": "participant-b", "emoji": "😂", "is_from_me": False},
+                    {"actor": "me", "emoji": "❤️", "is_from_me": True},
+                ]),
+                "2026-03-15T09:03:00Z",
+                "msg2",
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        messages = self.adapter.fetch_messages("14155551234@s.whatsapp.net", limit=50)
+        edited = next(message for message in messages if message["native_message_id"] == "msg2")
+
+        self.assertEqual(
+            edited["provider_reactions"],
+            [
+                {"name": "😂", "emoji": "😂", "count": 2, "reacted_by_me": False},
+                {"name": "❤️", "emoji": "❤️", "count": 1, "reacted_by_me": True},
+            ],
+        )
+        self.assertTrue(edited["provider_edited"])
+        self.assertEqual(edited["provider_edited_at"], "2026-03-15T09:03:00Z")
+        self.assertTrue(edited["provider_can_delete"])
+        self.assertFalse(edited["provider_can_edit"])
+
     def test_fetch_messages_tolerates_legacy_bridge_without_reply_columns(self):
         messages = self.adapter.fetch_messages("14155551234@s.whatsapp.net", limit=50)
 
@@ -470,6 +506,94 @@ class WhatsAppAdapterTests(unittest.TestCase):
             ok, err = self.adapter.send_message("14155551234@s.whatsapp.net", "Hello!")
         self.assertFalse(ok)
         self.assertIn("Connection refused", err)
+
+    def test_native_mutations_post_exact_targets_to_bridge(self):
+        capability_response = mock.Mock(status_code=200)
+        capability_response.json.return_value = {
+            "native_reactions": True,
+            "native_edits": True,
+            "native_deletes": True,
+        }
+        mutation_response = mock.Mock(status_code=200)
+        mutation_response.json.return_value = {"success": True}
+        with mock.patch(
+            "channels.whatsapp.httpx.get",
+            return_value=capability_response,
+        ), mock.patch(
+            "channels.whatsapp.httpx.post",
+            return_value=mutation_response,
+        ) as mock_post:
+            self.assertEqual(
+                self.adapter.set_reaction(
+                    "14155551234@s.whatsapp.net",
+                    "whatsapp:msg2",
+                    "❤️",
+                    remove=True,
+                ),
+                (True, None),
+            )
+            self.assertEqual(
+                self.adapter.edit_message(
+                    "14155551234@s.whatsapp.net",
+                    "whatsapp:msg2",
+                    "Updated",
+                ),
+                (True, None),
+            )
+            self.assertEqual(
+                self.adapter.delete_message(
+                    "14155551234@s.whatsapp.net",
+                    "whatsapp:msg2",
+                ),
+                (True, None),
+            )
+
+        self.assertEqual(
+            [call.args[0] for call in mock_post.call_args_list],
+            [
+                "http://localhost:8080/api/react",
+                "http://localhost:8080/api/edit",
+                "http://localhost:8080/api/delete",
+            ],
+        )
+        self.assertEqual(
+            mock_post.call_args_list[0].kwargs["json"],
+            {
+                "chat_jid": "14155551234@s.whatsapp.net",
+                "message_id": "msg2",
+                "emoji": "❤️",
+                "remove": True,
+            },
+        )
+        self.assertEqual(
+            mock_post.call_args_list[1].kwargs["json"],
+            {
+                "chat_jid": "14155551234@s.whatsapp.net",
+                "message_id": "msg2",
+                "message": "Updated",
+            },
+        )
+
+    def test_native_mutations_fail_closed_without_capability_or_exact_target(self):
+        capability_response = mock.Mock(status_code=200)
+        capability_response.json.return_value = {"native_reactions": False}
+        with mock.patch(
+            "channels.whatsapp.httpx.get",
+            return_value=capability_response,
+        ), mock.patch("channels.whatsapp.httpx.post") as mock_post:
+            self.assertEqual(
+                self.adapter.set_reaction(
+                    "14155551234@s.whatsapp.net",
+                    "msg2",
+                    "❤️",
+                ),
+                (False, "whatsapp_native_reactions_unavailable"),
+            )
+            self.assertEqual(
+                self.adapter.delete_message("not-an-exact-jid", "msg2"),
+                (False, "whatsapp_message_target_required"),
+            )
+        mock_post.assert_not_called()
 
     def test_get_unread_count_returns_none(self):
         self.assertIsNone(self.adapter.get_unread_count("14155551234@s.whatsapp.net"))

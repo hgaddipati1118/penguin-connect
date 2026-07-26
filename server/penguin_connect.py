@@ -461,6 +461,14 @@ def _source_message_native_metadata(msg: dict[str, Any]) -> dict[str, Any]:
             for reaction in provider_reactions[:100]
             if isinstance(reaction, dict)
         ]
+    for key in (
+        "provider_edited",
+        "provider_edited_at",
+        "provider_can_edit",
+        "provider_can_delete",
+    ):
+        if key in msg:
+            metadata[key] = msg[key]
     sender_avatar_url = str(msg.get("sender_avatar_url") or "").strip()
     if sender_avatar_url.startswith("https://") and len(sender_avatar_url) <= 2048:
         metadata["sender_avatar_url"] = sender_avatar_url

@@ -139,18 +139,22 @@ const el = {
   pinnedMessagesBar: document.querySelector("#pinnedMessagesBar"),
   messageList: document.querySelector("#messageList"),
   reactionPopover: document.querySelector("#reactionPopover"),
+  reactionProviderLabel: document.querySelector("#reactionProviderLabel"),
   reactionMoreButton: document.querySelector("#reactionMoreButton"),
   messageActionPopover: document.querySelector("#messageActionPopover"),
   messageEditDialog: document.querySelector("#messageEditDialog"),
   messageEditForm: document.querySelector("#messageEditForm"),
   messageEditText: document.querySelector("#messageEditText"),
   messageEditStatus: document.querySelector("#messageEditStatus"),
+  messageEditProviderLabel: document.querySelector("#messageEditProviderLabel"),
   closeMessageEditButton: document.querySelector("#closeMessageEditButton"),
   cancelMessageEditButton: document.querySelector("#cancelMessageEditButton"),
   saveMessageEditButton: document.querySelector("#saveMessageEditButton"),
   messageDeleteDialog: document.querySelector("#messageDeleteDialog"),
   messageDeletePreview: document.querySelector("#messageDeletePreview"),
   messageDeleteStatus: document.querySelector("#messageDeleteStatus"),
+  messageDeleteProviderLabel: document.querySelector("#messageDeleteProviderLabel"),
+  messageDeleteDialogDescription: document.querySelector("#messageDeleteDialogDescription"),
   closeMessageDeleteButton: document.querySelector("#closeMessageDeleteButton"),
   cancelMessageDeleteButton: document.querySelector("#cancelMessageDeleteButton"),
   confirmMessageDeleteButton: document.querySelector("#confirmMessageDeleteButton"),
@@ -3202,25 +3206,31 @@ function positionReactionPicker(anchor) {
 }
 
 function openReactionPicker(message, anchor) {
-  if (providerKey(state.selected?.source_provider) !== "slack") {
+  const provider = providerKey(state.selected?.source_provider);
+  if (!["slack", "whatsapp"].includes(provider)) {
     openProviderToReact(message);
     return;
   }
   if (!message || message.metadata?.pending_send || !anchor) return;
   const messageId = String(message.provider_message_id || "").trim();
   if (!messageId) {
-    toast("This Slack message cannot be reacted to yet.", "error");
+    toast(`This ${providerLabel(provider)} message cannot be reacted to yet.`, "error");
     return;
   }
   state.reaction.messageId = messageId;
   reactionPopoverAnchor = anchor;
+  el.reactionProviderLabel.textContent = providerLabel(provider);
+  el.reactionMoreButton.textContent = `More in ${providerLabel(provider)}`;
   const ownReactionNames = new Set(
     providerReactions(message)
       .filter((reaction) => reaction.reacted_by_me)
       .map((reaction) => reaction.name),
   );
   for (const button of el.reactionPopover.querySelectorAll("[data-reaction-name]")) {
-    const selected = ownReactionNames.has(button.dataset.reactionName);
+    const reactionToken = provider === "whatsapp"
+      ? button.dataset.reactionEmoji
+      : button.dataset.reactionName;
+    const selected = ownReactionNames.has(reactionToken);
     button.setAttribute("aria-pressed", selected ? "true" : "false");
     button.setAttribute(
       "aria-label",
@@ -3263,7 +3273,7 @@ function updateOptimisticProviderReaction(message, {
   };
 }
 
-async function submitSlackReaction(message, {
+async function submitProviderReaction(message, {
   name,
   emoji,
   remove,
@@ -3271,16 +3281,20 @@ async function submitSlackReaction(message, {
   if (
     state.reaction.busy
     || !state.selected
-    || providerKey(state.selected.source_provider) !== "slack"
+    || !["slack", "whatsapp"].includes(providerKey(state.selected.source_provider))
   ) return;
+  const provider = providerKey(state.selected.source_provider);
   const reactionName = String(name || "").trim();
   const reactionEmoji = String(emoji || `:${reactionName}:`).trim();
   if (!reactionName || !message?.provider_message_id) return;
+  const providerReactionName = provider === "whatsapp"
+    ? reactionEmoji
+    : reactionName;
   const conversationId = state.selected.conversation_id;
   const conversationMessages = state.messages;
   const paginationSnapshot = { ...state.messagePagination };
   const existing = providerReactions(message).find(
-    (reaction) => reaction.name === reactionName,
+    (reaction) => reaction.name === providerReactionName,
   );
   const shouldRemove = typeof remove === "boolean"
     ? remove
@@ -3288,7 +3302,7 @@ async function submitSlackReaction(message, {
   const previousReactions = providerReactions(message);
   state.reaction.busy = true;
   updateOptimisticProviderReaction(message, {
-    name: reactionName,
+    name: providerReactionName,
     emoji: reactionEmoji,
     remove: shouldRemove,
   });
@@ -3301,7 +3315,7 @@ async function submitSlackReaction(message, {
         method: "POST",
         body: JSON.stringify({
           message_id: message.provider_message_id,
-          emoji: reactionName,
+          emoji: providerReactionName,
           remove: shouldRemove,
         }),
       },
@@ -3330,7 +3344,7 @@ async function submitSlackReaction(message, {
     }
     const needsScope = String(error.message || "").includes("missing scope");
     toast(
-      needsScope
+      provider === "slack" && needsScope
         ? "Slack reactions need the reactions:write scope. Reinstall Penguin’s Slack app, then store the new token."
         : `Could not update reaction: ${error.message}`,
       "error",
@@ -3340,14 +3354,18 @@ async function submitSlackReaction(message, {
   }
 }
 
-function canMutateSlackMessage(message) {
+function canMutateProviderMessage(message) {
   const messageProvider = providerKey(
     message?.source_provider || message?.provider || state.selected?.source_provider,
   );
-  return messageProvider === "slack"
+  return ["slack", "whatsapp"].includes(messageProvider)
     && message?.metadata?.is_from_me === true
     && !message?.metadata?.pending_send
-    && Boolean(slackNativeMessageId(message));
+    && Boolean(messageNativeId(message))
+    && (
+      messageProvider === "slack"
+      || message?.metadata?.provider_can_delete === true
+    );
 }
 
 function closeMessageActionPopover({
@@ -3380,14 +3398,22 @@ function positionMessageActionPopover(anchor) {
 }
 
 function openMessageActionPopover(message, anchor) {
-  if (!canMutateSlackMessage(message) || !anchor) return;
+  if (!canMutateProviderMessage(message) || !anchor) return;
   closeReactionPicker();
   closeMessageActionPopover();
   state.messageMutation.messageId = String(message.provider_message_id || "");
   messageActionPopoverAnchor = anchor;
+  const provider = providerKey(
+    message?.source_provider || message?.provider || state.selected?.source_provider,
+  );
+  const editButton = el.messageActionPopover.querySelector(
+    '[data-message-operation="edit"]',
+  );
+  editButton.hidden = provider === "whatsapp"
+    && message?.metadata?.provider_can_edit !== true;
   el.messageActionPopover.hidden = false;
   positionMessageActionPopover(anchor);
-  el.messageActionPopover.querySelector("[data-message-operation]")?.focus({
+  el.messageActionPopover.querySelector("[data-message-operation]:not([hidden])")?.focus({
     preventScroll: true,
   });
 }
@@ -3405,8 +3431,15 @@ function closeMessageEditDialog() {
 
 function openMessageEditDialog() {
   const message = mutationMessage();
-  if (!canMutateSlackMessage(message)) return;
+  const provider = providerKey(
+    message?.source_provider || message?.provider || state.selected?.source_provider,
+  );
+  if (
+    !canMutateProviderMessage(message)
+    || (provider === "whatsapp" && message?.metadata?.provider_can_edit !== true)
+  ) return;
   closeMessageActionPopover({ clearSelection: false });
+  el.messageEditProviderLabel.textContent = providerLabel(provider);
   el.messageEditText.value = String(message.body_text || "");
   el.messageEditStatus.textContent = "";
   el.messageEditDialog.showModal();
@@ -3423,8 +3456,15 @@ function closeMessageDeleteDialog() {
 
 function openMessageDeleteDialog() {
   const message = mutationMessage();
-  if (!canMutateSlackMessage(message)) return;
+  if (!canMutateProviderMessage(message)) return;
+  const provider = providerKey(
+    message?.source_provider || message?.provider || state.selected?.source_provider,
+  );
   closeMessageActionPopover({ clearSelection: false });
+  const label = providerLabel(provider);
+  el.messageDeleteProviderLabel.textContent = label;
+  el.messageDeleteDialogDescription.textContent = `This removes the message from ${label} for everyone. It cannot be undone here.`;
+  el.confirmMessageDeleteButton.textContent = `Delete from ${label}`;
   const messageText = String(message.body_text || "").trim();
   const attachment = messageAttachments(message)[0];
   el.messageDeletePreview.textContent = messageText
@@ -3460,8 +3500,15 @@ async function submitMessageEdit(event) {
   event.preventDefault();
   if (state.messageMutation.busy || !state.selected) return;
   const message = mutationMessage();
-  if (!canMutateSlackMessage(message)) {
-    el.messageEditStatus.textContent = "This Slack message can no longer be edited.";
+  const provider = providerKey(
+    message?.source_provider || message?.provider || state.selected?.source_provider,
+  );
+  const label = providerLabel(provider);
+  if (
+    !canMutateProviderMessage(message)
+    || (provider === "whatsapp" && message?.metadata?.provider_can_edit !== true)
+  ) {
+    el.messageEditStatus.textContent = `This ${label} message can no longer be edited.`;
     return;
   }
   const nextText = el.messageEditText.value.replace(/\r\n?/g, "\n").trim();
@@ -3471,7 +3518,7 @@ async function submitMessageEdit(event) {
     return;
   }
   if (nextText.length > 20000) {
-    el.messageEditStatus.textContent = "Slack messages can be at most 20,000 characters here.";
+    el.messageEditStatus.textContent = `${label} messages can be at most 20,000 characters here.`;
     el.messageEditText.focus();
     return;
   }
@@ -3484,7 +3531,7 @@ async function submitMessageEdit(event) {
   el.cancelMessageEditButton.disabled = true;
   el.closeMessageEditButton.disabled = true;
   el.messageEditText.disabled = true;
-  el.messageEditStatus.textContent = "Saving to Slack…";
+  el.messageEditStatus.textContent = `Saving to ${label}…`;
   replaceCachedMessage(conversationId, messageId, (current) => ({
     ...current,
     body_text: nextText,
@@ -3512,7 +3559,7 @@ async function submitMessageEdit(event) {
     }));
     el.messageEditDialog.close();
     state.messageMutation.messageId = "";
-    toast("Message edited in Slack");
+    toast(`Message edited in ${label}`);
     loadConversations({ keepSelection: true }).catch(() => {});
   } catch (error) {
     replaceCachedMessage(conversationId, messageId, (current) => ({
@@ -3534,8 +3581,12 @@ async function submitMessageEdit(event) {
 async function confirmMessageDelete() {
   if (state.messageMutation.busy || !state.selected) return;
   const message = mutationMessage();
-  if (!canMutateSlackMessage(message)) {
-    el.messageDeleteStatus.textContent = "This Slack message can no longer be deleted.";
+  const provider = providerKey(
+    message?.source_provider || message?.provider || state.selected?.source_provider,
+  );
+  const label = providerLabel(provider);
+  if (!canMutateProviderMessage(message)) {
+    el.messageDeleteStatus.textContent = `This ${label} message can no longer be deleted.`;
     return;
   }
   const conversationId = state.selected.conversation_id;
@@ -3544,7 +3595,7 @@ async function confirmMessageDelete() {
   el.confirmMessageDeleteButton.disabled = true;
   el.cancelMessageDeleteButton.disabled = true;
   el.closeMessageDeleteButton.disabled = true;
-  el.messageDeleteStatus.textContent = "Deleting from Slack…";
+  el.messageDeleteStatus.textContent = `Deleting from ${label}…`;
   try {
     await api(
       `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}`,
@@ -3575,7 +3626,7 @@ async function confirmMessageDelete() {
     rememberConversationMessages(conversationId, nextMessages, nextMetadata);
     el.messageDeleteDialog.close();
     state.messageMutation.messageId = "";
-    toast("Message deleted from Slack");
+    toast(`Message deleted from ${label}`);
     loadConversations({ keepSelection: true }).catch(() => {});
   } catch (error) {
     el.messageDeleteStatus.textContent = `Could not delete: ${error.message}`;
@@ -3640,7 +3691,7 @@ function handleMessageListAction(event) {
   } else if (actionName === "more") {
     openMessageActionPopover(message, action);
   } else if (actionName === "react-existing") {
-    submitSlackReaction(message, {
+    submitProviderReaction(message, {
       name: action.dataset.reactionName,
       emoji: action.dataset.reactionEmoji,
       remove: action.dataset.reactedByMe === "true",
@@ -4063,8 +4114,8 @@ function renderMessages({
     react.className = "message-react-button";
     react.dataset.messageAction = "react";
     react.textContent = "☺";
-    react.title = messageProvider === "slack"
-      ? "React in Slack"
+    react.title = ["slack", "whatsapp"].includes(messageProvider)
+      ? `React in ${providerLabel(messageProvider)}`
       : `Open ${providerLabel(state.selected?.source_provider)} to react`;
     react.setAttribute("aria-label", react.title);
     if (message.metadata?.pending_send) react.hidden = true;
@@ -4087,7 +4138,7 @@ function renderMessages({
     more.append(createIcon("i-more"));
     more.title = "More message actions";
     more.setAttribute("aria-label", "More message actions");
-    more.hidden = !canMutateSlackMessage(message);
+    more.hidden = !canMutateProviderMessage(message);
     if (mine) row.append(more, reply, translate, pin, react, stack);
     else row.append(stack, reply, react, pin, translate);
     messageRowFingerprints.set(row, renderFingerprint);
@@ -6925,7 +6976,7 @@ el.reactionPopover.addEventListener("click", (event) => {
     closeReactionPicker();
     return;
   }
-  submitSlackReaction(message, {
+  submitProviderReaction(message, {
     name: button.dataset.reactionName,
     emoji: button.dataset.reactionEmoji,
   });
@@ -6942,7 +6993,11 @@ el.messageActionPopover.addEventListener("click", (event) => {
   if (button.dataset.messageOperation === "delete") openMessageDeleteDialog();
 });
 el.messageActionPopover.addEventListener("keydown", (event) => {
-  const buttons = [...el.messageActionPopover.querySelectorAll("[data-message-operation]")];
+  const buttons = [
+    ...el.messageActionPopover.querySelectorAll(
+      "[data-message-operation]:not([hidden])",
+    ),
+  ];
   const currentIndex = buttons.indexOf(document.activeElement);
   if (event.key === "Escape") {
     event.preventDefault();

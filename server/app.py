@@ -5340,6 +5340,8 @@ _COMPACT_MESSAGE_METADATA_FIELDS = (
     "sender_avatar_url",
     "provider_edited",
     "provider_edited_at",
+    "provider_can_edit",
+    "provider_can_delete",
 )
 
 _COMPACT_MESSAGE_ATTACHMENT_FIELDS = (
@@ -5380,6 +5382,8 @@ _SPARSE_COMPACT_MESSAGE_METADATA_DEFAULTS = {
     "sender_avatar_url": ("", None),
     "provider_edited": (False, None),
     "provider_edited_at": ("", None),
+    "provider_can_edit": (False, None),
+    "provider_can_delete": (False, None),
 }
 
 
@@ -5873,14 +5877,14 @@ def run_due_penguinconnect_scheduled_messages(limit: int = Query(25, ge=1, le=10
     return run_due_scheduled_messages(limit=limit)
 
 
-def _owned_slack_message_mutation_target(
+def _owned_provider_message_mutation_target(
     conn: sqlite3.Connection,
     conversation_id: str,
     message_id: str,
-) -> tuple[sqlite3.Row, sqlite3.Row, dict, str]:
+) -> tuple[sqlite3.Row, sqlite3.Row, dict, str, str]:
     conversation = _require_schedulable_conversation(conn, conversation_id)
     source_provider = str(conversation["source_provider"] or "").strip().lower()
-    if source_provider != "slack":
+    if source_provider not in {"slack", "whatsapp"}:
         raise HTTPException(
             status_code=400,
             detail=f"native_message_mutations_not_supported_for_{source_provider or 'unknown'}",
@@ -5894,8 +5898,8 @@ def _owned_slack_message_mutation_target(
     ).fetchone()
     if message is None:
         raise HTTPException(status_code=404, detail="message_not_found")
-    if str(message["provider"] or "").strip().lower() != "slack":
-        raise HTTPException(status_code=400, detail="slack_message_not_native")
+    if str(message["provider"] or "").strip().lower() != source_provider:
+        raise HTTPException(status_code=400, detail=f"{source_provider}_message_not_native")
     try:
         metadata = json.loads(message["metadata"] or "{}")
     except (TypeError, ValueError, json.JSONDecodeError):
@@ -5906,12 +5910,15 @@ def _owned_slack_message_mutation_target(
     if not native_message_id:
         native_message_id = (
             message_id.split(":", 1)[1]
-            if message_id.startswith("slack:")
+            if message_id.startswith(f"{source_provider}:")
             else message_id
         )
     if not native_message_id:
-        raise HTTPException(status_code=400, detail="slack_message_target_required")
-    return conversation, message, metadata, native_message_id
+        raise HTTPException(
+            status_code=400,
+            detail=f"{source_provider}_message_target_required",
+        )
+    return conversation, message, metadata, native_message_id, source_provider
 
 
 @app.patch("/api/penguin-connect/conversations/{conversation_id}/messages/{message_id}")
@@ -5928,24 +5935,30 @@ def edit_penguinconnect_message(
         raise HTTPException(status_code=413, detail="message_text_too_long")
     conn = get_connection()
     try:
-        conversation, _message, metadata, native_message_id = (
-            _owned_slack_message_mutation_target(
+        conversation, _message, metadata, native_message_id, source_provider = (
+            _owned_provider_message_mutation_target(
                 conn,
                 conversation_id,
                 message_id,
             )
         )
-        adapter = get_channel_adapter("slack")
+        adapter = get_channel_adapter(source_provider)
         edit_message = getattr(adapter, "edit_message", None)
         if not callable(edit_message):
-            raise HTTPException(status_code=503, detail="slack_edit_unavailable")
+            raise HTTPException(
+                status_code=503,
+                detail=f"{source_provider}_edit_unavailable",
+            )
         success, error = edit_message(
             str(conversation["source_chat_id"] or "").strip(),
             native_message_id,
             text,
         )
         if not success:
-            raise HTTPException(status_code=400, detail=error or "slack_edit_failed")
+            raise HTTPException(
+                status_code=400,
+                detail=error or f"{source_provider}_edit_failed",
+            )
         edited_at = _utc_now_iso()
         metadata["provider_edited"] = True
         metadata["provider_edited_at"] = edited_at
@@ -5967,7 +5980,7 @@ def edit_penguinconnect_message(
         log_action(
             "api_message_edit",
             conversation_id=conversation_id,
-            provider="slack",
+            provider=source_provider,
             success=True,
         )
         return {
@@ -5989,23 +6002,29 @@ def delete_penguinconnect_message(
 ):
     conn = get_connection()
     try:
-        conversation, _message, _metadata, native_message_id = (
-            _owned_slack_message_mutation_target(
+        conversation, _message, _metadata, native_message_id, source_provider = (
+            _owned_provider_message_mutation_target(
                 conn,
                 conversation_id,
                 message_id,
             )
         )
-        adapter = get_channel_adapter("slack")
+        adapter = get_channel_adapter(source_provider)
         delete_message = getattr(adapter, "delete_message", None)
         if not callable(delete_message):
-            raise HTTPException(status_code=503, detail="slack_delete_unavailable")
+            raise HTTPException(
+                status_code=503,
+                detail=f"{source_provider}_delete_unavailable",
+            )
         success, error = delete_message(
             str(conversation["source_chat_id"] or "").strip(),
             native_message_id,
         )
         if not success:
-            raise HTTPException(status_code=400, detail=error or "slack_delete_failed")
+            raise HTTPException(
+                status_code=400,
+                detail=error or f"{source_provider}_delete_failed",
+            )
         conn.execute(
             """DELETE FROM penguin_connect_attachment_intelligence
                WHERE conversation_id = ? AND provider_message_id = ?""",
@@ -6025,7 +6044,7 @@ def delete_penguinconnect_message(
         log_action(
             "api_message_delete",
             conversation_id=conversation_id,
-            provider="slack",
+            provider=source_provider,
             success=True,
         )
         return {
@@ -6053,13 +6072,13 @@ def set_penguinconnect_message_reaction(
     try:
         conversation = _require_schedulable_conversation(conn, conversation_id)
         source_provider = str(conversation["source_provider"] or "").strip().lower()
-        if source_provider != "slack":
+        if source_provider not in {"slack", "whatsapp"}:
             raise HTTPException(
                 status_code=400,
                 detail=f"native_reactions_not_supported_for_{source_provider or 'unknown'}",
             )
         message = conn.execute(
-            """SELECT provider_message_id, metadata
+            """SELECT provider, provider_message_id, metadata
                FROM penguin_connect_messages
                WHERE conversation_id = ? AND provider_message_id = ?
                LIMIT 1""",
@@ -6067,17 +6086,29 @@ def set_penguinconnect_message_reaction(
         ).fetchone()
         if message is None:
             raise HTTPException(status_code=404, detail="reaction_message_not_found")
+        if str(message["provider"] or "").strip().lower() != source_provider:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{source_provider}_message_not_native",
+            )
         try:
             metadata = json.loads(message["metadata"] or "{}")
         except (TypeError, ValueError, json.JSONDecodeError):
             metadata = {}
         native_message_id = str(metadata.get("native_message_id") or "").strip()
         if not native_message_id:
-            native_message_id = message_id.split(":", 1)[1] if message_id.startswith("slack:") else message_id
-        adapter = get_channel_adapter("slack")
+            native_message_id = (
+                message_id.split(":", 1)[1]
+                if message_id.startswith(f"{source_provider}:")
+                else message_id
+            )
+        adapter = get_channel_adapter(source_provider)
         set_reaction = getattr(adapter, "set_reaction", None)
         if not callable(set_reaction):
-            raise HTTPException(status_code=503, detail="slack_reactions_unavailable")
+            raise HTTPException(
+                status_code=503,
+                detail=f"{source_provider}_reactions_unavailable",
+            )
         success, error = set_reaction(
             str(conversation["source_chat_id"] or "").strip(),
             native_message_id,
@@ -6085,11 +6116,14 @@ def set_penguinconnect_message_reaction(
             remove=bool(req.remove),
         )
         if not success:
-            raise HTTPException(status_code=400, detail=error or "slack_reaction_failed")
+            raise HTTPException(
+                status_code=400,
+                detail=error or f"{source_provider}_reaction_failed",
+            )
         log_action(
             "api_message_reaction",
             conversation_id=conversation_id,
-            provider="slack",
+            provider=source_provider,
             removed=bool(req.remove),
             success=True,
         )

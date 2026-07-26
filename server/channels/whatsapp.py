@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -92,6 +93,44 @@ def _reply_preview(media_type: str, filename: str) -> str:
     if clean_media:
         return f"[{clean_media.capitalize()}]"
     return "Message"
+
+
+def _whatsapp_provider_reactions(value: Any) -> list[dict[str, Any]]:
+    try:
+        raw_reactions = json.loads(value or "[]") if isinstance(value, str) else value
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(raw_reactions, list):
+        return []
+    aggregated: dict[str, dict[str, Any]] = {}
+    for item in raw_reactions[:500]:
+        if not isinstance(item, dict):
+            continue
+        emoji = str(item.get("emoji") or "").strip()
+        if not emoji:
+            continue
+        reaction = aggregated.setdefault(
+            emoji,
+            {"name": emoji, "emoji": emoji, "count": 0, "reacted_by_me": False},
+        )
+        reaction["count"] += 1
+        reaction["reacted_by_me"] = (
+            reaction["reacted_by_me"] or item.get("is_from_me") is True
+        )
+    return list(aggregated.values())
+
+
+def _whatsapp_can_edit(timestamp: Any, is_from_me: bool) -> bool:
+    if not is_from_me:
+        return False
+    try:
+        sent_at = datetime.fromisoformat(str(timestamp or "").replace("Z", "+00:00"))
+        if sent_at.tzinfo is None:
+            sent_at = sent_at.replace(tzinfo=timezone.utc)
+        age = datetime.now(timezone.utc) - sent_at.astimezone(timezone.utc)
+        return timedelta(0) <= age <= timedelta(minutes=20)
+    except (TypeError, ValueError):
+        return False
 
 
 def _whatsapp_identity(conn: Optional[sqlite3.Connection], jid: str) -> dict[str, str]:
@@ -526,6 +565,16 @@ class WhatsAppChannelAdapter:
                 if has_reply_context
                 else ""
             )
+            mutation_select = (
+                ", m.reactions_json"
+                if "reactions_json" in columns
+                else ", '[]' AS reactions_json"
+            )
+            mutation_select += (
+                ", m.edited_at"
+                if "edited_at" in columns
+                else ", NULL AS edited_at"
+            )
             params: list[Any] = [chat_id]
             date_filter = ""
             if since and since_native_message_id:
@@ -554,6 +603,7 @@ class WhatsAppChannelAdapter:
                     m.media_type,
                     m.filename
                     {reply_select}
+                    {mutation_select}
                 FROM messages m
                 WHERE m.chat_jid = ?
                   {date_filter}
@@ -635,6 +685,16 @@ class WhatsAppChannelAdapter:
                         "resolved_phone": identity["phone"],
                         "attachments": attachments,
                         "native_message_id": row["id"],
+                        "provider_reactions": _whatsapp_provider_reactions(
+                            row["reactions_json"],
+                        ),
+                        "provider_edited": bool(row["edited_at"]),
+                        "provider_edited_at": row["edited_at"] or "",
+                        "provider_can_edit": _whatsapp_can_edit(
+                            row["timestamp"],
+                            bool(row["is_from_me"]),
+                        ),
+                        "provider_can_delete": bool(row["is_from_me"]),
                         **(
                             {
                                 "reply_to_message_id": row["reply_to_message_id"] or "",
@@ -654,6 +714,95 @@ class WhatsAppChannelAdapter:
             conn.close()
             if metadata_conn is not None:
                 metadata_conn.close()
+
+    def _native_capability(self, capability: str) -> bool:
+        try:
+            response = httpx.get(f"{_whatsapp_api_url()}/capabilities", timeout=5)
+            return response.status_code == 200 and response.json().get(capability) is True
+        except Exception:
+            return False
+
+    def _native_mutation(
+        self,
+        operation: str,
+        capability: str,
+        chat_identifier: str,
+        message_id: str,
+        extra: Optional[dict[str, Any]] = None,
+    ) -> tuple[bool, Optional[str]]:
+        chat_jid = str(chat_identifier or "").strip()
+        native_message_id = str(message_id or "").strip()
+        if native_message_id.startswith("whatsapp:"):
+            native_message_id = native_message_id.split(":", 1)[1]
+        if "@" not in chat_jid or not native_message_id:
+            return False, "whatsapp_message_target_required"
+        if not self._native_capability(capability):
+            return False, f"whatsapp_{capability}_unavailable"
+        payload: dict[str, Any] = {
+            "chat_jid": chat_jid,
+            "message_id": native_message_id,
+        }
+        payload.update(extra or {})
+        try:
+            response = httpx.post(
+                f"{_whatsapp_api_url()}/{operation}",
+                json=payload,
+                timeout=30,
+            )
+            data = response.json()
+            if response.status_code == 200 and data.get("success") is True:
+                return True, None
+            return False, f"whatsapp_{operation}_failed"
+        except Exception:
+            return False, f"whatsapp_{operation}_failed"
+
+    def set_reaction(
+        self,
+        chat_identifier: str,
+        message_id: str,
+        emoji: str,
+        *,
+        remove: bool = False,
+    ) -> tuple[bool, Optional[str]]:
+        normalized_emoji = str(emoji or "").strip()
+        if not normalized_emoji:
+            return False, "whatsapp_reaction_required"
+        return self._native_mutation(
+            "react",
+            "native_reactions",
+            chat_identifier,
+            message_id,
+            {"emoji": normalized_emoji, "remove": bool(remove)},
+        )
+
+    def edit_message(
+        self,
+        chat_identifier: str,
+        message_id: str,
+        message_text: str,
+    ) -> tuple[bool, Optional[str]]:
+        normalized_text = str(message_text or "").strip()
+        if not normalized_text:
+            return False, "whatsapp_message_text_required"
+        return self._native_mutation(
+            "edit",
+            "native_edits",
+            chat_identifier,
+            message_id,
+            {"message": normalized_text},
+        )
+
+    def delete_message(
+        self,
+        chat_identifier: str,
+        message_id: str,
+    ) -> tuple[bool, Optional[str]]:
+        return self._native_mutation(
+            "delete",
+            "native_deletes",
+            chat_identifier,
+            message_id,
+        )
 
     def _download_media(self, chat_jid: str, message_id: str) -> Optional[str]:
         """Download media via the whatsapp-mcp bridge API, return local file path."""

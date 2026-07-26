@@ -3823,10 +3823,12 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("reactionsByTarget", inbox_js_response.text)
         self.assertIn("providerReactions", inbox_js_response.text)
         self.assertIn("openReactionPicker", inbox_js_response.text)
-        self.assertIn("submitSlackReaction", inbox_js_response.text)
+        self.assertIn("submitProviderReaction", inbox_js_response.text)
+        self.assertIn("canMutateProviderMessage", inbox_js_response.text)
         self.assertIn("/messages/reaction", inbox_js_response.text)
         self.assertIn("openProviderToReact", inbox_js_response.text)
         self.assertIn('id="reactionPopover"', inbox_response.text)
+        self.assertIn('id="reactionProviderLabel"', inbox_response.text)
         self.assertIn(".reaction-popover", inbox_css_response.text)
         self.assertIn(".message-reaction-chip.reacted-by-me", inbox_css_response.text)
         self.assertIn("openMessageActionPopover", inbox_js_response.text)
@@ -5610,6 +5612,84 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(delete_response.status_code, 403)
         self.assertEqual(delete_response.json()["detail"], "message_not_owned")
         mock_adapter.assert_not_called()
+
+    def test_whatsapp_message_mutation_endpoints_use_exact_native_targets(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """UPDATE penguin_connect_conversations
+                   SET source_provider = 'whatsapp',
+                       source_chat_id = '15550101010@s.whatsapp.net'
+                   WHERE conversation_id = 'amc_test'"""
+            )
+            for native_id, owned in (
+                ("wa-own", True),
+                ("wa-incoming", False),
+            ):
+                conn.execute(
+                    """INSERT INTO penguin_connect_messages
+                       (conversation_id, provider, provider_message_id, direction,
+                        sender_name, subject, body_text, message_timestamp, is_read, metadata)
+                       VALUES (?, 'whatsapp', ?, 'whatsapp_local', ?, 'WhatsApp · Test',
+                               'Synthetic WhatsApp text', '2026-03-11T11:00:00+00:00',
+                               1, ?)""",
+                    (
+                        "amc_test",
+                        f"whatsapp:{native_id}",
+                        "Me" if owned else "Participant",
+                        json.dumps({
+                            "native_message_id": native_id,
+                            "is_from_me": owned,
+                        }),
+                    ),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        adapter = mock.Mock()
+        adapter.set_reaction.return_value = (True, None)
+        adapter.edit_message.return_value = (True, None)
+        adapter.delete_message.return_value = (True, None)
+        with mock.patch(
+            "app.get_channel_adapter",
+            return_value=adapter,
+        ) as get_adapter, TestClient(app_module.app) as client:
+            reaction_response = client.post(
+                "/penguin-connect/conversations/amc_test/messages/reaction",
+                json={
+                    "message_id": "whatsapp:wa-incoming",
+                    "emoji": "❤️",
+                    "remove": False,
+                },
+            )
+            edit_response = client.patch(
+                "/penguin-connect/conversations/amc_test/messages/whatsapp%3Awa-own",
+                json={"message": "Updated synthetic WhatsApp text"},
+            )
+            delete_response = client.delete(
+                "/penguin-connect/conversations/amc_test/messages/whatsapp%3Awa-own",
+            )
+
+        self.assertEqual(reaction_response.status_code, 200)
+        self.assertEqual(edit_response.status_code, 200)
+        self.assertEqual(delete_response.status_code, 200)
+        adapter.set_reaction.assert_called_once_with(
+            "15550101010@s.whatsapp.net",
+            "wa-incoming",
+            "❤️",
+            remove=False,
+        )
+        adapter.edit_message.assert_called_once_with(
+            "15550101010@s.whatsapp.net",
+            "wa-own",
+            "Updated synthetic WhatsApp text",
+        )
+        adapter.delete_message.assert_called_once_with(
+            "15550101010@s.whatsapp.net",
+            "wa-own",
+        )
+        self.assertTrue(all(call.args == ("whatsapp",) for call in get_adapter.call_args_list))
 
     def test_send_endpoint_forwards_attachment_paths(self):
         with mock.patch("app.refresh_contacts_now", return_value={"success": True}), mock.patch(

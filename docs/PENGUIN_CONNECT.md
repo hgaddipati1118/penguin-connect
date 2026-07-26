@@ -125,6 +125,12 @@ PENGUIN_CONNECT_WHATSAPP_API_URL=http://localhost:8080/api
 
 Look for `[OK] whatsapp_bridge` and `[OK] whatsapp_api`. Once the bridge is running, PenguinConnect discovers WhatsApp conversations automatically on server start.
 
+Penguin's extended local bridge advertises its supported operations at
+`GET /api/capabilities`. Native reply, reaction, edit, and delete controls fail closed when
+the corresponding capability is absent. Edits and deletes also require an exact cached
+chat JID/message ID pair and a message sent by the linked WhatsApp account; the bridge
+enforces WhatsApp's native edit window again immediately before sending.
+
 ## Slack Setup (Optional)
 
 Create a Slack app from [`../slack_manifest.example.json`](../slack_manifest.example.json),

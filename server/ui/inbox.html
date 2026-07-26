@@ -224,13 +224,13 @@
             class="reaction-popover"
             id="reactionPopover"
             role="dialog"
-            aria-label="React to Slack message"
+            aria-label="React to message"
             aria-modal="false"
             hidden
           >
             <div class="reaction-popover-heading">
               <strong>React</strong>
-              <span>Slack</span>
+              <span id="reactionProviderLabel">Slack</span>
             </div>
             <div class="reaction-options" role="group" aria-label="Choose a reaction">
               <button type="button" data-reaction-name="+1" data-reaction-emoji="👍" title="Thumbs up">👍</button>
@@ -246,7 +246,7 @@
             class="message-action-popover"
             id="messageActionPopover"
             role="menu"
-            aria-label="Slack message actions"
+            aria-label="Message actions"
             hidden
           >
             <button type="button" role="menuitem" data-message-operation="edit">
@@ -441,7 +441,7 @@
       <form id="messageEditForm">
         <header>
           <div>
-            <p class="overline">Slack</p>
+            <p class="overline" id="messageEditProviderLabel">Slack</p>
             <h2 id="messageEditDialogTitle">Edit message</h2>
           </div>
           <button class="icon-button" type="button" id="closeMessageEditButton" title="Close" aria-label="Close edit message">
@@ -471,7 +471,7 @@
       <div class="message-delete-sheet">
         <header>
           <div>
-            <p class="overline">Slack</p>
+            <p class="overline" id="messageDeleteProviderLabel">Slack</p>
             <h2 id="messageDeleteDialogTitle">Delete message?</h2>
           </div>
           <button class="icon-button" type="button" id="closeMessageDeleteButton" title="Close" aria-label="Close delete confirmation">
