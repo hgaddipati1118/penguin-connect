@@ -224,6 +224,7 @@ CREATE TABLE IF NOT EXISTS penguin_connect_scheduled_messages (
     conversation_id TEXT NOT NULL REFERENCES penguin_connect_conversations(conversation_id) ON DELETE CASCADE,
     sender_email TEXT NOT NULL DEFAULT '',
     body_text TEXT NOT NULL,
+    reply_to_message_id TEXT NOT NULL DEFAULT '',
     attachment_paths TEXT NOT NULL DEFAULT '[]',
     scheduled_at TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'scheduled',
@@ -1509,6 +1510,13 @@ def init_db() -> None:
             conn.execute("ALTER TABLE penguin_connect_conversation_management ADD COLUMN follow_up_at TEXT NOT NULL DEFAULT ''")
         if "is_muted" not in management_columns:
             conn.execute("ALTER TABLE penguin_connect_conversation_management ADD COLUMN is_muted INTEGER NOT NULL DEFAULT 0")
+        scheduled_message_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(penguin_connect_scheduled_messages)").fetchall()
+        }
+        if "reply_to_message_id" not in scheduled_message_columns:
+            conn.execute(
+                "ALTER TABLE penguin_connect_scheduled_messages ADD COLUMN reply_to_message_id TEXT NOT NULL DEFAULT ''"
+            )
         conn.execute(
             """CREATE INDEX IF NOT EXISTS idx_penguin_connect_conversation_management_follow_up
                ON penguin_connect_conversation_management(follow_up_at, is_archived)"""

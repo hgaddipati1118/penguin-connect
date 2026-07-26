@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -107,6 +108,7 @@ class SlackChannelAdapter:
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
+        self._user_resolution_lock = threading.Lock()
         self._users: dict[str, str] = {}
         self._channels: dict[str, str] = {}
         self._self_user_id = ""
@@ -199,16 +201,50 @@ class SlackChannelAdapter:
             if not cursor:
                 break
 
+    def _resolve_user_name(self, user_id: str) -> str:
+        normalized = str(user_id or "").strip()
+        if not normalized:
+            return ""
+        cached = self._users.get(normalized)
+        if cached:
+            return cached
+        if not normalized.startswith(("U", "W")):
+            return ""
+        with self._user_resolution_lock:
+            cached = self._users.get(normalized)
+            if cached:
+                return cached
+            payload = self._api("users.info", params={"user": normalized})
+            user = payload.get("user") if isinstance(payload.get("user"), dict) else {}
+            profile = user.get("profile") if isinstance(user.get("profile"), dict) else {}
+            name = (
+                str(profile.get("display_name") or "").strip()
+                or str(profile.get("real_name") or "").strip()
+                or str(user.get("real_name") or "").strip()
+                or str(user.get("name") or "").strip()
+                or normalized
+            )
+            self._users[normalized] = name
+            return name
+
     def _render_text(self, value: Any) -> str:
         text = str(value or "")
         text = _CHANNEL_MENTION_RE.sub(lambda match: f"#{match.group(2)}", text)
         return _USER_MENTION_RE.sub(
-            lambda match: f"@{self._users.get(match.group(1), match.group(1))}",
+            lambda match: f"@{self._resolve_user_name(match.group(1))}",
             text,
         ).replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
 
     def _message(self, message: dict[str, Any], channel_id: str) -> dict[str, Any]:
         user_id = str(message.get("user") or message.get("bot_id") or "").strip()
+        bot_profile = message.get("bot_profile") if isinstance(message.get("bot_profile"), dict) else {}
+        sender_name = (
+            self._resolve_user_name(user_id)
+            or str(bot_profile.get("name") or "").strip()
+            or str(message.get("username") or "").strip()
+            or user_id
+            or "Slack"
+        )
         files = message.get("files") if isinstance(message.get("files"), list) else []
         attachments = []
         for item in files:
@@ -225,6 +261,8 @@ class SlackChannelAdapter:
                 }
             )
         timestamp = str(message.get("ts") or "").strip()
+        thread_ts = str(message.get("thread_ts") or "").strip()
+        parent_user_id = str(message.get("parent_user_id") or "").strip()
         return {
             "text": self._render_text(message.get("text")),
             "timestamp": _timestamp_to_iso(timestamp),
@@ -232,11 +270,49 @@ class SlackChannelAdapter:
             "native_guid": timestamp,
             "chat_id": channel_id,
             "handle": user_id,
-            "push_name": self._users.get(user_id, user_id or "Slack"),
+            "push_name": sender_name,
             "is_from_me": bool(user_id and user_id == self._self_user_id),
             "attachments": attachments,
             "source_provider": "slack",
+            "thread_ts": thread_ts,
+            "is_thread_reply": bool(thread_ts and thread_ts != timestamp),
+            "thread_parent_name": self._resolve_user_name(parent_user_id),
+            "reply_count": max(0, int(message.get("reply_count") or 0)),
+            "reply_users_count": max(0, int(message.get("reply_users_count") or 0)),
+            "latest_reply": str(message.get("latest_reply") or "").strip(),
         }
+
+    def _fetch_thread_replies(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        *,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        replies: list[dict[str, Any]] = []
+        cursor = ""
+        max_pages = _env_int("PENGUIN_CONNECT_SLACK_THREAD_PAGES", 2, 1, 10)
+        for _ in range(max_pages):
+            remaining = max(1, limit - len(replies))
+            payload = self._api(
+                "conversations.replies",
+                params={
+                    "channel": channel_id,
+                    "ts": thread_ts,
+                    "limit": min(100, remaining),
+                    **({"cursor": cursor} if cursor else {}),
+                },
+            )
+            if not payload.get("ok"):
+                break
+            batch = [item for item in payload.get("messages") or [] if isinstance(item, dict)]
+            replies.extend(self._message(item, channel_id) for item in batch)
+            if len(replies) >= limit:
+                break
+            cursor = str((payload.get("response_metadata") or {}).get("next_cursor") or "").strip()
+            if not cursor or not batch:
+                break
+        return replies[:limit]
 
     def _recent_message_seed(self, days: int = 30, max_messages: int = 500) -> dict[str, list[dict[str, Any]]]:
         if not _slack_token().startswith("xoxp-"):
@@ -442,6 +518,48 @@ class SlackChannelAdapter:
                 cursor = str((payload.get("response_metadata") or {}).get("next_cursor") or "").strip()
                 if not cursor or not batch:
                     break
+            thread_roots = sorted(
+                (
+                    message for message in messages
+                    if int(message.get("reply_count") or 0) > 0
+                    and str(message.get("native_message_id") or "").strip()
+                ),
+                key=lambda message: (
+                    message.get("latest_reply") or "",
+                    message.get("timestamp") or "",
+                ),
+                reverse=True,
+            )[:_env_int("PENGUIN_CONNECT_SLACK_THREAD_FETCHES", 10, 0, 50)]
+            seen_message_ids = {
+                str(message.get("native_message_id") or "").strip()
+                for message in messages
+            }
+
+            def hydrate_thread(root: dict[str, Any]) -> list[dict[str, Any]]:
+                return self._fetch_thread_replies(
+                    chat_id,
+                    str(root.get("native_message_id") or "").strip(),
+                    limit=min(300, safe_limit),
+                )
+
+            thread_workers = min(
+                len(thread_roots),
+                _env_int("PENGUIN_CONNECT_SLACK_THREAD_WORKERS", 4, 1, 8),
+            )
+            hydrated_threads: list[list[dict[str, Any]]] = []
+            if thread_workers:
+                with ThreadPoolExecutor(
+                    max_workers=thread_workers,
+                    thread_name_prefix="penguin-slack-thread",
+                ) as executor:
+                    hydrated_threads = list(executor.map(hydrate_thread, thread_roots))
+            for replies in hydrated_threads:
+                for reply in replies:
+                    message_id = str(reply.get("native_message_id") or "").strip()
+                    if not message_id or message_id in seen_message_ids:
+                        continue
+                    seen_message_ids.add(message_id)
+                    messages.append(reply)
             messages = [message for message in messages if message.get("timestamp")]
             messages.sort(key=lambda message: message.get("timestamp") or "")
             result = messages[-safe_limit:]
@@ -458,15 +576,22 @@ class SlackChannelAdapter:
         chat_identifier: str,
         message_text: str,
         attachment_paths: Optional[list[str]] = None,
+        reply_to_message_id: Optional[str] = None,
     ) -> tuple[bool, Optional[str]]:
         if attachment_paths:
             return False, "slack_file_upload_not_supported_yet"
         text = str(message_text or "").strip()
         if not text:
             return False, "empty_message"
+        thread_ts = str(reply_to_message_id or "").strip()
+        if thread_ts.startswith("slack:"):
+            thread_ts = thread_ts.split(":", 1)[1]
+        body = {"channel": chat_identifier, "text": text}
+        if thread_ts:
+            body["thread_ts"] = thread_ts
         payload = self._api(
             "chat.postMessage",
-            json_body={"channel": chat_identifier, "text": text},
+            json_body=body,
         )
         if not payload.get("ok"):
             return False, str(payload.get("error") or "slack_send_failed")

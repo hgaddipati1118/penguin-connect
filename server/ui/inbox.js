@@ -48,6 +48,7 @@ const state = {
   attachments: [],
   pendingSends: [],
   scheduledMessages: [],
+  replyTarget: null,
   conversationAvatarDraft: "",
   followLatest: true,
   gifs: [],
@@ -119,6 +120,10 @@ const el = {
   messageList: document.querySelector("#messageList"),
   messageComposer: document.querySelector("#messageComposer"),
   messageComposerShell: document.querySelector("#messageComposerShell"),
+  composerReplyContext: document.querySelector("#composerReplyContext"),
+  composerReplyTitle: document.querySelector("#composerReplyTitle"),
+  composerReplySnippet: document.querySelector("#composerReplySnippet"),
+  clearReplyTargetButton: document.querySelector("#clearReplyTargetButton"),
   composerAiState: document.querySelector("#composerAiState"),
   sendButton: document.querySelector("#sendButton"),
   scheduleSendButton: document.querySelector("#scheduleSendButton"),
@@ -2046,6 +2051,116 @@ function nativeReceiptLabel(message) {
   return "";
 }
 
+function slackNativeMessageId(message) {
+  const nativeId = String(message?.metadata?.native_message_id || "").trim();
+  if (nativeId) return nativeId;
+  const providerId = String(message?.provider_message_id || "").trim();
+  return providerId.startsWith("slack:") ? providerId.slice(6) : "";
+}
+
+function slackThreadRootId(message) {
+  return String(message?.metadata?.thread_ts || "").trim()
+    || slackNativeMessageId(message);
+}
+
+function isSlackThreadReply(message) {
+  if (providerKey(state.selected?.source_provider) !== "slack") return false;
+  const threadTs = String(message?.metadata?.thread_ts || "").trim();
+  return Boolean(
+    message?.metadata?.is_thread_reply
+    || (threadTs && threadTs !== slackNativeMessageId(message)),
+  );
+}
+
+function slackThreadRenderRows(sortedRows) {
+  const visibleRows = sortedRows.slice(-state.messagesVisible).filter(
+    (message) => !message.metadata?.reaction,
+  );
+  if (providerKey(state.selected?.source_provider) !== "slack") {
+    return visibleRows.map((message) => ({ message, isThreadReply: false }));
+  }
+
+  const rootsById = new Map();
+  const repliesByRoot = new Map();
+  for (const message of sortedRows) {
+    if (message.metadata?.reaction) continue;
+    if (isSlackThreadReply(message)) {
+      const rootId = slackThreadRootId(message);
+      if (!repliesByRoot.has(rootId)) repliesByRoot.set(rootId, []);
+      repliesByRoot.get(rootId).push(message);
+    } else {
+      const messageId = slackNativeMessageId(message);
+      if (messageId) rootsById.set(messageId, message);
+    }
+  }
+
+  const includedRoots = new Map();
+  const orphanReplies = [];
+  for (const message of visibleRows) {
+    if (isSlackThreadReply(message)) {
+      const rootId = slackThreadRootId(message);
+      const root = rootsById.get(rootId);
+      if (root) includedRoots.set(rootId, root);
+      else orphanReplies.push(message);
+      continue;
+    }
+    includedRoots.set(slackNativeMessageId(message) || message.provider_message_id, message);
+  }
+
+  const renderRows = [];
+  const roots = [...includedRoots.entries()].sort((left, right) => (
+    Date.parse(left[1].message_timestamp || "") - Date.parse(right[1].message_timestamp || "")
+  ));
+  for (const [rootId, root] of roots) {
+    renderRows.push({ message: root, isThreadReply: false });
+    const replies = [...(repliesByRoot.get(rootId) || [])].sort((left, right) => (
+      Date.parse(left.message_timestamp || "") - Date.parse(right.message_timestamp || "")
+    ));
+    for (const reply of replies) {
+      renderRows.push({ message: reply, isThreadReply: true, root });
+    }
+  }
+  for (const reply of orphanReplies) {
+    renderRows.push({ message: reply, isThreadReply: true, root: null });
+  }
+  return renderRows;
+}
+
+function renderReplyTarget() {
+  const target = state.replyTarget;
+  el.composerReplyContext.hidden = !target;
+  if (!target) return;
+  el.composerReplyTitle.textContent = `Replying to ${target.sender || "thread"}`;
+  el.composerReplySnippet.textContent = truncate(
+    target.body || "Slack thread",
+    120,
+  );
+}
+
+function clearReplyTarget({ focus = false } = {}) {
+  state.replyTarget = null;
+  renderReplyTarget();
+  if (focus) el.messageComposer.focus({ preventScroll: true });
+}
+
+function startSlackThreadReply(message) {
+  if (providerKey(state.selected?.source_provider) !== "slack") return;
+  const threadTs = slackThreadRootId(message);
+  if (!threadTs) {
+    toast("This Slack message cannot be replied to yet.", "error");
+    return;
+  }
+  state.replyTarget = {
+    threadTs,
+    sender: isOwnMessage(message)
+      ? "yourself"
+      : (message.sender_name || message.sender_email || "this thread"),
+    body: message.body_text || "Attachment",
+  };
+  renderReplyTarget();
+  el.messageComposer.focus({ preventScroll: true });
+}
+
 async function openProviderToReact(message) {
   if (!state.selected || message.metadata?.pending_send) return;
   try {
@@ -2101,12 +2216,11 @@ function renderMessages({
   }
 
   let lastDate = "";
-  const rows = sortedRows.slice(-state.messagesVisible).filter(
-    (message) => !message.metadata?.reaction,
-  );
-  for (const message of rows) {
+  const rows = slackThreadRenderRows(sortedRows);
+  for (const entry of rows) {
+    const { message, isThreadReply } = entry;
     const date = fullDateLabel(message.message_timestamp);
-    if (date !== lastDate) {
+    if (!isThreadReply && date !== lastDate) {
       const divider = document.createElement("div");
       divider.className = "date-divider";
       divider.textContent = date;
@@ -2116,8 +2230,14 @@ function renderMessages({
 
     const mine = isOwnMessage(message);
     const row = document.createElement("article");
-    row.className = `message-row${mine ? " mine" : ""}`;
+    row.className = [
+      "message-row",
+      mine ? "mine" : "",
+      providerKey(state.selected?.source_provider) === "slack" ? "slack-message" : "",
+      isThreadReply ? "message-thread-reply" : "",
+    ].filter(Boolean).join(" ");
     row.dataset.messageId = message.provider_message_id || "";
+    row.dataset.threadRoot = isThreadReply ? slackThreadRootId(message) : "";
     row.dataset.searchText = [
       message.body_text,
       message.sender_name,
@@ -2127,7 +2247,14 @@ function renderMessages({
 
     const stack = document.createElement("div");
     stack.className = "message-stack";
-    if (!mine && message.sender_name && state.selected?.chat_type === "group") {
+    if (
+      !mine
+      && message.sender_name
+      && (
+        ["group", "channel"].includes(state.selected?.chat_type)
+        || providerKey(state.selected?.source_provider) === "slack"
+      )
+    ) {
       const sender = document.createElement("p");
       sender.className = "message-sender";
       sender.textContent = message.sender_name;
@@ -2149,6 +2276,17 @@ function renderMessages({
         list.append(renderInlineAttachment(message, attachment, index));
       }
       bubble.append(list);
+    }
+    const replyCount = Number(message.metadata?.reply_count || 0);
+    if (!isThreadReply && providerKey(state.selected?.source_provider) === "slack" && replyCount > 0) {
+      const threadSummary = document.createElement("button");
+      threadSummary.type = "button";
+      threadSummary.className = "message-thread-summary";
+      threadSummary.append(createIcon("i-reply"));
+      threadSummary.append(`${replyCount} ${replyCount === 1 ? "reply" : "replies"}`);
+      threadSummary.title = "Reply in this Slack thread";
+      threadSummary.addEventListener("click", () => startSlackThreadReply(message));
+      bubble.append(threadSummary);
     }
     const reactions = nativeReactions.get(
       normalizeReactionTargetGuid(message.metadata?.native_guid),
@@ -2216,8 +2354,17 @@ function renderMessages({
     react.setAttribute("aria-label", react.title);
     react.addEventListener("click", () => openProviderToReact(message));
     if (message.metadata?.pending_send) react.hidden = true;
-    if (mine) row.append(translate, pin, react, stack);
-    else row.append(stack, react, pin, translate);
+    const reply = document.createElement("button");
+    reply.type = "button";
+    reply.className = "message-reply-button";
+    reply.append(createIcon("i-reply"));
+    reply.title = "Reply in Slack thread";
+    reply.setAttribute("aria-label", `Reply to ${message.sender_name || "message"} in thread`);
+    reply.addEventListener("click", () => startSlackThreadReply(message));
+    reply.hidden = providerKey(state.selected?.source_provider) !== "slack"
+      || Boolean(message.metadata?.pending_send);
+    if (mine) row.append(reply, translate, pin, react, stack);
+    else row.append(stack, reply, react, pin, translate);
     messageFragment.append(row);
     if (
       state.autoTranslate
@@ -2409,6 +2556,7 @@ async function selectConversation(
   window.clearTimeout(selectionHydrationTimer);
   window.clearTimeout(selectionPreloadTimer);
   state.selected = conversation;
+  if (previousConversationId !== conversation.conversation_id) clearReplyTarget();
   try {
     localStorage.setItem("penguin-last-conversation", conversation.conversation_id);
   } catch (_error) {
@@ -2492,6 +2640,10 @@ function messagesFingerprint(messages) {
     message.metadata?.reaction?.target_guid,
     message.metadata?.reaction?.type,
     message.metadata?.reaction?.removed,
+    message.metadata?.thread_ts,
+    message.metadata?.is_thread_reply,
+    message.metadata?.reply_count,
+    message.sender_name,
   ].join(":")).join("|");
 }
 
@@ -2901,6 +3053,7 @@ async function deliverPendingSend(pending) {
           sender_email: "",
           message: pending.text,
           attachments,
+          reply_to_message_id: pending.replyTo?.threadTs || "",
         }),
       });
       removePendingOptimisticMessage(pending);
@@ -2920,6 +3073,7 @@ async function deliverPendingSend(pending) {
           message: pending.text,
           attachments,
           scheduled_at: new Date(Date.now() + 1500).toISOString(),
+          reply_to_message_id: pending.replyTo?.threadTs || "",
         }),
       },
     );
@@ -2976,6 +3130,8 @@ function addPendingOptimisticMessage(pending) {
       pending_send: true,
       pending_status: pending.instant ? "Sending now…" : "Sending in 15 seconds · Undo available",
       attachment_names: attachmentNames,
+      thread_ts: pending.replyTo?.threadTs || "",
+      is_thread_reply: Boolean(pending.replyTo),
     },
     attachments: [],
   };
@@ -3046,11 +3202,13 @@ async function scheduleCurrentMessage(event) {
           message: el.messageComposer.value.trim(),
           attachments,
           scheduled_at: scheduledAt.toISOString(),
+          reply_to_message_id: state.replyTarget?.threadTs || "",
         }),
       },
     );
     el.messageComposer.value = "";
     state.attachments = [];
+    clearReplyTarget();
     renderAttachmentPreview();
     resizeComposer();
     updateSendButton();
@@ -3075,6 +3233,10 @@ function undoPendingSend(pending) {
   if (state.selected?.conversation_id === pending.conversation.conversation_id) {
     if (!el.messageComposer.value.trim()) el.messageComposer.value = pending.text;
     state.attachments.push(...pending.files);
+    if (pending.replyTo) {
+      state.replyTarget = { ...pending.replyTo };
+      renderReplyTarget();
+    }
     renderAttachmentPreview();
     resizeComposer();
     updateSendButton();
@@ -3090,6 +3252,7 @@ function sendMessage({ instant = false } = {}) {
     conversation: state.selected,
     text: el.messageComposer.value.trim(),
     files: [...state.attachments],
+    replyTo: state.replyTarget ? { ...state.replyTarget } : null,
     cancelled: false,
     instant,
     timer: 0,
@@ -3098,6 +3261,7 @@ function sendMessage({ instant = false } = {}) {
   addPendingOptimisticMessage(pending);
   el.messageComposer.value = "";
   state.attachments = [];
+  clearReplyTarget();
   renderAttachmentPreview();
   resizeComposer();
   updateSendButton();
@@ -4760,6 +4924,7 @@ el.messageComposer.addEventListener("input", () => {
   mentionSelectionIndex = 0;
   renderMentionSuggestions();
 });
+el.clearReplyTargetButton.addEventListener("click", () => clearReplyTarget({ focus: true }));
 el.autoTranslateToggle.addEventListener("change", () => {
   state.autoTranslate = el.autoTranslateToggle.checked;
   try {

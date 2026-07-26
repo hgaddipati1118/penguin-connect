@@ -34,6 +34,7 @@ flowchart LR
 ## Current Status
 
 - Shipping source adapters: **Apple Messages** (`iMessage`, `SMS`, `RCS`), **WhatsApp**, and **Slack**
+- Slack channels retain human-readable authors, render replies beneath their parent message, and can send or schedule replies back into the native Slack thread
 - Primary operator surfaces: **local messaging workspace**, **power console**, **local CLI**, and **MCP server**
 - Optional legacy bridge surface: **Gmail aliases**
 - Additional adapter available: **Telegram**

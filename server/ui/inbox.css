@@ -1203,6 +1203,21 @@ kbd {
   justify-content: flex-end;
 }
 
+.message-row.message-thread-reply {
+  position: relative;
+  padding-left: 22px;
+}
+
+.message-row.message-thread-reply::before {
+  position: absolute;
+  top: -7px;
+  bottom: -7px;
+  left: 7px;
+  width: 1px;
+  background: #d7d0df;
+  content: "";
+}
+
 .message-stack {
   max-width: min(610px, 76%);
 }
@@ -1212,6 +1227,24 @@ kbd {
   color: var(--ink-faint);
   font-size: 9px;
   font-weight: 600;
+}
+
+.slack-message .message-sender {
+  color: #62556d;
+  font-size: 10px;
+}
+
+.message-thread-reply .message-stack {
+  max-width: min(580px, 72%);
+}
+
+.message-thread-reply .message-bubble {
+  border-color: rgba(91, 65, 113, 0.09);
+  background: #f3f0f5;
+}
+
+.message-thread-reply.mine .message-bubble {
+  background: #e3e8e4;
 }
 
 .message-bubble {
@@ -1282,7 +1315,8 @@ kbd {
 }
 
 .message-pin-button,
-.message-react-button {
+.message-react-button,
+.message-reply-button {
   display: grid;
   width: 28px;
   height: 28px;
@@ -1300,9 +1334,11 @@ kbd {
 .message-row:hover .message-pin-button,
 .message-row:hover .message-translate-button,
 .message-row:hover .message-react-button,
+.message-row:hover .message-reply-button,
 .message-pin-button:focus-visible,
 .message-translate-button:focus-visible,
 .message-react-button:focus-visible,
+.message-reply-button:focus-visible,
 .message-pin-button[aria-pressed="true"] {
   opacity: 1;
 }
@@ -1325,6 +1361,42 @@ kbd {
 .message-react-button:hover {
   background: #f2f1ec;
   color: var(--ink);
+}
+
+.message-reply-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.message-reply-button:hover {
+  background: #eee9f1;
+  color: #68467f;
+}
+
+.message-thread-summary {
+  display: inline-flex;
+  min-height: 25px;
+  align-items: center;
+  gap: 5px;
+  margin: 8px 0 -2px;
+  padding: 3px 8px;
+  border: 1px solid #d9d0df;
+  border-radius: 999px;
+  background: #faf8fb;
+  color: #654879;
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.message-thread-summary:hover {
+  border-color: #bca9c8;
+  background: #f4eff6;
+}
+
+.message-thread-summary svg {
+  width: 12px;
+  height: 12px;
 }
 
 .message-translate-button {
@@ -1549,6 +1621,82 @@ kbd {
   padding: 9px max(18px, 5vw) 10px;
   border-top: 1px solid var(--line);
   background: rgba(251, 250, 246, 0.97);
+}
+
+.composer-reply-context {
+  display: flex;
+  min-height: 46px;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border: 1px solid #d9d2df;
+  border-bottom: 0;
+  border-radius: 13px 13px 0 0;
+  background: #f5f2f6;
+}
+
+.composer-reply-context[hidden] {
+  display: none;
+}
+
+.composer-reply-icon {
+  display: grid;
+  width: 27px;
+  height: 27px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 8px;
+  background: #e8e0ec;
+  color: #68467f;
+}
+
+.composer-reply-icon svg,
+.composer-reply-clear svg {
+  width: 14px;
+  height: 14px;
+}
+
+.composer-reply-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 1px;
+}
+
+.composer-reply-copy strong {
+  color: var(--ink);
+  font-size: 10px;
+}
+
+.composer-reply-copy small {
+  overflow: hidden;
+  color: var(--ink-soft);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-reply-clear {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-faint);
+  cursor: pointer;
+}
+
+.composer-reply-clear:hover {
+  background: #ebe5ed;
+  color: var(--ink);
+}
+
+.composer-reply-context:not([hidden]) + .composer {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
 }
 
 .composer {

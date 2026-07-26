@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 import tempfile
@@ -113,6 +114,140 @@ class SlackChannelAdapterTests(unittest.TestCase):
         self.assertTrue(messages[1]["is_from_me"])
         self.assertEqual(sent, (True, None))
 
+    def test_fetches_thread_replies_with_author_and_parent_metadata(self):
+        adapter = SlackChannelAdapter()
+        adapter._self_user_id = "USELF"
+        adapter._users = {
+            "USELF": "Harsha",
+            "UANH": "Anh",
+            "UDHRUV": "Dhruv",
+        }
+
+        def fake_api(method, **kwargs):
+            if method == "conversations.history":
+                return {
+                    "ok": True,
+                    "messages": [
+                        {
+                            "ts": "1785000001.000100",
+                            "user": "UANH",
+                            "text": "Root question",
+                            "reply_count": 2,
+                            "reply_users_count": 2,
+                            "latest_reply": "1785000003.000100",
+                        },
+                    ],
+                    "response_metadata": {"next_cursor": ""},
+                }
+            if method == "conversations.replies":
+                self.assertEqual(kwargs["params"]["channel"], "C_PRODUCT")
+                self.assertEqual(kwargs["params"]["ts"], "1785000001.000100")
+                return {
+                    "ok": True,
+                    "messages": [
+                        {
+                            "ts": "1785000001.000100",
+                            "user": "UANH",
+                            "text": "Root question",
+                            "reply_count": 2,
+                        },
+                        {
+                            "ts": "1785000002.000100",
+                            "thread_ts": "1785000001.000100",
+                            "parent_user_id": "UANH",
+                            "user": "UDHRUV",
+                            "text": "First reply",
+                        },
+                        {
+                            "ts": "1785000003.000100",
+                            "thread_ts": "1785000001.000100",
+                            "parent_user_id": "UANH",
+                            "user": "USELF",
+                            "text": "Second reply",
+                        },
+                    ],
+                    "response_metadata": {"next_cursor": ""},
+                }
+            raise AssertionError(method)
+
+        with mock.patch.object(adapter, "_api", side_effect=fake_api):
+            messages = adapter.fetch_messages("C_PRODUCT", limit=50)
+
+        self.assertEqual(
+            [message["text"] for message in messages],
+            ["Root question", "First reply", "Second reply"],
+        )
+        self.assertEqual(messages[0]["reply_count"], 2)
+        self.assertFalse(messages[0]["is_thread_reply"])
+        self.assertEqual(messages[1]["thread_ts"], "1785000001.000100")
+        self.assertTrue(messages[1]["is_thread_reply"])
+        self.assertEqual(messages[1]["thread_parent_name"], "Anh")
+        self.assertEqual(messages[1]["push_name"], "Dhruv")
+        self.assertTrue(messages[2]["is_from_me"])
+
+    def test_sends_reply_into_existing_slack_thread(self):
+        adapter = SlackChannelAdapter()
+
+        def fake_api(method, **kwargs):
+            self.assertEqual(method, "chat.postMessage")
+            self.assertEqual(
+                kwargs["json_body"],
+                {
+                    "channel": "C_PRODUCT",
+                    "text": "Replying here",
+                    "thread_ts": "1785000001.000100",
+                },
+            )
+            return {"ok": True, "ts": "1785000004.000100"}
+
+        with mock.patch.object(adapter, "_api", side_effect=fake_api):
+            result = adapter.send_message(
+                "C_PRODUCT",
+                "Replying here",
+                reply_to_message_id="slack:1785000001.000100",
+            )
+
+        self.assertEqual(result, (True, None))
+
+    def test_resolves_missing_slack_user_once_with_users_info(self):
+        adapter = SlackChannelAdapter()
+        adapter._self_user_id = "USELF"
+        user_info_calls = 0
+
+        def fake_api(method, **kwargs):
+            nonlocal user_info_calls
+            if method == "users.list":
+                return {"ok": True, "members": [], "response_metadata": {"next_cursor": ""}}
+            if method == "conversations.history":
+                return {
+                    "ok": True,
+                    "messages": [
+                        {"ts": "1785000002.000100", "user": "UEXTERNAL", "text": "Second"},
+                        {"ts": "1785000001.000100", "user": "UEXTERNAL", "text": "First"},
+                    ],
+                    "response_metadata": {"next_cursor": ""},
+                }
+            if method == "users.info":
+                user_info_calls += 1
+                self.assertEqual(kwargs["params"], {"user": "UEXTERNAL"})
+                return {
+                    "ok": True,
+                    "user": {
+                        "id": "UEXTERNAL",
+                        "profile": {"display_name": "External guest"},
+                    },
+                }
+            raise AssertionError(method)
+
+        with mock.patch.object(adapter, "_api", side_effect=fake_api):
+            messages = adapter.fetch_messages("C_PRODUCT", limit=15)
+
+        self.assertEqual(
+            [message["push_name"] for message in messages],
+            ["External guest", "External guest"],
+        )
+        self.assertEqual(user_info_calls, 1)
+
     def test_reuses_recent_workspace_discovery(self):
         adapter = SlackChannelAdapter()
 
@@ -224,6 +359,48 @@ class SlackBridgeIntegrationTests(unittest.TestCase):
         self.assertEqual(message["provider_message_id"], "slack:1785000000.000100")
         self.assertEqual(message["body_text"], "Ready to ship")
         self.assertEqual(message["sender_name"], "Anh")
+
+    def test_manual_thread_reply_dispatches_to_slack_and_persists_thread_metadata(self):
+        self.conn.execute(
+            """INSERT INTO penguin_connect_conversations
+               (gmail_email, source_provider, conversation_id, source_chat_id,
+                source_chat_identifier, source_service_name, display_name, chat_type,
+                participants, status, exclude_from_sync)
+               VALUES ('owner@gmail.com', 'slack', 'slack-thread', 'C_PRODUCT',
+                       'C_PRODUCT', 'Slack', '#product', 'channel', '[]', 'active', 0)"""
+        )
+        self.conn.commit()
+        channel = mock.Mock()
+        channel.send_message.return_value = (True, None)
+
+        with mock.patch.object(penguin_connect, "_SLACK_CHANNEL", channel), mock.patch(
+            "penguin_connect._source_adapter_for_provider",
+            return_value=channel,
+        ), mock.patch(
+            "penguin_connect.refresh_conversation_exclusions"
+        ), mock.patch("penguin_connect.log_action"):
+            result = penguin_connect.send_manual_message(
+                self.conn,
+                conversation_id="slack-thread",
+                body_text="Nested reply",
+                reply_to_message_id="slack:1785000001.000100",
+            )
+
+        self.assertTrue(result["success"])
+        channel.send_message.assert_called_once_with(
+            "C_PRODUCT",
+            "Nested reply",
+            attachment_paths=None,
+            reply_to_message_id="slack:1785000001.000100",
+        )
+        row = self.conn.execute(
+            """SELECT metadata
+               FROM penguin_connect_messages
+               WHERE conversation_id = 'slack-thread'"""
+        ).fetchone()
+        metadata = json.loads(row["metadata"])
+        self.assertEqual(metadata["thread_ts"], "1785000001.000100")
+        self.assertTrue(metadata["is_thread_reply"])
 
 
 if __name__ == "__main__":

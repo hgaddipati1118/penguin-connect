@@ -321,6 +321,7 @@ def _send_to_source_conversation(
     *,
     attachment_paths: Optional[list[str]] = None,
     action_context: Optional[dict[str, Any]] = None,
+    reply_to_message_id: Optional[str] = None,
 ) -> tuple[bool, Optional[str]]:
     message_text = _rewrite_markdown_links_for_source_message(message_text)
     source_provider = _conversation_source_provider(conv)
@@ -335,6 +336,14 @@ def _send_to_source_conversation(
     log_action("source_send_attempt", **base_fields)
     if source_provider == "imessage":
         ok, error = send_imessage(source_chat_id, message_text, attachment_paths=attachment_paths)
+    elif source_provider == "slack":
+        adapter = _source_adapter_for_provider(source_provider)
+        ok, error = adapter.send_message(
+            source_chat_id,
+            message_text,
+            attachment_paths=attachment_paths,
+            reply_to_message_id=reply_to_message_id,
+        )
     else:
         adapter = _source_adapter_for_provider(source_provider)
         ok, error = adapter.send_message(source_chat_id, message_text, attachment_paths=attachment_paths)
@@ -424,6 +433,20 @@ def _source_message_native_metadata(msg: dict[str, Any]) -> dict[str, Any]:
     }
     if reaction and reaction["target_guid"]:
         metadata["reaction"] = reaction
+    thread_ts = str(msg.get("thread_ts") or "").strip()
+    if thread_ts:
+        metadata["thread_ts"] = thread_ts
+        metadata["is_thread_reply"] = bool(msg.get("is_thread_reply"))
+    thread_parent_name = str(msg.get("thread_parent_name") or "").strip()
+    if thread_parent_name:
+        metadata["thread_parent_name"] = thread_parent_name
+    reply_count = max(0, int(msg.get("reply_count") or 0))
+    if reply_count:
+        metadata["reply_count"] = reply_count
+        metadata["reply_users_count"] = max(0, int(msg.get("reply_users_count") or 0))
+    latest_reply = str(msg.get("latest_reply") or "").strip()
+    if latest_reply:
+        metadata["latest_reply"] = latest_reply
     return metadata
 
 
@@ -9758,6 +9781,7 @@ def send_manual_message(
     sender_email: str = "",
     body_text: str = "",
     attachment_paths: Optional[list[str]] = None,
+    reply_to_message_id: str = "",
 ) -> dict[str, Any]:
     body_text = _rewrite_markdown_links_for_source_message(body_text)
     attachment_paths = [str(path) for path in (attachment_paths or []) if str(path or "").strip()]
@@ -9781,6 +9805,9 @@ def send_manual_message(
         return {"success": False, "error": "conversation_excluded"}
 
     source_provider = _conversation_source_provider(conv)
+    reply_to_message_id = str(reply_to_message_id or "").strip()
+    if reply_to_message_id and source_provider != "slack":
+        return {"success": False, "error": "thread_replies_only_supported_for_slack"}
     attachment_metadata = _manual_attachment_metadata(attachment_paths)
     resolved_sender_email = _normalize_email(sender_email)
     sender_identity = resolved_sender_email or "local"
@@ -9797,6 +9824,7 @@ def send_manual_message(
         body_text,
         attachment_paths=attachment_paths or None,
         action_context=action_context,
+        reply_to_message_id=reply_to_message_id or None,
     )
     if not ok:
         log_action(
@@ -9817,6 +9845,14 @@ def send_manual_message(
     if attachment_paths:
         metadata["manual_attachment_count"] = len(attachment_paths)
         metadata["attachments"] = attachment_metadata
+    if reply_to_message_id:
+        thread_ts = (
+            reply_to_message_id.split(":", 1)[1]
+            if reply_to_message_id.startswith("slack:")
+            else reply_to_message_id
+        )
+        metadata["thread_ts"] = thread_ts
+        metadata["is_thread_reply"] = True
 
     conn.execute(
         """INSERT OR IGNORE INTO penguin_connect_messages
@@ -9840,6 +9876,7 @@ def send_manual_message(
         "conversation_id": conversation_id,
         "provider_message_id": provider_id,
         "attachment_count": len(attachment_paths),
+        "reply_to_message_id": reply_to_message_id,
     }
     log_action(
         "manual_send_result",

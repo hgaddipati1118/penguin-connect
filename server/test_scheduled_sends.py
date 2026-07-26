@@ -147,6 +147,87 @@ class ScheduledSendTests(unittest.TestCase):
         self.assertEqual(row["status"], "sent")
         self.assertEqual(row["provider_message_id"], "manual-1")
 
+    def test_scheduled_thread_reply_preserves_parent_until_delivery(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """INSERT INTO penguin_connect_conversations
+                   (gmail_email, conversation_id, source_provider, source_chat_id, display_name,
+                    chat_type, participants, status)
+                   VALUES (?, ?, 'slack', ?, ?, 'channel', ?, 'active')""",
+                (
+                    "owner@gmail.com",
+                    "slack_thread_test",
+                    "C_PRODUCT",
+                    "#product",
+                    '["U_ANH"]',
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        scheduled_at = (datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat()
+        with TestClient(app_module.app) as client:
+            create_response = client.post(
+                "/penguin-connect/conversations/slack_thread_test/scheduled-messages",
+                json={
+                    "message": "Nested reply",
+                    "scheduled_at": scheduled_at,
+                    "reply_to_message_id": "slack:1785000001.000100",
+                },
+            )
+
+        self.assertEqual(create_response.status_code, 200)
+        created = create_response.json()["scheduled_message"]
+        self.assertEqual(
+            created["reply_to_message_id"],
+            "slack:1785000001.000100",
+        )
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """UPDATE penguin_connect_scheduled_messages
+                   SET scheduled_at = ?
+                   WHERE scheduled_id = ?""",
+                (
+                    (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(),
+                    created["scheduled_id"],
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with mock.patch(
+            "app.penguinconnect_send_manual_message",
+            return_value={"success": True, "provider_message_id": "manual-thread-reply"},
+        ) as mock_send:
+            result = app_module.run_due_scheduled_messages()
+
+        self.assertEqual(result["processed"], 1)
+        self.assertEqual(
+            mock_send.call_args.kwargs["reply_to_message_id"],
+            "slack:1785000001.000100",
+        )
+
+    def test_thread_reply_is_rejected_for_non_slack_conversation(self):
+        scheduled_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        with TestClient(app_module.app) as client:
+            response = client.post(
+                "/penguin-connect/conversations/amc_test/scheduled-messages",
+                json={
+                    "message": "Not a Slack thread",
+                    "scheduled_at": scheduled_at,
+                    "reply_to_message_id": "slack:1785000001.000100",
+                },
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json()["detail"],
+            "thread_replies_only_supported_for_slack",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

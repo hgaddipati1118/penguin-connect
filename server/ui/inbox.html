@@ -52,6 +52,10 @@
       <symbol id="i-arrow" viewBox="0 0 24 24">
         <path d="m9 5 7 7-7 7" />
       </symbol>
+      <symbol id="i-reply" viewBox="0 0 24 24">
+        <path d="m9.5 7-5 5 5 5" />
+        <path d="M5 12h7.25c4.1 0 6.25 2 6.25 6" />
+      </symbol>
       <symbol id="i-note" viewBox="0 0 24 24">
         <path d="M5 3.75h14v16.5H5zM8.5 8h7M8.5 12h7M8.5 16h4" />
       </symbol>
@@ -212,6 +216,16 @@
           <div class="composer-wrap">
             <div class="scheduled-queue" id="scheduledQueue" aria-label="Scheduled message queue" hidden></div>
             <div class="attachment-preview" id="attachmentPreview" hidden></div>
+            <div class="composer-reply-context" id="composerReplyContext" hidden>
+              <span class="composer-reply-icon"><svg><use href="#i-reply"></use></svg></span>
+              <span class="composer-reply-copy">
+                <strong id="composerReplyTitle">Replying in thread</strong>
+                <small id="composerReplySnippet"></small>
+              </span>
+              <button class="composer-reply-clear" id="clearReplyTargetButton" type="button" title="Cancel thread reply" aria-label="Cancel thread reply">
+                <svg><use href="#i-close"></use></svg>
+              </button>
+            </div>
             <div class="composer" id="messageComposerShell">
               <textarea id="messageComposer" rows="1" placeholder="Write a message" aria-label="Write a message"></textarea>
               <div class="mention-suggestions" id="mentionSuggestions" role="listbox" aria-label="Mention a participant" hidden></div>
