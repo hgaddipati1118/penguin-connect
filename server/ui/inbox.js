@@ -6,6 +6,7 @@ const state = {
   conversations: [],
   conversationsVisible: 120,
   contacts: [],
+  contactsDetailed: false,
   contactsTotal: 0,
   peopleVisible: 200,
   files: [],
@@ -329,6 +330,8 @@ let threadSearchTimer = 0;
 let threadSearchRequestToken = 0;
 let threadSearchRestoreVisible = MESSAGE_RENDER_WINDOW;
 let searchAbortController = null;
+let contactsLoadToken = 0;
+let detailedContactsPromise = null;
 
 function apiErrorMessage(payload, response) {
   const detail = payload?.detail;
@@ -4198,15 +4201,17 @@ async function refreshWorkspaceIfChanged() {
 async function loadContacts(query = "", {
   signal = null,
   limit = null,
+  source = "all",
   includeCounts = true,
   includeThreadStats = true,
 } = {}) {
   if (state.view === "people" && !state.contacts.length && !query) skeletonRows(el.peopleList, 7);
+  const stateLoadToken = query ? 0 : ++contactsLoadToken;
   const resolvedLimit = limit ?? (query ? 500 : 5000);
   const params = new URLSearchParams({
     search: query,
     limit: String(resolvedLimit),
-    source: "all",
+    source,
   });
   if (!includeCounts) params.set("include_counts", "false");
   if (!includeThreadStats) params.set("include_thread_stats", "false");
@@ -4214,14 +4219,25 @@ async function loadContacts(query = "", {
     `/penguin-connect/contacts?${params.toString()}`,
     signal ? { signal } : {},
   );
-  if (!query) {
+  if (!query && stateLoadToken === contactsLoadToken) {
     state.contacts = payload.contacts || [];
+    state.contactsDetailed = source === "all" && includeCounts && includeThreadStats;
     rebuildContactIndex();
     state.contactsTotal = state.contacts.length;
     state.peopleVisible = 200;
     invalidateConversationProjection();
   }
   return payload.contacts || [];
+}
+
+function loadDetailedContacts() {
+  if (state.contactsDetailed) return Promise.resolve(state.contacts);
+  if (!detailedContactsPromise) {
+    detailedContactsPromise = loadContacts().finally(() => {
+      detailedContactsPromise = null;
+    });
+  }
+  return detailedContactsPromise;
 }
 
 function attachmentLibraryFile(item) {
@@ -4479,8 +4495,8 @@ function setView(view) {
       button.setAttribute("aria-pressed", active ? "true" : "false");
     }
   }
-  if (state.view === "people" && !state.contacts.length) {
-    loadContacts().then(renderPeopleList).catch((error) => toast(error.message, "error"));
+  if (state.view === "people" && (!state.contacts.length || !state.contactsDetailed)) {
+    loadDetailedContacts().then(renderPeopleList).catch((error) => toast(error.message, "error"));
   }
   if (state.view === "files" && !state.files.length) {
     loadFiles().then(renderFilesList).catch((error) => toast(error.message, "error"));
@@ -4614,7 +4630,10 @@ async function inboxAgentContext(query) {
     api(`/penguin-connect/messages/search?query=${encodeURIComponent(messageQuery)}&limit=40&view=all`),
     api(`/penguin-connect/search/hybrid?query=${encodeURIComponent(query)}&limit=20`),
     ...terms.slice(0, 3).map((term) => (
-      api(`/penguin-connect/contacts?search=${encodeURIComponent(term)}&limit=12&source=all`)
+      api(
+        `/penguin-connect/contacts?search=${encodeURIComponent(term)}`
+        + "&limit=12&source=all&include_counts=false&include_thread_stats=false",
+      )
     )),
   ]);
   const references = [];
@@ -5631,7 +5650,7 @@ async function refreshAll() {
   try {
     await Promise.all([
       loadConversations({ keepSelection: true, discoverWhatsApp: true, discoverSlack: true }),
-      loadContacts().then((contacts) => { state.contacts = contacts; }),
+      loadContacts(),
       loadHealth(),
     ]);
     if (state.selected) await selectConversation(state.selected);
@@ -5936,7 +5955,11 @@ el.agentContactActionButton.addEventListener("click", async () => {
   const search = String(action.search || "").trim();
   if (search) {
     try {
-      const matches = await loadContacts(search);
+      const matches = await loadContacts(search, {
+        limit: 80,
+        includeCounts: false,
+        includeThreadStats: false,
+      });
       contact = matches.find((item) => (
         String(item.display_name || "").toLowerCase() === search.toLowerCase()
         || normalizedHandle(contactHandle(item)) === normalizedHandle(search)
@@ -6172,7 +6195,11 @@ async function start() {
   await hydrateWorkspaceCache();
   await Promise.allSettled([
     loadConversations({ keepSelection: Boolean(state.selected) }),
-    loadContacts().then((contacts) => { state.contacts = contacts; renderPeopleList(); }),
+    loadContacts("", {
+      source: "contacts",
+      includeCounts: false,
+      includeThreadStats: false,
+    }).then(renderPeopleList),
     loadHealth(),
     loadAgentStatus(),
   ]);
