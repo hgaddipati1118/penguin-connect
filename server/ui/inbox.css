@@ -1712,10 +1712,51 @@ kbd {
 }
 
 .message-attachment-preview {
+  position: relative;
   display: grid;
   gap: 6px;
   overflow: hidden;
   border-radius: 10px;
+}
+
+.message-attachment-preview.is-downloading {
+  width: min(360px, 100%);
+  min-height: 140px;
+  place-items: center;
+  border: 1px solid rgba(32, 40, 36, 0.08);
+  background:
+    linear-gradient(
+      110deg,
+      rgba(238, 236, 230, 0.9) 20%,
+      rgba(248, 247, 243, 0.95) 42%,
+      rgba(238, 236, 230, 0.9) 64%
+    );
+  background-size: 220% 100%;
+  animation: media-preview-loading 1.4s ease-in-out infinite;
+}
+
+.message-attachment-preview.is-downloading img:not([src]) {
+  display: none;
+}
+
+.downloadable-image-status {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--ink-faint);
+  font-size: 9px;
+  font-weight: 650;
+}
+
+@keyframes media-preview-loading {
+  from {
+    background-position: 100% 0;
+  }
+
+  to {
+    background-position: -100% 0;
+  }
 }
 
 .message-attachment-preview > a:first-child {
@@ -4111,5 +4152,9 @@ mark {
   *::before,
   *::after {
     scroll-behavior: auto !important;
+  }
+
+  .message-attachment-preview.is-downloading {
+    animation: none;
   }
 }

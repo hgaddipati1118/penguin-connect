@@ -272,6 +272,7 @@ const PRELOAD_EAGER_CONCURRENCY = 4;
 const PRELOAD_BACKGROUND_CONCURRENCY = 2;
 const PRELOAD_MESSAGE_BATCH = 80;
 const PRELOAD_SLACK_MESSAGE_BATCH = 120;
+const DOWNLOADABLE_IMAGE_CONCURRENCY = 2;
 const DRAFT_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024;
 const DRAFT_ATTACHMENT_TOTAL_MAX_BYTES = 50 * 1024 * 1024;
 const DRAFT_ATTACHMENT_MAX_COUNT = 20;
@@ -337,6 +338,11 @@ const draftServerQueues = new Map();
 const dirtyDraftConversations = new Set();
 let attachmentHistorySyncPromise = null;
 const cacheRepairRequests = new Map();
+const downloadableImageQueue = [];
+const downloadableImageTasks = new WeakMap();
+const queuedDownloadableImages = new WeakSet();
+let downloadableImageActive = 0;
+let downloadableImageObserver = null;
 let threadSearchTimer = 0;
 let threadSearchRequestToken = 0;
 let threadSearchRestoreVisible = MESSAGE_RENDER_WINDOW;
@@ -2293,6 +2299,139 @@ function missingMediaPreview(message, label, kind = "Media") {
   return preview;
 }
 
+function finishDownloadableImage(wrapper, task, loaded) {
+  if (loaded) {
+    task.attachment.availability = "local";
+    wrapper.classList.remove("is-downloading");
+    task.status.remove();
+  } else {
+    task.attachment.availability = "downloadable";
+    if (wrapper.isConnected) {
+      wrapper.replaceWith(downloadableMediaPreview(
+        task.message,
+        task.attachment,
+        task.index,
+        task.label,
+        "Image",
+      ));
+    }
+  }
+  if (state.followLatest && !NATIVE_SCROLL_ANCHORING) queueThreadBottomAnchor();
+}
+
+async function loadDownloadableImage(wrapper, task) {
+  await new Promise((resolve) => {
+    let settled = false;
+    const finish = (loaded) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      finishDownloadableImage(wrapper, task, loaded);
+      resolve();
+    };
+    const timeout = window.setTimeout(() => {
+      task.image.removeAttribute("src");
+      finish(false);
+    }, 35000);
+    task.image.addEventListener("load", () => finish(true), { once: true });
+    task.image.addEventListener("error", () => finish(false), { once: true });
+    task.image.src = task.url;
+  });
+}
+
+function drainDownloadableImageQueue() {
+  while (
+    downloadableImageActive < DOWNLOADABLE_IMAGE_CONCURRENCY
+    && downloadableImageQueue.length
+  ) {
+    const wrapper = downloadableImageQueue.shift();
+    queuedDownloadableImages.delete(wrapper);
+    const task = downloadableImageTasks.get(wrapper);
+    if (!task || !wrapper.isConnected) continue;
+    downloadableImageActive += 1;
+    loadDownloadableImage(wrapper, task)
+      .catch(() => finishDownloadableImage(wrapper, task, false))
+      .finally(() => {
+        downloadableImageActive -= 1;
+        drainDownloadableImageQueue();
+      });
+  }
+}
+
+function queueDownloadableImage(wrapper) {
+  if (
+    queuedDownloadableImages.has(wrapper)
+    || wrapper.querySelector("img")?.hasAttribute("src")
+  ) return;
+  queuedDownloadableImages.add(wrapper);
+  downloadableImageQueue.push(wrapper);
+  drainDownloadableImageQueue();
+}
+
+function observeDownloadableImage(wrapper, task) {
+  downloadableImageTasks.set(wrapper, task);
+  if (!("IntersectionObserver" in window)) {
+    queueDownloadableImage(wrapper);
+    return;
+  }
+  if (!downloadableImageObserver) {
+    downloadableImageObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        downloadableImageObserver.unobserve(entry.target);
+        queueDownloadableImage(entry.target);
+      }
+    }, {
+      root: el.messageList,
+      rootMargin: "600px 0px",
+    });
+  }
+  downloadableImageObserver.observe(wrapper);
+}
+
+function renderImageAttachment(message, attachment, index, { downloadable = false } = {}) {
+  const label = attachmentLabel(attachment);
+  const url = attachmentUrl(message, index);
+  const wrapper = document.createElement("div");
+  wrapper.className = "message-attachment-preview";
+  const link = document.createElement("a");
+  link.href = url;
+  link.target = "_blank";
+  link.rel = "noreferrer";
+  const image = document.createElement("img");
+  image.alt = label;
+  image.loading = "lazy";
+  link.append(image);
+  wrapper.append(link);
+  if (downloadable) {
+    wrapper.classList.add("is-downloading");
+    const status = document.createElement("span");
+    status.className = "downloadable-image-status";
+    status.textContent = "Loading image preview…";
+    wrapper.append(status);
+    observeDownloadableImage(wrapper, {
+      attachment,
+      image,
+      index,
+      label,
+      message,
+      status,
+      url,
+    });
+    return wrapper;
+  }
+  image.src = url;
+  image.addEventListener("load", () => {
+    if (state.followLatest && !NATIVE_SCROLL_ANCHORING) queueThreadBottomAnchor();
+  });
+  image.addEventListener("error", () => {
+    attachment.availability = "missing";
+    wrapper.replaceWith(missingMediaPreview(message, label, "Image"));
+    if (state.followLatest && !NATIVE_SCROLL_ANCHORING) queueThreadBottomAnchor();
+  });
+  return wrapper;
+}
+
 function downloadableMediaPreview(message, attachment, index, label, kind) {
   const provider = providerLabel(message.source_provider || message.provider);
   const preview = document.createElement("div");
@@ -2345,34 +2484,17 @@ function renderInlineAttachment(message, attachment, index) {
   if (attachment?.availability === "missing") {
     return missingMediaPreview(message, label, kind);
   }
-  if (attachment?.availability === "downloadable") {
+  const downloadable = attachment?.availability === "downloadable";
+  if (downloadable && !mimeType.startsWith("image/")) {
     return downloadableMediaPreview(message, attachment, index, label, kind);
+  }
+  if (mimeType.startsWith("image/")) {
+    return renderImageAttachment(message, attachment, index, { downloadable });
   }
   const url = attachmentUrl(message, index);
   const wrapper = document.createElement("div");
   wrapper.className = "message-attachment-preview";
 
-  if (mimeType.startsWith("image/")) {
-    const link = document.createElement("a");
-    link.href = url;
-    link.target = "_blank";
-    link.rel = "noreferrer";
-    const image = document.createElement("img");
-    image.src = url;
-    image.alt = label;
-    image.loading = "lazy";
-    image.addEventListener("load", () => {
-      if (state.followLatest && !NATIVE_SCROLL_ANCHORING) queueThreadBottomAnchor();
-    });
-    image.addEventListener("error", () => {
-      attachment.availability = "missing";
-      wrapper.replaceWith(missingMediaPreview(message, label, "Image"));
-      if (state.followLatest && !NATIVE_SCROLL_ANCHORING) queueThreadBottomAnchor();
-    });
-    link.append(image);
-    wrapper.append(link);
-    return wrapper;
-  }
   if (mimeType.startsWith("video/")) {
     const video = document.createElement("video");
     video.src = url;
@@ -2996,6 +3118,11 @@ function reconcileMessageList(desiredChildren) {
   }
   while (current) {
     const next = current.nextSibling;
+    for (const preview of current.querySelectorAll?.(
+      ".message-attachment-preview.is-downloading",
+    ) || []) {
+      downloadableImageObserver?.unobserve(preview);
+    }
     current.remove();
     current = next;
   }
