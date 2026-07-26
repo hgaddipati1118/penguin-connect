@@ -43,6 +43,7 @@ from penguin_connect import (
     import_local_imessage_attachment_messages as penguinconnect_import_local_imessage_attachment_messages,
     import_local_whatsapp_attachment_messages as penguinconnect_import_local_whatsapp_attachment_messages,
     ensure_conversations_discovered as penguinconnect_ensure_conversations_discovered,
+    ensure_slack_conversations_discovered as penguinconnect_ensure_slack_conversations_discovered,
     ensure_whatsapp_conversations_discovered as penguinconnect_ensure_whatsapp_conversations_discovered,
     list_conversations as penguinconnect_list_conversations,
     reconnect_conversation as penguinconnect_reconnect_conversation,
@@ -53,6 +54,7 @@ from penguin_connect import (
 )
 from browse_sources import IMESSAGE_DB, resolve_apple_messages_chat
 from channels import get_channel_adapter
+from channels.slack import slack_source_paths
 from channels.whatsapp import whatsapp_attachment_count, whatsapp_source_paths
 from db import DB_PATH, get_connection, init_db
 from startup_checks import StartupReadinessError, assert_startup_ready
@@ -4932,6 +4934,7 @@ def connect_penguinconnect_gmail(req: PenguinConnectGmailConnectRequest):
 def get_penguinconnect_conversations(
     include_whatsapp: bool = False,
     include_imessage: bool = False,
+    include_slack: bool = False,
     compact: bool = False,
     fast: bool = False,
 ):
@@ -4954,7 +4957,12 @@ def get_penguinconnect_conversations(
                 result.get("gmail_email") or LOCAL_MESSAGES_ACCOUNT_EMAIL,
                 provision_aliases=False,
             )
-        if include_imessage or include_whatsapp:
+        if include_slack:
+            penguinconnect_ensure_slack_conversations_discovered(
+                conn,
+                result.get("gmail_email") or LOCAL_MESSAGES_ACCOUNT_EMAIL,
+            )
+        if include_imessage or include_whatsapp or include_slack:
             result = penguinconnect_list_conversations(
                 conn,
                 discover_sources=False,
@@ -5073,6 +5081,10 @@ def _workspace_revisions(conn: sqlite3.Connection) -> dict[str, str]:
         _workspace_source_file_token(source_path)
         for source_path in whatsapp_source_paths()
     ]
+    slack_tokens = [
+        _workspace_source_file_token(source_path)
+        for source_path in slack_source_paths()
+    ]
 
     def revision(value: object) -> str:
         encoded = json.dumps(value, separators=(",", ":"), sort_keys=True).encode("utf-8")
@@ -5082,6 +5094,7 @@ def _workspace_revisions(conn: sqlite3.Connection) -> dict[str, str]:
         "local_revision": revision(list(local_state) if local_state else []),
         "imessage_revision": revision(imessage_token),
         "whatsapp_revision": revision(whatsapp_tokens),
+        "slack_revision": revision(slack_tokens),
     }
     revisions["revision"] = revision(revisions)
     return revisions

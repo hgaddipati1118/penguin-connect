@@ -460,10 +460,11 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(len(first.json()["local_revision"]), 64)
         self.assertEqual(len(first.json()["imessage_revision"]), 64)
         self.assertEqual(len(first.json()["whatsapp_revision"]), 64)
+        self.assertEqual(len(first.json()["slack_revision"]), 64)
         self.assertNotEqual(first.json()["revision"], second.json()["revision"])
         self.assertEqual(first.json()["poll_after_ms"], 5000)
         self.assertNotIn(str(self.db_path), first.text)
-        self.assertLess(len(first.content), 400)
+        self.assertLess(len(first.content), 500)
 
     def test_conversations_compact_mode_keeps_inbox_fields_and_drops_bridge_fields(self):
         with TestClient(app_module.app) as client:
@@ -761,6 +762,19 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         discover_whatsapp.assert_called_once()
         self.assertFalse(discover_whatsapp.call_args.kwargs["provision_aliases"])
+
+    def test_conversations_endpoint_discovers_slack_only_when_requested(self):
+        with mock.patch.object(
+            app_module,
+            "penguinconnect_ensure_slack_conversations_discovered",
+            return_value=0,
+        ) as discover_slack, TestClient(app_module.app) as client:
+            response = client.get(
+                "/penguin-connect/conversations?include_slack=true"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        discover_slack.assert_called_once_with(mock.ANY, "owner@gmail.com")
 
     def test_conversations_endpoint_refreshes_imessage_only_when_requested(self):
         with mock.patch.object(

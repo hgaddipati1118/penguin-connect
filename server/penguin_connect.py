@@ -132,6 +132,10 @@ try:
     _TELEGRAM_CHANNEL = get_channel_adapter("telegram")
 except KeyError:
     _TELEGRAM_CHANNEL = None
+try:
+    _SLACK_CHANNEL = get_channel_adapter("slack")
+except KeyError:
+    _SLACK_CHANNEL = None
 _MARKDOWN_LINK_RE = re.compile(r"(?<!\!)\[([^\]\n]+)\]\((https?://[^\s)]+)\)")
 
 
@@ -236,6 +240,8 @@ def _source_provider_label(source_provider: Optional[str]) -> str:
         return "WhatsApp"
     if normalized == "telegram":
         return "Telegram"
+    if normalized == "slack":
+        return "Slack"
     return normalized.replace("_", " ").replace("-", " ").title() or "Messaging"
 
 
@@ -3749,9 +3755,10 @@ def ensure_local_imessage_conversations_discovered(
     )
 
 
-def _cache_discovered_whatsapp_preview(
+def _cache_discovered_provider_preview(
     conn: sqlite3.Connection,
     *,
+    source_provider: str,
     conversation_id: str,
     chat_id: str,
     display_name: str,
@@ -3766,13 +3773,13 @@ def _cache_discovered_whatsapp_preview(
     if not timestamp or not native_message_id or (not text and not attachments):
         return False
 
-    provider_id = _provider_message_id("whatsapp", latest_message)
+    provider_id = _provider_message_id(source_provider, latest_message)
     is_from_me = bool(latest_message.get("is_from_me"))
     sender_name = "Me" if is_from_me else (
         str(latest_message.get("push_name") or "").strip()
         or str(latest_message.get("handle") or "").strip()
         or display_name
-        or "WhatsApp"
+        or _source_provider_label(source_provider)
     )
     metadata = {
         "source_chat_id": chat_id,
@@ -3786,7 +3793,7 @@ def _cache_discovered_whatsapp_preview(
            (conversation_id, provider, provider_message_id, direction,
             sender_email, sender_name, subject, body_text, message_timestamp,
             is_read, metadata)
-           VALUES (?, 'whatsapp', ?, 'whatsapp_local', NULL, ?, ?, ?, ?, 1, ?)
+           VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, 1, ?)
            ON CONFLICT(conversation_id, provider_message_id) DO UPDATE SET
              sender_name = excluded.sender_name,
              subject = excluded.subject,
@@ -3795,9 +3802,11 @@ def _cache_discovered_whatsapp_preview(
              metadata = excluded.metadata""",
         (
             conversation_id,
+            source_provider,
             provider_id,
+            f"{source_provider}_local",
             sender_name,
-            _provider_subject("whatsapp", display_name or sender_name),
+            _provider_subject(source_provider, display_name or sender_name),
             text[:20000],
             timestamp,
             json.dumps(metadata),
@@ -3813,6 +3822,24 @@ def _cache_discovered_whatsapp_preview(
     )
     _record_conversation_activity_hint(conn, conversation_id, timestamp)
     return True
+
+
+def _cache_discovered_whatsapp_preview(
+    conn: sqlite3.Connection,
+    *,
+    conversation_id: str,
+    chat_id: str,
+    display_name: str,
+    latest_message: dict[str, Any],
+) -> bool:
+    return _cache_discovered_provider_preview(
+        conn,
+        source_provider="whatsapp",
+        conversation_id=conversation_id,
+        chat_id=chat_id,
+        display_name=display_name,
+        latest_message=latest_message,
+    )
 
 
 def ensure_whatsapp_conversations_discovered(
@@ -3979,6 +4006,85 @@ def ensure_telegram_conversations_discovered(
         gmail_email=gmail_email,
         success=True,
         discovered_count=count,
+    )
+    return count
+
+
+def ensure_slack_conversations_discovered(
+    conn: sqlite3.Connection,
+    gmail_email: str,
+    *,
+    max_chats: int | None = 500,
+) -> int:
+    """Discover Slack channels/DMs and seed any recent messages into the local cache."""
+    if _SLACK_CHANNEL is None:
+        return 0
+    discovery_limit = max_chats
+    log_action("slack_conversation_discovery_started", gmail_email=gmail_email, discovery_limit=discovery_limit)
+    discovered = _SLACK_CHANNEL.list_conversations(limit=discovery_limit)
+    if not discovered.get("available"):
+        log_action(
+            "slack_conversation_discovery_result",
+            gmail_email=gmail_email,
+            success=False,
+            discovered_count=0,
+            reason=discovered.get("reason") or "not_available",
+        )
+        return 0
+
+    count = 0
+    for chat in discovered.get("chats", []):
+        chat_id = str(chat.get("chat_id") or "").strip()
+        if not chat_id:
+            continue
+        participants = chat.get("participants") if isinstance(chat.get("participants"), list) else []
+        display_name = str(chat.get("name") or chat_id).strip()
+        chat_type = str(chat.get("chat_type") or "channel").strip()
+        conversation_id = deterministic_conversation_id(gmail_email, chat_id, "slack")
+        conn.execute(
+            """INSERT INTO penguin_connect_conversations
+               (gmail_email, source_provider, conversation_id, source_chat_id, source_chat_identifier,
+                source_service_name, display_name, chat_type, participants, status, exclude_from_sync,
+                created_at, updated_at)
+               VALUES (?, 'slack', ?, ?, ?, 'Slack', ?, ?, ?, 'active', 0, datetime('now'), datetime('now'))
+               ON CONFLICT(conversation_id) DO UPDATE SET
+                 source_provider = 'slack',
+                 source_chat_id = excluded.source_chat_id,
+                 source_chat_identifier = excluded.source_chat_identifier,
+                 source_service_name = 'Slack',
+                 display_name = excluded.display_name,
+                 chat_type = excluded.chat_type,
+                 participants = excluded.participants,
+                 status = 'active',
+                 updated_at = datetime('now')""",
+            (
+                gmail_email,
+                conversation_id,
+                chat_id,
+                chat_id,
+                display_name,
+                chat_type,
+                json.dumps(participants),
+            ),
+        )
+        latest_message = chat.get("latest_message")
+        if isinstance(latest_message, dict) and latest_message:
+            _cache_discovered_provider_preview(
+                conn,
+                source_provider="slack",
+                conversation_id=conversation_id,
+                chat_id=chat_id,
+                display_name=display_name,
+                latest_message=latest_message,
+            )
+        count += 1
+
+    log_action(
+        "slack_conversation_discovery_result",
+        gmail_email=gmail_email,
+        success=True,
+        discovered_count=count,
+        workspace=discovered.get("workspace"),
     )
     return count
 
@@ -4227,7 +4333,7 @@ def _cache_local_source_messages_for_view(
     backfill_history: bool = False,
 ) -> int:
     source_provider = _conversation_source_provider(conv)
-    if source_provider not in {"imessage", "apple_messages", "sms", "rcs", "whatsapp"}:
+    if source_provider not in {"imessage", "apple_messages", "sms", "rcs", "whatsapp", "slack"}:
         return 0
     if (conv["gmail_email"] or "").strip().lower() != LOCAL_MESSAGES_ACCOUNT_EMAIL:
         return 0
@@ -5271,11 +5377,21 @@ def _provider_message_id_for_telegram(msg: dict[str, Any]) -> str:
     return f"telegram:{hashlib.sha1(payload.encode('utf-8')).hexdigest()}"
 
 
+def _provider_message_id_for_slack(msg: dict[str, Any]) -> str:
+    native_id = str(msg.get("native_message_id") or "").strip()
+    if native_id:
+        return f"slack:{native_id}"
+    payload = f"{msg.get('timestamp')}::{msg.get('is_from_me')}::{msg.get('text') or ''}"
+    return f"slack:{hashlib.sha1(payload.encode('utf-8')).hexdigest()}"
+
+
 def _provider_message_id(source_provider: str, msg: dict[str, Any]) -> str:
     if source_provider == "whatsapp":
         return _provider_message_id_for_whatsapp(msg)
     if source_provider == "telegram":
         return _provider_message_id_for_telegram(msg)
+    if source_provider == "slack":
+        return _provider_message_id_for_slack(msg)
     return _provider_message_id_for_imessage(msg)
 
 
@@ -6669,6 +6785,16 @@ def _fetch_source_messages_for_conversation(
         )
     if source_provider == "telegram":
         return _fetch_telegram_messages_for_conversation(conv, limit=limit, since=since, since_native_message_id=since_native_message_id)
+    if source_provider == "slack":
+        adapter = _source_adapter_for_provider("slack")
+        return adapter.fetch_messages(
+            _conversation_source_chat_id(conv),
+            limit=limit,
+            since=since,
+            since_native_message_id=since_native_message_id,
+            before=before,
+            before_native_message_id=before_native_message_id,
+        )
     return _fetch_apple_messages_messages_for_conversation(
         conv,
         limit=limit,

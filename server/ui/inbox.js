@@ -41,6 +41,7 @@ const state = {
     local: "",
     imessage: "",
     whatsapp: "",
+    slack: "",
   },
   workspaceRefreshBusy: false,
   persistentCacheHydrated: false,
@@ -277,6 +278,8 @@ const SCHEDULE_FORMATTER = new Intl.DateTimeFormat(undefined, {
   minute: "2-digit",
 });
 let selectionHydrationTimer = 0;
+let selectionRenderFrame = 0;
+let selectionPreloadTimer = 0;
 let latestAnchorFrame = 0;
 let latestAnchorToken = 0;
 let mentionSelectionIndex = 0;
@@ -473,11 +476,16 @@ async function hydrateWorkspaceCache() {
 function providerKey(value) {
   const provider = String(value || "").toLowerCase();
   if (provider === "whatsapp") return "whatsapp";
+  if (provider === "slack") return "slack";
   return "imessage";
 }
 
 function providerLabel(value) {
-  return providerKey(value) === "whatsapp" ? "WhatsApp" : "iMessage";
+  return {
+    imessage: "iMessage",
+    whatsapp: "WhatsApp",
+    slack: "Slack",
+  }[providerKey(value)];
 }
 
 function normalizedHandle(value) {
@@ -981,9 +989,10 @@ function renderConversationList() {
   if (!rows.length) {
     const empty = document.createElement("div");
     empty.className = "pane-empty";
-    empty.textContent = state.source === "whatsapp"
-      ? "No WhatsApp conversations yet. Start the local WhatsApp bridge, then refresh."
-      : "No conversations found for this view.";
+    empty.textContent = {
+      whatsapp: "No WhatsApp conversations yet. Start the local WhatsApp bridge, then refresh.",
+      slack: "No Slack messages synced yet. Add a Slack user token, then refresh.",
+    }[state.source] || "No conversations found for this view.";
     el.conversationList.append(empty);
     return;
   }
@@ -2243,16 +2252,55 @@ function preloadAdjacentConversations(conversation) {
   const rows = visibleConversations();
   const index = rows.findIndex((item) => item.conversation_id === conversation?.conversation_id);
   if (index < 0) return;
-  for (const candidate of rows.slice(Math.max(0, index - 2), index + 4)) {
+  for (const candidate of rows.slice(Math.max(0, index - 1), index + 3)) {
     if (candidate.conversation_id !== conversation.conversation_id) {
       preloadConversationMessages(candidate);
     }
   }
 }
 
+function scheduleAdjacentPreload(conversation, selectionToken) {
+  window.clearTimeout(selectionPreloadTimer);
+  selectionPreloadTimer = window.setTimeout(() => {
+    if (
+      selectionToken !== state.selectionToken
+      || state.selected?.conversation_id !== conversation.conversation_id
+    ) return;
+    const schedule = window.requestIdleCallback
+      || ((callback) => window.setTimeout(callback, 80));
+    schedule(() => {
+      if (
+        selectionToken === state.selectionToken
+        && state.selected?.conversation_id === conversation.conversation_id
+      ) {
+        preloadAdjacentConversations(conversation);
+      }
+    }, { timeout: 450 });
+  }, 180);
+}
+
+function scheduleSelectedConversationHydration(conversation, selectionToken) {
+  window.clearTimeout(selectionHydrationTimer);
+  selectionHydrationTimer = window.setTimeout(() => {
+    if (
+      selectionToken !== state.selectionToken
+      || state.selected?.conversation_id !== conversation.conversation_id
+    ) return;
+    const isSlack = providerKey(conversation.source_provider) === "slack";
+    refreshSelectedMessages({ incremental: !isSlack }).catch((error) => toast(error.message, "error"));
+    if (!isSlack) repairSelectedConversationCache(conversation).catch(() => {});
+    loadScheduledMessages(conversation.conversation_id).catch(() => {});
+    markConversationRead(conversation).catch(() => {});
+  }, 180);
+  scheduleAdjacentPreload(conversation, selectionToken);
+}
+
 async function selectConversation(conversation, { focusMessageId = "" } = {}) {
   const selectionToken = ++state.selectionToken;
   const previousConversationId = state.selected?.conversation_id || "";
+  window.cancelAnimationFrame(selectionRenderFrame);
+  window.clearTimeout(selectionHydrationTimer);
+  window.clearTimeout(selectionPreloadTimer);
   state.selected = conversation;
   try {
     localStorage.setItem("penguin-last-conversation", conversation.conversation_id);
@@ -2275,45 +2323,49 @@ async function selectConversation(conversation, { focusMessageId = "" } = {}) {
   updateConversationSelectionUI(previousConversationId, conversation.conversation_id);
   renderThreadHeader();
   if (cachedMessages.length) {
-    renderMessages({ focusMessageId });
-    window.clearTimeout(selectionHydrationTimer);
-    selectionHydrationTimer = window.setTimeout(() => {
-      if (state.selected?.conversation_id === conversation.conversation_id) {
-        refreshSelectedMessages().catch((error) => toast(error.message, "error"));
-        repairSelectedConversationCache(conversation).catch(() => {});
-        loadScheduledMessages(conversation.conversation_id).catch(() => {});
-        markConversationRead(conversation).catch(() => {});
-      }
-    }, 90);
-    preloadAdjacentConversations(conversation);
+    selectionRenderFrame = window.requestAnimationFrame(() => {
+      if (
+        selectionToken !== state.selectionToken
+        || state.selected?.conversation_id !== conversation.conversation_id
+      ) return;
+      renderMessages({ focusMessageId });
+      scheduleSelectedConversationHydration(conversation, selectionToken);
+    });
     return;
   }
   el.messageList.innerHTML = `<div class="message-loading"><span></span><span></span><span></span><span></span></div>`;
-  try {
-    const payload = await api(
-      `/penguin-connect/conversations/${encodeURIComponent(conversation.conversation_id)}/messages?limit=300&offset=0&refresh=false`,
-    );
-    if (selectionToken !== state.selectionToken || state.selected?.conversation_id !== conversation.conversation_id) return;
-    state.messages = payload.messages || [];
-    state.messagePagination.total = Number(payload.total || state.messages.length);
-    state.messagePagination.hasMore = Boolean(payload.has_more);
-    rememberConversationMessages(
-      conversation.conversation_id,
-      state.messages,
-      state.messagePagination,
-    );
-    renderMessages({ focusMessageId });
-    await Promise.all([
-      markConversationRead(conversation),
-      loadScheduledMessages(conversation.conversation_id),
-    ]);
-    window.setTimeout(() => refreshSelectedMessages(), 50);
-    window.setTimeout(() => repairSelectedConversationCache(conversation).catch(() => {}), 140);
-    preloadAdjacentConversations(conversation);
-  } catch (error) {
-    el.messageList.innerHTML = `<div class="pane-empty"></div>`;
-    el.messageList.firstElementChild.textContent = error.message;
-  }
+  selectionRenderFrame = window.requestAnimationFrame(async () => {
+    if (
+      selectionToken !== state.selectionToken
+      || state.selected?.conversation_id !== conversation.conversation_id
+    ) return;
+    try {
+      const payload = await api(
+        `/penguin-connect/conversations/${encodeURIComponent(conversation.conversation_id)}/messages?limit=300&offset=0&refresh=false`,
+      );
+      if (
+        selectionToken !== state.selectionToken
+        || state.selected?.conversation_id !== conversation.conversation_id
+      ) return;
+      state.messages = payload.messages || [];
+      state.messagePagination.total = Number(payload.total || state.messages.length);
+      state.messagePagination.hasMore = Boolean(payload.has_more);
+      rememberConversationMessages(
+        conversation.conversation_id,
+        state.messages,
+        state.messagePagination,
+      );
+      renderMessages({ focusMessageId });
+      scheduleSelectedConversationHydration(conversation, selectionToken);
+    } catch (error) {
+      if (
+        selectionToken !== state.selectionToken
+        || state.selected?.conversation_id !== conversation.conversation_id
+      ) return;
+      el.messageList.innerHTML = `<div class="pane-empty"></div>`;
+      el.messageList.firstElementChild.textContent = error.message;
+    }
+  });
 }
 
 function messagesFingerprint(messages) {
@@ -2364,7 +2416,7 @@ async function repairSelectedConversationCache(conversation) {
   const conversationId = conversation?.conversation_id;
   if (
     !conversationId
-    || !["imessage", "apple_messages", "sms", "rcs", "whatsapp"].includes(conversation.source_provider)
+    || !["imessage", "apple_messages", "sms", "rcs", "whatsapp", "slack"].includes(conversation.source_provider)
   ) return;
   if (cacheRepairRequests.has(conversationId)) {
     await cacheRepairRequests.get(conversationId);
@@ -2963,6 +3015,7 @@ async function loadConversations({
   keepSelection = true,
   discoverWhatsApp = false,
   discoverIMessages = false,
+  discoverSlack = false,
 } = {}) {
   if (!state.conversations.length) {
     el.listSummary.textContent = "Loading conversations";
@@ -2975,6 +3028,7 @@ async function loadConversations({
     query.set("fast", "true");
     if (discoverWhatsApp) query.set("include_whatsapp", "true");
     if (discoverIMessages) query.set("include_imessage", "true");
+    if (discoverSlack) query.set("include_slack", "true");
     const queryString = query.toString();
     const payload = await api(
       `/penguin-connect/conversations${queryString ? `?${queryString}` : ""}`,
@@ -3020,6 +3074,7 @@ function rememberWorkspaceRevision(payload) {
     local: String(payload?.local_revision || ""),
     imessage: String(payload?.imessage_revision || ""),
     whatsapp: String(payload?.whatsapp_revision || ""),
+    slack: String(payload?.slack_revision || ""),
   };
 }
 
@@ -3058,6 +3113,7 @@ async function refreshWorkspaceIfChanged() {
     const sourcesStayedStable = (
       String(settledRevision.imessage_revision || "") === String(revision.imessage_revision || "")
       && String(settledRevision.whatsapp_revision || "") === String(revision.whatsapp_revision || "")
+      && String(settledRevision.slack_revision || "") === String(revision.slack_revision || "")
     );
     rememberWorkspaceRevision(sourcesStayedStable ? settledRevision : revision);
   } catch (_error) {
@@ -3327,7 +3383,7 @@ function setInboxSmartView(view = "all") {
 }
 
 function setSource(source) {
-  state.source = ["all", "imessage", "whatsapp"].includes(source) ? source : "all";
+  state.source = ["all", "imessage", "whatsapp", "slack"].includes(source) ? source : "all";
   state.conversationsVisible = CONVERSATION_RENDER_BATCH;
   for (const button of el.sourceTabs.querySelectorAll("button[data-source]")) {
     const active = button.dataset.source === state.source;
@@ -3336,6 +3392,25 @@ function setSource(source) {
   }
   if (state.search.query) runSearch(state.search.query);
   else renderView();
+  if (
+    state.source !== "all"
+    && state.selected
+    && providerKey(state.selected.source_provider) !== state.source
+  ) {
+    const next = visibleConversations()[0];
+    if (next) {
+      selectConversation(next);
+    } else {
+      state.selectionToken += 1;
+      window.cancelAnimationFrame(selectionRenderFrame);
+      window.clearTimeout(selectionHydrationTimer);
+      window.clearTimeout(selectionPreloadTimer);
+      state.selected = null;
+      state.messages = [];
+      renderThreadHeader();
+      el.shell.classList.remove("thread-open");
+    }
+  }
 }
 
 function setAgentOpen(focus = false) {
@@ -3684,7 +3759,7 @@ async function askAgent({ question = "", instruction = "" } = {}) {
       inboxContext.text || "No additional matching local results.",
     ].join("\n");
     const prompt = [
-      "You are helping with a private local messaging workspace that combines iMessage and WhatsApp.",
+      "You are helping with a private local messaging workspace that combines iMessage, WhatsApp, and Slack.",
       "Use only the supplied context. Do not invent facts, relationships, dates, or commitments.",
       "You may use the supplied message, contact, indexed-file, and Spotlight context to find local information.",
       "You also have the Slashy coordination root as your workspace. Inspect its repositories and use configured read-only Supabase or other tools when relevant.",
@@ -4149,7 +4224,7 @@ function jumpThreadToNewest() {
 }
 
 function cycleSource(direction = 1) {
-  const sources = ["all", "imessage", "whatsapp"];
+  const sources = ["all", "imessage", "whatsapp", "slack"];
   const index = sources.indexOf(state.source);
   setSource(sources[(index + direction + sources.length) % sources.length]);
 }
@@ -4410,7 +4485,7 @@ async function refreshAll() {
   el.listSummary.textContent = "Refreshing local sources";
   try {
     await Promise.all([
-      loadConversations({ keepSelection: true, discoverWhatsApp: true }),
+      loadConversations({ keepSelection: true, discoverWhatsApp: true, discoverSlack: true }),
       loadContacts().then((contacts) => { state.contacts = contacts; }),
       loadHealth(),
     ]);
@@ -4957,6 +5032,7 @@ async function start() {
         keepSelection: true,
         discoverIMessages: true,
         discoverWhatsApp: true,
+        discoverSlack: true,
       });
       rememberWorkspaceRevision(await loadWorkspaceRevision());
     } catch (_error) {
@@ -4975,6 +5051,17 @@ window.setInterval(() => {
   if (document.visibilityState !== "visible") return;
   loadHealth();
 }, 30000);
+
+window.setInterval(() => {
+  if (document.visibilityState !== "visible") return;
+  loadConversations({ keepSelection: true, discoverSlack: true })
+    .then(() => (
+      providerKey(state.selected?.source_provider) === "slack"
+        ? refreshSelectedMessages({ incremental: false })
+        : null
+    ))
+    .catch(() => {});
+}, 60000);
 
 window.setInterval(() => {
   if (document.visibilityState !== "visible") return;

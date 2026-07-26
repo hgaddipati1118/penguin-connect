@@ -5,7 +5,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB)](./server/requirements.txt)
 [![MIT License](https://img.shields.io/badge/license-MIT-16a34a)](./LICENSE)
 
-PenguinConnect is a local messaging workspace for searching, replying to, and managing Apple Messages and WhatsApp conversations from your Mac. The runtime is macOS-only, binds to `127.0.0.1`, and can run without Gmail.
+PenguinConnect is a local messaging control surface for searching, replying to, and managing Apple Messages, WhatsApp, and Slack conversations from your Mac. The runtime is macOS-only, binds to `127.0.0.1`, and can run without Gmail.
 
 It also keeps the older Gmail bridge available for Slashy/email workflows, but the operator UI and CLI are designed to work directly against the local Messages cache and Apple Messages route-safety checks.
 
@@ -13,6 +13,7 @@ It also keeps the older Gmail bridge available for Slashy/email workflows, but t
 flowchart LR
     Messages["Apple Messages<br/>iMessage / SMS / RCS"] <-->|local chat.db + safe routes| Workspace["PenguinConnect<br/>local messaging workspace"]
     WhatsApp["WhatsApp<br/>local bridge"] <-->|local DB + bridge API| Workspace
+    Slack["Slack<br/>Web API"] <-->|rate-aware local cache| Workspace
     Workspace <-->|local context| Codex["Codex agent"]
     Workspace -->|optional bridge mode| Gmail["Gmail aliases<br/>legacy email workflow"]
 ```
@@ -23,7 +24,7 @@ flowchart LR
 
 ## Why PenguinConnect
 
-- **Keep iMessage and WhatsApp in one recency-sorted inbox.** Search conversations, contacts, attachments, and local message history, then reply through the original provider.
+- **Operate iMessage, WhatsApp, and Slack from one recency-sorted control surface.** Search conversations, contacts, attachments, and local message history, then reply through the original provider.
 - **Manage threads locally.** Add private titles, notes, labels, muted/pinned/archived state, follow-up dates, saved views, and group-name context without changing the underlying Messages chat.
 - **Clean up contacts from the same surface.** Search cached Contacts and unsaved participants, create missing contact cards, favorite people, save recipient lists, and jump from a person to related threads or messages.
 - **Ask Codex with real thread context.** Build or run a local Codex prompt from recent messages, notes, tags, search results, contacts, and draft text.
@@ -32,10 +33,10 @@ flowchart LR
 
 ## Current Status
 
-- Shipping source adapters: **Apple Messages** (`iMessage`, `SMS`, `RCS`) and **WhatsApp**
+- Shipping source adapters: **Apple Messages** (`iMessage`, `SMS`, `RCS`), **WhatsApp**, and **Slack**
 - Primary operator surfaces: **local messaging workspace**, **power console**, **local CLI**, and **MCP server**
 - Optional legacy bridge surface: **Gmail aliases**
-- Additional adapter available: **Telegram**; Slack is intentionally outside the current inbox
+- Additional adapter available: **Telegram**
 - Runtime: macOS 13+, Python 3.11+, `Terminal.app` with Full Disk Access
 
 Want to help add a new messaging adapter or improve the bridge? Reach out at [harsha@slashy.com](mailto:harsha@slashy.com) or open an issue.
@@ -78,7 +79,7 @@ open http://127.0.0.1:9000/penguin-connect/ui
 ./scripts/check.sh
 ```
 
-The default `/penguin-connect/ui` route is the focused iMessage + WhatsApp workspace. The existing
+The default `/penguin-connect/ui` route is the focused iMessage + WhatsApp + Slack workspace. The existing
 operator surface remains available at `/penguin-connect/console`.
 
 The workspace explicitly discovers WhatsApp whenever it refreshes. For a headless Gmail sync
