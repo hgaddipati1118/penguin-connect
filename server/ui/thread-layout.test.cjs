@@ -5,8 +5,10 @@ const {
   buildMessageReplyTarget,
   buildSlackReplyTarget,
   firstUnreadMessageId,
+  planNativeReplySummaries,
   planSlackAuthorGroups,
   planSlackThreadDefaults,
+  providerSupportsReply,
 } = require("./thread-layout.js");
 
 function root(id, timestamp, replyCount = 1) {
@@ -247,6 +249,59 @@ test("uses the native WhatsApp id for quoted replies", () => {
   assert.equal(target.messageId, "native-id");
   assert.equal(target.provider, "whatsapp");
   assert.equal(target.native, true);
+});
+
+test("supports reply shortcuts across every rendered messaging provider", () => {
+  assert.equal(providerSupportsReply("iMessage"), true);
+  assert.equal(providerSupportsReply("apple_messages"), true);
+  assert.equal(providerSupportsReply("WhatsApp"), true);
+  assert.equal(providerSupportsReply("Slack"), true);
+  assert.equal(providerSupportsReply("telegram"), false);
+  assert.equal(providerSupportsReply(""), false);
+});
+
+test("summarizes direct native replies and identifies the latest child", () => {
+  const summaries = planNativeReplySummaries([
+    {
+      id: "reply-new",
+      parentId: "parent-guid",
+      timestamp: "2026-07-26T10:04:00Z",
+    },
+    {
+      id: "reply-old",
+      parentId: "parent-guid",
+      timestamp: "2026-07-26T10:02:00Z",
+    },
+    {
+      id: "nested-reply",
+      parentId: "reply-old",
+      timestamp: "2026-07-26T10:03:00Z",
+    },
+    {
+      id: "slack-thread-reply",
+      parentId: "slack-root",
+      timestamp: "2026-07-26T10:05:00Z",
+      isSlackThreadReply: true,
+    },
+    {
+      id: "hidden-reaction-event",
+      parentId: "parent-guid",
+      timestamp: "2026-07-26T10:06:00Z",
+      isReaction: true,
+    },
+  ]);
+
+  assert.deepEqual(summaries.get("parent-guid"), {
+    count: 2,
+    latestReplyId: "reply-new",
+    latestTimestamp: Date.parse("2026-07-26T10:04:00Z"),
+  });
+  assert.deepEqual(summaries.get("reply-old"), {
+    count: 1,
+    latestReplyId: "nested-reply",
+    latestTimestamp: Date.parse("2026-07-26T10:03:00Z"),
+  });
+  assert.equal(summaries.has("slack-root"), false);
 });
 
 test("finds the earliest unread incoming message regardless of input order", () => {

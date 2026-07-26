@@ -3179,15 +3179,16 @@ function nativeReplyDepth(message, messagesByNativeId) {
   return depth;
 }
 
-function nativeReplyCounts(messages) {
-  const counts = new Map();
-  for (const message of messages) {
-    if (isSlackThreadReply(message)) continue;
-    const parentId = String(message?.metadata?.reply_context?.message_id || "").trim();
-    if (!parentId) continue;
-    counts.set(parentId, (counts.get(parentId) || 0) + 1);
-  }
-  return counts;
+function nativeReplySummaries(messages) {
+  return window.PenguinThreadLayout.planNativeReplySummaries(
+    (messages || []).map((message) => ({
+      id: String(message?.provider_message_id || "").trim(),
+      parentId: String(message?.metadata?.reply_context?.message_id || "").trim(),
+      timestamp: message?.message_timestamp,
+      isSlackThreadReply: isSlackThreadReply(message),
+      isReaction: Boolean(message?.metadata?.reaction),
+    })),
+  );
 }
 
 function unreadBoundaryRows(messages, { markAllUnread = false } = {}) {
@@ -3932,6 +3933,10 @@ function handleMessageListAction(event) {
     scrollToNativeReplyTarget(action.dataset.replyMessageId);
     return;
   }
+  if (actionName === "jump-native-replies") {
+    scrollToNativeReplyTarget(action.dataset.replyMessageId);
+    return;
+  }
   const message = currentMessageById(row?.dataset.messageId);
   if (!message) return;
   if (actionName === "toggle-thread") {
@@ -3975,6 +3980,7 @@ function messageRenderFingerprint(message, {
   latestThreadReply,
   replyDepth,
   nativeReplyCount,
+  latestNativeReplyId,
   parentMessage,
   reactions,
   showNativeReceipt,
@@ -3992,6 +3998,7 @@ function messageRenderFingerprint(message, {
     latestThreadReply?.body_text || "",
     Number(replyDepth || 0),
     Number(nativeReplyCount || 0),
+    String(latestNativeReplyId || ""),
     message,
     parentMessage?.sender_name || "",
     parentMessage?.body_text || "",
@@ -4063,7 +4070,7 @@ function renderMessages({
       messagesByNativeId.set(lookupId, message);
     }
   }
-  const replyCountsByNativeId = nativeReplyCounts(sortedRows);
+  const replySummariesByNativeId = nativeReplySummaries(sortedRows);
   const nativeReactions = reactionsByTarget(sortedRows);
   if (focusMessageId) {
     const focusedIndex = sortedRows.findIndex(
@@ -4139,12 +4146,19 @@ function renderMessages({
     const replyCount = Number(message.metadata?.reply_count || 0);
     const replyContext = message.metadata?.reply_context;
     const replyDepth = nativeReplyDepth(message, messagesByNativeId);
+    const replySummaries = messageLookupIds(message)
+      .map((lookupId) => replySummariesByNativeId.get(lookupId))
+      .filter(Boolean);
     const nativeReplyCount = Math.max(
       0,
-      ...messageLookupIds(message).map((lookupId) => (
-        replyCountsByNativeId.get(lookupId) || 0
-      )),
+      ...replySummaries.map((summary) => Number(summary.count || 0)),
     );
+    const latestNativeReply = replySummaries.reduce((latest, summary) => (
+      !latest || Number(summary.latestTimestamp || 0) >= Number(latest.latestTimestamp || 0)
+        ? summary
+        : latest
+    ), null);
+    const latestNativeReplyId = String(latestNativeReply?.latestReplyId || "");
     const parentMessage = replyContext?.message_id
       ? messagesByNativeId.get(String(replyContext.message_id))
       : null;
@@ -4170,6 +4184,7 @@ function renderMessages({
       latestThreadReply,
       replyDepth,
       nativeReplyCount,
+      latestNativeReplyId,
       parentMessage,
       reactions,
       showNativeReceipt,
@@ -4419,11 +4434,21 @@ function renderMessages({
       meta.append(unread);
     }
     if (nativeReplyCount) {
-      const replyCountLabel = document.createElement("span");
+      const replyCountLabel = document.createElement("button");
+      replyCountLabel.type = "button";
       replyCountLabel.className = "message-native-reply-count";
       replyCountLabel.textContent = `${nativeReplyCount} ${
         nativeReplyCount === 1 ? "reply" : "replies"
       }`;
+      replyCountLabel.dataset.messageAction = "jump-native-replies";
+      replyCountLabel.dataset.replyMessageId = latestNativeReplyId;
+      replyCountLabel.title = "Jump to latest reply";
+      replyCountLabel.setAttribute(
+        "aria-label",
+        `Jump to latest of ${nativeReplyCount} ${
+          nativeReplyCount === 1 ? "reply" : "replies"
+        }`,
+      );
       meta.append(replyCountLabel);
     }
     stack.append(bubble, meta);
@@ -8175,7 +8200,9 @@ document.addEventListener("keydown", (event) => {
     const focusedMessage = currentMessageById(state.focusedMessageId);
     if (
       focusedMessage
-      && ["slack", "whatsapp"].includes(providerKey(state.selected?.source_provider))
+      && window.PenguinThreadLayout.providerSupportsReply(
+        providerKey(state.selected?.source_provider),
+      )
     ) {
       startNativeReply(focusedMessage);
     } else {

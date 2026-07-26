@@ -47,6 +47,41 @@
     };
   }
 
+  function providerSupportsReply(provider = "") {
+    const normalized = String(provider || "").trim().toLowerCase();
+    return [
+      "apple_messages",
+      "imessage",
+      "rcs",
+      "slack",
+      "sms",
+      "whatsapp",
+    ].includes(normalized);
+  }
+
+  function planNativeReplySummaries(rows) {
+    const summaries = new Map();
+    for (const row of rows || []) {
+      if (!row || row.isSlackThreadReply || row.isReaction) continue;
+      const id = String(row.id || "").trim();
+      const parentId = String(row.parentId || "").trim();
+      if (!id || !parentId) continue;
+      const timestamp = timestampValue(row.timestamp);
+      const current = summaries.get(parentId) || {
+        count: 0,
+        latestReplyId: "",
+        latestTimestamp: 0,
+      };
+      current.count += 1;
+      if (!current.latestReplyId || timestamp >= current.latestTimestamp) {
+        current.latestReplyId = id;
+        current.latestTimestamp = timestamp;
+      }
+      summaries.set(parentId, current);
+    }
+    return summaries;
+  }
+
   function firstUnreadMessageId(rows) {
     const unread = (rows || [])
       .filter((row) => (
@@ -149,8 +184,10 @@
     buildMessageReplyTarget,
     buildSlackReplyTarget,
     firstUnreadMessageId,
+    planNativeReplySummaries,
     planSlackAuthorGroups,
     planSlackThreadDefaults,
+    providerSupportsReply,
   });
   root.PenguinThreadLayout = api;
   if (typeof module !== "undefined" && module.exports) {

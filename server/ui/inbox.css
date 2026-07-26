@@ -1614,8 +1614,26 @@ kbd {
 }
 
 .message-native-reply-count {
+  display: inline-flex;
+  min-height: 20px;
+  align-items: center;
+  padding: 1px 4px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
   color: #4e765f;
+  cursor: pointer;
+  font: inherit;
   font-weight: 700;
+}
+
+.message-native-reply-count:hover {
+  background: rgba(78, 118, 95, 0.09);
+}
+
+.message-native-reply-count:focus-visible {
+  outline: 2px solid rgba(78, 118, 95, 0.48);
+  outline-offset: 1px;
 }
 
 .message-reactions {
