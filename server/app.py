@@ -82,6 +82,11 @@ DEFAULT_UI_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 DEFAULT_UI_ATTACHMENT_TOTAL_MAX_BYTES = 50 * 1024 * 1024
 DEFAULT_CODEX_PROMPT_MAX_CHARS = 24_000
 DEFAULT_CODEX_TIMEOUT_SECONDS = 90
+LOCAL_UI_LINK_RE = re.compile(
+    r"https?://(?:127(?:\.\d+){3}|localhost|\[::1\])(?::\d+)?"
+    r"/penguin-connect/(?:ui|console)(?:[/?#]|$)",
+    re.IGNORECASE,
+)
 _scheduled_send_worker_stop = threading.Event()
 _scheduled_send_worker_thread: threading.Thread | None = None
 _scheduled_send_worker_lock = threading.Lock()
@@ -165,6 +170,12 @@ class PenguinConnectImessageSendRequest(BaseModel):
     to: str = ""  # a single phone / email / iMessage handle for a 1:1 DM
     text: str = ""
     attachment_paths: list[str] | None = None
+
+
+def _ensure_external_message_safe(message: str) -> None:
+    if LOCAL_UI_LINK_RE.search(str(message or "")):
+        raise HTTPException(status_code=400, detail="local_ui_link_send_blocked")
+
 
 class PenguinConnectRecipientListRequest(BaseModel):
     list_id: str = ""
@@ -373,6 +384,7 @@ def _create_scheduled_message(
 ) -> dict:
     conversation = _require_schedulable_conversation(conn, conversation_id)
     body_text = _messages_body_text(req.message)
+    _ensure_external_message_safe(body_text)
     scheduled_at_dt = _parse_scheduled_at(req.scheduled_at)
     if scheduled_at_dt <= _utc_now():
         raise HTTPException(status_code=400, detail="scheduled_at_must_be_future")
@@ -4666,6 +4678,22 @@ def get_penguinconnect_media_preview_queue_js():
         "application/javascript; charset=utf-8",
     )
 
+@app.get("/api/penguin-connect/ui/browser-safety.js")
+@app.get("/penguin-connect/ui/browser-safety.js")
+def get_penguinconnect_browser_safety_js():
+    return _ui_file_response(
+        "browser-safety.js",
+        "application/javascript; charset=utf-8",
+    )
+
+@app.get("/api/penguin-connect/ui/workspace-cache-policy.js")
+@app.get("/penguin-connect/ui/workspace-cache-policy.js")
+def get_penguinconnect_workspace_cache_policy_js():
+    return _ui_file_response(
+        "workspace-cache-policy.js",
+        "application/javascript; charset=utf-8",
+    )
+
 @app.get("/api/penguin-connect/ui/app.css")
 @app.get("/penguin-connect/ui/app.css")
 def get_penguinconnect_ui_css():
@@ -5130,6 +5158,7 @@ def send_penguinconnect_messages_draft(req: PenguinConnectDraftSendRequest):
         raise HTTPException(status_code=400, detail="draft_requires_participant")
 
     body_text = _messages_body_text(req.message)
+    _ensure_external_message_safe(body_text)
     requested_attachment_paths = [str(path).strip() for path in (req.attachment_paths or []) if str(path or "").strip()]
     if not body_text and not requested_attachment_paths and not req.attachments:
         raise HTTPException(status_code=400, detail="empty_message")
@@ -5231,6 +5260,7 @@ def penguinconnect_imessage_send(req: PenguinConnectImessageSendRequest):
     caller should fall back to email. This is the safe way to re-enable CRM iMessage DMs."""
     recipient = (req.to or "").strip()
     body_text = (req.text or "").strip()
+    _ensure_external_message_safe(body_text)
     attachments = [str(p).strip() for p in (req.attachment_paths or []) if str(p or "").strip()]
     if not recipient:
         raise HTTPException(status_code=400, detail="missing_recipient")
@@ -6399,6 +6429,7 @@ def send_penguinconnect_conversation_message(conversation_id: str, req: PenguinC
     ui_attachment_paths: list[str] = []
     staged_dir: Path | None = None
     success = False
+    _ensure_external_message_safe(req.message)
     conn = get_connection()
     try:
         ui_attachment_paths, staged_dir = _stage_sent_message_attachments(req.attachments)

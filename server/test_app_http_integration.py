@@ -3863,6 +3863,12 @@ class AppHttpIntegrationTests(unittest.TestCase):
             media_preview_queue_js_response = client.get(
                 "/penguin-connect/ui/media-preview-queue.js",
             )
+            browser_safety_js_response = client.get(
+                "/penguin-connect/ui/browser-safety.js",
+            )
+            workspace_cache_policy_js_response = client.get(
+                "/penguin-connect/ui/workspace-cache-policy.js",
+            )
             html_response = client.get("/penguin-connect/console")
             css_response = client.get("/penguin-connect/ui/app.css")
             js_response = client.get("/penguin-connect/ui/app.js")
@@ -3924,6 +3930,14 @@ class AppHttpIntegrationTests(unittest.TestCase):
             'src="/penguin-connect/ui/media-preview-queue.js"',
             inbox_response.text,
         )
+        self.assertIn(
+            'src="/penguin-connect/ui/browser-safety.js"',
+            inbox_response.text,
+        )
+        self.assertIn(
+            'src="/penguin-connect/ui/workspace-cache-policy.js"',
+            inbox_response.text,
+        )
         self.assertEqual(inbox_js_response.status_code, 200)
         self.assertEqual(inbox_js_response.headers["cache-control"], "no-store")
         self.assertEqual(thread_layout_js_response.status_code, 200)
@@ -3947,6 +3961,22 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn(
             "createMediaPreviewQueue",
             media_preview_queue_js_response.text,
+        )
+        self.assertEqual(browser_safety_js_response.status_code, 200)
+        self.assertEqual(
+            browser_safety_js_response.headers["cache-control"],
+            "no-store",
+        )
+        self.assertIn("isReadOnlyBrowserSession", browser_safety_js_response.text)
+        self.assertIn("requestMethodMutates", browser_safety_js_response.text)
+        self.assertEqual(workspace_cache_policy_js_response.status_code, 200)
+        self.assertEqual(
+            workspace_cache_policy_js_response.headers["cache-control"],
+            "no-store",
+        )
+        self.assertIn(
+            "planWorkspaceHydration",
+            workspace_cache_policy_js_response.text,
         )
         self.assertIn(
             "createDurableUndoQueue",
@@ -4205,9 +4235,20 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("newestMessagesForCache", inbox_js_response.text)
         self.assertNotIn(".slice(-300)", inbox_js_response.text)
         self.assertIn("penguin-local-workspace", inbox_js_response.text)
-        self.assertIn("WORKSPACE_CACHE_VERSION = 2", inbox_js_response.text)
+        self.assertIn("WORKSPACE_CACHE_VERSION = 3", inbox_js_response.text)
+        self.assertIn("WORKSPACE_CACHE_EAGER_THREAD_LIMIT = 12", inbox_js_response.text)
+        self.assertIn("WORKSPACE_CACHE_HYDRATION_BATCH = 12", inbox_js_response.text)
+        self.assertIn('createIndex("updatedAt", "updatedAt")', inbox_js_response.text)
+        self.assertIn('openKeyCursor(null, "next")', inbox_js_response.text)
+        self.assertIn("readManyWorkspaceCache", inbox_js_response.text)
         self.assertIn('createObjectStore("drafts", { keyPath: "conversationId" })', inbox_js_response.text)
-        self.assertIn("hydrateDraftCache", inbox_js_response.text)
+        self.assertIn("hydrateConversationDraft", inbox_js_response.text)
+        self.assertIn("scheduleWorkspaceThreadHydration", inbox_js_response.text)
+        self.assertIn("READ_ONLY_BROWSER_SESSION", inbox_js_response.text)
+        self.assertIn(
+            "Live writes are disabled in automated browser sessions",
+            inbox_js_response.text,
+        )
         self.assertIn("conversationHasDraft", inbox_js_response.text)
         self.assertIn("scheduleDraftPersistence", inbox_js_response.text)
         self.assertIn("persistCurrentDraftNow", inbox_js_response.text)

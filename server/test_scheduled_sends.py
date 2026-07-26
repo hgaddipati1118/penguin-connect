@@ -101,6 +101,29 @@ class ScheduledSendTests(unittest.TestCase):
             self.assertEqual(cancel_response.status_code, 200)
             self.assertEqual(cancel_response.json()["scheduled_message"]["status"], "cancelled")
 
+    def test_local_penguin_ui_links_cannot_be_scheduled_to_external_channels(self):
+        scheduled_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+
+        with TestClient(app_module.app) as client:
+            response = client.post(
+                "/penguin-connect/conversations/amc_test/scheduled-messages",
+                json={
+                    "message": "http://127.0.0.1:8888/penguin-connect/ui?slack-mutations-qa=1",
+                    "scheduled_at": scheduled_at,
+                },
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "local_ui_link_send_blocked")
+        conn = self._get_connection()
+        try:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM penguin_connect_scheduled_messages",
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(count, 0)
+
     def test_failed_message_can_be_retried_and_delivered(self):
         due_at = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
         conn = self._get_connection()

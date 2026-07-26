@@ -285,7 +285,9 @@ removable recipient chips, reusable saved recipient lists, selected-thread parti
 search, thread filtering, local Messages search, new-chat, and contact creation, participant favoriting, bulk add-all, copy-all, and save-as-list actions, local thread titles, notes, tags and muted state,
 native Messages group-name context whenever a local title differs plus one-click local-title restore from the native group name,
 rail-level quick reply, visible-thread next unread/needs-reply/follow-up jumps, pin/mute/archive/read-unread actions, follow-up scheduling/filtering with quick presets from threads or message rows, quick message-row labels plus bulk follow-up set/clear, read/unread management, local route
-disconnect/reconnect controls, persistent per-thread reply drafts, new chat
+disconnect/reconnect controls, persistent per-thread reply drafts, bounded IndexedDB
+workspace snapshots that restore the remembered thread first and hydrate adjacent threads
+during browser idle time, new chat
 draft staging with keyboard-navigable contact suggestions, live Messages-ready draft preview, Cmd/Ctrl+Enter keyboard submit, copy-recipients/copy-body/copy-draft actions,
 addressed Messages compose links, and a Codex prompt helper with
 reply, summary, follow-up, contact-cleanup, and custom-question modes that can
@@ -298,6 +300,9 @@ imported attachment summaries, including audio attachments from Apple Messages.
 The group command stages a new Messages draft instead of auto-sending, because
 Messages exposes reliable scripting for existing chats but not for creating a
 brand-new group chat by API.
+
+Automated browser sessions are hard read-only. The outbound API also rejects local
+Penguin UI/console links so a QA URL cannot escape into iMessage, WhatsApp, or Slack.
 
 ## Safety Model
 

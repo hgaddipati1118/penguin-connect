@@ -317,9 +317,15 @@ const contactIndex = new Map();
 const translationQueue = [];
 const conversationRowFingerprints = new WeakMap();
 const messageRowFingerprints = new WeakMap();
+const READ_ONLY_BROWSER_SESSION = window.PenguinBrowserSafety.isReadOnlyBrowserSession({
+  webdriver: navigator.webdriver === true,
+  search: window.location.search,
+});
 const WORKSPACE_CACHE_DB = "penguin-local-workspace";
-const WORKSPACE_CACHE_VERSION = 2;
+const WORKSPACE_CACHE_VERSION = 3;
 const WORKSPACE_CACHE_THREAD_LIMIT = 160;
+const WORKSPACE_CACHE_EAGER_THREAD_LIMIT = 12;
+const WORKSPACE_CACHE_HYDRATION_BATCH = 12;
 const PRELOAD_EAGER_THREAD_LIMIT = 48;
 const PRELOAD_BACKGROUND_THREAD_LIMIT = 120;
 const PRELOAD_EAGER_CONCURRENCY = 4;
@@ -422,6 +428,8 @@ let shortcutPrefix = "";
 let shortcutPrefixTimer = 0;
 let workspaceCacheDatabasePromise = null;
 let workspaceCachePruneScheduled = false;
+const hydratedDraftConversationIds = new Set();
+const draftHydrationPromises = new Map();
 const draftLocalTimers = new Map();
 const draftServerTimers = new Map();
 const draftLocalQueues = new Map();
@@ -454,6 +462,13 @@ function apiErrorMessage(payload, response) {
 }
 
 async function api(path, options = {}) {
+  const method = String(options.method || "GET").toUpperCase();
+  if (
+    READ_ONLY_BROWSER_SESSION
+    && window.PenguinBrowserSafety.requestMethodMutates(method)
+  ) {
+    throw new Error("Live writes are disabled in automated browser sessions");
+  }
   const response = await fetch(path, {
     headers: {
       ...(options.body ? { "Content-Type": "application/json" } : {}),
@@ -481,8 +496,14 @@ function openWorkspaceCache() {
       if (!database.objectStoreNames.contains("snapshots")) {
         database.createObjectStore("snapshots", { keyPath: "key" });
       }
+      let threadStore = null;
       if (!database.objectStoreNames.contains("threads")) {
-        database.createObjectStore("threads", { keyPath: "conversationId" });
+        threadStore = database.createObjectStore("threads", { keyPath: "conversationId" });
+      } else {
+        threadStore = request.transaction.objectStore("threads");
+      }
+      if (!threadStore.indexNames.contains("updatedAt")) {
+        threadStore.createIndex("updatedAt", "updatedAt");
       }
       if (!database.objectStoreNames.contains("drafts")) {
         database.createObjectStore("drafts", { keyPath: "conversationId" });
@@ -506,14 +527,27 @@ async function readWorkspaceCache(storeName, key) {
   });
 }
 
-async function readAllWorkspaceCache(storeName) {
+async function readManyWorkspaceCache(storeName, keys) {
+  const uniqueKeys = [...new Set(
+    (keys || []).map((key) => String(key || "").trim()).filter(Boolean),
+  )];
+  if (!uniqueKeys.length) return [];
   const database = await openWorkspaceCache();
   if (!database) return [];
   return new Promise((resolve) => {
     const transaction = database.transaction(storeName, "readonly");
-    const request = transaction.objectStore(storeName).getAll();
-    request.onsuccess = () => resolve(request.result || []);
-    request.onerror = () => resolve([]);
+    const store = transaction.objectStore(storeName);
+    const records = new Array(uniqueKeys.length).fill(null);
+    for (const [index, key] of uniqueKeys.entries()) {
+      const request = store.get(key);
+      request.onsuccess = () => {
+        records[index] = request.result || null;
+      };
+    }
+    const finish = () => resolve(records.filter(Boolean));
+    transaction.oncomplete = finish;
+    transaction.onerror = finish;
+    transaction.onabort = finish;
   });
 }
 
@@ -753,6 +787,7 @@ function scheduleDraftPersistence() {
     persistDraftRecord(record).catch(() => {});
   }, DRAFT_LOCAL_DEBOUNCE_MS));
 
+  if (READ_ONLY_BROWSER_SESSION) return record;
   window.clearTimeout(draftServerTimers.get(conversationId));
   draftServerTimers.set(conversationId, window.setTimeout(() => {
     draftServerTimers.delete(conversationId);
@@ -784,6 +819,7 @@ function persistCurrentDraftNow({
   draftServerTimers.delete(conversationId);
   dirtyDraftConversations.delete(conversationId);
   const localWrite = persistDraftRecord(record);
+  if (READ_ONLY_BROWSER_SESSION) return localWrite;
   if (keepalive) {
     fetch(`/penguin-connect/conversations/${encodeURIComponent(conversationId)}/management`, {
       method: "POST",
@@ -824,6 +860,7 @@ function clearConversationDraft(
       dirtyDraftConversations.delete(conversationId);
     }
   });
+  if (READ_ONLY_BROWSER_SESSION) return localWrite;
   if (keepalive) {
     fetch(`/penguin-connect/conversations/${encodeURIComponent(conversationId)}/management`, {
       method: "POST",
@@ -837,20 +874,45 @@ function clearConversationDraft(
   return localWrite;
 }
 
-async function hydrateDraftCache() {
-  const records = await readAllWorkspaceCache("drafts");
-  for (const record of records) {
-    const conversationId = String(record?.conversationId || "");
-    if (!conversationId) continue;
-    state.draftCache.set(conversationId, record);
-    state.draftRevisions.set(
-      conversationId,
-      Math.max(
-        Number(state.draftRevisions.get(conversationId) || 0),
-        Number(record.revision || 0),
-      ),
-    );
+function applyHydratedDraftRecord(record) {
+  const conversationId = String(record?.conversationId || "");
+  if (
+    !conversationId
+    || dirtyDraftConversations.has(conversationId)
+    || state.draftCache.has(conversationId)
+  ) return false;
+  state.draftRevisions.set(
+    conversationId,
+    Math.max(
+      Number(state.draftRevisions.get(conversationId) || 0),
+      Number(record.revision || 0),
+    ),
+  );
+  updateConversationDraftCache(record);
+  return true;
+}
+
+function hydrateConversationDraft(conversationId) {
+  const id = String(conversationId || "").trim();
+  if (!id || hydratedDraftConversationIds.has(id)) {
+    return Promise.resolve(state.draftCache.get(id) || null);
   }
+  if (draftHydrationPromises.has(id)) return draftHydrationPromises.get(id);
+  const hydration = readWorkspaceCache("drafts", id)
+    .then((record) => {
+      hydratedDraftConversationIds.add(id);
+      if (record) applyHydratedDraftRecord(record);
+      return state.draftCache.get(id) || record || null;
+    })
+    .catch(() => {
+      hydratedDraftConversationIds.add(id);
+      return state.draftCache.get(id) || null;
+    })
+    .finally(() => {
+      draftHydrationPromises.delete(id);
+    });
+  draftHydrationPromises.set(id, hydration);
+  return hydration;
 }
 
 function restoreConversationDraft(conversation, selectionToken = state.selectionToken) {
@@ -893,18 +955,54 @@ function restoreConversationDraft(conversation, selectionToken = state.selection
   return hasDraft;
 }
 
+function prepareConversationDraft(conversation, selectionToken = state.selectionToken) {
+  const conversationId = String(conversation?.conversation_id || "");
+  if (!conversationId) return;
+  if (hydratedDraftConversationIds.has(conversationId)) {
+    restoreConversationDraft(conversation, selectionToken);
+    return;
+  }
+  el.messageComposer.value = "";
+  state.attachments = [];
+  state.replyTarget = null;
+  renderReplyTarget();
+  renderAttachmentPreview();
+  resizeComposer();
+  updateSendButton();
+  el.composerStatus.textContent = "Loading local draft…";
+  hydrateConversationDraft(conversationId).then(() => {
+    if (
+      selectionToken !== state.selectionToken
+      || state.selected?.conversation_id !== conversationId
+      || dirtyDraftConversations.has(conversationId)
+    ) return;
+    restoreConversationDraft(conversation, selectionToken);
+  });
+}
+
 async function pruneWorkspaceThreadCache() {
   const database = await openWorkspaceCache();
   if (!database) return;
-  const records = await readAllWorkspaceCache("threads");
-  const expired = records
-    .sort((left, right) => Number(right.updatedAt || 0) - Number(left.updatedAt || 0))
-    .slice(WORKSPACE_CACHE_THREAD_LIMIT);
-  if (!expired.length) return;
   await new Promise((resolve) => {
     const transaction = database.transaction("threads", "readwrite");
     const store = transaction.objectStore("threads");
-    for (const record of expired) store.delete(record.conversationId);
+    const updatedAt = store.index("updatedAt");
+    const countRequest = store.count();
+    countRequest.onsuccess = () => {
+      let excess = Math.max(
+        0,
+        Number(countRequest.result || 0) - WORKSPACE_CACHE_THREAD_LIMIT,
+      );
+      if (!excess) return;
+      const cursorRequest = updatedAt.openKeyCursor(null, "next");
+      cursorRequest.onsuccess = () => {
+        const cursor = cursorRequest.result;
+        if (!cursor || excess <= 0) return;
+        store.delete(cursor.primaryKey);
+        excess -= 1;
+        cursor.continue();
+      };
+    };
     transaction.oncomplete = resolve;
     transaction.onerror = resolve;
     transaction.onabort = resolve;
@@ -969,37 +1067,51 @@ function rememberConversationMessages(conversationId, messages, metadata = {}) {
   persistThreadSnapshot(conversationId, messages, normalizedMetadata).catch(() => {});
 }
 
+function applyHydratedThreadRecord(thread) {
+  const conversationId = String(thread?.conversationId || "").trim();
+  if (
+    !conversationId
+    || state.messageCache.has(conversationId)
+    || !Array.isArray(thread.messages)
+    || !thread.messages.length
+  ) return false;
+  state.messageCache.set(conversationId, thread.messages);
+  state.messageCacheMetadata.set(conversationId, {
+    total: Math.max(Number(thread.total || 0), thread.messages.length),
+    hasMore: Boolean(thread.hasMore),
+  });
+  return true;
+}
+
+async function hydrateWorkspaceThreads(conversationIds) {
+  const records = await readManyWorkspaceCache("threads", conversationIds);
+  let applied = 0;
+  for (const record of records) {
+    if (applyHydratedThreadRecord(record)) applied += 1;
+  }
+  return applied;
+}
+
+function scheduleWorkspaceThreadHydration(conversationIds) {
+  const pendingIds = [...(conversationIds || [])];
+  if (!pendingIds.length) return;
+  const schedule = window.requestIdleCallback
+    || ((callback) => window.setTimeout(callback, 120));
+  const hydrateNextBatch = async () => {
+    const batch = pendingIds.splice(0, WORKSPACE_CACHE_HYDRATION_BATCH);
+    await hydrateWorkspaceThreads(batch);
+    if (pendingIds.length) schedule(hydrateNextBatch, { timeout: 800 });
+  };
+  schedule(hydrateNextBatch, { timeout: 250 });
+}
+
 async function hydrateWorkspaceCache() {
-  const [snapshot] = await Promise.all([
-    readWorkspaceCache("snapshots", "conversations"),
-    hydrateDraftCache(),
-  ]);
+  const snapshot = await readWorkspaceCache("snapshots", "conversations");
   if (!Array.isArray(snapshot?.conversations) || !snapshot.conversations.length) {
     state.persistentCacheHydrated = true;
     return false;
   }
   state.conversations = snapshot.conversations;
-  const recentIds = new Set(
-    sortedConversations(state.conversations)
-      .filter(hasCachedMessage)
-      .slice(0, WORKSPACE_CACHE_THREAD_LIMIT)
-      .map((conversation) => conversation.conversation_id),
-  );
-  const threads = await readAllWorkspaceCache("threads");
-  for (const thread of threads) {
-    if (
-      recentIds.has(thread.conversationId)
-      && Array.isArray(thread.messages)
-      && thread.messages.length
-    ) {
-      state.messageCache.set(thread.conversationId, thread.messages);
-      state.messageCacheMetadata.set(thread.conversationId, {
-        total: Math.max(Number(thread.total || 0), thread.messages.length),
-        hasMore: Boolean(thread.hasMore),
-      });
-    }
-  }
-  state.persistentCacheHydrated = true;
   renderView();
   let rememberedConversationId = "";
   try {
@@ -1007,12 +1119,33 @@ async function hydrateWorkspaceCache() {
   } catch (_error) {
     rememberedConversationId = "";
   }
+  const hydrationPlan = window.PenguinWorkspaceCachePolicy.planWorkspaceHydration(
+    sortedConversations(state.conversations)
+      .filter(hasCachedMessage)
+      .map((conversation) => conversation.conversation_id),
+    {
+      rememberedConversationId,
+      eagerLimit: WORKSPACE_CACHE_EAGER_THREAD_LIMIT,
+      totalLimit: WORKSPACE_CACHE_THREAD_LIMIT,
+    },
+  );
+  await Promise.all([
+    hydrateWorkspaceThreads(hydrationPlan.immediateIds),
+    rememberedConversationId
+      ? hydrateConversationDraft(rememberedConversationId)
+      : Promise.resolve(),
+  ]);
+  state.persistentCacheHydrated = true;
   const remembered = state.conversations.find(
     (conversation) => conversation.conversation_id === rememberedConversationId,
   );
   if (remembered && hasCachedMessage(remembered) && !remembered.is_archived) {
     selectConversation(remembered);
   }
+  scheduleWorkspaceThreadHydration([
+    ...hydrationPlan.eagerIds,
+    ...hydrationPlan.backgroundIds,
+  ]);
   return true;
 }
 
@@ -4945,7 +5078,7 @@ async function selectConversation(
   if (previousConversationId !== conversation.conversation_id) {
     state.focusedMessageId = "";
     state.unreadBoundaryMessageId = "";
-    restoreConversationDraft(conversation, selectionToken);
+    prepareConversationDraft(conversation, selectionToken);
   }
   try {
     localStorage.setItem("penguin-last-conversation", conversation.conversation_id);
@@ -5378,8 +5511,12 @@ function openMentionSuggestions() {
 
 function updateSendButton() {
   const hasContent = Boolean(el.messageComposer.value.trim() || state.attachments.length);
-  el.sendButton.disabled = !state.selected || !hasContent;
-  el.scheduleSendButton.disabled = !state.selected || !hasContent;
+  el.sendButton.disabled = READ_ONLY_BROWSER_SESSION || !state.selected || !hasContent;
+  el.scheduleSendButton.disabled = READ_ONLY_BROWSER_SESSION || !state.selected || !hasContent;
+  if (READ_ONLY_BROWSER_SESSION) {
+    el.sendButton.title = "Live sends are disabled in automated browser sessions";
+    el.scheduleSendButton.title = "Scheduling is disabled in automated browser sessions";
+  }
   el.gifButton.disabled = !state.selected;
   el.mentionButton.disabled = !conversationSupportsMentions();
 }
@@ -5997,6 +6134,10 @@ async function undoPendingSend(pending) {
 }
 
 function sendMessage({ instant = false } = {}) {
+  if (READ_ONLY_BROWSER_SESSION) {
+    toast("Live sends are disabled in automated browser sessions", "error");
+    return;
+  }
   if (!state.selected || el.sendButton.disabled) return;
   const pending = {
     id: `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`,
