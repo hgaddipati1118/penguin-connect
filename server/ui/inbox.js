@@ -284,6 +284,16 @@ let latestAnchorFrame = 0;
 let latestAnchorToken = 0;
 let latestAnchorResizeObserver = null;
 let latestAnchorStopTimer = 0;
+let conversationProjectionRevision = 0;
+const conversationProjectionCache = {
+  conversations: null,
+  revision: -1,
+  source: "",
+  smartView: "",
+  activeLabel: "",
+  rows: [],
+  indexById: new Map(),
+};
 let mentionSelectionIndex = 0;
 let translationWorkerRunning = false;
 let shortcutPrefix = "";
@@ -569,8 +579,21 @@ function sourceMatches(conversation) {
   return state.source === "all" || providerKey(conversation?.source_provider) === state.source;
 }
 
+function invalidateConversationProjection() {
+  conversationProjectionRevision += 1;
+}
+
 function visibleConversations() {
-  return sortedConversations(state.conversations.filter((conversation) => (
+  if (
+    conversationProjectionCache.conversations === state.conversations
+    && conversationProjectionCache.revision === conversationProjectionRevision
+    && conversationProjectionCache.source === state.source
+    && conversationProjectionCache.smartView === state.smartView
+    && conversationProjectionCache.activeLabel === state.activeLabel
+  ) {
+    return conversationProjectionCache.rows;
+  }
+  const rows = sortedConversations(state.conversations.filter((conversation) => (
     sourceMatches(conversation)
     && hasCachedMessage(conversation)
     && (!state.activeLabel || (conversation.labels || []).includes(state.activeLabel))
@@ -581,6 +604,21 @@ function visibleConversations() {
     && conversation.status !== "disconnected"
     && !conversation.excluded
   )));
+  conversationProjectionCache.conversations = state.conversations;
+  conversationProjectionCache.revision = conversationProjectionRevision;
+  conversationProjectionCache.source = state.source;
+  conversationProjectionCache.smartView = state.smartView;
+  conversationProjectionCache.activeLabel = state.activeLabel;
+  conversationProjectionCache.rows = rows;
+  conversationProjectionCache.indexById = new Map(
+    rows.map((conversation, index) => [conversation.conversation_id, index]),
+  );
+  return rows;
+}
+
+function visibleConversationIndex(conversationId) {
+  visibleConversations();
+  return conversationProjectionCache.indexById.get(conversationId) ?? -1;
 }
 
 function initials(value) {
@@ -813,6 +851,7 @@ function updateSelectedLabelsUI(labels) {
     (conversation) => conversation.conversation_id === state.selected.conversation_id,
   );
   if (stored) stored.labels = cleanLabels;
+  invalidateConversationProjection();
   renderThreadHeader();
   renderLabelBar();
   if (state.activeLabel) {
@@ -948,6 +987,7 @@ function renderLabelBar() {
       state.activeLabel = "";
       state.conversationsVisible = CONVERSATION_RENDER_BATCH;
       renderView();
+      reconcileConversationSelection();
     });
     el.labelBar.append(button);
   }
@@ -971,6 +1011,7 @@ function renderLabelBar() {
       state.activeLabel = select.value;
       state.conversationsVisible = CONVERSATION_RENDER_BATCH;
       renderView();
+      reconcileConversationSelection();
     });
     el.labelBar.append(select);
   }
@@ -2228,7 +2269,7 @@ function updateConversationSelectionUI(previousId, nextId) {
     `[data-conversation-id="${CSS.escape(nextId)}"]`,
   );
   if (!next) {
-    const index = visibleConversations().findIndex((item) => item.conversation_id === nextId);
+    const index = visibleConversationIndex(nextId);
     if (index >= state.conversationsVisible) {
       state.conversationsVisible = (
         Math.ceil((index + 1) / CONVERSATION_RENDER_BATCH)
@@ -2270,7 +2311,7 @@ async function preloadConversationMessages(conversation) {
 
 function preloadAdjacentConversations(conversation) {
   const rows = visibleConversations();
-  const index = rows.findIndex((item) => item.conversation_id === conversation?.conversation_id);
+  const index = visibleConversationIndex(conversation?.conversation_id);
   if (index < 0) return;
   for (const candidate of rows.slice(Math.max(0, index - 1), index + 3)) {
     if (candidate.conversation_id !== conversation.conversation_id) {
@@ -2299,7 +2340,11 @@ function scheduleAdjacentPreload(conversation, selectionToken) {
   }, 180);
 }
 
-function scheduleSelectedConversationHydration(conversation, selectionToken) {
+function scheduleSelectedConversationHydration(
+  conversation,
+  selectionToken,
+  { markRead = true } = {},
+) {
   window.clearTimeout(selectionHydrationTimer);
   selectionHydrationTimer = window.setTimeout(() => {
     if (
@@ -2310,12 +2355,15 @@ function scheduleSelectedConversationHydration(conversation, selectionToken) {
     refreshSelectedMessages({ incremental: !isSlack }).catch((error) => toast(error.message, "error"));
     if (!isSlack) repairSelectedConversationCache(conversation).catch(() => {});
     loadScheduledMessages(conversation.conversation_id).catch(() => {});
-    markConversationRead(conversation).catch(() => {});
+    if (markRead) markConversationRead(conversation).catch(() => {});
   }, 180);
   scheduleAdjacentPreload(conversation, selectionToken);
 }
 
-async function selectConversation(conversation, { focusMessageId = "" } = {}) {
+async function selectConversation(
+  conversation,
+  { focusMessageId = "", markRead = true } = {},
+) {
   const selectionToken = ++state.selectionToken;
   const previousConversationId = state.selected?.conversation_id || "";
   window.cancelAnimationFrame(selectionRenderFrame);
@@ -2349,7 +2397,7 @@ async function selectConversation(conversation, { focusMessageId = "" } = {}) {
         || state.selected?.conversation_id !== conversation.conversation_id
       ) return;
       renderMessages({ focusMessageId });
-      scheduleSelectedConversationHydration(conversation, selectionToken);
+      scheduleSelectedConversationHydration(conversation, selectionToken, { markRead });
     });
     return;
   }
@@ -2376,7 +2424,7 @@ async function selectConversation(conversation, { focusMessageId = "" } = {}) {
         state.messagePagination,
       );
       renderMessages({ focusMessageId });
-      scheduleSelectedConversationHydration(conversation, selectionToken);
+      scheduleSelectedConversationHydration(conversation, selectionToken, { markRead });
     } catch (error) {
       if (
         selectionToken !== state.selectionToken
@@ -2494,6 +2542,7 @@ async function markConversationRead(conversation) {
     });
     conversation.unread_count = 0;
     conversation.has_unread = false;
+    invalidateConversationProjection();
     const activeRow = el.conversationList.querySelector(
       `[data-conversation-id="${CSS.escape(conversation.conversation_id)}"]`,
     );
@@ -3153,6 +3202,7 @@ async function loadContacts(query = "") {
     state.contacts = payload.contacts || [];
     state.contactsTotal = state.contacts.length;
     state.peopleVisible = 200;
+    invalidateConversationProjection();
   }
   return payload.contacts || [];
 }
@@ -3400,6 +3450,31 @@ function setInboxSmartView(view = "all") {
   el.globalSearch.value = "";
   state.conversationsVisible = CONVERSATION_RENDER_BATCH;
   renderView();
+  reconcileConversationSelection();
+}
+
+function clearConversationSelection() {
+  state.selectionToken += 1;
+  window.cancelAnimationFrame(selectionRenderFrame);
+  window.clearTimeout(selectionHydrationTimer);
+  window.clearTimeout(selectionPreloadTimer);
+  state.selected = null;
+  state.messages = [];
+  renderThreadHeader();
+  el.shell.classList.remove("thread-open");
+}
+
+function reconcileConversationSelection() {
+  const rows = visibleConversations();
+  if (
+    state.selected
+    && visibleConversationIndex(state.selected.conversation_id) >= 0
+  ) return;
+  if (rows.length) {
+    selectConversation(rows[0], { markRead: false });
+    return;
+  }
+  clearConversationSelection();
 }
 
 function setSource(source) {
@@ -3410,26 +3485,11 @@ function setSource(source) {
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", active ? "true" : "false");
   }
-  if (state.search.query) runSearch(state.search.query);
-  else renderView();
-  if (
-    state.source !== "all"
-    && state.selected
-    && providerKey(state.selected.source_provider) !== state.source
-  ) {
-    const next = visibleConversations()[0];
-    if (next) {
-      selectConversation(next);
-    } else {
-      state.selectionToken += 1;
-      window.cancelAnimationFrame(selectionRenderFrame);
-      window.clearTimeout(selectionHydrationTimer);
-      window.clearTimeout(selectionPreloadTimer);
-      state.selected = null;
-      state.messages = [];
-      renderThreadHeader();
-      el.shell.classList.remove("thread-open");
-    }
+  if (state.search.query) {
+    runSearch(state.search.query);
+  } else {
+    renderView();
+    reconcileConversationSelection();
   }
 }
 
@@ -4075,6 +4135,7 @@ function updateSelectedConversationManagement(management) {
   const index = state.conversations.findIndex((item) => item.conversation_id === conversationId);
   if (index >= 0) Object.assign(state.conversations[index], management);
   Object.assign(state.selected, management);
+  invalidateConversationProjection();
   renderThreadHeader();
   renderConversationList();
 }
@@ -4086,6 +4147,7 @@ async function setConversationArchived(
 ) {
   const previous = previousValue;
   conversation.is_archived = archived;
+  invalidateConversationProjection();
   renderConversationList();
   if (select) selectConversation(conversation);
   try {
@@ -4097,8 +4159,10 @@ async function setConversationArchived(
       },
     );
     Object.assign(conversation, result);
+    invalidateConversationProjection();
   } catch (error) {
     conversation.is_archived = previous;
+    invalidateConversationProjection();
     renderConversationList();
     toast(`Could not ${archived ? "archive" : "restore"}: ${error.message}`, "error");
   }
@@ -4108,6 +4172,7 @@ async function setConversationPinned(conversation, pinned = !conversation.is_pin
   if (!conversation) return;
   const previous = Boolean(conversation.is_pinned);
   conversation.is_pinned = pinned;
+  invalidateConversationProjection();
   renderConversationList();
   try {
     const result = await api(
@@ -4118,10 +4183,12 @@ async function setConversationPinned(conversation, pinned = !conversation.is_pin
       },
     );
     Object.assign(conversation, result);
+    invalidateConversationProjection();
     renderConversationList();
     toast(pinned ? "Conversation starred" : "Conversation unstarred");
   } catch (error) {
     conversation.is_pinned = previous;
+    invalidateConversationProjection();
     renderConversationList();
     toast(`Could not update star: ${error.message}`, "error");
   }
@@ -4132,6 +4199,7 @@ async function setConversationUnread(conversation, unread) {
   const previousCount = Number(conversation.unread_count || 0);
   conversation.unread_count = unread ? Math.max(1, previousCount) : 0;
   conversation.has_unread = unread;
+  invalidateConversationProjection();
   renderConversationList();
   try {
     const result = await api(
@@ -4143,11 +4211,13 @@ async function setConversationUnread(conversation, unread) {
     );
     conversation.unread_count = Number(result.unread_count || 0);
     conversation.has_unread = Boolean(result.has_unread);
+    invalidateConversationProjection();
     renderConversationList();
     toast(unread ? "Marked unread" : "Marked read");
   } catch (error) {
     conversation.unread_count = previousCount;
     conversation.has_unread = previousCount > 0;
+    invalidateConversationProjection();
     renderConversationList();
     toast(`Could not update read state: ${error.message}`, "error");
   }
@@ -4157,11 +4227,12 @@ function archiveSelectedConversation(direction = 1) {
   if (!state.selected) return;
   const conversation = state.selected;
   const rows = visibleConversations();
-  const index = rows.findIndex((item) => item.conversation_id === conversation.conversation_id);
+  const index = visibleConversationIndex(conversation.conversation_id);
   const preferred = direction < 0 ? rows[index - 1] : rows[index + 1];
   const fallback = direction < 0 ? rows[index + 1] : rows[index - 1];
   const next = preferred || fallback || null;
   conversation.is_archived = true;
+  invalidateConversationProjection();
   renderConversationList();
   if (next) selectConversation(next);
   setConversationArchived(conversation, true, { previousValue: false });
@@ -4222,9 +4293,7 @@ function scrollCurrentThread(direction) {
 function moveConversationSelection(offset) {
   const rows = visibleConversations();
   if (!rows.length) return;
-  const currentIndex = rows.findIndex((conversation) => (
-    conversation.conversation_id === state.selected?.conversation_id
-  ));
+  const currentIndex = visibleConversationIndex(state.selected?.conversation_id);
   const nextIndex = currentIndex < 0
     ? (offset > 0 ? 0 : rows.length - 1)
     : Math.max(0, Math.min(rows.length - 1, currentIndex + offset));
