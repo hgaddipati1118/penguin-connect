@@ -258,6 +258,7 @@ const writingActions = {
 const listObservers = new Map();
 const contactIndex = new Map();
 const translationQueue = [];
+const messageRowFingerprints = new WeakMap();
 const WORKSPACE_CACHE_DB = "penguin-local-workspace";
 const WORKSPACE_CACHE_VERSION = 2;
 const WORKSPACE_CACHE_THREAD_LIMIT = 60;
@@ -2592,6 +2593,76 @@ async function openProviderToReact(message) {
   }
 }
 
+function currentMessageById(messageId) {
+  const cleanId = String(messageId || "");
+  return state.messages.find(
+    (message) => String(message.provider_message_id || "") === cleanId,
+  ) || null;
+}
+
+function handleMessageListAction(event) {
+  const action = event.target.closest("[data-message-action]");
+  if (!action || !el.messageList.contains(action)) return;
+  const actionName = action.dataset.messageAction;
+  if (actionName === "jump-reply") {
+    scrollToNativeReplyTarget(action.dataset.replyMessageId);
+    return;
+  }
+  const row = action.closest(".message-row");
+  const message = currentMessageById(row?.dataset.messageId);
+  if (!message) return;
+  if (actionName === "pin") {
+    togglePinnedMessage(message, action);
+  } else if (actionName === "translate") {
+    queueMessageTranslation(message, { notify: true, priority: true });
+  } else if (actionName === "react") {
+    openProviderToReact(message);
+  } else if (actionName === "reply") {
+    startNativeReply(message);
+  }
+}
+
+function messageRenderFingerprint(message, {
+  isThreadReply,
+  parentMessage,
+  reactions,
+} = {}) {
+  return JSON.stringify([
+    state.selected?.conversation_id || "",
+    state.selected?.source_provider || "",
+    state.selected?.chat_type || "",
+    Boolean(isThreadReply),
+    message,
+    parentMessage?.sender_name || "",
+    parentMessage?.body_text || "",
+    reactions || [],
+    state.translationCache.get(message.provider_message_id) || null,
+    state.translatingMessages.has(message.provider_message_id),
+  ]);
+}
+
+function reusableMessageRow(existingRows, message, renderFingerprint) {
+  const row = existingRows.get(String(message.provider_message_id || ""));
+  if (!row || messageRowFingerprints.get(row) !== renderFingerprint) return null;
+  return row;
+}
+
+function reconcileMessageList(desiredChildren) {
+  let current = el.messageList.firstChild;
+  for (const child of desiredChildren) {
+    if (current === child) {
+      current = current.nextSibling;
+      continue;
+    }
+    el.messageList.insertBefore(child, current);
+  }
+  while (current) {
+    const next = current.nextSibling;
+    current.remove();
+    current = next;
+  }
+}
+
 function renderMessages({
   focusMessageId = "",
   preserveScroll = false,
@@ -2600,16 +2671,20 @@ function renderMessages({
   const previousScrollTop = el.messageList.scrollTop;
   const previousScrollHeight = el.messageList.scrollHeight;
   const previousBottomDistance = el.messageList.scrollHeight - el.messageList.clientHeight - el.messageList.scrollTop;
-  el.messageList.replaceChildren();
+  const existingRows = new Map(
+    [...el.messageList.querySelectorAll(".message-row")].map(
+      (row) => [String(row.dataset.messageId || ""), row],
+    ),
+  );
   renderPinnedMessages();
   if (!state.messages.length) {
     const empty = document.createElement("div");
     empty.className = "pane-empty";
     empty.textContent = "No messages are cached for this conversation yet.";
-    el.messageList.append(empty);
+    el.messageList.replaceChildren(empty);
     return;
   }
-  const messageFragment = document.createDocumentFragment();
+  const messageChildren = [];
 
   const sortedRows = [...state.messages].sort((a, b) => (
     Date.parse(a.message_timestamp || "") - Date.parse(b.message_timestamp || "")
@@ -2639,7 +2714,7 @@ function renderMessages({
     historyLoader.textContent = state.messagePagination.loadingOlder
       ? "Loading older messages…"
       : "Scroll up for older messages";
-    messageFragment.append(historyLoader);
+    messageChildren.push(historyLoader);
   }
 
   let lastDate = "";
@@ -2651,12 +2726,36 @@ function renderMessages({
       const divider = document.createElement("div");
       divider.className = "date-divider";
       divider.textContent = date;
-      messageFragment.append(divider);
+      messageChildren.push(divider);
       lastDate = date;
     }
 
     const mine = isOwnMessage(message);
-    const row = document.createElement("article");
+    const replyContext = message.metadata?.reply_context;
+    const parentMessage = replyContext?.message_id
+      ? messagesByNativeId.get(String(replyContext.message_id))
+      : null;
+    const reactions = nativeReactions.get(
+      normalizeReactionTargetGuid(message.metadata?.native_guid),
+    ) || [];
+    const renderFingerprint = messageRenderFingerprint(message, {
+      isThreadReply,
+      parentMessage,
+      reactions,
+    });
+    let row = reusableMessageRow(existingRows, message, renderFingerprint);
+    if (row) {
+      messageChildren.push(row);
+      if (
+        state.autoTranslate
+        && !mine
+        && likelyNeedsTranslation(message.body_text)
+      ) {
+        queueMessageTranslation(message);
+      }
+      continue;
+    }
+    row = document.createElement("article");
     row.className = [
       "message-row",
       mine ? "mine" : "",
@@ -2695,12 +2794,12 @@ function renderMessages({
 
     const bubble = document.createElement("div");
     bubble.className = "message-bubble";
-    const replyContext = message.metadata?.reply_context;
     if (replyContext?.message_id) {
-      const parentMessage = messagesByNativeId.get(String(replyContext.message_id));
       const quote = document.createElement("button");
       quote.type = "button";
       quote.className = "message-reply-quote";
+      quote.dataset.messageAction = "jump-reply";
+      quote.dataset.replyMessageId = String(replyContext.message_id);
       quote.title = "Jump to replied-to message";
       const quoteSender = document.createElement("strong");
       quoteSender.textContent = parentMessage?.sender_name
@@ -2714,10 +2813,6 @@ function renderMessages({
         150,
       );
       quote.append(quoteSender, quoteText);
-      quote.addEventListener(
-        "click",
-        () => scrollToNativeReplyTarget(replyContext.message_id),
-      );
       bubble.append(quote);
     }
     const body = document.createElement("span");
@@ -2741,13 +2836,10 @@ function renderMessages({
       threadSummary.className = "message-thread-summary";
       threadSummary.append(createIcon("i-reply"));
       threadSummary.append(`${replyCount} ${replyCount === 1 ? "reply" : "replies"}`);
+      threadSummary.dataset.messageAction = "reply";
       threadSummary.title = "Reply in this Slack thread";
-      threadSummary.addEventListener("click", () => startSlackThreadReply(message));
       bubble.append(threadSummary);
     }
-    const reactions = nativeReactions.get(
-      normalizeReactionTargetGuid(message.metadata?.native_guid),
-    ) || [];
     if (reactions.length) {
       const reactionList = document.createElement("div");
       reactionList.className = "message-reactions";
@@ -2791,41 +2883,39 @@ function renderMessages({
     pin.append(createIcon("i-pin"));
     pin.setAttribute("aria-pressed", message.is_starred ? "true" : "false");
     pin.setAttribute("aria-label", message.is_starred ? "Unpin message" : "Pin message");
+    pin.dataset.messageAction = "pin";
     pin.title = pin.getAttribute("aria-label");
-    pin.addEventListener("click", () => togglePinnedMessage(message, pin));
     const translate = document.createElement("button");
     translate.type = "button";
     translate.className = "message-translate-button";
+    translate.dataset.messageAction = "translate";
     translate.textContent = "EN";
     translate.title = "Translate message to English";
     translate.setAttribute("aria-label", "Translate message to English");
-    translate.addEventListener("click", () => queueMessageTranslation(message, {
-      notify: true,
-      priority: true,
-    }));
     const react = document.createElement("button");
     react.type = "button";
     react.className = "message-react-button";
+    react.dataset.messageAction = "react";
     react.textContent = "☺";
     react.title = `Open ${providerLabel(state.selected?.source_provider)} to react`;
     react.setAttribute("aria-label", react.title);
-    react.addEventListener("click", () => openProviderToReact(message));
     if (message.metadata?.pending_send) react.hidden = true;
     const reply = document.createElement("button");
     reply.type = "button";
     reply.className = "message-reply-button";
+    reply.dataset.messageAction = "reply";
     reply.append(createIcon("i-reply"));
     const replyProvider = providerKey(state.selected?.source_provider);
     reply.title = replyProvider === "slack"
       ? "Reply in Slack thread"
       : "Reply to this WhatsApp message";
     reply.setAttribute("aria-label", `Reply to ${message.sender_name || "message"}`);
-    reply.addEventListener("click", () => startNativeReply(message));
     reply.hidden = !["slack", "whatsapp"].includes(replyProvider)
       || Boolean(message.metadata?.pending_send);
     if (mine) row.append(reply, translate, pin, react, stack);
     else row.append(stack, reply, react, pin, translate);
-    messageFragment.append(row);
+    messageRowFingerprints.set(row, renderFingerprint);
+    messageChildren.push(row);
     if (
       state.autoTranslate
       && !mine
@@ -2838,8 +2928,8 @@ function renderMessages({
   const bottomAnchor = document.createElement("div");
   bottomAnchor.className = "thread-bottom-anchor";
   bottomAnchor.setAttribute("aria-hidden", "true");
-  messageFragment.append(bottomAnchor);
-  el.messageList.append(messageFragment);
+  messageChildren.push(bottomAnchor);
+  reconcileMessageList(messageChildren);
   applyThreadSearch();
   const focused = focusMessageId
     ? el.messageList.querySelector(`[data-message-id="${CSS.escape(focusMessageId)}"]`)
@@ -5470,6 +5560,7 @@ el.autoTranslateToggle.addEventListener("change", () => {
   }
   if (state.autoTranslate && state.messages.length) renderMessages({ preserveScroll: true });
 });
+el.messageList.addEventListener("click", handleMessageListAction);
 el.messageList.addEventListener("scroll", (event) => {
   if (!event.isTrusted) return;
   const bottomDistance = el.messageList.scrollHeight - el.messageList.clientHeight - el.messageList.scrollTop;
