@@ -5075,6 +5075,7 @@ def get_penguinconnect_conversations(
     include_slack: bool = False,
     compact: bool = False,
     fast: bool = False,
+    sparse: bool = False,
 ):
     conn = get_connection()
     try:
@@ -5112,7 +5113,11 @@ def get_penguinconnect_conversations(
         if not (compact and fast):
             result = _attach_conversation_contact_context(conn, result)
         conn.commit()
-        return _compact_conversation_result(result) if compact else result
+        return (
+            _compact_conversation_result(result, sparse_defaults=sparse)
+            if compact
+            else result
+        )
     except sqlite3.OperationalError as exc:
         raise _map_sqlite_error(exc)
     finally:
@@ -5156,8 +5161,33 @@ _COMPACT_CONTACT_CONTEXT_FIELDS = (
     "is_saved",
 )
 
+_SPARSE_COMPACT_DEFAULTS = {
+    "chat_type": ("dm", None),
+    "participants": ([], None),
+    "status": ("active", None),
+    "excluded": (False, None),
+    "last_message_has_attachments": (False, None),
+    "unread_count": (0, None),
+    "has_unread": (False, None),
+    "is_pinned": (False, None),
+    "is_archived": (False, None),
+    "is_muted": (False, None),
+    "title": ("", None),
+    "note": ("", None),
+    "labels": ([], None),
+    "avatar_data_url": ("", None),
+    "draft_text": ("", None),
+    "follow_up_at": ("", None),
+    "management_updated_at": ("", None),
+    "contact_context": ([], None),
+}
 
-def _compact_conversation_result(result: dict) -> dict:
+
+def _compact_conversation_result(
+    result: dict,
+    *,
+    sparse_defaults: bool = False,
+) -> dict:
     """Return only fields the keyboard inbox needs for its initial list render."""
     compact_result = {
         key: value
@@ -5172,8 +5202,16 @@ def _compact_conversation_result(result: dict) -> dict:
             key: conversation.get(key)
             for key in _COMPACT_CONVERSATION_FIELDS
             if key in conversation
+            and not (
+                sparse_defaults
+                and key in _SPARSE_COMPACT_DEFAULTS
+                and conversation.get(key) in _SPARSE_COMPACT_DEFAULTS[key]
+            )
         }
-        if "contact_context" in conversation:
+        if "contact_context" in conversation and not (
+            sparse_defaults
+            and conversation.get("contact_context") in _SPARSE_COMPACT_DEFAULTS["contact_context"]
+        ):
             compact["contact_context"] = [
                 {
                     key: contact.get(key)

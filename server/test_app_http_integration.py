@@ -588,6 +588,133 @@ class AppHttpIntegrationTests(unittest.TestCase):
             )
         self.assertLess(len(compact_response.content), len(full_response.content))
 
+    def test_sparse_compact_conversations_omit_only_default_values(self):
+        result = {
+            "connected": True,
+            "conversations": [
+                {
+                    "conversation_id": "slack:synthetic",
+                    "source_provider": "slack",
+                    "source_service_name": "Slack",
+                    "display_name": "#synthetic",
+                    "chat_type": "dm",
+                    "participants": [],
+                    "status": "active",
+                    "excluded": False,
+                    "last_message_provider_id": "slack:synthetic:1",
+                    "last_message_ts": "2026-07-25T12:00:00+00:00",
+                    "last_message_preview": "Useful non-default preview",
+                    "last_message_has_attachments": False,
+                    "unread_count": 0,
+                    "has_unread": False,
+                    "is_pinned": False,
+                    "is_archived": False,
+                    "is_muted": False,
+                    "title": "",
+                    "note": "",
+                    "labels": [],
+                    "avatar_data_url": "",
+                    "draft_text": "",
+                    "follow_up_at": "",
+                    "management_updated_at": "",
+                    "contact_context": [],
+                }
+            ],
+        }
+
+        compact = app_module._compact_conversation_result(
+            result,
+            sparse_defaults=True,
+        )
+        row = compact["conversations"][0]
+
+        self.assertTrue(compact["connected"])
+        self.assertEqual(row["conversation_id"], "slack:synthetic")
+        self.assertEqual(row["source_provider"], "slack")
+        self.assertEqual(row["source_service_name"], "Slack")
+        self.assertEqual(row["display_name"], "#synthetic")
+        self.assertEqual(row["last_message_provider_id"], "slack:synthetic:1")
+        self.assertEqual(row["last_message_preview"], "Useful non-default preview")
+        self.assertNotIn("chat_type", row)
+        self.assertNotIn("participants", row)
+        self.assertNotIn("status", row)
+        self.assertNotIn("excluded", row)
+        self.assertNotIn("last_message_has_attachments", row)
+        self.assertNotIn("unread_count", row)
+        self.assertNotIn("has_unread", row)
+        self.assertNotIn("is_pinned", row)
+        self.assertNotIn("is_archived", row)
+        self.assertNotIn("is_muted", row)
+        self.assertNotIn("title", row)
+        self.assertNotIn("note", row)
+        self.assertNotIn("labels", row)
+        self.assertNotIn("avatar_data_url", row)
+        self.assertNotIn("draft_text", row)
+        self.assertNotIn("follow_up_at", row)
+        self.assertNotIn("management_updated_at", row)
+        self.assertNotIn("contact_context", row)
+
+        non_default_values = {
+            "chat_type": "group",
+            "participants": ["Harsha", "Dhruv"],
+            "status": "disconnected",
+            "excluded": True,
+            "last_message_has_attachments": True,
+            "unread_count": 3,
+            "has_unread": True,
+            "is_pinned": True,
+            "is_archived": True,
+            "is_muted": True,
+            "title": "Launch crew",
+            "note": "Follow up tomorrow",
+            "labels": ["Customer"],
+            "avatar_data_url": "data:image/png;base64,cGVuZ3Vpbg==",
+            "draft_text": "Draft reply",
+            "follow_up_at": "2026-07-26T12:00:00+00:00",
+            "management_updated_at": "2026-07-25T12:01:00+00:00",
+        }
+        result["conversations"][0].update(non_default_values)
+        non_default_row = app_module._compact_conversation_result(
+            result,
+            sparse_defaults=True,
+        )["conversations"][0]
+        for field, value in non_default_values.items():
+            self.assertEqual(non_default_row[field], value)
+
+    def test_sparse_fast_conversations_are_smaller_and_preserve_identity(self):
+        with TestClient(app_module.app) as client:
+            regular_response = client.get(
+                "/penguin-connect/conversations",
+                params={"compact": True, "fast": True},
+            )
+            sparse_response = client.get(
+                "/penguin-connect/conversations",
+                params={"compact": True, "fast": True, "sparse": True},
+            )
+
+        self.assertEqual(regular_response.status_code, 200)
+        self.assertEqual(sparse_response.status_code, 200)
+        regular_rows = {
+            row["conversation_id"]: row
+            for row in regular_response.json()["conversations"]
+        }
+        sparse_rows = {
+            row["conversation_id"]: row
+            for row in sparse_response.json()["conversations"]
+        }
+        self.assertEqual(set(sparse_rows), set(regular_rows))
+        for conversation_id, sparse_row in sparse_rows.items():
+            regular_row = regular_rows[conversation_id]
+            self.assertEqual(
+                sparse_row["source_provider"],
+                regular_row["source_provider"],
+            )
+            self.assertEqual(
+                sparse_row.get("last_message_provider_id"),
+                regular_row.get("last_message_provider_id"),
+            )
+        self.assertLess(len(sparse_response.content), len(regular_response.content))
+
     def test_conversations_fast_mode_skips_blocking_discovery_and_preview_hydration(self):
         cached = {
             "connected": False,
@@ -3324,6 +3451,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("attachmentsPersisted", inbox_js_response.text)
         self.assertIn('window.addEventListener("pagehide"', inbox_js_response.text)
         self.assertIn('query.set("compact", "true")', inbox_js_response.text)
+        self.assertIn('query.set("sparse", "true")', inbox_js_response.text)
         self.assertIn("openContactCard", inbox_js_response.text)
         self.assertIn("toggleConversationPane", inbox_js_response.text)
         self.assertIn("toggleAgentPane", inbox_js_response.text)

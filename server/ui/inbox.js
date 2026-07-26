@@ -4121,6 +4121,7 @@ async function loadConversations({
     const query = new URLSearchParams();
     query.set("compact", "true");
     query.set("fast", "true");
+    query.set("sparse", "true");
     if (discoverWhatsApp) query.set("include_whatsapp", "true");
     if (discoverIMessages) query.set("include_imessage", "true");
     if (discoverSlack) query.set("include_slack", "true");
