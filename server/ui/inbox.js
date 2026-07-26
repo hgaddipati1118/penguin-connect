@@ -4879,14 +4879,10 @@ async function refreshSelectedMessages({
       }),
     );
     if (state.selected?.conversation_id !== conversationId) return;
-    let nextMessages = payload.messages || [];
-    if (state.messages.length > nextMessages.length) {
-      const merged = new Map(
-        state.messages.map((message) => [message.provider_message_id, message]),
-      );
-      for (const message of nextMessages) merged.set(message.provider_message_id, message);
-      nextMessages = [...merged.values()];
-    }
+    const nextMessages = window.PenguinRefreshCoordinator.mergeRefreshedMessages(
+      state.messages,
+      payload.messages || [],
+    );
     state.messagePagination.total = Number(payload.total || nextMessages.length);
     state.messagePagination.hasMore = nextMessages.length < state.messagePagination.total;
     rememberConversationMessages(conversationId, nextMessages, state.messagePagination);
@@ -5250,14 +5246,17 @@ async function loadScheduledMessages(conversationId = state.selected?.conversati
   if (!conversationId) {
     state.scheduledMessages = [];
     renderScheduledQueue();
-    return;
+    return [];
   }
   const payload = await api(
     `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/scheduled-messages`,
   );
-  if (state.selected?.conversation_id !== conversationId) return;
-  state.scheduledMessages = payload.scheduled_messages || [];
-  renderScheduledQueue();
+  const scheduledMessages = payload.scheduled_messages || [];
+  if (state.selected?.conversation_id === conversationId) {
+    state.scheduledMessages = scheduledMessages;
+    renderScheduledQueue();
+  }
+  return scheduledMessages;
 }
 
 async function cancelScheduledMessage(scheduledId) {
@@ -5315,36 +5314,95 @@ function fileAsAttachment(file) {
   });
 }
 
+function pendingConversationIsSelected(pending) {
+  return (
+    state.selected?.conversation_id
+    === pending?.conversation?.conversation_id
+  );
+}
+
+function failPendingDelivery(pending, error) {
+  removePendingOptimisticMessage(pending);
+  restorePendingDraft(pending);
+  if (pendingConversationIsSelected(pending)) {
+    el.composerStatus.textContent = `Not sent · draft restored · ${error.message}`;
+  }
+  toast(`Could not send: ${error.message}`, "error");
+}
+
+async function refreshAfterPendingDelivery(pending) {
+  let refreshed = true;
+  if (pendingConversationIsSelected(pending)) {
+    try {
+      await refreshSelectedMessages({ force: true });
+    } catch (_error) {
+      refreshed = false;
+      el.composerStatus.textContent = `Sent through ${
+        providerLabel(pending.conversation.source_provider)
+      } · inbox refresh will retry`;
+    }
+  }
+  loadConversations({ keepSelection: true }).catch(() => {});
+  return refreshed;
+}
+
 async function deliverPendingSend(pending) {
   if (pending.cancelled) return;
   state.pendingSends = state.pendingSends.filter((item) => item.id !== pending.id);
   updatePendingOptimisticMessage(pending, "Sending…");
-  if (state.selected?.conversation_id === pending.conversation.conversation_id) {
-    el.composerStatus.textContent = `Sending through ${providerLabel(pending.conversation.source_provider)}…`;
+  if (pendingConversationIsSelected(pending)) {
+    el.composerStatus.textContent = `Sending through ${
+      providerLabel(pending.conversation.source_provider)
+    }…`;
   }
+
+  let attachments;
   try {
-    const attachments = await Promise.all(pending.files.map(fileAsAttachment));
-    if (pending.instant) {
-      await api(`/penguin-connect/conversations/${encodeURIComponent(pending.conversation.conversation_id)}/send`, {
-        method: "POST",
-        body: JSON.stringify({
-          sender_email: "",
-          message: pending.providerText,
-          attachments,
-          reply_to_message_id: replyTargetProviderMessageId(pending.replyTo),
-          reply_context_message_id: replyTargetContextMessageId(pending.replyTo),
-        }),
-      });
-      removePendingOptimisticMessage(pending);
-      if (state.selected?.conversation_id === pending.conversation.conversation_id) {
-        el.composerStatus.textContent = `Sent through ${providerLabel(pending.conversation.source_provider)}`;
-        await refreshSelectedMessages({ force: true });
-      }
-      loadConversations({ keepSelection: true });
+    attachments = await Promise.all(pending.files.map(fileAsAttachment));
+  } catch (error) {
+    failPendingDelivery(pending, error);
+    return;
+  }
+
+  if (pending.instant) {
+    let delivery;
+    try {
+      delivery = await api(
+        `/penguin-connect/conversations/${
+          encodeURIComponent(pending.conversation.conversation_id)
+        }/send`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            sender_email: "",
+            message: pending.providerText,
+            attachments,
+            reply_to_message_id: replyTargetProviderMessageId(pending.replyTo),
+            reply_context_message_id: replyTargetContextMessageId(pending.replyTo),
+          }),
+        },
+      );
+    } catch (error) {
+      failPendingDelivery(pending, error);
       return;
     }
-    await api(
-      `/penguin-connect/conversations/${encodeURIComponent(pending.conversation.conversation_id)}/scheduled-messages`,
+
+    settlePendingOptimisticMessage(pending, delivery.provider_message_id);
+    if (pendingConversationIsSelected(pending)) {
+      el.composerStatus.textContent = `Sent through ${
+        providerLabel(pending.conversation.source_provider)
+      }`;
+    }
+    await refreshAfterPendingDelivery(pending);
+    return;
+  }
+
+  let scheduled;
+  try {
+    scheduled = await api(
+      `/penguin-connect/conversations/${
+        encodeURIComponent(pending.conversation.conversation_id)
+      }/scheduled-messages`,
       {
         method: "POST",
         body: JSON.stringify({
@@ -5357,40 +5415,70 @@ async function deliverPendingSend(pending) {
         }),
       },
     );
-    updatePendingOptimisticMessage(pending, "Queued · offline retry enabled");
-    if (state.selected?.conversation_id === pending.conversation.conversation_id) {
-      el.composerStatus.textContent = `Queued for ${providerLabel(pending.conversation.source_provider)} · offline retry enabled`;
-      await loadScheduledMessages(pending.conversation.conversation_id);
-    }
-    window.setTimeout(async () => {
-      try {
-        await api("/penguin-connect/scheduled-messages/run-due", {
-          method: "POST",
-          body: "{}",
-        });
-        removePendingOptimisticMessage(pending);
-        await Promise.all([
-          loadConversations({ keepSelection: true }),
-          state.selected?.conversation_id === pending.conversation.conversation_id
-            ? refreshSelectedMessages({ force: true })
-            : Promise.resolve(),
-          state.selected?.conversation_id === pending.conversation.conversation_id
-            ? loadScheduledMessages(pending.conversation.conversation_id)
-            : Promise.resolve(),
-        ]);
-      } catch (_error) {
-        // The durable worker owns retrying; the UI can safely go away.
-        updatePendingOptimisticMessage(pending, "Queued · retrying when online");
-      }
-    }, 1800);
   } catch (error) {
-    removePendingOptimisticMessage(pending);
-    restorePendingDraft(pending);
-    if (state.selected?.conversation_id === pending.conversation.conversation_id) {
-      el.composerStatus.textContent = `Not sent · draft restored · ${error.message}`;
-    }
-    toast(`Could not send: ${error.message}`, "error");
+    failPendingDelivery(pending, error);
+    return;
   }
+
+  pending.scheduledId = String(
+    scheduled?.scheduled_message?.scheduled_id || "",
+  );
+  updatePendingOptimisticMessage(pending, "Queued · offline retry enabled");
+  if (pendingConversationIsSelected(pending)) {
+    el.composerStatus.textContent = `Queued for ${
+      providerLabel(pending.conversation.source_provider)
+    } · offline retry enabled`;
+  }
+  loadScheduledMessages(pending.conversation.conversation_id).catch(() => {});
+
+  window.setTimeout(async () => {
+    let runResult;
+    try {
+      runResult = await api("/penguin-connect/scheduled-messages/run-due", {
+        method: "POST",
+        body: "{}",
+      });
+    } catch (_error) {
+      updatePendingOptimisticMessage(pending, "Queued · retrying when online");
+      return;
+    }
+
+    let delivery = (runResult.results || []).find(
+      (result) => result.scheduled_id === pending.scheduledId,
+    );
+    try {
+      const scheduledMessages = await loadScheduledMessages(
+        pending.conversation.conversation_id,
+      );
+      delivery = scheduledMessages.find(
+        (item) => item.scheduled_id === pending.scheduledId,
+      ) || delivery;
+    } catch (_error) {
+      // The run-due response still carries the authoritative delivery result.
+    }
+
+    if (delivery?.status === "sent") {
+      settlePendingOptimisticMessage(
+        pending,
+        delivery.provider_message_id,
+      );
+      if (pendingConversationIsSelected(pending)) {
+        el.composerStatus.textContent = `Sent through ${
+          providerLabel(pending.conversation.source_provider)
+        }`;
+      }
+      await refreshAfterPendingDelivery(pending);
+      return;
+    }
+    if (delivery?.status === "failed") {
+      failPendingDelivery(
+        pending,
+        new Error(delivery.error || delivery.last_error || "delivery failed"),
+      );
+      return;
+    }
+    updatePendingOptimisticMessage(pending, "Queued · retrying when online");
+  }, 1800);
 }
 
 function addPendingOptimisticMessage(pending) {
@@ -5451,15 +5539,46 @@ function updatePendingOptimisticMessage(pending, status, failed = false) {
   if (state.selected?.conversation_id === pending.conversation.conversation_id) renderMessages();
 }
 
+function settlePendingOptimisticMessage(pending, providerMessageId) {
+  const optimistic = pending.optimisticMessage;
+  if (!optimistic) return null;
+  const settled = window.PenguinRefreshCoordinator.settleOptimisticMessage(
+    optimistic,
+    { providerMessageId },
+  );
+  if (!settled) return null;
+
+  const conversationId = pending.conversation.conversation_id;
+  const replaceOptimistic = (messages) => (messages || []).map((message) => (
+    message === optimistic
+    || message.provider_message_id === pending.optimisticId
+      ? settled
+      : message
+  ));
+  const cached = replaceOptimistic(state.messageCache.get(conversationId) || []);
+  pending.optimisticMessage = settled;
+  pending.settledId = settled.provider_message_id;
+  rememberConversationMessages(conversationId, cached);
+  if (state.selected?.conversation_id === conversationId) {
+    state.messages = replaceOptimistic(state.messages);
+    rememberConversationMessages(conversationId, state.messages);
+    renderMessages();
+  }
+  return settled;
+}
+
 function removePendingOptimisticMessage(pending) {
   const conversationId = pending.conversation.conversation_id;
+  const removableIds = new Set(
+    [pending.optimisticId, pending.settledId].filter(Boolean),
+  );
   state.messages = state.messages.filter(
-    (message) => message.provider_message_id !== pending.optimisticId,
+    (message) => !removableIds.has(message.provider_message_id),
   );
   const cached = state.messageCache.get(conversationId) || [];
   rememberConversationMessages(
     conversationId,
-    cached.filter((message) => message.provider_message_id !== pending.optimisticId),
+    cached.filter((message) => !removableIds.has(message.provider_message_id)),
   );
   if (state.selected?.conversation_id === conversationId) renderMessages();
 }

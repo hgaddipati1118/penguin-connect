@@ -69,9 +69,60 @@
     return Object.freeze({ run });
   }
 
+  function mergeRefreshedMessages(currentMessages, refreshedMessages) {
+    const current = Array.isArray(currentMessages) ? currentMessages : [];
+    const refreshed = Array.isArray(refreshedMessages) ? refreshedMessages : [];
+    const preserveLoadedHistory = current.length > refreshed.length;
+    const merged = new Map();
+
+    if (preserveLoadedHistory) {
+      for (const message of current) {
+        const messageId = String(message?.provider_message_id || "").trim();
+        if (messageId) merged.set(messageId, message);
+      }
+    }
+    for (const message of refreshed) {
+      const messageId = String(message?.provider_message_id || "").trim();
+      if (messageId) merged.set(messageId, message);
+    }
+    for (const message of current) {
+      if (
+        !message?.metadata?.pending_send
+        && !message?.metadata?.optimistic_send
+      ) continue;
+      const messageId = String(message.provider_message_id || "").trim();
+      if (messageId && !merged.has(messageId)) merged.set(messageId, message);
+    }
+    return [...merged.values()];
+  }
+
+  function settleOptimisticMessage(message, {
+    providerMessageId = "",
+    status = "Sent",
+  } = {}) {
+    if (!message) return null;
+    const metadata = {
+      ...(message.metadata || {}),
+      pending_send: false,
+      pending_status: String(status || "Sent"),
+      optimistic_send: true,
+    };
+    delete metadata.pending_failed;
+    return {
+      ...message,
+      provider_message_id: (
+        String(providerMessageId || "").trim()
+        || String(message.provider_message_id || "").trim()
+      ),
+      metadata,
+    };
+  }
+
   const api = Object.freeze({
     createCompletionGate,
     createRefreshCoordinator,
+    mergeRefreshedMessages,
+    settleOptimisticMessage,
   });
   root.PenguinRefreshCoordinator = api;
   if (typeof module !== "undefined" && module.exports) {

@@ -575,6 +575,11 @@ def run_due_scheduled_messages(limit: int = 25) -> dict:
                     "conversation_id": row["conversation_id"],
                     "status": status,
                     "error": error,
+                    "provider_message_id": (
+                        str(send_result.get("provider_message_id") or "")
+                        if send_result.get("success")
+                        else ""
+                    ),
                 }
             )
         return {"success": True, "processed": len(results), "results": results}

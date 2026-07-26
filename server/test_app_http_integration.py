@@ -3689,6 +3689,14 @@ class AppHttpIntegrationTests(unittest.TestCase):
             "createRefreshCoordinator",
             refresh_coordinator_js_response.text,
         )
+        self.assertIn(
+            "mergeRefreshedMessages",
+            refresh_coordinator_js_response.text,
+        )
+        self.assertIn(
+            "settleOptimisticMessage",
+            refresh_coordinator_js_response.text,
+        )
         self.assertEqual(composer_mentions_js_response.status_code, 200)
         self.assertEqual(
             composer_mentions_js_response.headers["cache-control"],
@@ -3775,6 +3783,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("renderLabelBar", inbox_js_response.text)
         self.assertIn("conversationLabels", inbox_js_response.text)
         self.assertIn("refreshSelectedMessages", inbox_js_response.text)
+        self.assertIn("refreshAfterPendingDelivery", inbox_js_response.text)
+        self.assertIn("settlePendingOptimisticMessage", inbox_js_response.text)
         self.assertIn("selectedRefreshCoordinator.run", inbox_js_response.text)
         self.assertIn("cacheRepairGate.run", inbox_js_response.text)
         self.assertIn(

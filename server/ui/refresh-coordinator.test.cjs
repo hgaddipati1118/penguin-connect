@@ -4,6 +4,8 @@ const test = require("node:test");
 const {
   createCompletionGate,
   createRefreshCoordinator,
+  mergeRefreshedMessages,
+  settleOptimisticMessage,
 } = require("./refresh-coordinator.js");
 
 test("coalesces concurrent refreshes for the same conversation and mode", async () => {
@@ -155,4 +157,103 @@ test("coalesces concurrent history repairs before marking them complete", async 
   await Promise.all([first, second]);
 
   assert.equal(calls, 1);
+});
+
+test("keeps optimistic sends when a refresh returns a larger message page", () => {
+  const optimistic = {
+    provider_message_id: "optimistic:send-1",
+    body_text: "Queued reply",
+    metadata: { pending_send: true },
+  };
+  const refreshed = Array.from({ length: 3 }, (_, index) => ({
+    provider_message_id: `server-${index + 1}`,
+    body_text: `Server message ${index + 1}`,
+    metadata: {},
+  }));
+
+  const merged = mergeRefreshedMessages([optimistic], refreshed);
+
+  assert.equal(merged.length, 4);
+  assert.equal(merged.at(-1), optimistic);
+});
+
+test("preserves loaded history without letting it overwrite refreshed rows", () => {
+  const older = {
+    provider_message_id: "older",
+    body_text: "Older cached message",
+    metadata: {},
+  };
+  const stale = {
+    provider_message_id: "shared",
+    body_text: "Stale body",
+    metadata: {},
+  };
+  const fresh = {
+    provider_message_id: "shared",
+    body_text: "Edited body",
+    metadata: { provider_edited: true },
+  };
+
+  const merged = mergeRefreshedMessages([older, stale], [fresh]);
+
+  assert.deepEqual(merged, [older, fresh]);
+});
+
+test("settles an optimistic send under the canonical server message id", () => {
+  const optimistic = {
+    provider_message_id: "optimistic:send-1",
+    body_text: "Sent reply",
+    metadata: {
+      pending_send: true,
+      pending_status: "Sending…",
+      pending_failed: false,
+    },
+  };
+
+  const settled = settleOptimisticMessage(optimistic, {
+    providerMessageId: "manual:canonical-1",
+  });
+
+  assert.equal(settled.provider_message_id, "manual:canonical-1");
+  assert.equal(settled.metadata.pending_send, false);
+  assert.equal(settled.metadata.optimistic_send, true);
+  assert.equal(settled.metadata.pending_status, "Sent");
+  assert.equal("pending_failed" in settled.metadata, false);
+  assert.equal(optimistic.provider_message_id, "optimistic:send-1");
+});
+
+test("keeps a settled optimistic send until its canonical row is refreshed", () => {
+  const settled = settleOptimisticMessage({
+    provider_message_id: "optimistic:send-1",
+    body_text: "Sent reply",
+    metadata: { pending_send: true },
+  }, {
+    providerMessageId: "manual:canonical-1",
+  });
+
+  const merged = mergeRefreshedMessages(
+    [settled],
+    [{ provider_message_id: "server-1", metadata: {} }],
+  );
+
+  assert.equal(merged.at(-1), settled);
+});
+
+test("replaces a settled optimistic send with its refreshed canonical row", () => {
+  const settled = settleOptimisticMessage({
+    provider_message_id: "optimistic:send-1",
+    body_text: "Optimistic body",
+    metadata: { pending_send: true },
+  }, {
+    providerMessageId: "manual:canonical-1",
+  });
+  const canonical = {
+    provider_message_id: "manual:canonical-1",
+    body_text: "Canonical body",
+    metadata: {},
+  };
+
+  const merged = mergeRefreshedMessages([settled], [canonical]);
+
+  assert.deepEqual(merged, [canonical]);
 });

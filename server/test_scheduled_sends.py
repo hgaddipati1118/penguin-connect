@@ -131,6 +131,10 @@ class ScheduledSendTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["processed"], 1)
+        self.assertEqual(
+            response.json()["results"][0]["provider_message_id"],
+            "manual-1",
+        )
         mock_send.assert_called_once()
         self.assertEqual(mock_send.call_args.kwargs["conversation_id"], "amc_test")
         self.assertEqual(mock_send.call_args.kwargs["body_text"], "Due now")
