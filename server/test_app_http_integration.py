@@ -3518,6 +3518,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn('params.set("include_counts", "false")', inbox_js_response.text)
         self.assertIn('params.set("include_thread_stats", "false")', inbox_js_response.text)
         self.assertIn("moveConversationSelection", inbox_js_response.text)
+        self.assertIn("renderCachedConversationSelection", inbox_js_response.text)
         self.assertIn("openConversationMeta", inbox_js_response.text)
         self.assertIn("Primary context — currently selected conversation", inbox_js_response.text)
         self.assertIn("renderInlineAttachment", inbox_js_response.text)
@@ -3572,6 +3573,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("discoverSlack: slackChanged", inbox_js_response.text)
         self.assertIn("SLACK_SELECTED_REFRESH_MS = 10000", inbox_js_response.text)
         self.assertIn("conversationsFingerprint", inbox_js_response.text)
+        self.assertIn("conversationRowFingerprints = new WeakMap()", inbox_js_response.text)
+        self.assertIn("reconcileConversationList", inbox_js_response.text)
+        self.assertIn("reusableConversationRow", inbox_js_response.text)
         self.assertIn("conversationParticipants(conversation).join", inbox_js_response.text)
         self.assertIn("JSON.stringify(conversation.participant_names || {})", inbox_js_response.text)
         self.assertIn(

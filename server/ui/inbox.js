@@ -261,6 +261,7 @@ const writingActions = {
 const listObservers = new Map();
 const contactIndex = new Map();
 const translationQueue = [];
+const conversationRowFingerprints = new WeakMap();
 const messageRowFingerprints = new WeakMap();
 const WORKSPACE_CACHE_DB = "penguin-local-workspace";
 const WORKSPACE_CACHE_VERSION = 2;
@@ -1477,13 +1478,130 @@ function renderLabelBar() {
   }
 }
 
+function conversationRowFingerprint(conversation) {
+  return [
+    providerKey(conversation.source_provider),
+    conversation.chat_type,
+    conversationName(conversation),
+    conversationParticipants(conversation).join(","),
+    JSON.stringify(conversation.participant_names || {}),
+    `${String(conversation.avatar_data_url || "").length}:${String(conversation.avatar_data_url || "").slice(-16)}`,
+    conversation.last_message_provider_id,
+    conversation.last_message_ts,
+    conversation.last_message_preview,
+    conversation.last_message_has_attachments ? 1 : 0,
+    conversationHasDraft(conversation) ? 1 : 0,
+    Number(conversation.unread_count || 0),
+    (conversation.labels || []).join(","),
+  ].join("\u001f");
+}
+
+function reusableConversationRow(conversation, existingRow = null) {
+  const row = existingRow || document.createElement("button");
+  if (!existingRow) {
+    row.type = "button";
+    row.className = "conversation-row";
+    row.setAttribute("role", "listitem");
+    row.addEventListener("click", () => {
+      const current = state.conversations.find(
+        (candidate) => candidate.conversation_id === row.dataset.conversationId,
+      );
+      if (current) selectConversation(current);
+    });
+  }
+  row.dataset.conversationId = conversation.conversation_id;
+  const active = conversation.conversation_id === state.selected?.conversation_id;
+  row.classList.toggle("active", active);
+  row.setAttribute("aria-current", active ? "true" : "false");
+  const fingerprint = conversationRowFingerprint(conversation);
+  if (conversationRowFingerprints.get(row) === fingerprint) return row;
+
+  const name = conversationName(conversation);
+  const fragment = document.createDocumentFragment();
+  fragment.append(conversationAvatarFor(conversation));
+
+  const copy = document.createElement("span");
+  copy.className = "conversation-copy";
+  const top = document.createElement("span");
+  top.className = "conversation-topline";
+  const nameNode = document.createElement("span");
+  nameNode.className = "conversation-name";
+  nameNode.textContent = name;
+  const time = document.createElement("time");
+  time.className = "conversation-time";
+  time.dateTime = conversation.last_message_ts || "";
+  time.textContent = timeLabel(conversation.last_message_ts);
+  top.append(nameNode, time);
+
+  const preview = document.createElement("span");
+  preview.className = "conversation-preview";
+  const previewText = document.createElement("span");
+  previewText.className = "conversation-preview-text";
+  if (conversationHasDraft(conversation)) {
+    const draft = document.createElement("span");
+    draft.className = "draft-label";
+    draft.textContent = "Draft";
+    previewText.append(draft);
+  }
+  previewText.append(document.createTextNode(
+    conversation.last_message_preview
+    || (conversation.last_message_has_attachments ? "Attachment" : "No messages cached yet"),
+  ));
+  preview.append(previewText);
+  const labels = Array.isArray(conversation.labels) ? conversation.labels : [];
+  if (labels.length) {
+    const label = document.createElement("span");
+    label.className = "conversation-label";
+    label.textContent = labels[0];
+    preview.append(label);
+  }
+  if (Number(conversation.unread_count || 0) > 0) {
+    const unread = document.createElement("span");
+    unread.className = "unread-count";
+    const unreadCount = Number(conversation.unread_count);
+    unread.textContent = unreadCount > 99 ? "99+" : String(unreadCount);
+    unread.title = `${unreadCount.toLocaleString()} unread message${unreadCount === 1 ? "" : "s"}`;
+    unread.setAttribute("aria-label", unread.title);
+    preview.append(unread);
+  }
+  copy.append(top, preview);
+  fragment.append(copy);
+  row.replaceChildren(fragment);
+  conversationRowFingerprints.set(row, fingerprint);
+  return row;
+}
+
+function reconcileConversationList(visibleRows) {
+  const existingRows = new Map(
+    [...el.conversationList.querySelectorAll(":scope > .conversation-row")].map(
+      (row) => [row.dataset.conversationId, row],
+    ),
+  );
+  for (const child of [...el.conversationList.children]) {
+    if (!child.classList.contains("conversation-row")) child.remove();
+  }
+  const desiredIds = new Set();
+  for (const [index, conversation] of visibleRows.entries()) {
+    desiredIds.add(conversation.conversation_id);
+    const row = reusableConversationRow(
+      conversation,
+      existingRows.get(conversation.conversation_id) || null,
+    );
+    const current = el.conversationList.children[index];
+    if (current !== row) el.conversationList.insertBefore(row, current || null);
+  }
+  for (const row of [...el.conversationList.querySelectorAll(":scope > .conversation-row")]) {
+    if (!desiredIds.has(row.dataset.conversationId)) row.remove();
+  }
+}
+
 function renderConversationList() {
   const rows = visibleConversations();
   const visibleRows = rows.slice(0, state.conversationsVisible);
   const previousScrollTop = prepareInfiniteList(el.conversationList);
-  el.conversationList.replaceChildren();
   el.listSummary.textContent = `${rows.length} conversation${rows.length === 1 ? "" : "s"} · latest first`;
   if (!rows.length) {
+    el.conversationList.replaceChildren();
     const empty = document.createElement("div");
     empty.className = "pane-empty";
     empty.textContent = {
@@ -1494,69 +1612,7 @@ function renderConversationList() {
     return;
   }
 
-  for (const conversation of visibleRows) {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "conversation-row";
-    row.dataset.conversationId = conversation.conversation_id;
-    row.setAttribute("role", "listitem");
-    const active = conversation.conversation_id === state.selected?.conversation_id;
-    row.classList.toggle("active", active);
-    row.setAttribute("aria-current", active ? "true" : "false");
-
-    const provider = providerKey(conversation.source_provider);
-    const name = conversationName(conversation);
-    row.append(conversationAvatarFor(conversation));
-
-    const copy = document.createElement("span");
-    copy.className = "conversation-copy";
-    const top = document.createElement("span");
-    top.className = "conversation-topline";
-    const nameNode = document.createElement("span");
-    nameNode.className = "conversation-name";
-    nameNode.textContent = name;
-    const time = document.createElement("time");
-    time.className = "conversation-time";
-    time.dateTime = conversation.last_message_ts || "";
-    time.textContent = timeLabel(conversation.last_message_ts);
-    top.append(nameNode, time);
-
-    const preview = document.createElement("span");
-    preview.className = "conversation-preview";
-    const previewText = document.createElement("span");
-    previewText.className = "conversation-preview-text";
-    if (conversationHasDraft(conversation)) {
-      const draft = document.createElement("span");
-      draft.className = "draft-label";
-      draft.textContent = "Draft";
-      previewText.append(draft);
-    }
-    previewText.append(document.createTextNode(
-      conversation.last_message_preview
-      || (conversation.last_message_has_attachments ? "Attachment" : "No messages cached yet"),
-    ));
-    preview.append(previewText);
-    const labels = Array.isArray(conversation.labels) ? conversation.labels : [];
-    if (labels.length) {
-      const label = document.createElement("span");
-      label.className = "conversation-label";
-      label.textContent = labels[0];
-      preview.append(label);
-    }
-    if (Number(conversation.unread_count || 0) > 0) {
-      const unread = document.createElement("span");
-      unread.className = "unread-count";
-      const unreadCount = Number(conversation.unread_count);
-      unread.textContent = unreadCount > 99 ? "99+" : String(unreadCount);
-      unread.title = `${unreadCount.toLocaleString()} unread message${unreadCount === 1 ? "" : "s"}`;
-      unread.setAttribute("aria-label", unread.title);
-      preview.append(unread);
-    }
-    copy.append(top, preview);
-    row.append(copy);
-    row.addEventListener("click", () => selectConversation(conversation));
-    el.conversationList.append(row);
-  }
+  reconcileConversationList(visibleRows);
   if (state.conversationsVisible < rows.length) {
     appendInfiniteSentinel(el.conversationList, "Loading more conversations…", () => {
       state.conversationsVisible += CONVERSATION_RENDER_BATCH;
@@ -3419,6 +3475,20 @@ function scheduleSelectedConversationHydration(
   scheduleAdjacentPreload(conversation, selectionToken);
 }
 
+function renderCachedConversationSelection(
+  conversation,
+  selectionToken,
+  { focusMessageId = "", markRead = true } = {},
+) {
+  if (
+    selectionToken !== state.selectionToken
+    || state.selected?.conversation_id !== conversation.conversation_id
+  ) return false;
+  renderMessages({ focusMessageId });
+  scheduleSelectedConversationHydration(conversation, selectionToken, { markRead });
+  return true;
+}
+
 async function selectConversation(
   conversation,
   { focusMessageId = "", markRead = true } = {},
@@ -3457,14 +3527,11 @@ async function selectConversation(
   updateConversationSelectionUI(previousConversationId, conversation.conversation_id);
   renderThreadHeader();
   if (cachedMessages.length) {
-    selectionRenderFrame = window.requestAnimationFrame(() => {
-      if (
-        selectionToken !== state.selectionToken
-        || state.selected?.conversation_id !== conversation.conversation_id
-      ) return;
-      renderMessages({ focusMessageId });
-      scheduleSelectedConversationHydration(conversation, selectionToken, { markRead });
-    });
+    renderCachedConversationSelection(
+      conversation,
+      selectionToken,
+      { focusMessageId, markRead },
+    );
     return;
   }
   el.messageList.innerHTML = `<div class="message-loading"><span></span><span></span><span></span><span></span></div>`;
