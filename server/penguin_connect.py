@@ -336,7 +336,7 @@ def _send_to_source_conversation(
     log_action("source_send_attempt", **base_fields)
     if source_provider == "imessage":
         ok, error = send_imessage(source_chat_id, message_text, attachment_paths=attachment_paths)
-    elif source_provider == "slack":
+    elif source_provider in {"slack", "whatsapp"}:
         adapter = _source_adapter_for_provider(source_provider)
         ok, error = adapter.send_message(
             source_chat_id,
@@ -447,6 +447,13 @@ def _source_message_native_metadata(msg: dict[str, Any]) -> dict[str, Any]:
     latest_reply = str(msg.get("latest_reply") or "").strip()
     if latest_reply:
         metadata["latest_reply"] = latest_reply
+    reply_to_message_id = str(msg.get("reply_to_message_id") or "").strip()
+    if reply_to_message_id:
+        metadata["reply_context"] = {
+            "message_id": reply_to_message_id,
+            "sender": str(msg.get("reply_to_sender") or "").strip(),
+            "text": str(msg.get("reply_to_text") or "").strip(),
+        }
     return metadata
 
 
@@ -9806,8 +9813,11 @@ def send_manual_message(
 
     source_provider = _conversation_source_provider(conv)
     reply_to_message_id = str(reply_to_message_id or "").strip()
-    if reply_to_message_id and source_provider != "slack":
-        return {"success": False, "error": "thread_replies_only_supported_for_slack"}
+    if reply_to_message_id and source_provider not in {"slack", "whatsapp"}:
+        return {
+            "success": False,
+            "error": f"native_replies_not_supported_for_{source_provider}",
+        }
     attachment_metadata = _manual_attachment_metadata(attachment_paths)
     resolved_sender_email = _normalize_email(sender_email)
     sender_identity = resolved_sender_email or "local"
@@ -9846,13 +9856,16 @@ def send_manual_message(
         metadata["manual_attachment_count"] = len(attachment_paths)
         metadata["attachments"] = attachment_metadata
     if reply_to_message_id:
-        thread_ts = (
-            reply_to_message_id.split(":", 1)[1]
-            if reply_to_message_id.startswith("slack:")
-            else reply_to_message_id
-        )
-        metadata["thread_ts"] = thread_ts
-        metadata["is_thread_reply"] = True
+        if source_provider == "slack":
+            thread_ts = (
+                reply_to_message_id.split(":", 1)[1]
+                if reply_to_message_id.startswith("slack:")
+                else reply_to_message_id
+            )
+            metadata["thread_ts"] = thread_ts
+            metadata["is_thread_reply"] = True
+        else:
+            metadata["reply_context"] = {"message_id": reply_to_message_id}
 
     conn.execute(
         """INSERT OR IGNORE INTO penguin_connect_messages

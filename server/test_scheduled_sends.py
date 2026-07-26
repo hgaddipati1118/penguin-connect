@@ -210,7 +210,7 @@ class ScheduledSendTests(unittest.TestCase):
             "slack:1785000001.000100",
         )
 
-    def test_thread_reply_is_rejected_for_non_slack_conversation(self):
+    def test_native_reply_is_rejected_for_imessage_conversation(self):
         scheduled_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
         with TestClient(app_module.app) as client:
             response = client.post(
@@ -225,7 +225,44 @@ class ScheduledSendTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(
             response.json()["detail"],
-            "thread_replies_only_supported_for_slack",
+            "native_replies_not_supported_for_imessage",
+        )
+
+    def test_whatsapp_native_reply_can_be_scheduled(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """INSERT INTO penguin_connect_conversations
+                   (gmail_email, conversation_id, source_provider, source_chat_id, display_name,
+                    chat_type, participants, status)
+                   VALUES (?, ?, 'whatsapp', ?, ?, 'dm', ?, 'active')""",
+                (
+                    "owner@gmail.com",
+                    "whatsapp_reply_test",
+                    "14155551234@s.whatsapp.net",
+                    "Alice",
+                    '["14155551234"]',
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        scheduled_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        with TestClient(app_module.app) as client:
+            response = client.post(
+                "/penguin-connect/conversations/whatsapp_reply_test/scheduled-messages",
+                json={
+                    "message": "Native quoted reply",
+                    "scheduled_at": scheduled_at,
+                    "reply_to_message_id": "msg1",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["scheduled_message"]["reply_to_message_id"],
+            "msg1",
         )
 
 

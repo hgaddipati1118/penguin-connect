@@ -416,7 +416,7 @@ function draftRecordHasContent(record) {
   return Boolean(
     String(record.text || "").length
     || (Array.isArray(record.attachments) && record.attachments.length)
-    || record.replyTarget?.threadTs,
+    || replyTargetMessageId(record.replyTarget),
   );
 }
 
@@ -428,11 +428,17 @@ function conversationHasDraft(conversation) {
   return Boolean(String(conversation?.draft_text || "").length);
 }
 
+function replyTargetMessageId(target) {
+  return String(target?.messageId || target?.threadTs || "").trim();
+}
+
 function cleanDraftReplyTarget(target) {
-  const threadTs = String(target?.threadTs || "").trim();
-  if (!threadTs) return null;
+  const messageId = replyTargetMessageId(target);
+  if (!messageId) return null;
   return {
-    threadTs: threadTs.slice(0, 500),
+    messageId: messageId.slice(0, 500),
+    threadTs: String(target?.threadTs || "").slice(0, 500),
+    provider: target?.provider ? providerKey(target.provider).slice(0, 40) : "",
     sender: String(target?.sender || "").slice(0, 300),
     body: String(target?.body || "").slice(0, 2000),
   };
@@ -740,8 +746,8 @@ function restoreConversationDraft(conversation, selectionToken = state.selection
   state.attachments = hasDraft ? draftAttachmentFiles(record) : [];
   state.replyTarget = (
     hasDraft
-    && providerKey(conversation.source_provider) === "slack"
-    && record.replyTarget?.threadTs
+    && ["slack", "whatsapp"].includes(providerKey(conversation.source_provider))
+    && replyTargetMessageId(record.replyTarget)
   ) ? { ...record.replyTarget } : null;
   renderReplyTarget();
   renderAttachmentPreview();
@@ -2492,9 +2498,12 @@ function renderReplyTarget() {
   const target = state.replyTarget;
   el.composerReplyContext.hidden = !target;
   if (!target) return;
-  el.composerReplyTitle.textContent = `Replying to ${target.sender || "thread"}`;
+  const targetProvider = providerKey(target.provider || state.selected?.source_provider);
+  el.composerReplyTitle.textContent = targetProvider === "slack"
+    ? `Replying in ${target.sender || "thread"}`
+    : `Replying to ${target.sender || "message"}`;
   el.composerReplySnippet.textContent = truncate(
-    target.body || "Slack thread",
+    target.body || (targetProvider === "slack" ? "Slack thread" : "Message"),
     120,
   );
 }
@@ -2514,7 +2523,9 @@ function startSlackThreadReply(message) {
     return;
   }
   state.replyTarget = {
+    messageId: threadTs,
     threadTs,
+    provider: "slack",
     sender: isOwnMessage(message)
       ? "yourself"
       : (message.sender_name || message.sender_email || "this thread"),
@@ -2523,6 +2534,49 @@ function startSlackThreadReply(message) {
   renderReplyTarget();
   scheduleDraftPersistence();
   el.messageComposer.focus({ preventScroll: true });
+}
+
+function startNativeReply(message) {
+  const provider = providerKey(state.selected?.source_provider);
+  if (provider === "slack") {
+    startSlackThreadReply(message);
+    return;
+  }
+  if (provider !== "whatsapp") return;
+  const messageId = String(message?.metadata?.native_message_id || "").trim();
+  if (!messageId) {
+    toast("This WhatsApp message cannot be replied to yet.", "error");
+    return;
+  }
+  state.replyTarget = {
+    messageId,
+    threadTs: "",
+    provider,
+    sender: isOwnMessage(message)
+      ? "yourself"
+      : (message.sender_name || message.sender_email || "this message"),
+    body: message.body_text
+      || messageAttachments(message)[0]?.transfer_name
+      || "Attachment",
+  };
+  renderReplyTarget();
+  scheduleDraftPersistence();
+  el.messageComposer.focus({ preventScroll: true });
+}
+
+function scrollToNativeReplyTarget(messageId) {
+  const cleanId = String(messageId || "").trim();
+  if (!cleanId) return;
+  const target = [...el.messageList.querySelectorAll(".message-row")].find(
+    (row) => row.dataset.nativeMessageId === cleanId,
+  );
+  if (!target) {
+    toast("The replied-to message is outside the loaded history.");
+    return;
+  }
+  target.scrollIntoView({ block: "center", behavior: "smooth" });
+  target.classList.add("reply-target-highlight");
+  window.setTimeout(() => target.classList.remove("reply-target-highlight"), 1200);
 }
 
 async function openProviderToReact(message) {
@@ -2560,6 +2614,15 @@ function renderMessages({
   const sortedRows = [...state.messages].sort((a, b) => (
     Date.parse(a.message_timestamp || "") - Date.parse(b.message_timestamp || "")
   ));
+  const messagesByNativeId = new Map();
+  for (const message of sortedRows) {
+    const nativeId = String(
+      message.metadata?.native_guid
+      || message.metadata?.native_message_id
+      || "",
+    );
+    if (nativeId) messagesByNativeId.set(nativeId, message);
+  }
   const nativeReactions = reactionsByTarget(sortedRows);
   if (focusMessageId) {
     const focusedIndex = sortedRows.findIndex(
@@ -2601,6 +2664,11 @@ function renderMessages({
       isThreadReply ? "message-thread-reply" : "",
     ].filter(Boolean).join(" ");
     row.dataset.messageId = message.provider_message_id || "";
+    row.dataset.nativeMessageId = String(
+      message.metadata?.native_guid
+      || message.metadata?.native_message_id
+      || "",
+    );
     row.dataset.threadRoot = isThreadReply ? slackThreadRootId(message) : "";
     row.dataset.searchText = [
       message.body_text,
@@ -2627,6 +2695,31 @@ function renderMessages({
 
     const bubble = document.createElement("div");
     bubble.className = "message-bubble";
+    const replyContext = message.metadata?.reply_context;
+    if (replyContext?.message_id) {
+      const parentMessage = messagesByNativeId.get(String(replyContext.message_id));
+      const quote = document.createElement("button");
+      quote.type = "button";
+      quote.className = "message-reply-quote";
+      quote.title = "Jump to replied-to message";
+      const quoteSender = document.createElement("strong");
+      quoteSender.textContent = parentMessage?.sender_name
+        || replyContext.sender
+        || "Earlier message";
+      const quoteText = document.createElement("span");
+      quoteText.textContent = truncate(
+        parentMessage?.body_text
+        || replyContext.text
+        || "Attachment",
+        150,
+      );
+      quote.append(quoteSender, quoteText);
+      quote.addEventListener(
+        "click",
+        () => scrollToNativeReplyTarget(replyContext.message_id),
+      );
+      bubble.append(quote);
+    }
     const body = document.createElement("span");
     body.className = "message-body";
     body.textContent = message.body_text || (messageAttachments(message).length ? "" : "Empty message");
@@ -2722,10 +2815,13 @@ function renderMessages({
     reply.type = "button";
     reply.className = "message-reply-button";
     reply.append(createIcon("i-reply"));
-    reply.title = "Reply in Slack thread";
-    reply.setAttribute("aria-label", `Reply to ${message.sender_name || "message"} in thread`);
-    reply.addEventListener("click", () => startSlackThreadReply(message));
-    reply.hidden = providerKey(state.selected?.source_provider) !== "slack"
+    const replyProvider = providerKey(state.selected?.source_provider);
+    reply.title = replyProvider === "slack"
+      ? "Reply in Slack thread"
+      : "Reply to this WhatsApp message";
+    reply.setAttribute("aria-label", `Reply to ${message.sender_name || "message"}`);
+    reply.addEventListener("click", () => startNativeReply(message));
+    reply.hidden = !["slack", "whatsapp"].includes(replyProvider)
       || Boolean(message.metadata?.pending_send);
     if (mine) row.append(reply, translate, pin, react, stack);
     else row.append(stack, reply, react, pin, translate);
@@ -3012,6 +3108,9 @@ function messagesFingerprint(messages) {
     message.metadata?.thread_ts,
     message.metadata?.is_thread_reply,
     message.metadata?.reply_count,
+    message.metadata?.reply_context?.message_id,
+    message.metadata?.reply_context?.sender,
+    message.metadata?.reply_context?.text,
     message.sender_name,
   ].join(":")).join("|");
 }
@@ -3425,7 +3524,7 @@ async function deliverPendingSend(pending) {
           sender_email: "",
           message: pending.text,
           attachments,
-          reply_to_message_id: pending.replyTo?.threadTs || "",
+          reply_to_message_id: replyTargetMessageId(pending.replyTo),
         }),
       });
       removePendingOptimisticMessage(pending);
@@ -3445,7 +3544,7 @@ async function deliverPendingSend(pending) {
           message: pending.text,
           attachments,
           scheduled_at: new Date(Date.now() + 1500).toISOString(),
-          reply_to_message_id: pending.replyTo?.threadTs || "",
+          reply_to_message_id: replyTargetMessageId(pending.replyTo),
         }),
       },
     );
@@ -3503,8 +3602,20 @@ function addPendingOptimisticMessage(pending) {
       pending_send: true,
       pending_status: pending.instant ? "Sending now…" : "Sending in 15 seconds · Undo available",
       attachment_names: attachmentNames,
-      thread_ts: pending.replyTo?.threadTs || "",
-      is_thread_reply: Boolean(pending.replyTo),
+      ...(providerKey(pending.conversation.source_provider) === "slack"
+        ? {
+            thread_ts: pending.replyTo?.threadTs || replyTargetMessageId(pending.replyTo),
+            is_thread_reply: Boolean(pending.replyTo),
+          }
+        : (pending.replyTo
+          ? {
+              reply_context: {
+                message_id: replyTargetMessageId(pending.replyTo),
+                sender: pending.replyTo.sender || "",
+                text: pending.replyTo.body || "",
+              },
+            }
+          : {})),
     },
     attachments: [],
   };
@@ -3579,7 +3690,7 @@ async function scheduleCurrentMessage(event) {
           message: draftText,
           attachments,
           scheduled_at: scheduledAt.toISOString(),
-          reply_to_message_id: draftReplyTarget?.threadTs || "",
+          reply_to_message_id: replyTargetMessageId(draftReplyTarget),
         }),
       },
     );

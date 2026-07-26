@@ -77,6 +77,23 @@ def _open_whatsapp_metadata_db() -> Optional[sqlite3.Connection]:
         return None
 
 
+def _message_columns(conn: sqlite3.Connection) -> set[str]:
+    try:
+        return {str(row["name"]) for row in conn.execute("PRAGMA table_info(messages)")}
+    except sqlite3.Error:
+        return set()
+
+
+def _reply_preview(media_type: str, filename: str) -> str:
+    clean_media = str(media_type or "").strip()
+    clean_filename = str(filename or "").strip()
+    if clean_filename:
+        return clean_filename
+    if clean_media:
+        return f"[{clean_media.capitalize()}]"
+    return "Message"
+
+
 def _whatsapp_identity(conn: Optional[sqlite3.Connection], jid: str) -> dict[str, str]:
     raw_jid = (jid or "").strip()
     fallback = _jid_to_phone(raw_jid)
@@ -456,6 +473,20 @@ class WhatsAppChannelAdapter:
         metadata_conn = _open_whatsapp_metadata_db()
         try:
             safe_limit = max(1, min(int(limit or 50), 1000))
+            columns = _message_columns(conn)
+            has_reply_context = {
+                "reply_to_message_id",
+                "reply_to_sender",
+                "reply_to_text",
+            }.issubset(columns)
+            reply_select = (
+                """,
+                    m.reply_to_message_id,
+                    m.reply_to_sender,
+                    m.reply_to_text"""
+                if has_reply_context
+                else ""
+            )
             params: list[Any] = [chat_id]
             date_filter = ""
             if since and since_native_message_id:
@@ -483,6 +514,7 @@ class WhatsAppChannelAdapter:
                     m.sender,
                     m.media_type,
                     m.filename
+                    {reply_select}
                 FROM messages m
                 WHERE m.chat_jid = ?
                   {date_filter}
@@ -534,6 +566,15 @@ class WhatsAppChannelAdapter:
                         "push_name": chat_name or _jid_to_phone(sender_jid),
                         "attachments": attachments,
                         "native_message_id": row["id"],
+                        **(
+                            {
+                                "reply_to_message_id": row["reply_to_message_id"] or "",
+                                "reply_to_sender": row["reply_to_sender"] or "",
+                                "reply_to_text": row["reply_to_text"] or "",
+                            }
+                            if has_reply_context and row["reply_to_message_id"]
+                            else {}
+                        ),
                     }
                 )
             return messages
@@ -570,8 +611,10 @@ class WhatsAppChannelAdapter:
         chat_identifier: str,
         message_text: str,
         attachment_paths: Optional[list[str]] = None,
+        reply_to_message_id: Optional[str] = None,
     ) -> tuple[bool, Optional[str]]:
         normalized_text = (message_text or "").strip()
+        normalized_reply_id = str(reply_to_message_id or "").strip()
         valid_attachments: list[str] = []
         for path in attachment_paths or []:
             candidate = Path(path).expanduser()
@@ -582,19 +625,64 @@ class WhatsAppChannelAdapter:
             return False, "empty_message"
 
         try:
-            for attachment_path in valid_attachments:
+            reply_payload: dict[str, str] = {}
+            if normalized_reply_id:
+                capability_response = httpx.get(
+                    f"{_whatsapp_api_url()}/capabilities",
+                    timeout=5,
+                )
+                if (
+                    capability_response.status_code != 200
+                    or not capability_response.json().get("native_replies")
+                ):
+                    return False, "whatsapp_native_replies_unavailable"
+                conn = _open_whatsapp_db()
+                if conn is None:
+                    return False, "whatsapp_reply_target_unavailable"
+                try:
+                    columns = _message_columns(conn)
+                    media_select = (
+                        "media_type, filename"
+                        if {"media_type", "filename"}.issubset(columns)
+                        else "'' AS media_type, '' AS filename"
+                    )
+                    target = conn.execute(
+                        f"""SELECT sender, content, {media_select}
+                            FROM messages
+                            WHERE chat_jid = ? AND id = ?
+                            LIMIT 1""",
+                        (chat_identifier, normalized_reply_id),
+                    ).fetchone()
+                finally:
+                    conn.close()
+                if target is None:
+                    return False, "whatsapp_reply_target_not_found"
+                reply_payload = {
+                    "reply_to_message_id": normalized_reply_id,
+                    "reply_to_sender": str(target["sender"] or ""),
+                    "reply_to_text": str(target["content"] or "")
+                    or _reply_preview(target["media_type"], target["filename"]),
+                }
+
+            reply_on_attachment = bool(normalized_reply_id and not normalized_text)
+            for index, attachment_path in enumerate(valid_attachments):
+                payload = {"recipient": chat_identifier, "media_path": attachment_path}
+                if reply_on_attachment and index == 0:
+                    payload.update(reply_payload)
                 resp = httpx.post(
                     f"{_whatsapp_api_url()}/send",
-                    json={"recipient": chat_identifier, "media_path": attachment_path},
+                    json=payload,
                     timeout=30,
                 )
                 if resp.status_code != 200 or not resp.json().get("success"):
                     return False, f"whatsapp_attachment_send_failed: {resp.text}"
 
             if normalized_text:
+                payload = {"recipient": chat_identifier, "message": normalized_text}
+                payload.update(reply_payload)
                 resp = httpx.post(
                     f"{_whatsapp_api_url()}/send",
-                    json={"recipient": chat_identifier, "message": normalized_text},
+                    json=payload,
                     timeout=30,
                 )
                 if resp.status_code != 200 or not resp.json().get("success"):

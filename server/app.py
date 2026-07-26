@@ -377,8 +377,12 @@ def _create_scheduled_message(
     scheduled_id = f"scheduled_{uuid.uuid4().hex}"
     now_iso = _utc_now_iso()
     reply_to_message_id = str(req.reply_to_message_id or "").strip()
-    if reply_to_message_id and str(conversation["source_provider"] or "").lower() != "slack":
-        raise HTTPException(status_code=400, detail="thread_replies_only_supported_for_slack")
+    source_provider = str(conversation["source_provider"] or "").lower()
+    if reply_to_message_id and source_provider not in {"slack", "whatsapp"}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"native_replies_not_supported_for_{source_provider}",
+        )
     try:
         conn.execute(
             """INSERT INTO penguin_connect_scheduled_messages

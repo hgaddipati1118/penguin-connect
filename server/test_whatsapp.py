@@ -230,6 +230,38 @@ class WhatsAppAdapterTests(unittest.TestCase):
         self.assertIn("service", msg)
         self.assertEqual(msg["service"], "WhatsApp")
 
+    def test_fetch_messages_includes_native_reply_context_when_bridge_supports_it(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("ALTER TABLE messages ADD COLUMN reply_to_message_id TEXT")
+        conn.execute("ALTER TABLE messages ADD COLUMN reply_to_sender TEXT")
+        conn.execute("ALTER TABLE messages ADD COLUMN reply_to_text TEXT")
+        conn.execute(
+            """UPDATE messages
+               SET reply_to_message_id = ?, reply_to_sender = ?, reply_to_text = ?
+               WHERE id = ?""",
+            (
+                "msg1",
+                "14155551234@s.whatsapp.net",
+                "Hello from Alice",
+                "msg2",
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        messages = self.adapter.fetch_messages("14155551234@s.whatsapp.net", limit=50)
+        reply = next(message for message in messages if message["native_message_id"] == "msg2")
+
+        self.assertEqual(reply["reply_to_message_id"], "msg1")
+        self.assertEqual(reply["reply_to_sender"], "14155551234@s.whatsapp.net")
+        self.assertEqual(reply["reply_to_text"], "Hello from Alice")
+
+    def test_fetch_messages_tolerates_legacy_bridge_without_reply_columns(self):
+        messages = self.adapter.fetch_messages("14155551234@s.whatsapp.net", limit=50)
+
+        self.assertTrue(messages)
+        self.assertTrue(all("reply_to_message_id" not in message for message in messages))
+
     def test_fetch_messages_is_from_me(self):
         messages = self.adapter.fetch_messages("14155551234@s.whatsapp.net", limit=50)
         from_me = [m for m in messages if m["is_from_me"]]
@@ -271,6 +303,53 @@ class WhatsAppAdapterTests(unittest.TestCase):
         mock_post.assert_called_once()
         call_kwargs = mock_post.call_args
         self.assertIn("Hello!", str(call_kwargs))
+
+    def test_send_message_posts_native_reply_context_to_bridge(self):
+        mock_response = mock.Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"success": True, "message": "sent"}
+        capability_response = mock.Mock()
+        capability_response.status_code = 200
+        capability_response.json.return_value = {"native_replies": True}
+        with mock.patch(
+            "channels.whatsapp.httpx.get",
+            return_value=capability_response,
+        ), mock.patch("channels.whatsapp.httpx.post", return_value=mock_response) as mock_post:
+            ok, err = self.adapter.send_message(
+                "14155551234@s.whatsapp.net",
+                "Native reply",
+                reply_to_message_id="msg1",
+            )
+
+        self.assertTrue(ok)
+        self.assertIsNone(err)
+        self.assertEqual(
+            mock_post.call_args.kwargs["json"],
+            {
+                "recipient": "14155551234@s.whatsapp.net",
+                "message": "Native reply",
+                "reply_to_message_id": "msg1",
+                "reply_to_sender": "14155551234@s.whatsapp.net",
+                "reply_to_text": "Hello from Alice",
+            },
+        )
+
+    def test_send_message_fails_closed_when_bridge_cannot_confirm_native_replies(self):
+        capability_response = mock.Mock()
+        capability_response.status_code = 404
+        with mock.patch(
+            "channels.whatsapp.httpx.get",
+            return_value=capability_response,
+        ), mock.patch("channels.whatsapp.httpx.post") as mock_post:
+            ok, err = self.adapter.send_message(
+                "14155551234@s.whatsapp.net",
+                "Must remain nested",
+                reply_to_message_id="msg1",
+            )
+
+        self.assertFalse(ok)
+        self.assertEqual(err, "whatsapp_native_replies_unavailable")
+        mock_post.assert_not_called()
 
     def test_send_message_empty_rejected(self):
         ok, err = self.adapter.send_message("14155551234@s.whatsapp.net", "")

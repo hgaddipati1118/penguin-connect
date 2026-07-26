@@ -116,6 +116,24 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(removed["reaction"]["type"], 2001)
         self.assertTrue(removed["reaction"]["removed"])
 
+    def test_source_message_native_metadata_maps_provider_reply_context(self):
+        metadata = penguin_connect._source_message_native_metadata(
+            {
+                "reply_to_message_id": "parent-message-id",
+                "reply_to_sender": "Alice",
+                "reply_to_text": "The original question",
+            }
+        )
+
+        self.assertEqual(
+            metadata["reply_context"],
+            {
+                "message_id": "parent-message-id",
+                "sender": "Alice",
+                "text": "The original question",
+            },
+        )
+
     def test_get_connection_tolerates_locked_wal_pragma(self):
         class FakeConnection:
             row_factory = None
@@ -702,6 +720,67 @@ class PenguinConnectTests(unittest.TestCase):
         metadata = json.loads(row["metadata"])
         self.assertEqual(row["body_text"], "")
         self.assertEqual(metadata["manual_attachment_count"], 1)
+
+    def test_send_manual_message_forwards_whatsapp_native_reply_target(self):
+        self.conn.execute(
+            """INSERT INTO penguin_connect_conversations
+               (gmail_email, conversation_id, source_provider, source_chat_id, display_name,
+                chat_type, participants, status)
+               VALUES (?, ?, 'whatsapp', ?, ?, 'dm', ?, 'active')""",
+            (
+                "owner@gmail.com",
+                "whatsapp_reply",
+                "14155551234@s.whatsapp.net",
+                "Alice",
+                '["14155551234"]',
+            ),
+        )
+        adapter = mock.Mock()
+        adapter.send_message.return_value = (True, None)
+        with mock.patch(
+            "penguin_connect._source_adapter_for_provider",
+            return_value=adapter,
+        ):
+            result = penguin_connect.send_manual_message(
+                self.conn,
+                conversation_id="whatsapp_reply",
+                body_text="Nested answer",
+                reply_to_message_id="parent-message",
+            )
+
+        self.assertTrue(result["success"])
+        adapter.send_message.assert_called_once_with(
+            "14155551234@s.whatsapp.net",
+            "Nested answer",
+            attachment_paths=None,
+            reply_to_message_id="parent-message",
+        )
+        metadata = json.loads(
+            self.conn.execute(
+                """SELECT metadata
+                   FROM penguin_connect_messages
+                   WHERE conversation_id = ? AND direction = 'manual_to_imessage'""",
+                ("whatsapp_reply",),
+            ).fetchone()["metadata"]
+        )
+        self.assertEqual(
+            metadata["reply_context"],
+            {"message_id": "parent-message"},
+        )
+
+    def test_send_manual_message_rejects_fake_imessage_native_reply(self):
+        result = penguin_connect.send_manual_message(
+            self.conn,
+            conversation_id="amc_test",
+            body_text="Must remain nested",
+            reply_to_message_id="parent-guid",
+        )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(
+            result["error"],
+            "native_replies_not_supported_for_imessage",
+        )
 
 
     def test_disconnect_and_reconnect_provisions_fresh_alias(self):
@@ -7280,6 +7359,78 @@ class PenguinConnectTests(unittest.TestCase):
 
         self.assertEqual([r["text"] for r in first_batch], ["m1", "m2", "m3"])
         self.assertEqual([r["text"] for r in second_batch], ["m4", "m5", "m6"])
+
+    def test_fetch_imessage_messages_includes_native_reply_parent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "chat.db")
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                CREATE TABLE chat (
+                    ROWID INTEGER PRIMARY KEY,
+                    guid TEXT,
+                    chat_identifier TEXT,
+                    display_name TEXT,
+                    service_name TEXT,
+                    is_archived INTEGER DEFAULT 0
+                );
+                CREATE TABLE message (
+                    ROWID INTEGER PRIMARY KEY,
+                    guid TEXT,
+                    text TEXT,
+                    date INTEGER,
+                    is_from_me INTEGER,
+                    service TEXT,
+                    handle_id INTEGER,
+                    attributedBody BLOB,
+                    thread_originator_guid TEXT,
+                    thread_originator_part TEXT
+                );
+                CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
+                CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+                CREATE TABLE message_attachment_join (message_id INTEGER, attachment_id INTEGER);
+                CREATE TABLE attachment (
+                    ROWID INTEGER PRIMARY KEY,
+                    filename TEXT,
+                    mime_type TEXT,
+                    total_bytes INTEGER,
+                    transfer_name TEXT
+                );
+                """
+            )
+            conn.execute(
+                "INSERT INTO chat(ROWID, guid, chat_identifier, display_name, service_name) VALUES (1, ?, ?, '', 'iMessage')",
+                ("iMessage;-;chat-reply", "chat-reply"),
+            )
+            conn.execute(
+                """INSERT INTO message
+                   (ROWID, guid, text, date, is_from_me, service, handle_id, attributedBody)
+                   VALUES (1, 'parent-guid', 'Original question', 1000, 0, 'iMessage', 1, NULL)"""
+            )
+            conn.execute(
+                """INSERT INTO message
+                   (ROWID, guid, text, date, is_from_me, service, handle_id, attributedBody,
+                    thread_originator_guid, thread_originator_part)
+                   VALUES (2, 'reply-guid', 'Nested answer', 2000, 1, 'iMessage', NULL, NULL,
+                           'p:0/parent-guid', '0:0:0')"""
+            )
+            conn.execute("INSERT INTO handle(ROWID, id) VALUES (1, '+14155551234')")
+            conn.execute("INSERT INTO chat_message_join(chat_id, message_id) VALUES (1, 1)")
+            conn.execute("INSERT INTO chat_message_join(chat_id, message_id) VALUES (1, 2)")
+            conn.commit()
+            conn.close()
+
+            old_path = browse_sources.IMESSAGE_DB
+            browse_sources.IMESSAGE_DB = db_path
+            try:
+                rows = browse_sources.fetch_imessage_messages("iMessage;-;chat-reply", limit=10)
+            finally:
+                browse_sources.IMESSAGE_DB = old_path
+
+        reply = next(row for row in rows if row["native_guid"] == "reply-guid")
+        self.assertEqual(reply["reply_to_message_id"], "parent-guid")
+        self.assertEqual(reply["reply_to_sender"], "+14155551234")
+        self.assertEqual(reply["reply_to_text"], "Original question")
 
     def test_fetch_imessage_messages_pages_backwards_without_repeating_boundary(self):
         with tempfile.TemporaryDirectory() as tmp:

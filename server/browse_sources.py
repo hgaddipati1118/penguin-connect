@@ -783,6 +783,41 @@ def fetch_imessage_messages(
         associated_guid_select = message_column("associated_message_guid", "''")
         associated_type_select = message_column("associated_message_type", "0")
         associated_emoji_select = message_column("associated_message_emoji", "''")
+        has_native_reply_context = "thread_originator_guid" in message_columns
+        if has_native_reply_context:
+            reply_parent_join = """
+            LEFT JOIN message reply_parent
+              ON reply_parent.guid = REPLACE(
+                   REPLACE(COALESCE(m.thread_originator_guid, ''), 'p:0/', ''),
+                   'bp:',
+                   ''
+                 )
+            LEFT JOIN handle reply_handle ON reply_parent.handle_id = reply_handle.ROWID
+            """
+            reply_message_id_select = """
+                COALESCE(
+                    reply_parent.guid,
+                    REPLACE(
+                        REPLACE(COALESCE(m.thread_originator_guid, ''), 'p:0/', ''),
+                        'bp:',
+                        ''
+                    )
+                )
+            """
+            reply_sender_select = """
+                CASE
+                    WHEN reply_parent.is_from_me = 1 THEN 'Me'
+                    ELSE COALESCE(reply_handle.id, '')
+                END
+            """
+            reply_text_select = "reply_parent.text"
+            reply_attributed_body_select = "reply_parent.attributedBody"
+        else:
+            reply_parent_join = ""
+            reply_message_id_select = "''"
+            reply_sender_select = "''"
+            reply_text_select = "''"
+            reply_attributed_body_select = "NULL"
         reaction_filter = (
             "OR COALESCE(m.associated_message_type, 0) != 0"
             if "associated_message_type" in message_columns
@@ -817,11 +852,16 @@ def fetch_imessage_messages(
                 {date_read_select},
                 {associated_guid_select},
                 {associated_type_select},
-                {associated_emoji_select}
+                {associated_emoji_select},
+                {reply_message_id_select},
+                {reply_sender_select},
+                {reply_text_select},
+                {reply_attributed_body_select}
             FROM message m
             JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
             LEFT JOIN handle h ON m.handle_id = h.ROWID
             LEFT JOIN message_attachment_join maj ON maj.message_id = m.ROWID
+            {reply_parent_join}
             WHERE cmj.chat_id = ?
               {date_filter}
               AND ((m.text IS NOT NULL AND m.text != '')
@@ -851,9 +891,15 @@ def fetch_imessage_messages(
                 associated_guid,
                 associated_type,
                 associated_emoji,
+                reply_to_message_id,
+                reply_to_sender,
+                reply_to_text,
+                reply_attributed_body,
             ) = row
             if not text and attributed_body:
                 text = _extract_text_from_attributed_body(attributed_body)
+            if not reply_to_text and reply_attributed_body:
+                reply_to_text = _extract_text_from_attributed_body(reply_attributed_body)
 
             cur.execute(
                 """
@@ -893,6 +939,9 @@ def fetch_imessage_messages(
                     "associated_message_guid": associated_guid or "",
                     "associated_message_type": int(associated_type or 0),
                     "associated_message_emoji": associated_emoji or "",
+                    "reply_to_message_id": reply_to_message_id or "",
+                    "reply_to_sender": reply_to_sender or "",
+                    "reply_to_text": reply_to_text or "",
                     "has_attributed_body": bool(attributed_body),
                 }
             )
