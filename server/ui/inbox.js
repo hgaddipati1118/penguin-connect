@@ -429,10 +429,12 @@ const draftServerQueues = new Map();
 const dirtyDraftConversations = new Set();
 let attachmentHistorySyncPromise = null;
 const cacheRepairGate = window.PenguinRefreshCoordinator.createCompletionGate();
-const downloadableImageQueue = [];
 const downloadableImageTasks = new WeakMap();
-const queuedDownloadableImages = new WeakSet();
-let downloadableImageActive = 0;
+const downloadableImageQueue = window.PenguinMediaPreviewQueue.createMediaPreviewQueue({
+  concurrency: DOWNLOADABLE_IMAGE_CONCURRENCY,
+  run: loadDownloadableImage,
+  onError: (_error, wrapper, task) => finishDownloadableImage(wrapper, task, false),
+});
 let downloadableImageObserver = null;
 let threadSearchTimer = 0;
 let threadSearchRequestToken = 0;
@@ -2503,6 +2505,8 @@ function missingMediaPreview(message, label, kind = "Media") {
 }
 
 function finishDownloadableImage(wrapper, task, loaded) {
+  task.cancel = null;
+  downloadableImageTasks.delete(wrapper);
   if (loaded) {
     task.attachment.availability = "local";
     wrapper.classList.remove("is-downloading");
@@ -2532,6 +2536,10 @@ async function loadDownloadableImage(wrapper, task) {
       finishDownloadableImage(wrapper, task, loaded);
       resolve();
     };
+    task.cancel = () => {
+      task.image.removeAttribute("src");
+      finish(false);
+    };
     const timeout = window.setTimeout(() => {
       task.image.removeAttribute("src");
       finish(false);
@@ -2542,33 +2550,25 @@ async function loadDownloadableImage(wrapper, task) {
   });
 }
 
-function drainDownloadableImageQueue() {
-  while (
-    downloadableImageActive < DOWNLOADABLE_IMAGE_CONCURRENCY
-    && downloadableImageQueue.length
-  ) {
-    const wrapper = downloadableImageQueue.shift();
-    queuedDownloadableImages.delete(wrapper);
-    const task = downloadableImageTasks.get(wrapper);
-    if (!task || !wrapper.isConnected) continue;
-    downloadableImageActive += 1;
-    loadDownloadableImage(wrapper, task)
-      .catch(() => finishDownloadableImage(wrapper, task, false))
-      .finally(() => {
-        downloadableImageActive -= 1;
-        drainDownloadableImageQueue();
-      });
-  }
+function queueDownloadableImage(wrapper) {
+  if (wrapper.querySelector("img")?.hasAttribute("src")) return;
+  const task = downloadableImageTasks.get(wrapper);
+  if (!task || !wrapper.isConnected) return;
+  downloadableImageQueue.enqueue(wrapper, task);
 }
 
-function queueDownloadableImage(wrapper) {
-  if (
-    queuedDownloadableImages.has(wrapper)
-    || wrapper.querySelector("img")?.hasAttribute("src")
-  ) return;
-  queuedDownloadableImages.add(wrapper);
-  downloadableImageQueue.push(wrapper);
-  drainDownloadableImageQueue();
+function cancelDownloadableImage(wrapper) {
+  downloadableImageObserver?.unobserve(wrapper);
+  downloadableImageQueue.cancel(wrapper);
+  downloadableImageTasks.delete(wrapper);
+}
+
+function disposeMessageListMedia(root = el.messageList) {
+  for (const preview of root.querySelectorAll(
+    ".message-attachment-preview.is-downloading",
+  )) {
+    cancelDownloadableImage(preview);
+  }
 }
 
 function observeDownloadableImage(wrapper, task) {
@@ -4093,7 +4093,7 @@ function reconcileMessageList(desiredChildren) {
     for (const preview of current.querySelectorAll?.(
       ".message-attachment-preview.is-downloading",
     ) || []) {
-      downloadableImageObserver?.unobserve(preview);
+      cancelDownloadableImage(preview);
     }
     current.remove();
     current = next;
@@ -4118,6 +4118,7 @@ function renderMessages({
     const empty = document.createElement("div");
     empty.className = "pane-empty";
     empty.textContent = "No messages are cached for this conversation yet.";
+    disposeMessageListMedia();
     el.messageList.replaceChildren(empty);
     return;
   }
@@ -4953,6 +4954,7 @@ async function selectConversation(
     );
     return;
   }
+  disposeMessageListMedia();
   el.messageList.innerHTML = `<div class="message-loading"><span></span><span></span><span></span><span></span></div>`;
   selectionRenderFrame = window.requestAnimationFrame(async () => {
     if (
@@ -4980,6 +4982,7 @@ async function selectConversation(
         selectionToken !== state.selectionToken
         || state.selected?.conversation_id !== conversation.conversation_id
       ) return;
+      disposeMessageListMedia();
       el.messageList.innerHTML = `<div class="pane-empty"></div>`;
       el.messageList.firstElementChild.textContent = error.message;
     }
@@ -6507,6 +6510,8 @@ function clearConversationSelection() {
   window.clearTimeout(selectionPreloadTimer);
   state.selected = null;
   state.messages = [];
+  disposeMessageListMedia();
+  el.messageList.replaceChildren();
   renderThreadHeader();
   el.shell.classList.remove("thread-open");
 }

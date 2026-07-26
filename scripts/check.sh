@@ -66,6 +66,7 @@ node --check "$ROOT_DIR/server/ui/refresh-coordinator.js"
 node --check "$ROOT_DIR/server/ui/composer-mentions.js"
 node --check "$ROOT_DIR/server/ui/conversation-navigation.js"
 node --check "$ROOT_DIR/server/ui/list-windowing.js"
+node --check "$ROOT_DIR/server/ui/media-preview-queue.js"
 node --test "$ROOT_DIR/server/ui/"*.test.cjs
 
 if [ "$(uname -s)" = "Darwin" ] && command -v swiftc >/dev/null 2>&1; then

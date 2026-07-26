@@ -3860,6 +3860,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
             list_windowing_js_response = client.get(
                 "/penguin-connect/ui/list-windowing.js",
             )
+            media_preview_queue_js_response = client.get(
+                "/penguin-connect/ui/media-preview-queue.js",
+            )
             html_response = client.get("/penguin-connect/console")
             css_response = client.get("/penguin-connect/ui/app.css")
             js_response = client.get("/penguin-connect/ui/app.js")
@@ -3917,6 +3920,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
             'src="/penguin-connect/ui/list-windowing.js"',
             inbox_response.text,
         )
+        self.assertIn(
+            'src="/penguin-connect/ui/media-preview-queue.js"',
+            inbox_response.text,
+        )
         self.assertEqual(inbox_js_response.status_code, 200)
         self.assertEqual(inbox_js_response.headers["cache-control"], "no-store")
         self.assertEqual(thread_layout_js_response.status_code, 200)
@@ -3931,6 +3938,15 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn(
             "createRefreshCoordinator",
             refresh_coordinator_js_response.text,
+        )
+        self.assertEqual(media_preview_queue_js_response.status_code, 200)
+        self.assertEqual(
+            media_preview_queue_js_response.headers["cache-control"],
+            "no-store",
+        )
+        self.assertIn(
+            "createMediaPreviewQueue",
+            media_preview_queue_js_response.text,
         )
         self.assertIn(
             "createDurableUndoQueue",
@@ -3982,7 +3998,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("renderInlineAttachment", inbox_js_response.text)
         self.assertIn("DOWNLOADABLE_IMAGE_CONCURRENCY = 2", inbox_js_response.text)
         self.assertIn("observeDownloadableImage", inbox_js_response.text)
-        self.assertIn("drainDownloadableImageQueue", inbox_js_response.text)
+        self.assertIn("cancelDownloadableImage", inbox_js_response.text)
+        self.assertIn("disposeMessageListMedia", inbox_js_response.text)
+        self.assertIn("downloadableImageQueue.cancel", inbox_js_response.text)
         self.assertIn('task.attachment.availability = "downloadable"', inbox_js_response.text)
         self.assertIn("downloadable-image-status", inbox_js_response.text)
         self.assertIn(".message-attachment-preview.is-downloading", inbox_css_response.text)

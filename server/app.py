@@ -4627,6 +4627,14 @@ def get_penguinconnect_list_windowing_js():
         "application/javascript; charset=utf-8",
     )
 
+@app.get("/api/penguin-connect/ui/media-preview-queue.js")
+@app.get("/penguin-connect/ui/media-preview-queue.js")
+def get_penguinconnect_media_preview_queue_js():
+    return _ui_file_response(
+        "media-preview-queue.js",
+        "application/javascript; charset=utf-8",
+    )
+
 @app.get("/api/penguin-connect/ui/app.css")
 @app.get("/penguin-connect/ui/app.css")
 def get_penguinconnect_ui_css():
