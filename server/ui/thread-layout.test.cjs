@@ -3,6 +3,7 @@ const test = require("node:test");
 
 const {
   buildSlackReplyTarget,
+  firstUnreadMessageId,
   planSlackThreadDefaults,
 } = require("./thread-layout.js");
 
@@ -90,4 +91,44 @@ test("uses a standalone Slack message as both the clicked target and thread root
 
   assert.equal(target.messageId, "root-1");
   assert.equal(target.threadTs, "root-1");
+});
+
+test("finds the earliest unread incoming message regardless of input order", () => {
+  const boundary = firstUnreadMessageId([
+    {
+      id: "later-unread",
+      timestamp: "2026-07-25T10:04:00Z",
+      isRead: false,
+      mine: false,
+    },
+    {
+      id: "outgoing",
+      timestamp: "2026-07-25T10:01:00Z",
+      isRead: false,
+      mine: true,
+    },
+    {
+      id: "earlier-unread",
+      timestamp: "2026-07-25T10:02:00Z",
+      isRead: false,
+      mine: false,
+    },
+    {
+      id: "read",
+      timestamp: "2026-07-25T10:00:00Z",
+      isRead: true,
+      mine: false,
+    },
+  ]);
+
+  assert.equal(boundary, "earlier-unread");
+});
+
+test("returns no unread boundary when every incoming message is read", () => {
+  const boundary = firstUnreadMessageId([
+    { id: "read", timestamp: "2026-07-25T10:00:00Z", isRead: true, mine: false },
+    { id: "mine", timestamp: "2026-07-25T10:01:00Z", isRead: false, mine: true },
+  ]);
+
+  assert.equal(boundary, "");
 });

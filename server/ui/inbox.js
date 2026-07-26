@@ -58,6 +58,7 @@ const state = {
   scheduledMessages: [],
   replyTarget: null,
   focusedMessageId: "",
+  unreadBoundaryMessageId: "",
   reaction: {
     messageId: "",
     busy: false,
@@ -3071,6 +3072,27 @@ function nativeReplyCounts(messages) {
   return counts;
 }
 
+function unreadBoundaryRows(messages, { markAllUnread = false } = {}) {
+  return (messages || []).map((message) => ({
+    id: message.provider_message_id,
+    timestamp: message.message_timestamp,
+    isRead: markAllUnread ? false : Boolean(message.is_read),
+    mine: isOwnMessage(message),
+  }));
+}
+
+function captureUnreadBoundary(conversation, messages) {
+  if (
+    state.unreadBoundaryMessageId
+    || Number(conversation?.unread_count || 0) <= 0
+    || typeof window.PenguinThreadLayout?.firstUnreadMessageId !== "function"
+  ) return false;
+  state.unreadBoundaryMessageId = window.PenguinThreadLayout.firstUnreadMessageId(
+    unreadBoundaryRows(messages),
+  );
+  return Boolean(state.unreadBoundaryMessageId);
+}
+
 function renderReplyTarget() {
   const target = state.replyTarget;
   el.composerReplyContext.hidden = !target;
@@ -3821,9 +3843,16 @@ function renderMessages({
       String(message.provider_message_id || "") === String(focusMessageId || "")
     )),
   );
-  applySlackThreadDefaults(sortedRows, focusedThreadId);
+  const unreadThreadId = slackThreadIdForMessage(
+    sortedRows.find((message) => (
+      String(message.provider_message_id || "")
+      === String(state.unreadBoundaryMessageId || "")
+    )),
+  );
+  applySlackThreadDefaults(sortedRows, focusedThreadId || unreadThreadId);
 
   let lastDate = "";
+  let unreadDividerRendered = false;
   const rows = slackThreadRenderRows(sortedRows);
   for (const entry of rows) {
     const {
@@ -3839,6 +3868,19 @@ function renderMessages({
       divider.textContent = date;
       messageChildren.push(divider);
       lastDate = date;
+    }
+    if (
+      !unreadDividerRendered
+      && state.unreadBoundaryMessageId
+      && String(message.provider_message_id || "") === state.unreadBoundaryMessageId
+    ) {
+      const unreadDivider = document.createElement("div");
+      unreadDivider.className = "unread-divider";
+      unreadDivider.textContent = "New messages";
+      unreadDivider.setAttribute("role", "separator");
+      unreadDivider.setAttribute("aria-label", "New messages");
+      messageChildren.push(unreadDivider);
+      unreadDividerRendered = true;
     }
 
     const mine = isOwnMessage(message);
@@ -4370,6 +4412,7 @@ async function selectConversation(
   state.selected = conversation;
   if (previousConversationId !== conversation.conversation_id) {
     state.focusedMessageId = "";
+    state.unreadBoundaryMessageId = "";
     restoreConversationDraft(conversation, selectionToken);
   }
   try {
@@ -4386,6 +4429,7 @@ async function selectConversation(
     total: Math.max(Number(cachedMetadata.total || 0), cachedMessages.length),
     loadingOlder: false,
   };
+  captureUnreadBoundary(conversation, state.messages);
   state.followLatest = true;
   el.mentionSuggestions.hidden = true;
   state.scheduledMessages = [];
@@ -4420,6 +4464,7 @@ async function selectConversation(
       state.messages = payload.messages || [];
       state.messagePagination.total = Number(payload.total || state.messages.length);
       state.messagePagination.hasMore = Boolean(payload.has_more);
+      captureUnreadBoundary(conversation, state.messages);
       rememberConversationMessages(
         conversation.conversation_id,
         state.messages,
@@ -4499,7 +4544,14 @@ async function refreshSelectedMessages({
     state.messagePagination.total = Number(payload.total || nextMessages.length);
     state.messagePagination.hasMore = nextMessages.length < state.messagePagination.total;
     rememberConversationMessages(conversationId, nextMessages, state.messagePagination);
-    if (messagesFingerprint(nextMessages) === messagesFingerprint(state.messages)) return;
+    const unreadBoundaryChanged = captureUnreadBoundary(
+      selectedConversation,
+      nextMessages,
+    );
+    if (
+      messagesFingerprint(nextMessages) === messagesFingerprint(state.messages)
+      && !unreadBoundaryChanged
+    ) return;
     const shouldFollowLatest = state.followLatest;
     state.messages = nextMessages;
     renderMessages({ preserveScroll: !shouldFollowLatest });
@@ -4624,7 +4676,10 @@ function applyThreadSearch() {
     activeDivider?.classList.toggle("search-hidden", Boolean(query) && !activeDividerHasMatch);
   };
   for (const child of el.messageList.children) {
-    if (child.classList.contains("date-divider")) {
+    if (
+      child.classList.contains("date-divider")
+      || child.classList.contains("unread-divider")
+    ) {
       flushDivider();
       activeDivider = child;
       activeDividerHasMatch = false;
@@ -6496,6 +6551,14 @@ async function setConversationUnread(conversation, unread) {
     );
     conversation.unread_count = Number(result.unread_count || 0);
     conversation.has_unread = Boolean(result.has_unread);
+    if (state.selected?.conversation_id === conversation.conversation_id) {
+      state.unreadBoundaryMessageId = unread
+        ? window.PenguinThreadLayout.firstUnreadMessageId(
+          unreadBoundaryRows(state.messages, { markAllUnread: true }),
+        )
+        : "";
+      renderMessages({ preserveScroll: true });
+    }
     invalidateConversationProjection();
     renderConversationList();
     toast(unread ? "Marked unread" : "Marked read");

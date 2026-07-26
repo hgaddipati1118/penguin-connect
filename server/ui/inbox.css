@@ -1222,6 +1222,34 @@ kbd {
   content: "";
 }
 
+.unread-divider {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 17px 0 12px;
+  color: #c35f49;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.unread-divider::before,
+.unread-divider::after {
+  height: 1px;
+  background: color-mix(in srgb, #d8654a 46%, transparent);
+  content: "";
+}
+
+.unread-divider::before {
+  width: 22px;
+}
+
+.unread-divider::after {
+  flex: 1;
+}
+
 .message-row {
   display: flex;
   align-items: center;

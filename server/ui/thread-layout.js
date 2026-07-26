@@ -22,6 +22,18 @@
     };
   }
 
+  function firstUnreadMessageId(rows) {
+    const unread = (rows || [])
+      .filter((row) => (
+        row
+        && row.isRead === false
+        && !row.mine
+        && String(row.id || "").trim()
+      ))
+      .sort((left, right) => timestampValue(left.timestamp) - timestampValue(right.timestamp));
+    return String(unread[0]?.id || "").trim();
+  }
+
   function planSlackThreadDefaults(rows, {
     preferredOpenThreadId = "",
   } = {}) {
@@ -61,6 +73,7 @@
 
   const api = Object.freeze({
     buildSlackReplyTarget,
+    firstUnreadMessageId,
     planSlackThreadDefaults,
   });
   root.PenguinThreadLayout = api;
