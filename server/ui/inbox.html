@@ -329,9 +329,17 @@
               <p id="agentStatus">Checking Codex</p>
             </div>
           </div>
-          <button class="icon-button agent-close-button" id="closeAgentButton" type="button" title="Close agent (⌘/)" aria-label="Close Penguin Agent">
-            <svg><use href="#i-panel"></use></svg>
-          </button>
+          <div class="agent-header-actions">
+            <button class="icon-button agent-header-button" id="newAgentChatButton" type="button" title="New agent chat" aria-label="Start a new Penguin Agent chat">
+              <svg><use href="#i-compose"></use></svg>
+            </button>
+            <button class="icon-button agent-header-button" id="agentHistoryButton" type="button" title="Agent chat history" aria-label="Show Penguin Agent chat history" aria-expanded="false">
+              <svg><use href="#i-clock"></use></svg>
+            </button>
+            <button class="icon-button agent-close-button" id="closeAgentButton" type="button" title="Close agent (⌘/)" aria-label="Close Penguin Agent">
+              <svg><use href="#i-panel"></use></svg>
+            </button>
+          </div>
         </header>
 
         <div class="agent-body">
@@ -349,6 +357,17 @@
               </select>
               <small id="agentModeHelp">Read-only · uses the Slashy coordination root</small>
             </label>
+          </section>
+
+          <section class="agent-history-panel" id="agentHistoryPanel" hidden aria-label="Recent Penguin Agent chats">
+            <div class="agent-history-head">
+              <div>
+                <p>Recent chats</p>
+                <small id="agentHistoryCount">Saved privately on this Mac</small>
+              </div>
+              <button class="text-button" id="agentHistoryNewButton" type="button">New chat</button>
+            </div>
+            <div class="agent-history-list" id="agentHistoryList"></div>
           </section>
 
           <div class="agent-welcome" id="agentWelcome">
@@ -808,6 +827,7 @@
     <script src="/penguin-connect/ui/list-windowing.js"></script>
     <script src="/penguin-connect/ui/media-preview-queue.js"></script>
     <script src="/penguin-connect/ui/workspace-cache-policy.js"></script>
+    <script src="/penguin-connect/ui/agent-history.js"></script>
     <script src="/penguin-connect/ui/inbox.js"></script>
   </body>
 </html>

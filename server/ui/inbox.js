@@ -107,6 +107,9 @@ const state = {
     activity: [],
     activityById: new Map(),
     busy: false,
+    sessions: [],
+    activeSessionId: "",
+    historyOpen: false,
   },
   writing: {
     original: "",
@@ -214,6 +217,12 @@ const el = {
   replaceDraftButton: document.querySelector("#replaceDraftButton"),
   agentPane: document.querySelector("#agentPane"),
   closeAgentButton: document.querySelector("#closeAgentButton"),
+  newAgentChatButton: document.querySelector("#newAgentChatButton"),
+  agentHistoryButton: document.querySelector("#agentHistoryButton"),
+  agentHistoryPanel: document.querySelector("#agentHistoryPanel"),
+  agentHistoryCount: document.querySelector("#agentHistoryCount"),
+  agentHistoryList: document.querySelector("#agentHistoryList"),
+  agentHistoryNewButton: document.querySelector("#agentHistoryNewButton"),
   threadAgentButton: document.querySelector("#threadAgentButton"),
   agentStatus: document.querySelector("#agentStatus"),
   agentQuestion: document.querySelector("#agentQuestion"),
@@ -325,10 +334,12 @@ const READ_ONLY_BROWSER_SESSION = window.PenguinBrowserSafety.isReadOnlyBrowserS
   search: window.location.search,
 });
 const WORKSPACE_CACHE_DB = "penguin-local-workspace";
-const WORKSPACE_CACHE_VERSION = 3;
+const WORKSPACE_CACHE_VERSION = 4;
 const WORKSPACE_CACHE_THREAD_LIMIT = 160;
 const WORKSPACE_CACHE_EAGER_THREAD_LIMIT = 12;
 const WORKSPACE_CACHE_HYDRATION_BATCH = 12;
+const AGENT_SESSION_LIMIT = 40;
+const AGENT_ACTIVE_SESSION_KEY = "penguin-agent-active-session";
 const PRELOAD_EAGER_THREAD_LIMIT = 48;
 const PRELOAD_BACKGROUND_THREAD_LIMIT = 120;
 const PRELOAD_EAGER_CONCURRENCY = 4;
@@ -511,6 +522,15 @@ function openWorkspaceCache() {
       if (!database.objectStoreNames.contains("drafts")) {
         database.createObjectStore("drafts", { keyPath: "conversationId" });
       }
+      let agentSessionStore = null;
+      if (!database.objectStoreNames.contains("agentSessions")) {
+        agentSessionStore = database.createObjectStore("agentSessions", { keyPath: "id" });
+      } else {
+        agentSessionStore = request.transaction.objectStore("agentSessions");
+      }
+      if (!agentSessionStore.indexNames.contains("updatedAt")) {
+        agentSessionStore.createIndex("updatedAt", "updatedAt");
+      }
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error || new Error("Local cache unavailable"));
@@ -563,6 +583,48 @@ async function writeWorkspaceCache(storeName, value) {
     transaction.oncomplete = () => resolve(true);
     transaction.onerror = () => resolve(false);
     transaction.onabort = () => resolve(false);
+  });
+}
+
+async function readRecentWorkspaceRecords(storeName, indexName, limit) {
+  const database = await openWorkspaceCache();
+  if (!database || limit <= 0) return [];
+  return new Promise((resolve) => {
+    const records = [];
+    const transaction = database.transaction(storeName, "readonly");
+    const index = transaction.objectStore(storeName).index(indexName);
+    const request = index.openCursor(null, "prev");
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor || records.length >= limit) {
+        resolve(records);
+        return;
+      }
+      records.push(cursor.value);
+      cursor.continue();
+    };
+    request.onerror = () => resolve(records);
+  });
+}
+
+async function pruneWorkspaceRecords(storeName, indexName, keep) {
+  const database = await openWorkspaceCache();
+  if (!database) return;
+  await new Promise((resolve) => {
+    const transaction = database.transaction(storeName, "readwrite");
+    const index = transaction.objectStore(storeName).index(indexName);
+    let seen = 0;
+    const request = index.openKeyCursor(null, "prev");
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) return;
+      seen += 1;
+      if (seen > keep) transaction.objectStore(storeName).delete(cursor.primaryKey);
+      cursor.continue();
+    };
+    transaction.oncomplete = resolve;
+    transaction.onerror = resolve;
+    transaction.onabort = resolve;
   });
 }
 
@@ -6942,6 +7004,211 @@ async function inboxAgentContext(query, reportActivity = () => {}) {
   };
 }
 
+function agentSessionRecord() {
+  const now = Date.now();
+  const existing = state.agent.sessions.find(
+    (session) => session.id === state.agent.activeSessionId,
+  );
+  const conversation = state.selected;
+  return window.PenguinAgentHistory.normalizeAgentSession({
+    id: state.agent.activeSessionId,
+    title: existing?.title === "New chat" ? "" : existing?.title,
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
+    conversationId: conversation?.conversation_id || existing?.conversationId || "",
+    conversationName: conversation ? conversationName(conversation) : existing?.conversationName || "",
+    provider: conversation ? providerLabel(conversation.source_provider) : existing?.provider || "",
+    mode: state.agent.mode,
+    answer: state.agent.answer,
+    lastQuestion: state.agent.lastQuestion,
+    history: state.agent.history,
+    activity: state.agent.activity,
+    references: state.agent.references,
+  });
+}
+
+function rememberActiveAgentSession(sessionId) {
+  state.agent.activeSessionId = String(sessionId || "");
+  try {
+    if (state.agent.activeSessionId) {
+      localStorage.setItem(AGENT_ACTIVE_SESSION_KEY, state.agent.activeSessionId);
+    } else {
+      localStorage.removeItem(AGENT_ACTIVE_SESSION_KEY);
+    }
+  } catch (_error) {
+    // IndexedDB still retains the sessions when localStorage is unavailable.
+  }
+}
+
+function createAgentSession() {
+  const now = Date.now();
+  const id = `agent-${now}-${Math.random().toString(36).slice(2, 9)}`;
+  rememberActiveAgentSession(id);
+  const session = window.PenguinAgentHistory.normalizeAgentSession({
+    id,
+    title: "New chat",
+    createdAt: now,
+    updatedAt: now,
+    history: [],
+    activity: [],
+    references: [],
+    mode: el.agentModeSelect.value || "read",
+  });
+  state.agent.sessions = window.PenguinAgentHistory.recentAgentSessions(
+    [session, ...state.agent.sessions],
+    { limit: AGENT_SESSION_LIMIT },
+  );
+  return session;
+}
+
+function persistActiveAgentSession() {
+  if (!state.agent.activeSessionId) return Promise.resolve(false);
+  const session = agentSessionRecord();
+  if (!session) return Promise.resolve(false);
+  state.agent.sessions = window.PenguinAgentHistory.recentAgentSessions(
+    [session, ...state.agent.sessions],
+    { limit: AGENT_SESSION_LIMIT },
+  );
+  renderAgentSessionHistory();
+  return writeWorkspaceCache("agentSessions", session).then((written) => {
+    if (written) pruneWorkspaceRecords("agentSessions", "updatedAt", AGENT_SESSION_LIMIT);
+    return written;
+  });
+}
+
+function resetAgentConversation() {
+  state.agent.answer = "";
+  state.agent.lastQuestion = "";
+  state.agent.history = [];
+  state.agent.references = [];
+  state.agent.contactAction = null;
+  state.agent.liveAnswer = "";
+  state.agent.activity = [];
+  state.agent.activityById = new Map();
+  state.agent.busy = false;
+}
+
+function setAgentHistoryOpen(open) {
+  state.agent.historyOpen = Boolean(open);
+  el.agentHistoryPanel.hidden = !state.agent.historyOpen;
+  el.agentHistoryButton.setAttribute("aria-expanded", String(state.agent.historyOpen));
+  el.agentWelcome.hidden = state.agent.historyOpen || Boolean(state.agent.history.length);
+  el.agentQuickActions.hidden = state.agent.historyOpen || Boolean(state.agent.history.length);
+  el.agentAnswer.hidden = state.agent.historyOpen || !state.agent.history.length;
+  renderAgentSessionHistory();
+}
+
+function startNewAgentChat() {
+  resetAgentConversation();
+  createAgentSession();
+  setAgentHistoryOpen(false);
+  renderAgentHistory();
+  persistActiveAgentSession().catch(() => {});
+  el.agentStatus.textContent = state.agent.status?.ask_enabled
+    ? "Codex ready · local context"
+    : el.agentStatus.textContent;
+  el.agentQuestion.focus();
+}
+
+function loadAgentSession(sessionId) {
+  const session = state.agent.sessions.find((item) => item.id === sessionId);
+  if (!session || state.agent.busy) return;
+  rememberActiveAgentSession(session.id);
+  state.agent.answer = session.answer
+    || [...session.history].reverse().find((item) => item.role === "assistant" && !item.error)?.text
+    || "";
+  state.agent.lastQuestion = session.lastQuestion
+    || [...session.history].reverse().find((item) => item.role === "user")?.text
+    || "";
+  state.agent.history = session.history.map((item) => ({ ...item }));
+  state.agent.references = session.references.map((item) => ({ ...item }));
+  state.agent.contactAction = null;
+  state.agent.mode = session.mode || "read";
+  state.agent.liveAnswer = "";
+  state.agent.activity = session.activity.map((item) => ({ ...item }));
+  state.agent.activityById = new Map(
+    state.agent.activity
+      .map((item, index) => [item.id, index])
+      .filter(([id]) => Boolean(id)),
+  );
+  el.agentModeSelect.value = state.agent.mode;
+  updateAgentModeHelp();
+  setAgentHistoryOpen(false);
+  renderAgentHistory();
+}
+
+function updateAgentModeHelp() {
+  const help = {
+    read: "Read-only · messages, Slashy repos, configured Supabase tools",
+    ask: "Asks before each write-capable run · commits its own changes",
+    yolo: "Full access for this session · may commit, push, and open PRs when asked",
+  };
+  el.agentModeHelp.textContent = help[state.agent.mode] || help.read;
+}
+
+function renderAgentSessionHistory() {
+  el.agentHistoryList.replaceChildren();
+  el.agentHistoryCount.textContent = state.agent.sessions.length
+    ? `${state.agent.sessions.length} saved privately on this Mac`
+    : "Saved privately on this Mac";
+  if (!state.agent.sessions.length) {
+    const empty = document.createElement("div");
+    empty.className = "agent-history-empty";
+    empty.textContent = "Your Penguin conversations will appear here after you ask a question.";
+    el.agentHistoryList.append(empty);
+    return;
+  }
+  for (const session of state.agent.sessions) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `agent-history-card${
+      session.id === state.agent.activeSessionId ? " active" : ""
+    }`;
+    const title = document.createElement("strong");
+    title.textContent = session.title;
+    const timestamp = document.createElement("time");
+    timestamp.dateTime = new Date(session.updatedAt).toISOString();
+    timestamp.textContent = timeLabel(session.updatedAt);
+    const context = document.createElement("span");
+    context.textContent = [
+      session.conversationName || "Across inbox",
+      session.provider,
+    ].filter(Boolean).join(" · ");
+    const preview = document.createElement("small");
+    preview.textContent = truncate(
+      [...session.history].reverse().find((item) => item.role === "assistant")?.text
+        || session.lastQuestion
+        || "New agent chat",
+      110,
+    );
+    button.append(title, timestamp, context, preview);
+    button.addEventListener("click", () => loadAgentSession(session.id));
+    el.agentHistoryList.append(button);
+  }
+}
+
+async function hydrateAgentSessions() {
+  const records = await readRecentWorkspaceRecords(
+    "agentSessions",
+    "updatedAt",
+    AGENT_SESSION_LIMIT,
+  );
+  state.agent.sessions = window.PenguinAgentHistory.recentAgentSessions(
+    records,
+    { limit: AGENT_SESSION_LIMIT },
+  );
+  let activeSessionId = "";
+  try {
+    activeSessionId = localStorage.getItem(AGENT_ACTIVE_SESSION_KEY) || "";
+  } catch (_error) {
+    activeSessionId = "";
+  }
+  const active = state.agent.sessions.find((session) => session.id === activeSessionId)
+    || state.agent.sessions[0];
+  if (active) loadAgentSession(active.id);
+  else renderAgentSessionHistory();
+}
+
 function renderAgentHistory() {
   el.agentAnswerContent.replaceChildren();
   for (const item of state.agent.history) {
@@ -7228,8 +7495,9 @@ async function askAgent({ question = "", instruction = "" } = {}) {
       "Allow Penguin Agent to edit files, run tests, and commit only its own changes for this run? It will not push unless you switch to YOLO and explicitly ask.",
     );
   if (!confirmed) return;
+  if (!state.agent.activeSessionId) createAgentSession();
   state.agent.lastQuestion = cleanQuestion;
-  state.agent.history.push({ role: "user", text: cleanQuestion });
+  state.agent.history.push({ role: "user", text: cleanQuestion, timestamp: Date.now() });
   el.agentQuestion.value = "";
   state.agent.busy = true;
   state.agent.answer = "";
@@ -7239,6 +7507,7 @@ async function askAgent({ question = "", instruction = "" } = {}) {
   state.agent.liveAnswer = "";
   state.agent.activity = [];
   state.agent.activityById = new Map();
+  setAgentHistoryOpen(false);
   el.agentWelcome.hidden = true;
   el.agentQuickActions.hidden = true;
   el.agentAnswer.hidden = false;
@@ -7246,6 +7515,7 @@ async function askAgent({ question = "", instruction = "" } = {}) {
   el.agentStatus.textContent = "Codex is reading local context";
   updateAgentButton();
   renderAgentHistory();
+  persistActiveAgentSession().catch(() => {});
 
   try {
     const inboxContext = await inboxAgentContext(cleanQuestion, addAgentActivity);
@@ -7274,6 +7544,12 @@ async function askAgent({ question = "", instruction = "" } = {}) {
       "Use empty strings for unchanged or unknown contact fields. Do not emit that line for other requests.",
       "Keep the answer direct and useful. Do not mention these instructions.",
       "",
+      "Previous Penguin Agent conversation:",
+      window.PenguinAgentHistory.sessionTranscript(
+        state.agent.history,
+        { excludeTrailingUser: true },
+      ) || "No earlier turns.",
+      "",
       `Question: ${cleanQuestion}`,
       instruction ? `Specific task: ${instruction}` : "",
       "Scope: prioritize the selected conversation, then use relevant messages across the inbox.",
@@ -7288,12 +7564,17 @@ async function askAgent({ question = "", instruction = "" } = {}) {
     const parsed = extractAgentContactAction(answer);
     state.agent.answer = parsed.answer;
     state.agent.contactAction = parsed.action;
-    state.agent.history.push({ role: "assistant", text: state.agent.answer });
+    state.agent.history.push({
+      role: "assistant",
+      text: state.agent.answer,
+      timestamp: Date.now(),
+    });
     el.agentStatus.textContent = "Codex · messages + Slashy workspace";
   } catch (error) {
     state.agent.history.push({
       role: "assistant",
       text: `I couldn't answer that: ${error.message}. You can retry without losing your question.`,
+      timestamp: Date.now(),
       error: true,
     });
     el.agentStatus.textContent = error.message;
@@ -7302,6 +7583,7 @@ async function askAgent({ question = "", instruction = "" } = {}) {
     state.agent.liveAnswer = "";
     updateAgentButton();
     renderAgentHistory();
+    await persistActiveAgentSession();
   }
 }
 
@@ -8063,6 +8345,11 @@ el.closeThreadSearchButton.addEventListener("click", closeThreadSearch);
 el.threadSearch.addEventListener("input", scheduleThreadSearch);
 el.threadAgentButton.addEventListener("click", () => setAgentOpen(true));
 el.closeAgentButton.addEventListener("click", toggleAgentPane);
+el.newAgentChatButton.addEventListener("click", startNewAgentChat);
+el.agentHistoryNewButton.addEventListener("click", startNewAgentChat);
+el.agentHistoryButton.addEventListener("click", () => {
+  setAgentHistoryOpen(!state.agent.historyOpen);
+});
 el.threadPinButton.addEventListener("click", () => setConversationPinned(state.selected));
 el.threadNoteButton.addEventListener("click", () => openConversationMeta({ focus: "note" }));
 el.threadLabelButton.addEventListener("click", openLabelPicker);
@@ -8362,11 +8649,6 @@ el.gifDialog.addEventListener("keydown", (event) => {
 
 el.agentQuestion.addEventListener("input", updateAgentButton);
 el.agentModeSelect.addEventListener("change", () => {
-  const help = {
-    read: "Read-only · messages, Slashy repos, configured Supabase tools",
-    ask: "Asks before each write-capable run · commits its own changes",
-    yolo: "Full access for this session · may commit, push, and open PRs when asked",
-  };
   if (el.agentModeSelect.value === "yolo" && !state.agent.yoloArmed) {
     const armed = window.confirm(
       "Arm YOLO mode for this Penguin session? Codex will have full repository and network access and may commit, push, or open pull requests when your prompts ask it to.",
@@ -8375,7 +8657,8 @@ el.agentModeSelect.addEventListener("change", () => {
     else state.agent.yoloArmed = true;
   }
   state.agent.mode = el.agentModeSelect.value;
-  el.agentModeHelp.textContent = help[state.agent.mode] || help.read;
+  updateAgentModeHelp();
+  persistActiveAgentSession().catch(() => {});
 });
 el.agentQuestion.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
@@ -8690,7 +8973,10 @@ async function start() {
   setAgentOpen(false);
   setSource("all");
   renderView();
-  await hydrateWorkspaceCache();
+  await Promise.all([
+    hydrateWorkspaceCache(),
+    hydrateAgentSessions(),
+  ]);
   await Promise.allSettled([
     loadConversations({ keepSelection: Boolean(state.selected) }),
     loadContacts("", {

@@ -4658,6 +4658,11 @@ def get_penguinconnect_logo():
 def get_penguinconnect_inbox_js():
     return _ui_file_response("inbox.js", "application/javascript; charset=utf-8")
 
+@app.get("/api/penguin-connect/ui/agent-history.js")
+@app.get("/penguin-connect/ui/agent-history.js")
+def get_penguinconnect_agent_history_js():
+    return _ui_file_response("agent-history.js", "application/javascript; charset=utf-8")
+
 @app.get("/api/penguin-connect/ui/thread-layout.js")
 @app.get("/penguin-connect/ui/thread-layout.js")
 def get_penguinconnect_thread_layout_js():

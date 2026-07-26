@@ -3913,6 +3913,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
             inbox_css_response = client.get("/penguin-connect/ui/inbox.css")
             logo_response = client.get("/penguin-connect/ui/penguin-logo.png")
             inbox_js_response = client.get("/penguin-connect/ui/inbox.js")
+            agent_history_js_response = client.get(
+                "/penguin-connect/ui/agent-history.js",
+            )
             thread_layout_js_response = client.get("/penguin-connect/ui/thread-layout.js")
             refresh_coordinator_js_response = client.get(
                 "/penguin-connect/ui/refresh-coordinator.js",
@@ -4004,8 +4007,24 @@ class AppHttpIntegrationTests(unittest.TestCase):
             'src="/penguin-connect/ui/workspace-cache-policy.js"',
             inbox_response.text,
         )
+        self.assertIn(
+            'src="/penguin-connect/ui/agent-history.js"',
+            inbox_response.text,
+        )
+        self.assertIn('id="agentHistoryButton"', inbox_response.text)
+        self.assertIn('id="newAgentChatButton"', inbox_response.text)
+        self.assertIn('id="agentHistoryPanel"', inbox_response.text)
+        self.assertIn('id="agentHistoryList"', inbox_response.text)
         self.assertEqual(inbox_js_response.status_code, 200)
         self.assertEqual(inbox_js_response.headers["cache-control"], "no-store")
+        self.assertEqual(agent_history_js_response.status_code, 200)
+        self.assertEqual(
+            agent_history_js_response.headers["cache-control"],
+            "no-store",
+        )
+        self.assertIn("normalizeAgentSession", agent_history_js_response.text)
+        self.assertIn("recentAgentSessions", agent_history_js_response.text)
+        self.assertIn("sessionTranscript", agent_history_js_response.text)
         self.assertEqual(thread_layout_js_response.status_code, 200)
         self.assertEqual(thread_layout_js_response.headers["cache-control"], "no-store")
         self.assertIn("planSlackThreadDefaults", thread_layout_js_response.text)
@@ -4301,7 +4320,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("newestMessagesForCache", inbox_js_response.text)
         self.assertNotIn(".slice(-300)", inbox_js_response.text)
         self.assertIn("penguin-local-workspace", inbox_js_response.text)
-        self.assertIn("WORKSPACE_CACHE_VERSION = 3", inbox_js_response.text)
+        self.assertIn("WORKSPACE_CACHE_VERSION = 4", inbox_js_response.text)
         self.assertIn("WORKSPACE_CACHE_EAGER_THREAD_LIMIT = 12", inbox_js_response.text)
         self.assertIn("WORKSPACE_CACHE_HYDRATION_BATCH = 12", inbox_js_response.text)
         self.assertIn('createIndex("updatedAt", "updatedAt")', inbox_js_response.text)
@@ -4320,6 +4339,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("inboxAgentContext(cleanQuestion, addAgentActivity)", inbox_js_response.text)
         self.assertIn("activityById", inbox_js_response.text)
         self.assertIn("liveAnswer", inbox_js_response.text)
+        self.assertIn("agentSessions", inbox_js_response.text)
+        self.assertIn("hydrateAgentSessions", inbox_js_response.text)
+        self.assertIn("persistActiveAgentSession", inbox_js_response.text)
+        self.assertIn("PenguinAgentHistory.sessionTranscript", inbox_js_response.text)
         self.assertIn("penguin.integration_warning", inbox_js_response.text)
         self.assertIn("conversationHasDraft", inbox_js_response.text)
         self.assertIn("scheduleDraftPersistence", inbox_js_response.text)

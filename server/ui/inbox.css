@@ -2966,6 +2966,23 @@ button.message-reaction-chip:hover {
   height: 31px;
 }
 
+.agent-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.agent-header-button {
+  width: 31px;
+  height: 31px;
+}
+
+.agent-header-button[aria-expanded="true"] {
+  border-color: #e2b4a7;
+  background: var(--penguin-soft);
+  color: var(--penguin);
+}
+
 .agent-title {
   display: flex;
   align-items: center;
@@ -3093,6 +3110,105 @@ button.message-reaction-chip:hover {
   border-radius: 50%;
   background: var(--penguin);
   box-shadow: 0 0 0 3px var(--penguin-soft);
+}
+
+.agent-history-panel {
+  display: grid;
+  gap: 8px;
+  margin: -2px 0 16px;
+}
+
+.agent-history-panel[hidden] {
+  display: none;
+}
+
+.agent-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px;
+}
+
+.agent-history-head p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.agent-history-head small {
+  display: block;
+  margin-top: 2px;
+  color: var(--ink-faint);
+  font-size: 8px;
+}
+
+.agent-history-list {
+  display: grid;
+  gap: 5px;
+}
+
+.agent-history-empty {
+  padding: 22px 14px;
+  border: 1px dashed var(--line);
+  border-radius: 11px;
+  color: var(--ink-faint);
+  font-size: 10px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.agent-history-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 8px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.8);
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.agent-history-card:hover,
+.agent-history-card.active {
+  border-color: #deb0a3;
+  background: #fffaf7;
+}
+
+.agent-history-card strong,
+.agent-history-card span,
+.agent-history-card small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-history-card strong {
+  font-size: 10px;
+}
+
+.agent-history-card time {
+  color: var(--ink-faint);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 7.5px;
+}
+
+.agent-history-card span,
+.agent-history-card small {
+  grid-column: 1 / -1;
+}
+
+.agent-history-card span {
+  color: var(--ink-soft);
+  font-size: 8.5px;
+}
+
+.agent-history-card small {
+  color: var(--ink-faint);
+  font-size: 8px;
 }
 
 .agent-welcome {
