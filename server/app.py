@@ -4493,6 +4493,11 @@ def get_penguinconnect_thread_layout_js():
 def get_penguinconnect_refresh_coordinator_js():
     return _ui_file_response("refresh-coordinator.js", "application/javascript; charset=utf-8")
 
+@app.get("/api/penguin-connect/ui/composer-mentions.js")
+@app.get("/penguin-connect/ui/composer-mentions.js")
+def get_penguinconnect_composer_mentions_js():
+    return _ui_file_response("composer-mentions.js", "application/javascript; charset=utf-8")
+
 @app.get("/api/penguin-connect/ui/app.css")
 @app.get("/penguin-connect/ui/app.css")
 def get_penguinconnect_ui_css():
@@ -5553,6 +5558,74 @@ def get_penguinconnect_conversation_messages(
             if compact
             else result
         )
+    finally:
+        conn.close()
+
+
+@app.get("/api/penguin-connect/conversations/{conversation_id}/participants")
+@app.get("/penguin-connect/conversations/{conversation_id}/participants")
+def get_penguinconnect_conversation_participants(conversation_id: str):
+    conn = get_connection()
+    try:
+        conversation = conn.execute(
+            """SELECT conversation_id, source_provider, source_chat_id,
+                      source_chat_identifier, chat_type, participants, participant_names
+               FROM penguin_connect_conversations
+               WHERE conversation_id = ?
+               LIMIT 1""",
+            (conversation_id,),
+        ).fetchone()
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="conversation_not_found")
+        provider = str(conversation["source_provider"] or "imessage").strip().lower()
+        chat_type = str(conversation["chat_type"] or "dm").strip().lower()
+        if provider == "slack":
+            adapter = get_channel_adapter("slack")
+            list_participants = getattr(adapter, "list_participants", None)
+            if not callable(list_participants):
+                raise HTTPException(
+                    status_code=503,
+                    detail="slack_participant_discovery_unavailable",
+                )
+            result = list_participants(
+                str(conversation["source_chat_id"] or "").strip()
+            )
+            return {
+                "success": True,
+                "conversation_id": conversation_id,
+                "provider": provider,
+                "chat_type": chat_type,
+                "available": bool(result.get("available")),
+                "participants": result.get("participants") or [],
+                **(
+                    {"reason": str(result.get("reason") or "")}
+                    if not result.get("available")
+                    else {}
+                ),
+            }
+        handles = _conversation_participant_handles(conversation)
+        try:
+            participant_names = json.loads(conversation["participant_names"] or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            participant_names = {}
+        if not isinstance(participant_names, dict):
+            participant_names = {}
+        return {
+            "success": True,
+            "conversation_id": conversation_id,
+            "provider": provider,
+            "chat_type": chat_type,
+            "available": True,
+            "participants": [
+                {
+                    "id": handle,
+                    "display_name": str(participant_names.get(handle) or handle),
+                    "avatar_url": "",
+                    "is_self": False,
+                }
+                for handle in handles
+            ],
+        }
     finally:
         conn.close()
 

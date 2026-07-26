@@ -114,6 +114,67 @@ class SlackChannelAdapterTests(unittest.TestCase):
         self.assertTrue(messages[1]["is_from_me"])
         self.assertEqual(sent, (True, None))
 
+    def test_lists_channel_participants_with_native_ids_and_caches_the_result(self):
+        adapter = SlackChannelAdapter()
+        adapter._self_user_id = "USELF"
+        adapter._users = {
+            "USELF": "Harsha",
+            "UANH": "Anh",
+            "UDHRUV": "Dhruv",
+        }
+        adapter._user_avatars = {
+            "UANH": "https://cdn.example.test/anh.png",
+        }
+        member_calls = 0
+
+        def fake_api(method, **kwargs):
+            nonlocal member_calls
+            if method != "conversations.members":
+                raise AssertionError(method)
+            member_calls += 1
+            self.assertEqual(kwargs["params"]["channel"], "C_PRODUCT")
+            if not kwargs["params"].get("cursor"):
+                return {
+                    "ok": True,
+                    "members": ["USELF", "UANH"],
+                    "response_metadata": {"next_cursor": "page-2"},
+                }
+            self.assertEqual(kwargs["params"]["cursor"], "page-2")
+            return {
+                "ok": True,
+                "members": ["UDHRUV", "UANH"],
+                "response_metadata": {"next_cursor": ""},
+            }
+
+        with mock.patch.object(adapter, "_api", side_effect=fake_api):
+            first = adapter.list_participants("C_PRODUCT")
+            second = adapter.list_participants("C_PRODUCT")
+
+        self.assertTrue(first["available"])
+        self.assertEqual(first["channel_id"], "C_PRODUCT")
+        self.assertEqual(first["participants"], [
+            {
+                "id": "UANH",
+                "display_name": "Anh",
+                "avatar_url": "https://cdn.example.test/anh.png",
+                "is_self": False,
+            },
+            {
+                "id": "UDHRUV",
+                "display_name": "Dhruv",
+                "avatar_url": "",
+                "is_self": False,
+            },
+            {
+                "id": "USELF",
+                "display_name": "Harsha",
+                "avatar_url": "",
+                "is_self": True,
+            },
+        ])
+        self.assertEqual(second, first)
+        self.assertEqual(member_calls, 2)
+
     def test_normalizes_slack_reactions_with_counts_and_own_state(self):
         adapter = SlackChannelAdapter()
         adapter._self_user_id = "USELF"

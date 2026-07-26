@@ -77,6 +77,8 @@ const state = {
   translationCache: new Map(),
   translatingMessages: new Set(),
   labelDraft: new Set(),
+  mentionParticipantCache: new Map(),
+  mentionParticipantLoading: new Set(),
   search: {
     query: "",
     conversations: [],
@@ -2280,10 +2282,25 @@ function renderThreadHeader() {
   el.threadProvider.className = `provider-pill ${provider}`;
   el.threadProvider.textContent = providerLabel(provider);
   const participants = conversationParticipants(conversation);
+  const loadedMentionParticipants = (
+    state.mentionParticipantCache.get(conversation.conversation_id) || []
+  );
+  const participantCount = loadedMentionParticipants.length || participants.length;
+  const participantSummary = ["group", "channel"].includes(conversation.chat_type)
+    ? (
+        participantCount
+          ? `${participantCount} ${conversation.chat_type === "channel" ? "members" : "participants"}`
+          : (
+              state.mentionParticipantLoading.has(conversation.conversation_id)
+                ? "Loading members…"
+                : (conversation.chat_type === "channel" ? "Slack channel" : "Group conversation")
+            )
+      )
+    : participants[0] || "";
   const contact = savedConversationContact(conversation);
   el.threadSubtitle.textContent = [
     contact?.organization || "",
-    conversation.chat_type === "group" ? `${participants.length} participants` : participants[0] || "",
+    participantSummary,
     conversation.status !== "active" ? conversation.status : "",
   ].filter(Boolean).join(" · ") || "Local conversation";
   el.agentContextLabel.textContent = `${name} first · then inbox`;
@@ -4531,6 +4548,117 @@ function renderCachedConversationSelection(
   return true;
 }
 
+function conversationSupportsMentions(conversation = state.selected) {
+  if (!conversation) return false;
+  return (
+    conversation.chat_type === "group"
+    || (
+      providerKey(conversation.source_provider) === "slack"
+      && conversation.chat_type === "channel"
+    )
+  );
+}
+
+function messageHistoryMentionCandidates(conversation = state.selected) {
+  if (!conversation) return [];
+  const messages = state.selected?.conversation_id === conversation.conversation_id
+    ? state.messages
+    : (state.messageCache.get(conversation.conversation_id) || []);
+  return messages.map((message) => ({
+    label: String(message.sender_name || message.sender_email || "").trim(),
+    handle: String(message.sender_email || "").trim(),
+    avatarUrl: String(message.metadata?.sender_avatar_url || "").trim(),
+    isSelf: isOwnMessage(message),
+  }));
+}
+
+function cachedProviderMentionCandidates(conversation = state.selected) {
+  if (!conversation) return [];
+  const loaded = state.mentionParticipantCache.get(conversation.conversation_id) || [];
+  const context = Array.isArray(conversation.contact_context)
+    ? conversation.contact_context
+    : [];
+  const participantNames = conversationParticipantNames(conversation);
+  const stored = conversationParticipants(conversation).map((participant) => {
+    const contact = contactForHandle(participant, context);
+    return {
+      label: String(
+        contact?.display_name
+        || participantNames[participant]
+        || participant,
+      ).trim(),
+      handle: participant,
+      avatarUrl: "",
+      isSelf: false,
+    };
+  });
+  return window.PenguinComposerMentions.mergeMentionCandidates(loaded, stored);
+}
+
+function mentionCandidates(conversation = state.selected) {
+  if (!conversationSupportsMentions(conversation)) return [];
+  return window.PenguinComposerMentions.mergeMentionCandidates(
+    cachedProviderMentionCandidates(conversation),
+    messageHistoryMentionCandidates(conversation),
+  );
+}
+
+function encodeComposerMessage(text, conversation = state.selected) {
+  return window.PenguinComposerMentions.encodeProviderMentions(
+    text,
+    providerKey(conversation?.source_provider),
+    mentionCandidates(conversation),
+  );
+}
+
+function renderComposerMessage(text, conversation = state.selected) {
+  return window.PenguinComposerMentions.renderProviderMentions(
+    text,
+    providerKey(conversation?.source_provider),
+    mentionCandidates(conversation),
+  );
+}
+
+async function loadMentionParticipants(
+  conversation,
+  selectionToken = state.selectionToken,
+) {
+  const conversationId = conversation?.conversation_id;
+  if (
+    !conversationId
+    || providerKey(conversation.source_provider) !== "slack"
+    || !conversationSupportsMentions(conversation)
+    || state.mentionParticipantCache.has(conversationId)
+    || state.mentionParticipantLoading.has(conversationId)
+  ) return;
+  state.mentionParticipantLoading.add(conversationId);
+  updateSendButton();
+  try {
+    const payload = await api(
+      `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/participants`,
+    );
+    if (payload.available) {
+      state.mentionParticipantCache.set(
+        conversationId,
+        Array.isArray(payload.participants) ? payload.participants : [],
+      );
+    }
+  } catch (_error) {
+    // Message-history senders remain available when Slack member discovery is unavailable.
+  } finally {
+    state.mentionParticipantLoading.delete(conversationId);
+    if (
+      selectionToken === state.selectionToken
+      && state.selected?.conversation_id === conversationId
+    ) {
+      renderThreadHeader();
+      updateSendButton();
+      renderScheduledQueue();
+      if (composerMentionMatch()) renderMentionSuggestions();
+    }
+  }
+}
+
 async function selectConversation(
   conversation,
   { focusMessageId = "", markRead = true } = {},
@@ -4572,6 +4700,7 @@ async function selectConversation(
   el.shell.classList.add("thread-open");
   updateConversationSelectionUI(previousConversationId, conversation.conversation_id);
   renderThreadHeader();
+  loadMentionParticipants(conversation, selectionToken);
   if (cachedMessages.length) {
     renderCachedConversationSelection(
       conversation,
@@ -4889,26 +5018,6 @@ function resizeComposer() {
   el.messageComposer.style.height = `${Math.min(el.messageComposer.scrollHeight, 140)}px`;
 }
 
-function mentionCandidates() {
-  if (!state.selected || state.selected.chat_type !== "group") return [];
-  const context = Array.isArray(state.selected.contact_context)
-    ? state.selected.contact_context
-    : [];
-  const seen = new Set();
-  return conversationParticipants(state.selected).map((participant) => {
-    const contact = contactForHandle(participant, context);
-    return {
-      label: String(contact?.display_name || participant).trim(),
-      handle: participant,
-    };
-  }).filter((candidate) => {
-    const key = `${candidate.label.toLowerCase()}:${normalizedHandle(candidate.handle)}`;
-    if (!candidate.label || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
 function composerMentionMatch() {
   const cursor = el.messageComposer.selectionStart ?? el.messageComposer.value.length;
   const beforeCursor = el.messageComposer.value.slice(0, cursor);
@@ -4946,6 +5055,18 @@ function renderMentionSuggestions() {
   )).slice(0, 8);
   el.mentionSuggestions.replaceChildren();
   if (!match || !candidates.length) {
+    if (
+      match
+      && state.selected
+      && state.mentionParticipantLoading.has(state.selected.conversation_id)
+    ) {
+      const loading = document.createElement("div");
+      loading.className = "mention-suggestions-status";
+      loading.textContent = "Loading channel members…";
+      el.mentionSuggestions.append(loading);
+      el.mentionSuggestions.hidden = false;
+      return;
+    }
     el.mentionSuggestions.hidden = true;
     return;
   }
@@ -4957,6 +5078,11 @@ function renderMentionSuggestions() {
     button.classList.toggle("active", index === mentionSelectionIndex);
     const avatar = document.createElement("span");
     avatar.textContent = initials(candidate.label);
+    if (candidate.avatarUrl) {
+      avatar.classList.add("has-image");
+      avatar.style.backgroundImage = `url("${candidate.avatarUrl.replaceAll('"', '\\"')}")`;
+      avatar.textContent = "";
+    }
     const copy = document.createElement("span");
     const name = document.createElement("strong");
     name.textContent = candidate.label;
@@ -4972,10 +5098,11 @@ function renderMentionSuggestions() {
 }
 
 function openMentionSuggestions() {
-  if (!state.selected || state.selected.chat_type !== "group") {
-    toast("Mentions are available in group conversations.", "error");
+  if (!conversationSupportsMentions()) {
+    toast("Mentions are available in groups and Slack channels.", "error");
     return;
   }
+  loadMentionParticipants(state.selected);
   const cursor = el.messageComposer.selectionStart ?? el.messageComposer.value.length;
   const needsSpace = cursor > 0 && !/\s/.test(el.messageComposer.value[cursor - 1]);
   el.messageComposer.setRangeText(needsSpace ? " @" : "@", cursor, cursor, "end");
@@ -4992,7 +5119,7 @@ function updateSendButton() {
   el.sendButton.disabled = !state.selected || !hasContent;
   el.scheduleSendButton.disabled = !state.selected || !hasContent;
   el.gifButton.disabled = !state.selected;
-  el.mentionButton.disabled = !state.selected || state.selected.chat_type !== "group";
+  el.mentionButton.disabled = !conversationSupportsMentions();
 }
 
 function renderScheduledQueue() {
@@ -5010,7 +5137,11 @@ function renderScheduledQueue() {
     const copy = document.createElement("span");
     copy.className = "scheduled-item-copy";
     const message = document.createElement("strong");
-    message.textContent = truncate(item.message || `${item.attachment_count} attachment${item.attachment_count === 1 ? "" : "s"}`, 72);
+    message.textContent = truncate(
+      renderComposerMessage(item.message)
+      || `${item.attachment_count} attachment${item.attachment_count === 1 ? "" : "s"}`,
+      72,
+    );
     const meta = document.createElement("small");
     const when = new Date(item.scheduled_at);
     const whenText = Number.isNaN(when.getTime())
@@ -5116,7 +5247,7 @@ async function deliverPendingSend(pending) {
         method: "POST",
         body: JSON.stringify({
           sender_email: "",
-          message: pending.text,
+          message: pending.providerText,
           attachments,
           reply_to_message_id: replyTargetProviderMessageId(pending.replyTo),
           reply_context_message_id: replyTargetContextMessageId(pending.replyTo),
@@ -5136,7 +5267,7 @@ async function deliverPendingSend(pending) {
         method: "POST",
         body: JSON.stringify({
           sender_email: "",
-          message: pending.text,
+          message: pending.providerText,
           attachments,
           scheduled_at: new Date(Date.now() + 1500).toISOString(),
           reply_to_message_id: replyTargetProviderMessageId(pending.replyTo),
@@ -5275,6 +5406,7 @@ async function scheduleCurrentMessage(event) {
   if (!state.selected || !el.scheduleAt.value || el.confirmScheduleButton.disabled) return;
   const conversationId = state.selected.conversation_id;
   const draftText = el.messageComposer.value.trim();
+  const providerText = encodeComposerMessage(draftText, state.selected);
   const draftFiles = [...state.attachments];
   const draftReplyTarget = state.replyTarget ? { ...state.replyTarget } : null;
   const scheduledAt = new Date(el.scheduleAt.value);
@@ -5292,7 +5424,7 @@ async function scheduleCurrentMessage(event) {
         method: "POST",
         body: JSON.stringify({
           sender_email: "",
-          message: draftText,
+          message: providerText,
           attachments,
           scheduled_at: scheduledAt.toISOString(),
           reply_to_message_id: replyTargetProviderMessageId(draftReplyTarget),
@@ -5388,6 +5520,7 @@ function sendMessage({ instant = false } = {}) {
     id: `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     conversation: state.selected,
     text: el.messageComposer.value.trim(),
+    providerText: encodeComposerMessage(el.messageComposer.value.trim(), state.selected),
     files: [...state.attachments],
     replyTo: state.replyTarget ? { ...state.replyTarget } : null,
     cancelled: false,
@@ -7282,6 +7415,13 @@ el.messageDeleteDialog.addEventListener("click", (event) => {
 el.messageComposer.addEventListener("keydown", (event) => {
   if (!el.mentionSuggestions.hidden) {
     const options = [...el.mentionSuggestions.querySelectorAll("button")];
+    if (!options.length) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        el.mentionSuggestions.hidden = true;
+      }
+      return;
+    }
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       mentionSelectionIndex = (

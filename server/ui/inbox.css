@@ -2559,6 +2559,18 @@ button.message-reaction-chip:hover {
   font-weight: 750;
 }
 
+.mention-suggestions button > span:first-child.has-image {
+  background-position: center;
+  background-size: cover;
+}
+
+.mention-suggestions-status {
+  padding: 12px 10px;
+  color: var(--ink-faint);
+  font-size: 9px;
+  text-align: center;
+}
+
 .mention-suggestions button > span:last-child {
   display: grid;
   min-width: 0;

@@ -63,6 +63,7 @@ echo "[check] frontend syntax and unit tests"
 node --check "$ROOT_DIR/server/ui/inbox.js"
 node --check "$ROOT_DIR/server/ui/thread-layout.js"
 node --check "$ROOT_DIR/server/ui/refresh-coordinator.js"
+node --check "$ROOT_DIR/server/ui/composer-mentions.js"
 node --test "$ROOT_DIR/server/ui/"*.test.cjs
 
 echo "[check] shell script syntax"

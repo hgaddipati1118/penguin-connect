@@ -226,6 +226,10 @@ class SlackChannelAdapter:
             tuple[str, int],
             tuple[float, dict[str, Any]],
         ] = {}
+        self._participant_cache: dict[
+            str,
+            tuple[float, dict[str, Any]],
+        ] = {}
 
     def _api(
         self,
@@ -623,6 +627,101 @@ class SlackChannelAdapter:
                 if str(chat.get("last_message_at") or "") > cutoff
             ],
         }
+
+    def list_participants(
+        self,
+        chat_identifier: str,
+        limit: int = 1000,
+    ) -> dict[str, Any]:
+        channel_id = str(chat_identifier or "").strip()
+        if not channel_id:
+            return {
+                "available": False,
+                "reason": "slack_channel_required",
+                "participants": [],
+            }
+        if not _slack_token():
+            return {
+                "available": False,
+                "reason": "PENGUIN_CONNECT_SLACK_TOKEN not set",
+                "participants": [],
+            }
+        with self._lock:
+            cache_ttl = _env_int(
+                "PENGUIN_CONNECT_SLACK_PARTICIPANT_CACHE_SECONDS",
+                300,
+                15,
+                3600,
+            )
+            cached = self._participant_cache.get(channel_id)
+            if cached and time.monotonic() - cached[0] < cache_ttl:
+                return copy.deepcopy(cached[1])
+            if not self._load_identity():
+                return {
+                    "available": False,
+                    "reason": "Slack authentication failed",
+                    "participants": [],
+                }
+            self._load_users()
+            member_ids: list[str] = []
+            seen: set[str] = set()
+            cursor = ""
+            safe_limit = _safe_limit(limit, default=1000)
+            while len(member_ids) < safe_limit:
+                payload = self._api(
+                    "conversations.members",
+                    params={
+                        "channel": channel_id,
+                        "limit": min(200, safe_limit - len(member_ids)),
+                        **({"cursor": cursor} if cursor else {}),
+                    },
+                )
+                if not payload.get("ok"):
+                    return {
+                        "available": False,
+                        "reason": payload.get("error") or "Slack unavailable",
+                        "participants": [],
+                    }
+                for raw_member_id in payload.get("members") or []:
+                    member_id = str(raw_member_id or "").strip()
+                    if not member_id or member_id in seen:
+                        continue
+                    seen.add(member_id)
+                    member_ids.append(member_id)
+                    if len(member_ids) >= safe_limit:
+                        break
+                cursor = str(
+                    (payload.get("response_metadata") or {}).get("next_cursor") or ""
+                ).strip()
+                if not cursor:
+                    break
+            participants = [
+                {
+                    "id": member_id,
+                    "display_name": self._resolve_user_name(member_id) or member_id,
+                    "avatar_url": self._user_avatars.get(member_id, ""),
+                    "is_self": bool(
+                        self._self_user_id and member_id == self._self_user_id
+                    ),
+                }
+                for member_id in member_ids
+            ]
+            participants.sort(
+                key=lambda participant: (
+                    str(participant["display_name"]).casefold(),
+                    str(participant["id"]),
+                )
+            )
+            result = {
+                "available": True,
+                "channel_id": channel_id,
+                "participants": participants,
+            }
+            self._participant_cache[channel_id] = (
+                time.monotonic(),
+                copy.deepcopy(result),
+            )
+            return result
 
     def fetch_messages(
         self,

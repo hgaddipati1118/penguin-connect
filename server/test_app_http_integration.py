@@ -228,6 +228,59 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(older["offset"], 1)
         self.assertNotEqual(older["messages"][0]["provider_message_id"], "imsg-latest")
 
+    def test_conversation_participants_endpoint_loads_slack_channel_members(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """INSERT INTO penguin_connect_conversations
+                   (gmail_email, conversation_id, source_provider, source_chat_id,
+                    source_chat_identifier, source_service_name, display_name, chat_type,
+                    participants, status, exclude_from_sync)
+                   VALUES ('owner@gmail.com', 'slack-channel', 'slack', 'C_PRODUCT',
+                           'C_PRODUCT', 'Slack', '#product', 'channel', '[]', 'active', 0)"""
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        adapter = mock.Mock()
+        adapter.list_participants.return_value = {
+            "available": True,
+            "channel_id": "C_PRODUCT",
+            "participants": [
+                {
+                    "id": "UANH",
+                    "display_name": "Anh",
+                    "avatar_url": "https://cdn.example.test/anh.png",
+                    "is_self": False,
+                },
+            ],
+        }
+
+        with mock.patch("app.get_channel_adapter", return_value=adapter), TestClient(
+            app_module.app
+        ) as client:
+            response = client.get(
+                "/penguin-connect/conversations/slack-channel/participants"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {
+            "success": True,
+            "conversation_id": "slack-channel",
+            "provider": "slack",
+            "chat_type": "channel",
+            "available": True,
+            "participants": [
+                {
+                    "id": "UANH",
+                    "display_name": "Anh",
+                    "avatar_url": "https://cdn.example.test/anh.png",
+                    "is_self": False,
+                },
+            ],
+        })
+        adapter.list_participants.assert_called_once_with("C_PRODUCT")
+
     def test_sparse_compact_messages_keep_render_fields_and_drop_bridge_metadata(self):
         result = {
             "found": True,
@@ -3562,6 +3615,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
             refresh_coordinator_js_response = client.get(
                 "/penguin-connect/ui/refresh-coordinator.js",
             )
+            composer_mentions_js_response = client.get(
+                "/penguin-connect/ui/composer-mentions.js",
+            )
             html_response = client.get("/penguin-connect/console")
             css_response = client.get("/penguin-connect/ui/app.css")
             js_response = client.get("/penguin-connect/ui/app.js")
@@ -3607,6 +3663,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
             'src="/penguin-connect/ui/refresh-coordinator.js"',
             inbox_response.text,
         )
+        self.assertIn(
+            'src="/penguin-connect/ui/composer-mentions.js"',
+            inbox_response.text,
+        )
         self.assertEqual(inbox_js_response.status_code, 200)
         self.assertEqual(inbox_js_response.headers["cache-control"], "no-store")
         self.assertEqual(thread_layout_js_response.status_code, 200)
@@ -3621,6 +3681,13 @@ class AppHttpIntegrationTests(unittest.TestCase):
             "createRefreshCoordinator",
             refresh_coordinator_js_response.text,
         )
+        self.assertEqual(composer_mentions_js_response.status_code, 200)
+        self.assertEqual(
+            composer_mentions_js_response.headers["cache-control"],
+            "no-store",
+        )
+        self.assertIn("encodeProviderMentions", composer_mentions_js_response.text)
+        self.assertIn("renderProviderMentions", composer_mentions_js_response.text)
         self.assertIn("loadConversations", inbox_js_response.text)
         self.assertIn("hasCachedMessage", inbox_js_response.text)
         self.assertIn("conversation?.chat_type === \"group\" && displayName", inbox_js_response.text)
@@ -3652,6 +3719,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("/penguin-connect/attachment-library?limit=200", inbox_js_response.text)
         self.assertIn("/penguin-connect/attachment-library/status", inbox_js_response.text)
         self.assertIn("renderMentionSuggestions", inbox_js_response.text)
+        self.assertIn("loadMentionParticipants", inbox_js_response.text)
+        self.assertIn("conversationSupportsMentions", inbox_js_response.text)
+        self.assertIn("pending.providerText", inbox_js_response.text)
         self.assertIn("event.stopPropagation()", inbox_js_response.text)
         self.assertIn('query.set("fast", "true")', inbox_js_response.text)
         self.assertIn("CONVERSATION_RENDER_BATCH = 120", inbox_js_response.text)
