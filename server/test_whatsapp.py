@@ -160,6 +160,57 @@ class WhatsAppAdapterTests(unittest.TestCase):
         self.assertEqual(chat["name"], "Dhruv Example")
         self.assertEqual(chat["participants"], [phone])
 
+    def test_list_conversations_resolves_bare_lid_group_participants(self):
+        lid = "999000111222333"
+        phone = "15550101999"
+        group_jid = "120363047891234567@g.us"
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "bare-lid-group-msg",
+                group_jid,
+                lid,
+                "Hello from a bare LID",
+                "2026-03-15T12:00:00",
+                0,
+                None,
+                None,
+            ),
+        )
+        conn.execute(
+            "UPDATE chats SET last_message_time = ? WHERE jid = ?",
+            ("2026-03-15T12:00:00", group_jid),
+        )
+        conn.commit()
+        conn.close()
+        with tempfile.NamedTemporaryFile(suffix=".db") as metadata_file:
+            metadata = sqlite3.connect(metadata_file.name)
+            metadata.execute("CREATE TABLE whatsmeow_lid_map (lid TEXT PRIMARY KEY, pn TEXT UNIQUE NOT NULL)")
+            metadata.execute(
+                """CREATE TABLE whatsmeow_contacts (
+                    our_jid TEXT, their_jid TEXT, first_name TEXT, full_name TEXT,
+                    push_name TEXT, business_name TEXT, redacted_phone TEXT
+                )"""
+            )
+            metadata.execute("INSERT INTO whatsmeow_lid_map VALUES (?, ?)", (lid, phone))
+            metadata.execute(
+                "INSERT INTO whatsmeow_contacts VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("me@s.whatsapp.net", f"{lid}@lid", "", "", "Taylor Example", None, None),
+            )
+            metadata.commit()
+            metadata.close()
+            with mock.patch.dict(
+                os.environ,
+                {"PENGUIN_CONNECT_WHATSAPP_METADATA_DB_PATH": metadata_file.name},
+            ):
+                result = self.adapter.list_conversations()
+
+        chat = next(item for item in result["chats"] if item["chat_id"] == group_jid)
+        self.assertIn(phone, chat["participants"])
+        self.assertNotIn(lid, chat["participants"])
+        self.assertEqual(chat["latest_message"]["push_name"], "Taylor Example")
+
     def test_list_conversations_source_provider(self):
         result = self.adapter.list_conversations()
         for chat in result["chats"]:
@@ -284,6 +335,52 @@ class WhatsAppAdapterTests(unittest.TestCase):
         messages = self.adapter.fetch_messages("14155551234@s.whatsapp.net", limit=50)
         incoming = [m for m in messages if not m["is_from_me"] and m["text"]]
         self.assertEqual(incoming[0]["push_name"], "Alice")
+
+    def test_fetch_messages_resolves_bare_lid_sender(self):
+        lid = "999000111222333"
+        phone = "15550101999"
+        group_jid = "120363047891234567@g.us"
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            "INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "bare-lid-fetch-msg",
+                group_jid,
+                lid,
+                "Hello from a bare LID",
+                "2026-03-15T12:00:00",
+                0,
+                None,
+                None,
+            ),
+        )
+        conn.commit()
+        conn.close()
+        with tempfile.NamedTemporaryFile(suffix=".db") as metadata_file:
+            metadata = sqlite3.connect(metadata_file.name)
+            metadata.execute("CREATE TABLE whatsmeow_lid_map (lid TEXT PRIMARY KEY, pn TEXT UNIQUE NOT NULL)")
+            metadata.execute(
+                """CREATE TABLE whatsmeow_contacts (
+                    our_jid TEXT, their_jid TEXT, first_name TEXT, full_name TEXT,
+                    push_name TEXT, business_name TEXT, redacted_phone TEXT
+                )"""
+            )
+            metadata.execute("INSERT INTO whatsmeow_lid_map VALUES (?, ?)", (lid, phone))
+            metadata.execute(
+                "INSERT INTO whatsmeow_contacts VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("me@s.whatsapp.net", f"{lid}@lid", "", "", "Taylor Example", None, None),
+            )
+            metadata.commit()
+            metadata.close()
+            with mock.patch.dict(
+                os.environ,
+                {"PENGUIN_CONNECT_WHATSAPP_METADATA_DB_PATH": metadata_file.name},
+            ):
+                messages = self.adapter.fetch_messages(group_jid, limit=50)
+
+        message = next(item for item in messages if item["native_message_id"] == "bare-lid-fetch-msg")
+        self.assertEqual(message["push_name"], "Taylor Example")
+        self.assertEqual(message["resolved_phone"], phone)
 
     def test_fetch_messages_no_db(self):
         with mock.patch.dict(os.environ, {"PENGUIN_CONNECT_WHATSAPP_DB_PATH": "/nonexistent/db.sqlite"}):

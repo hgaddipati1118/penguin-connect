@@ -2697,6 +2697,41 @@ function slackThreadRenderRows(sortedRows) {
   return renderRows;
 }
 
+function messageNativeId(message) {
+  return String(
+    message?.metadata?.native_guid
+    || message?.metadata?.native_message_id
+    || "",
+  ).trim();
+}
+
+function nativeReplyDepth(message, messagesByNativeId) {
+  if (isSlackThreadReply(message)) return 0;
+  let parentId = String(message?.metadata?.reply_context?.message_id || "").trim();
+  if (!parentId) return 0;
+  let depth = 0;
+  const seen = new Set([messageNativeId(message)]);
+  while (parentId && depth < 3 && !seen.has(parentId)) {
+    depth += 1;
+    seen.add(parentId);
+    const parent = messagesByNativeId.get(parentId);
+    if (!parent) break;
+    parentId = String(parent.metadata?.reply_context?.message_id || "").trim();
+  }
+  return depth;
+}
+
+function nativeReplyCounts(messages) {
+  const counts = new Map();
+  for (const message of messages) {
+    if (isSlackThreadReply(message)) continue;
+    const parentId = String(message?.metadata?.reply_context?.message_id || "").trim();
+    if (!parentId) continue;
+    counts.set(parentId, (counts.get(parentId) || 0) + 1);
+  }
+  return counts;
+}
+
 function renderReplyTarget() {
   const target = state.replyTarget;
   el.composerReplyContext.hidden = !target;
@@ -2839,6 +2874,8 @@ function handleMessageListAction(event) {
 function messageRenderFingerprint(message, {
   isThreadReply,
   isThreadLastReply,
+  replyDepth,
+  nativeReplyCount,
   parentMessage,
   reactions,
 } = {}) {
@@ -2848,6 +2885,8 @@ function messageRenderFingerprint(message, {
     state.selected?.chat_type || "",
     Boolean(isThreadReply),
     Boolean(isThreadLastReply),
+    Number(replyDepth || 0),
+    Number(nativeReplyCount || 0),
     message,
     parentMessage?.sender_name || "",
     parentMessage?.body_text || "",
@@ -2908,13 +2947,10 @@ function renderMessages({
   ));
   const messagesByNativeId = new Map();
   for (const message of sortedRows) {
-    const nativeId = String(
-      message.metadata?.native_guid
-      || message.metadata?.native_message_id
-      || "",
-    );
+    const nativeId = messageNativeId(message);
     if (nativeId) messagesByNativeId.set(nativeId, message);
   }
+  const replyCountsByNativeId = nativeReplyCounts(sortedRows);
   const nativeReactions = reactionsByTarget(sortedRows);
   if (focusMessageId) {
     const focusedIndex = sortedRows.findIndex(
@@ -2951,6 +2987,8 @@ function renderMessages({
     const messageProvider = providerKey(state.selected?.source_provider);
     const replyCount = Number(message.metadata?.reply_count || 0);
     const replyContext = message.metadata?.reply_context;
+    const replyDepth = nativeReplyDepth(message, messagesByNativeId);
+    const nativeReplyCount = replyCountsByNativeId.get(messageNativeId(message)) || 0;
     const parentMessage = replyContext?.message_id
       ? messagesByNativeId.get(String(replyContext.message_id))
       : null;
@@ -2960,6 +2998,8 @@ function renderMessages({
     const renderFingerprint = messageRenderFingerprint(message, {
       isThreadReply,
       isThreadLastReply,
+      replyDepth,
+      nativeReplyCount,
       parentMessage,
       reactions,
     });
@@ -2982,17 +3022,18 @@ function renderMessages({
       messageProvider === "slack" ? "slack-message" : "",
       isThreadReply ? "message-thread-reply" : "",
       isThreadLastReply ? "message-thread-last-reply" : "",
+      replyDepth ? "message-native-reply" : "",
+      nativeReplyCount ? "message-has-native-replies" : "",
     ].filter(Boolean).join(" ");
     row.dataset.messageId = message.provider_message_id || "";
-    row.dataset.nativeMessageId = String(
-      message.metadata?.native_guid
-      || message.metadata?.native_message_id
-      || "",
-    );
+    row.dataset.nativeMessageId = messageNativeId(message);
     row.dataset.threadRoot = isThreadReply
       ? slackThreadRootId(message)
       : (messageProvider === "slack" && replyCount > 0 ? slackNativeMessageId(message) : "");
     row.dataset.threadDepth = isThreadReply ? "1" : "0";
+    row.dataset.replyDepth = String(replyDepth);
+    row.dataset.replyParent = String(replyContext?.message_id || "");
+    if (replyDepth) row.style.setProperty("--reply-depth", String(replyDepth));
     row.dataset.searchText = [
       message.body_text,
       message.sender_name,
@@ -3129,6 +3170,14 @@ function renderMessages({
       const unread = document.createElement("span");
       unread.textContent = "Unread";
       meta.append(unread);
+    }
+    if (nativeReplyCount) {
+      const replyCountLabel = document.createElement("span");
+      replyCountLabel.className = "message-native-reply-count";
+      replyCountLabel.textContent = `${nativeReplyCount} ${
+        nativeReplyCount === 1 ? "reply" : "replies"
+      }`;
+      meta.append(replyCountLabel);
     }
     stack.append(bubble, meta);
     const pin = document.createElement("button");

@@ -2579,6 +2579,63 @@ class PenguinConnectTests(unittest.TestCase):
             since_native_message_id=None,
         )
 
+    def test_get_conversation_messages_repairs_cached_whatsapp_lid_sender_names(self):
+        self.conn.execute("DELETE FROM penguin_connect_messages")
+        self.conn.execute("DELETE FROM penguin_connect_accounts")
+        self.conn.execute(
+            """UPDATE penguin_connect_conversations
+               SET gmail_email = ?, source_provider = 'whatsapp',
+                   source_chat_id = ?, source_chat_identifier = ?, alias_email = NULL
+               WHERE conversation_id = ?""",
+            (
+                penguin_connect.LOCAL_MESSAGES_ACCOUNT_EMAIL,
+                "120363047891234567@g.us",
+                "120363047891234567@g.us",
+                "amc_test",
+            ),
+        )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_messages
+               (conversation_id, provider, provider_message_id, direction,
+                sender_name, subject, body_text, message_timestamp, is_read, metadata)
+               VALUES (?, 'whatsapp', ?, 'whatsapp_local', ?, ?, ?, ?, 1, ?)""",
+            (
+                "amc_test",
+                "whatsapp:bare-lid-message",
+                "999000111222333",
+                "WhatsApp · Family Group",
+                "Cached message",
+                "2026-03-04T09:00:00+00:00",
+                json.dumps({"native_message_id": "bare-lid-message", "local_cache_only": True}),
+            ),
+        )
+        self.conn.commit()
+        fake_channel = mock.Mock()
+        fake_channel.resolve_identities.return_value = {
+            "999000111222333": {
+                "phone": "15550101999",
+                "name": "Taylor Example",
+            }
+        }
+
+        with mock.patch.object(penguin_connect, "_WHATSAPP_CHANNEL", fake_channel):
+            result = penguin_connect.get_conversation_messages(
+                self.conn,
+                "amc_test",
+                limit=50,
+                refresh_source=False,
+            )
+
+        self.assertEqual(result["messages"][0]["sender_name"], "Taylor Example")
+        stored = self.conn.execute(
+            """SELECT sender_name
+               FROM penguin_connect_messages
+               WHERE conversation_id = ? AND provider_message_id = ?""",
+            ("amc_test", "whatsapp:bare-lid-message"),
+        ).fetchone()
+        self.assertEqual(stored["sender_name"], "Taylor Example")
+        fake_channel.resolve_identities.assert_called_once_with(["999000111222333"])
+
     def test_get_conversation_messages_caches_slack_threads_with_native_provider_identity(self):
         self.conn.execute("DELETE FROM penguin_connect_messages")
         self.conn.execute("DELETE FROM penguin_connect_accounts")
@@ -2746,6 +2803,86 @@ class PenguinConnectTests(unittest.TestCase):
                 before_native_message_id="wa-2",
             ),
         )
+
+    def test_completed_whatsapp_backfill_repairs_recent_native_reply_context(self):
+        self.conn.execute("DELETE FROM penguin_connect_messages")
+        self.conn.execute("DELETE FROM penguin_connect_sync_state")
+        self.conn.execute(
+            """UPDATE penguin_connect_conversations
+               SET gmail_email = ?, source_provider = 'whatsapp',
+                   source_chat_id = ?, source_chat_identifier = ?, alias_email = NULL
+               WHERE conversation_id = ?""",
+            (
+                penguin_connect.LOCAL_MESSAGES_ACCOUNT_EMAIL,
+                "120363047891234567@g.us",
+                "120363047891234567@g.us",
+                "amc_test",
+            ),
+        )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_messages
+               (conversation_id, provider, provider_message_id, direction,
+                sender_name, subject, body_text, message_timestamp, is_read, metadata)
+               VALUES (?, 'whatsapp', ?, 'whatsapp_local', ?, ?, ?, ?, 1, ?)""",
+            (
+                "amc_test",
+                "whatsapp:wa-reply",
+                "Synthetic Person",
+                "WhatsApp · Family Group",
+                "Nested response",
+                "2026-03-04T09:03:00+00:00",
+                json.dumps({"native_message_id": "wa-reply", "local_cache_only": True}),
+            ),
+        )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_sync_state
+               (conversation_id, last_source_ts, last_source_native_message_id,
+                local_cache_backfill_completed_at)
+               VALUES (?, ?, ?, datetime('now'))""",
+            ("amc_test", "2026-03-04T09:03:00+00:00", "wa-reply"),
+        )
+        self.conn.commit()
+        fake_channel = mock.Mock()
+        fake_channel.fetch_messages.return_value = [
+            {
+                "native_message_id": "wa-reply",
+                "timestamp": "2026-03-04T09:03:00+00:00",
+                "text": "Nested response",
+                "is_from_me": False,
+                "handle": "15550000000@s.whatsapp.net",
+                "push_name": "Synthetic Person",
+                "attachments": [],
+                "reply_to_message_id": "wa-root",
+                "reply_to_sender": "Another Person",
+                "reply_to_text": "Root message",
+            }
+        ]
+
+        with mock.patch.object(penguin_connect, "_WHATSAPP_CHANNEL", fake_channel), mock.patch(
+            "penguin_connect._resolve_sender_and_subject",
+            return_value=("Synthetic Person", "Family Group"),
+        ):
+            result = penguin_connect.backfill_local_conversation_cache(
+                self.conn,
+                "amc_test",
+                limit=120,
+            )
+
+        self.assertEqual(result, {"found": True, "imported": 0, "completed": True})
+        fake_channel.fetch_messages.assert_called_once_with(
+            "120363047891234567@g.us",
+            limit=120,
+            since=None,
+            since_native_message_id=None,
+        )
+        stored = self.conn.execute(
+            """SELECT metadata FROM penguin_connect_messages
+               WHERE conversation_id = ? AND provider_message_id = ?""",
+            ("amc_test", "whatsapp:wa-reply"),
+        ).fetchone()
+        reply_context = json.loads(stored["metadata"])["reply_context"]
+        self.assertEqual(reply_context["message_id"], "wa-root")
+        self.assertEqual(reply_context["sender"], "Another Person")
 
     def test_get_conversation_messages_does_not_cache_local_rows_for_gmail_backed_conversation(self):
         self.conn.execute("DELETE FROM penguin_connect_messages")

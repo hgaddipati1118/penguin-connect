@@ -96,38 +96,12 @@ def _reply_preview(media_type: str, filename: str) -> str:
 
 def _whatsapp_identity(conn: Optional[sqlite3.Connection], jid: str) -> dict[str, str]:
     raw_jid = (jid or "").strip()
-    fallback = _jid_to_phone(raw_jid)
-    if conn is None or not raw_jid or _is_group_jid(raw_jid):
-        return {"phone": fallback, "name": ""}
-    resolved_phone = fallback
-    if raw_jid.endswith("@lid"):
-        row = conn.execute(
-            "SELECT pn FROM whatsmeow_lid_map WHERE lid = ? LIMIT 1",
-            (fallback,),
-        ).fetchone()
-        if row and row["pn"]:
-            resolved_phone = str(row["pn"])
-    candidate_jids = [raw_jid]
-    phone_jid = f"{resolved_phone}@s.whatsapp.net"
-    if phone_jid not in candidate_jids:
-        candidate_jids.append(phone_jid)
-    placeholders = ",".join("?" for _ in candidate_jids)
-    rows = conn.execute(
-        f"""SELECT their_jid, first_name, full_name, push_name, business_name
-            FROM whatsmeow_contacts
-            WHERE their_jid IN ({placeholders})""",
-        candidate_jids,
-    ).fetchall()
-    by_jid = {row["their_jid"]: row for row in rows}
-    ordered = [by_jid.get(jid_value) for jid_value in candidate_jids]
-    for row in ordered:
-        if not row:
-            continue
-        for key in ("full_name", "first_name", "business_name", "push_name"):
-            value = str(row[key] or "").strip()
-            if value:
-                return {"phone": resolved_phone, "name": value}
-    return {"phone": resolved_phone, "name": ""}
+    if not raw_jid:
+        return {"phone": "", "name": ""}
+    return _whatsapp_identity_cache(conn, [raw_jid]).get(
+        raw_jid,
+        {"phone": _jid_to_phone(raw_jid), "name": ""},
+    )
 
 
 def _whatsapp_identity_cache(
@@ -135,7 +109,11 @@ def _whatsapp_identity_cache(
     jids: list[str],
 ) -> dict[str, dict[str, str]]:
     """Resolve a discovery batch without issuing queries per conversation."""
-    raw_jids = [str(jid or "").strip() for jid in jids if str(jid or "").strip()]
+    raw_jids = list(dict.fromkeys(
+        str(jid or "").strip()
+        for jid in jids
+        if str(jid or "").strip()
+    ))
     identities = {
         jid: {"phone": _jid_to_phone(jid), "name": ""}
         for jid in raw_jids
@@ -144,42 +122,82 @@ def _whatsapp_identity_cache(
         return identities
 
     lid_to_phone: dict[str, str] = {}
-    try:
-        lid_to_phone = {
-            str(row["lid"]): str(row["pn"])
-            for row in conn.execute("SELECT lid, pn FROM whatsmeow_lid_map")
-            if row["lid"] and row["pn"]
-        }
-    except sqlite3.Error:
-        lid_to_phone = {}
+    lid_candidates = list(dict.fromkeys(
+        _jid_to_phone(jid)
+        for jid in raw_jids
+        if (
+            jid.endswith("@lid")
+            or ("@" not in jid and _jid_to_phone(jid).isdigit())
+        )
+    ))
+    for chunk_start in range(0, len(lid_candidates), 800):
+        chunk = lid_candidates[chunk_start:chunk_start + 800]
+        placeholders = ",".join("?" for _ in chunk)
+        try:
+            rows = conn.execute(
+                f"SELECT lid, pn FROM whatsmeow_lid_map WHERE lid IN ({placeholders})",
+                chunk,
+            ).fetchall()
+        except sqlite3.Error:
+            rows = []
+        for row in rows:
+            if row["lid"] and row["pn"]:
+                lid_to_phone[str(row["lid"])] = str(row["pn"])
 
     names_by_jid: dict[str, str] = {}
-    try:
-        rows = conn.execute(
-            """SELECT their_jid, first_name, full_name, push_name, business_name
-               FROM whatsmeow_contacts"""
-        ).fetchall()
-    except sqlite3.Error:
-        rows = []
-    for row in rows:
-        their_jid = str(row["their_jid"] or "").strip()
-        if not their_jid or names_by_jid.get(their_jid):
+    candidates_by_jid: dict[str, list[str]] = {}
+    contact_jids: list[str] = []
+    for jid in raw_jids:
+        if _is_group_jid(jid):
             continue
-        for key in ("full_name", "first_name", "business_name", "push_name"):
-            value = str(row[key] or "").strip()
-            if value:
-                names_by_jid[their_jid] = value
-                break
+        raw_phone = _jid_to_phone(jid)
+        mapped_phone = lid_to_phone.get(raw_phone, "")
+        phone = mapped_phone or raw_phone
+        candidate_jids = [jid]
+        if jid.endswith("@lid") or mapped_phone:
+            candidate_jids.append(f"{raw_phone}@lid")
+        candidate_jids.append(f"{phone}@s.whatsapp.net")
+        candidates_by_jid[jid] = list(dict.fromkeys(candidate_jids))
+        contact_jids.extend(candidates_by_jid[jid])
+
+    contact_jids = list(dict.fromkeys(contact_jids))
+    for chunk_start in range(0, len(contact_jids), 800):
+        chunk = contact_jids[chunk_start:chunk_start + 800]
+        placeholders = ",".join("?" for _ in chunk)
+        try:
+            rows = conn.execute(
+                f"""SELECT their_jid, first_name, full_name, push_name, business_name
+                    FROM whatsmeow_contacts
+                    WHERE their_jid IN ({placeholders})""",
+                chunk,
+            ).fetchall()
+        except sqlite3.Error:
+            rows = []
+        for row in rows:
+            their_jid = str(row["their_jid"] or "").strip()
+            if not their_jid or names_by_jid.get(their_jid):
+                continue
+            for key in ("full_name", "first_name", "business_name", "push_name"):
+                value = str(row[key] or "").strip()
+                if value:
+                    names_by_jid[their_jid] = value
+                    break
 
     for jid in raw_jids:
         if _is_group_jid(jid):
             continue
         raw_phone = _jid_to_phone(jid)
-        phone = lid_to_phone.get(raw_phone, raw_phone) if jid.endswith("@lid") else raw_phone
-        phone_jid = f"{phone}@s.whatsapp.net"
+        phone = lid_to_phone.get(raw_phone, raw_phone)
         identities[jid] = {
             "phone": phone,
-            "name": names_by_jid.get(jid) or names_by_jid.get(phone_jid) or "",
+            "name": next(
+                (
+                    names_by_jid[candidate]
+                    for candidate in candidates_by_jid.get(jid, [])
+                    if names_by_jid.get(candidate)
+                ),
+                "",
+            ),
         }
     return identities
 
@@ -264,8 +282,8 @@ class WhatsAppChannelAdapter:
                 for row in rows
                 if str(row["latest_sender"] or "").strip()
             ]
-            identities = _whatsapp_identity_cache(metadata_conn, [*selected_jids, *latest_senders])
             participants_by_chat: dict[str, list[str]] = {}
+            participant_senders: list[str] = []
             for chunk_start in range(0, len(selected_jids), 800):
                 jid_chunk = selected_jids[chunk_start:chunk_start + 800]
                 placeholders = ",".join("?" for _ in jid_chunk)
@@ -280,9 +298,14 @@ class WhatsAppChannelAdapter:
                     jid_chunk,
                 ).fetchall()
                 for participant_row in participant_rows:
-                    participants_by_chat.setdefault(participant_row["chat_jid"], []).append(
-                        participant_row["sender"]
-                    )
+                    sender = str(participant_row["sender"] or "").strip()
+                    participants_by_chat.setdefault(participant_row["chat_jid"], []).append(sender)
+                    participant_senders.append(sender)
+
+            identities = _whatsapp_identity_cache(
+                metadata_conn,
+                [*selected_jids, *latest_senders, *participant_senders],
+            )
 
             chats = []
             for row in rows:
@@ -292,7 +315,16 @@ class WhatsAppChannelAdapter:
                 source_name = (row["name"] or "").strip()
                 name = source_name or identity["name"] or identity["phone"]
 
-                participants = participants_by_chat.get(jid, []) if is_group else [identity["phone"]]
+                participants = (
+                    list(dict.fromkeys(
+                        (identities.get(participant) or {
+                            "phone": _jid_to_phone(participant),
+                        })["phone"]
+                        for participant in participants_by_chat.get(jid, [])
+                    ))
+                    if is_group
+                    else [identity["phone"]]
+                )
                 latest_sender = str(row["latest_sender"] or "").strip()
                 latest_sender_identity = identities.get(latest_sender) or {
                     "phone": _jid_to_phone(latest_sender),
@@ -525,6 +557,31 @@ class WhatsAppChannelAdapter:
                 params,
             ).fetchall()
 
+            sender_jids = [
+                str(row["sender"] or "").strip()
+                for row in rows
+                if str(row["sender"] or "").strip()
+            ]
+            if has_reply_context:
+                sender_jids.extend(
+                    str(row["reply_to_sender"] or "").strip()
+                    for row in rows
+                    if str(row["reply_to_sender"] or "").strip()
+                )
+            identities = _whatsapp_identity_cache(metadata_conn, sender_jids)
+            chat_names: dict[str, str] = {}
+            unique_sender_jids = list(dict.fromkeys(sender_jids))
+            for chunk_start in range(0, len(unique_sender_jids), 800):
+                chunk = unique_sender_jids[chunk_start:chunk_start + 800]
+                placeholders = ",".join("?" for _ in chunk)
+                for chat_row in conn.execute(
+                    f"SELECT jid, name FROM chats WHERE jid IN ({placeholders})",
+                    chunk,
+                ).fetchall():
+                    name = str(chat_row["name"] or "").strip()
+                    if name:
+                        chat_names[str(chat_row["jid"])] = name
+
             messages = []
             for row in rows:
                 text = row["content"] or ""
@@ -549,14 +606,16 @@ class WhatsAppChannelAdapter:
                     continue
 
                 sender_jid = row["sender"] or ""
-                identity = _whatsapp_identity(metadata_conn, sender_jid)
-                chat_name = identity["name"] or None
-                if sender_jid:
-                    name_row = conn.execute(
-                        "SELECT name FROM chats WHERE jid = ? LIMIT 1", (sender_jid,)
-                    ).fetchone()
-                    if name_row:
-                        chat_name = name_row["name"]
+                identity = identities.get(sender_jid) or {
+                    "phone": _jid_to_phone(sender_jid),
+                    "name": "",
+                }
+                chat_name = chat_names.get(sender_jid) or identity["name"]
+                reply_sender = str(row["reply_to_sender"] or "").strip() if has_reply_context else ""
+                reply_identity = identities.get(reply_sender) or {
+                    "phone": _jid_to_phone(reply_sender),
+                    "name": "",
+                }
 
                 messages.append(
                     {
@@ -566,12 +625,14 @@ class WhatsAppChannelAdapter:
                         "service": "WhatsApp",
                         "handle": sender_jid,
                         "push_name": chat_name or _jid_to_phone(sender_jid),
+                        "resolved_phone": identity["phone"],
                         "attachments": attachments,
                         "native_message_id": row["id"],
                         **(
                             {
                                 "reply_to_message_id": row["reply_to_message_id"] or "",
-                                "reply_to_sender": row["reply_to_sender"] or "",
+                                "reply_to_sender": reply_identity["name"]
+                                or reply_identity["phone"],
                                 "reply_to_text": row["reply_to_text"] or "",
                             }
                             if has_reply_context and row["reply_to_message_id"]
@@ -607,6 +668,14 @@ class WhatsAppChannelAdapter:
 
     def download_attachment(self, chat_jid: str, message_id: str) -> Optional[str]:
         return self._download_media(chat_jid, message_id)
+
+    def resolve_identities(self, jids: list[str]) -> dict[str, dict[str, str]]:
+        metadata_conn = _open_whatsapp_metadata_db()
+        try:
+            return _whatsapp_identity_cache(metadata_conn, jids)
+        finally:
+            if metadata_conn is not None:
+                metadata_conn.close()
 
     def send_message(
         self,
@@ -707,20 +776,21 @@ class WhatsAppChannelAdapter:
         looks_like_unresolved_handle: LooksLikeUnresolvedHandle,
     ) -> tuple[str, str]:
         handle = (msg.get("handle") or "").strip()
+        resolved_phone = (msg.get("resolved_phone") or _jid_to_phone(handle)).strip()
         push_name = (msg.get("push_name") or "").strip()
 
         if msg.get("is_from_me"):
             sender_name = "Me"
         else:
-            contact_name = lookup_contact_name(conn, _jid_to_phone(handle))
-            sender_name = contact_name or push_name or _jid_to_phone(handle) or "WhatsApp"
+            contact_name = lookup_contact_name(conn, resolved_phone)
+            sender_name = contact_name or push_name or resolved_phone or "WhatsApp"
 
         display_name = (conv["display_name"] or "").strip()
         if display_name and not looks_like_unresolved_handle(display_name):
             subject_name = display_name
         elif (conv["chat_type"] or "").strip().lower() == "dm":
-            contact_name = lookup_contact_name(conn, _jid_to_phone(handle))
-            subject_name = contact_name or push_name or display_name or _jid_to_phone(handle) or "Conversation"
+            contact_name = lookup_contact_name(conn, resolved_phone)
+            subject_name = contact_name or push_name or display_name or resolved_phone or "Conversation"
         else:
             subject_name = display_name or "Conversation"
 

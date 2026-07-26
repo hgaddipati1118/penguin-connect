@@ -5047,13 +5047,18 @@ def get_conversation_messages(
                     include_history=True,
                 )
         else:
+            source_provider = _conversation_source_provider(conv)
             _cache_local_source_messages_for_view(
                 conn,
                 conv,
                 limit=refresh_limit,
                 include_history=True,
-                backfill_history=_conversation_source_provider(conv)
-                in {"imessage", "apple_messages", "sms", "rcs", "whatsapp"},
+                # WhatsApp's selected-conversation repair must always read the
+                # newest page so newly available reply context and contact
+                # names can update existing cache rows. Its durable older-page
+                # walk runs through the separate cache-backfill endpoint.
+                backfill_history=source_provider
+                in {"imessage", "apple_messages", "sms", "rcs"},
             )
 
     account = conn.execute(
@@ -5092,6 +5097,42 @@ def get_conversation_messages(
 
     messages = []
     source_provider = _conversation_source_provider(conv)
+    sender_name_repairs: dict[str, str] = {}
+    if source_provider == "whatsapp" and _WHATSAPP_CHANNEL is not None:
+        unresolved_names = list(dict.fromkeys(
+            str(row["sender_name"] or "").strip()
+            for row in rows
+            if _looks_like_unresolved_handle(str(row["sender_name"] or ""))
+        ))
+        if unresolved_names:
+            try:
+                identities = _WHATSAPP_CHANNEL.resolve_identities(unresolved_names)
+            except Exception:
+                identities = {}
+            repair_rows: list[tuple[str, str, str]] = []
+            for row in rows:
+                stored_name = str(row["sender_name"] or "").strip()
+                if stored_name not in identities:
+                    continue
+                identity = identities.get(stored_name) or {}
+                resolved_phone = str(identity.get("phone") or "").strip()
+                resolved_name = (
+                    _lookup_contact_name(conn, resolved_phone)
+                    or str(identity.get("name") or "").strip()
+                )
+                if not resolved_name or _looks_like_unresolved_handle(resolved_name):
+                    continue
+                provider_message_id = str(row["provider_message_id"] or "")
+                sender_name_repairs[provider_message_id] = resolved_name
+                repair_rows.append((resolved_name, conversation_id, provider_message_id))
+            if repair_rows:
+                conn.executemany(
+                    """UPDATE penguin_connect_messages
+                       SET sender_name = ?
+                       WHERE conversation_id = ? AND provider_message_id = ?""",
+                    repair_rows,
+                )
+                conn.commit()
     for row in rows:
         metadata = {}
         try:
@@ -5103,7 +5144,10 @@ def get_conversation_messages(
             row["direction"] in {"email_to_imessage", "manual_to_imessage"}
             and _normalize_email(row["sender_email"]) in own_sender_emails
         )
-        sender_name = row["sender_name"]
+        sender_name = sender_name_repairs.get(
+            str(row["provider_message_id"] or ""),
+            row["sender_name"],
+        )
         if is_own_imessage_message:
             sender_name = "Me"
         elif is_own_gmail_message:
@@ -5167,6 +5211,15 @@ def backfill_local_conversation_cache(
         (conversation_id,),
     ).fetchone()
     if state and state["local_cache_backfill_completed_at"]:
+        if _conversation_source_provider(conv) == "whatsapp":
+            imported = _cache_local_source_messages_for_view(
+                conn,
+                conv,
+                limit=max(1, min(int(limit or 5000), 5000)),
+                include_history=True,
+                backfill_history=False,
+            )
+            return {"found": True, "imported": imported, "completed": True}
         return {"found": True, "imported": 0, "completed": True}
 
     imported = _cache_local_source_messages_for_view(

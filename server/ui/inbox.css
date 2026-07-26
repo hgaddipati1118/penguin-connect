@@ -1232,6 +1232,43 @@ kbd {
   bottom: calc(100% - 17px);
 }
 
+.message-row.message-native-reply {
+  position: relative;
+  padding-left: min(calc(var(--reply-depth, 1) * 15px), 45px);
+}
+
+.message-row.message-native-reply.mine {
+  padding-right: min(calc(var(--reply-depth, 1) * 15px), 45px);
+  padding-left: 0;
+}
+
+.message-row.message-native-reply::before,
+.message-row.message-native-reply::after {
+  position: absolute;
+  left: max(4px, calc((var(--reply-depth, 1) - 1) * 15px + 4px));
+  background: color-mix(in srgb, var(--provider-color, #5d9b78) 34%, transparent);
+  content: "";
+  pointer-events: none;
+}
+
+.message-row.message-native-reply.mine::before,
+.message-row.message-native-reply.mine::after {
+  right: max(4px, calc((var(--reply-depth, 1) - 1) * 15px + 4px));
+  left: auto;
+}
+
+.message-row.message-native-reply::before {
+  top: -6px;
+  bottom: 50%;
+  width: 1px;
+}
+
+.message-row.message-native-reply::after {
+  top: 50%;
+  width: 10px;
+  height: 1px;
+}
+
 .message-stack {
   max-width: min(610px, 76%);
 }
@@ -1422,6 +1459,11 @@ kbd {
 
 .message-receipt {
   color: #5f776b;
+}
+
+.message-native-reply-count {
+  color: #4e765f;
+  font-weight: 700;
 }
 
 .message-reactions {
