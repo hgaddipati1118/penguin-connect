@@ -3679,6 +3679,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(thread_layout_js_response.status_code, 200)
         self.assertEqual(thread_layout_js_response.headers["cache-control"], "no-store")
         self.assertIn("planSlackThreadDefaults", thread_layout_js_response.text)
+        self.assertIn("planSlackAuthorGroups", thread_layout_js_response.text)
         self.assertEqual(refresh_coordinator_js_response.status_code, 200)
         self.assertEqual(
             refresh_coordinator_js_response.headers["cache-control"],
@@ -3828,7 +3829,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn('actionName === "toggle-thread"', inbox_js_response.text)
         self.assertIn('threadSummary.setAttribute("aria-expanded"', inbox_js_response.text)
         self.assertIn("message-author-avatar", inbox_js_response.text)
-        self.assertIn("thread_parent_name", inbox_js_response.text)
+        self.assertIn("slackAuthorGroups", inbox_js_response.text)
+        self.assertIn("message-author-continuation", inbox_css_response.text)
         self.assertIn("reply_users_count", inbox_js_response.text)
         self.assertIn("startSlackThreadReply", inbox_js_response.text)
         self.assertIn("startNativeReply", inbox_js_response.text)

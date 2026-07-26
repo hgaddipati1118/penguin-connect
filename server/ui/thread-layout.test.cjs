@@ -4,6 +4,7 @@ const test = require("node:test");
 const {
   buildSlackReplyTarget,
   firstUnreadMessageId,
+  planSlackAuthorGroups,
   planSlackThreadDefaults,
 } = require("./thread-layout.js");
 
@@ -63,6 +64,127 @@ test("does not collapse a single thread or orphan replies", () => {
 
   assert.equal(single.defaultOpenThreadId, "thread-a");
   assert.deepEqual(single.collapsedThreadIds, []);
+});
+
+test("groups consecutive Slack messages from the same author", () => {
+  const groups = planSlackAuthorGroups([
+    {
+      id: "message-1",
+      senderKey: "member-a",
+      timestamp: "2026-07-25T10:00:00Z",
+    },
+    {
+      id: "message-2",
+      senderKey: "member-a",
+      timestamp: "2026-07-25T10:02:00Z",
+    },
+  ]);
+
+  assert.deepEqual(groups, [
+    {
+      id: "message-1",
+      showAuthor: true,
+      continuesAuthor: false,
+      startsThread: false,
+    },
+    {
+      id: "message-2",
+      showAuthor: false,
+      continuesAuthor: true,
+      startsThread: false,
+    },
+  ]);
+});
+
+test("starts a new Slack author group when identity, time, or thread changes", () => {
+  const groups = planSlackAuthorGroups([
+    {
+      id: "root",
+      senderKey: "member-a",
+      timestamp: "2026-07-25T10:00:00Z",
+    },
+    {
+      id: "reply-1",
+      senderKey: "member-a",
+      threadRootId: "root",
+      isReply: true,
+      timestamp: "2026-07-25T10:01:00Z",
+    },
+    {
+      id: "reply-2",
+      senderKey: "member-b",
+      threadRootId: "root",
+      isReply: true,
+      timestamp: "2026-07-25T10:02:00Z",
+    },
+    {
+      id: "reply-3",
+      senderKey: "member-b",
+      threadRootId: "root",
+      isReply: true,
+      timestamp: "2026-07-25T10:10:00Z",
+    },
+  ]);
+
+  assert.deepEqual(groups.map((group) => ({
+    showAuthor: group.showAuthor,
+    startsThread: group.startsThread,
+  })), [
+    { showAuthor: true, startsThread: false },
+    { showAuthor: true, startsThread: true },
+    { showAuthor: true, startsThread: false },
+    { showAuthor: true, startsThread: false },
+  ]);
+});
+
+test("keeps consecutive replies by one author visually grouped inside one thread", () => {
+  const groups = planSlackAuthorGroups([
+    {
+      id: "reply-1",
+      senderKey: "member-a",
+      threadRootId: "root",
+      isReply: true,
+      timestamp: "2026-07-25T10:00:00Z",
+    },
+    {
+      id: "reply-2",
+      senderKey: "member-a",
+      threadRootId: "root",
+      isReply: true,
+      timestamp: "2026-07-25T10:01:00Z",
+    },
+  ]);
+
+  assert.equal(groups[0].startsThread, true);
+  assert.equal(groups[0].showAuthor, true);
+  assert.equal(groups[1].continuesAuthor, true);
+  assert.equal(groups[1].showAuthor, false);
+});
+
+test("repeats the author after a date or unread boundary", () => {
+  const groups = planSlackAuthorGroups([
+    {
+      id: "before-midnight",
+      senderKey: "member-a",
+      dateKey: "Jul 25",
+      timestamp: "2026-07-25T23:59:00Z",
+    },
+    {
+      id: "after-midnight",
+      senderKey: "member-a",
+      dateKey: "Jul 26",
+      timestamp: "2026-07-26T00:01:00Z",
+    },
+    {
+      id: "after-unread",
+      senderKey: "member-a",
+      dateKey: "Jul 26",
+      breakBefore: true,
+      timestamp: "2026-07-26T00:02:00Z",
+    },
+  ]);
+
+  assert.deepEqual(groups.map((group) => group.showAuthor), [true, true, true]);
 });
 
 test("targets the Slack thread root while preserving the exact clicked reply", () => {

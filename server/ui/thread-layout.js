@@ -34,6 +34,55 @@
     return String(unread[0]?.id || "").trim();
   }
 
+  function planSlackAuthorGroups(rows, {
+    maxGapMs = 5 * 60 * 1000,
+  } = {}) {
+    const groups = [];
+    let previous = null;
+    for (const row of rows || []) {
+      if (!row) continue;
+      const id = String(row.id || "").trim();
+      const senderKey = String(row.senderKey || "").trim().toLocaleLowerCase();
+      const threadRootId = String(row.threadRootId || "").trim();
+      const dateKey = String(row.dateKey || "").trim();
+      const isReply = Boolean(row.isReply);
+      const startsThread = Boolean(
+        isReply
+        && (
+          !previous?.isReply
+          || previous.threadRootId !== threadRootId
+        )
+      );
+      const timestamp = timestampValue(row.timestamp);
+      const gap = previous ? timestamp - previous.timestamp : Number.POSITIVE_INFINITY;
+      const continuesAuthor = Boolean(
+        previous
+        && !row.breakBefore
+        && !startsThread
+        && previous.senderKey === senderKey
+        && previous.isReply === isReply
+        && previous.threadRootId === threadRootId
+        && previous.dateKey === dateKey
+        && gap >= 0
+        && gap <= maxGapMs
+      );
+      groups.push({
+        id,
+        showAuthor: !continuesAuthor,
+        continuesAuthor,
+        startsThread,
+      });
+      previous = {
+        senderKey,
+        threadRootId,
+        dateKey,
+        isReply,
+        timestamp,
+      };
+    }
+    return groups;
+  }
+
   function planSlackThreadDefaults(rows, {
     preferredOpenThreadId = "",
   } = {}) {
@@ -74,6 +123,7 @@
   const api = Object.freeze({
     buildSlackReplyTarget,
     firstUnreadMessageId,
+    planSlackAuthorGroups,
     planSlackThreadDefaults,
   });
   root.PenguinThreadLayout = api;

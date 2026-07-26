@@ -2940,7 +2940,10 @@ function slackAuthorTone(value) {
   return hash % 6;
 }
 
-function slackMessageAuthor(message, { isThreadReply = false } = {}) {
+function slackMessageAuthor(message, {
+  isThreadReply = false,
+  showThreadContext = false,
+} = {}) {
   const mine = isOwnMessage(message);
   const authorName = mine
     ? "You"
@@ -2967,16 +2970,51 @@ function slackMessageAuthor(message, { isThreadReply = false } = {}) {
   author.append(avatar, name);
 
   const isThreadRoot = Number(message.metadata?.reply_count || 0) > 0;
-  if (isThreadReply || isThreadRoot) {
+  if (showThreadContext && (isThreadReply || isThreadRoot)) {
     const context = document.createElement("span");
     context.className = "message-author-context";
-    const parentName = String(message.metadata?.thread_parent_name || "").trim();
     context.textContent = isThreadReply
-      ? `Thread reply${parentName ? ` to ${parentName}` : ""}`
+      ? "Replies in thread"
       : "Thread starter";
     author.append(context);
   }
   return author;
+}
+
+function slackMessageSenderKey(message) {
+  return String(
+    message?.metadata?.sender_id
+    || message?.sender_email
+    || message?.sender_name
+    || (isOwnMessage(message) ? "you" : "slack-member"),
+  ).trim().toLocaleLowerCase();
+}
+
+function slackAuthorGroups(entries) {
+  if (
+    providerKey(state.selected?.source_provider) !== "slack"
+    || typeof window.PenguinThreadLayout?.planSlackAuthorGroups !== "function"
+  ) return [];
+  return window.PenguinThreadLayout.planSlackAuthorGroups(
+    (entries || []).map((entry) => {
+      const message = entry.message;
+      const isThreadRoot = Number(message.metadata?.reply_count || 0) > 0;
+      return {
+        id: message.provider_message_id,
+        senderKey: slackMessageSenderKey(message),
+        threadRootId: entry.isThreadReply
+          ? slackThreadRootId(message)
+          : (isThreadRoot ? slackNativeMessageId(message) : ""),
+        dateKey: fullDateLabel(message.message_timestamp),
+        breakBefore: (
+          String(message.provider_message_id || "")
+          === String(state.unreadBoundaryMessageId || "")
+        ),
+        isReply: Boolean(entry.isThreadReply),
+        timestamp: message.message_timestamp,
+      };
+    }),
+  );
 }
 
 function slackThreadLayoutInput(messages) {
@@ -3885,6 +3923,8 @@ function handleMessageListAction(event) {
 function messageRenderFingerprint(message, {
   isThreadReply,
   isThreadLastReply,
+  showSlackAuthor,
+  startsSlackThread,
   latestThreadReply,
   replyDepth,
   nativeReplyCount,
@@ -3898,6 +3938,8 @@ function messageRenderFingerprint(message, {
     state.selected?.chat_type || "",
     Boolean(isThreadReply),
     Boolean(isThreadLastReply),
+    Boolean(showSlackAuthor),
+    Boolean(startsSlackThread),
     latestThreadReply?.provider_message_id || "",
     latestThreadReply?.sender_name || "",
     latestThreadReply?.body_text || "",
@@ -4009,13 +4051,19 @@ function renderMessages({
   let lastDate = "";
   let unreadDividerRendered = false;
   const rows = slackThreadRenderRows(sortedRows);
-  for (const entry of rows) {
+  const slackAuthorPlan = slackAuthorGroups(rows);
+  for (const [rowIndex, entry] of rows.entries()) {
     const {
       message,
       isThreadReply,
       isThreadLastReply,
       latestThreadReply,
     } = entry;
+    const authorGroup = slackAuthorPlan[rowIndex] || {
+      showAuthor: true,
+      continuesAuthor: false,
+      startsThread: false,
+    };
     const date = fullDateLabel(message.message_timestamp);
     if (!isThreadReply && date !== lastDate) {
       const divider = document.createElement("div");
@@ -4064,6 +4112,8 @@ function renderMessages({
     const renderFingerprint = messageRenderFingerprint(message, {
       isThreadReply,
       isThreadLastReply,
+      showSlackAuthor: authorGroup.showAuthor,
+      startsSlackThread: authorGroup.startsThread,
       latestThreadReply,
       replyDepth,
       nativeReplyCount,
@@ -4092,6 +4142,11 @@ function renderMessages({
       message.provider_message_id === state.focusedMessageId ? "message-focused" : "",
       isThreadReply ? "message-thread-reply" : "",
       isThreadLastReply ? "message-thread-last-reply" : "",
+      authorGroup.startsThread ? "message-thread-first-reply" : "",
+      messageProvider === "slack" && replyCount > 0 ? "message-thread-root" : "",
+      messageProvider === "slack" && authorGroup.continuesAuthor
+        ? "message-author-continuation"
+        : "",
       replyDepth ? "message-native-reply" : "",
       nativeReplyCount ? "message-has-native-replies" : "",
     ].filter(Boolean).join(" ");
@@ -4125,7 +4180,15 @@ function renderMessages({
           mine ? "you" : (message.sender_name || message.sender_email || "Slack member")
         }`,
       );
-      stack.append(slackMessageAuthor(message, { isThreadReply }));
+      if (authorGroup.showAuthor) {
+        stack.append(slackMessageAuthor(message, {
+          isThreadReply,
+          showThreadContext: (
+            authorGroup.startsThread
+            || (!isThreadReply && replyCount > 0)
+          ),
+        }));
+      }
     } else if (
       !mine
       && message.sender_name
