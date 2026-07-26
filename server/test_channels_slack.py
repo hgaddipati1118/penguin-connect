@@ -842,6 +842,19 @@ class SlackBridgeIntegrationTests(unittest.TestCase):
                VALUES ('owner@gmail.com', 'slack', 'slack-thread', 'C_PRODUCT',
                        'C_PRODUCT', 'Slack', '#product', 'channel', '[]', 'active', 0)"""
         )
+        self.conn.execute(
+            """INSERT INTO penguin_connect_messages
+               (conversation_id, provider, provider_message_id, direction,
+                sender_email, sender_name, subject, body_text, message_timestamp,
+                is_read, metadata)
+               VALUES ('slack-thread', 'slack', 'slack:1785000002.000100',
+                       'provider_to_gmail', 'U_TEAMMATE', 'Taylor Example',
+                       'Slack: #product', 'The nested detail',
+                       '2026-07-25T12:00:02+00:00', 1,
+                       '{"native_message_id":"1785000002.000100",
+                         "thread_ts":"1785000001.000100",
+                         "is_thread_reply":true}')"""
+        )
         self.conn.commit()
         channel = mock.Mock()
         channel.send_message.return_value = (True, None)
@@ -857,6 +870,7 @@ class SlackBridgeIntegrationTests(unittest.TestCase):
                 conversation_id="slack-thread",
                 body_text="Nested reply",
                 reply_to_message_id="slack:1785000001.000100",
+                reply_context_message_id="slack:1785000002.000100",
             )
 
         self.assertTrue(result["success"])
@@ -869,11 +883,20 @@ class SlackBridgeIntegrationTests(unittest.TestCase):
         row = self.conn.execute(
             """SELECT metadata
                FROM penguin_connect_messages
-               WHERE conversation_id = 'slack-thread'"""
+               WHERE conversation_id = 'slack-thread'
+                 AND provider = 'manual'"""
         ).fetchone()
         metadata = json.loads(row["metadata"])
         self.assertEqual(metadata["thread_ts"], "1785000001.000100")
         self.assertTrue(metadata["is_thread_reply"])
+        self.assertEqual(
+            metadata["reply_context"],
+            {
+                "message_id": "1785000002.000100",
+                "sender": "Taylor Example",
+                "text": "The nested detail",
+            },
+        )
 
 
 if __name__ == "__main__":

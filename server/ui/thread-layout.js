@@ -4,6 +4,24 @@
     return Number.isFinite(parsed) ? parsed : 0;
   }
 
+  function buildSlackReplyTarget({
+    nativeMessageId = "",
+    threadRootId = "",
+    sender = "",
+    body = "",
+  } = {}) {
+    const messageId = String(nativeMessageId || "").trim();
+    const threadTs = String(threadRootId || messageId).trim();
+    if (!messageId || !threadTs) return null;
+    return {
+      messageId,
+      threadTs,
+      provider: "slack",
+      sender: String(sender || "").trim(),
+      body: String(body || "").trim(),
+    };
+  }
+
   function planSlackThreadDefaults(rows, {
     preferredOpenThreadId = "",
   } = {}) {
@@ -42,6 +60,7 @@
   }
 
   const api = Object.freeze({
+    buildSlackReplyTarget,
     planSlackThreadDefaults,
   });
   root.PenguinThreadLayout = api;

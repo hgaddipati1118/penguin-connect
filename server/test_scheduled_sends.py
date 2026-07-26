@@ -174,6 +174,7 @@ class ScheduledSendTests(unittest.TestCase):
                     "message": "Nested reply",
                     "scheduled_at": scheduled_at,
                     "reply_to_message_id": "slack:1785000001.000100",
+                    "reply_context_message_id": "slack:1785000002.000100",
                 },
             )
 
@@ -182,6 +183,10 @@ class ScheduledSendTests(unittest.TestCase):
         self.assertEqual(
             created["reply_to_message_id"],
             "slack:1785000001.000100",
+        )
+        self.assertEqual(
+            created["reply_context_message_id"],
+            "slack:1785000002.000100",
         )
         conn = self._get_connection()
         try:
@@ -208,6 +213,10 @@ class ScheduledSendTests(unittest.TestCase):
         self.assertEqual(
             mock_send.call_args.kwargs["reply_to_message_id"],
             "slack:1785000001.000100",
+        )
+        self.assertEqual(
+            mock_send.call_args.kwargs["reply_context_message_id"],
+            "slack:1785000002.000100",
         )
 
     def test_native_reply_is_rejected_for_imessage_conversation(self):

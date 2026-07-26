@@ -106,6 +106,7 @@ class PenguinConnectSendRequest(BaseModel):
     sender_email: str = ""
     message: str = ""
     reply_to_message_id: str = ""
+    reply_context_message_id: str = ""
     attachment_paths: list[str] | None = None
     attachments: list[PenguinConnectBrowserAttachment] | None = None
 
@@ -114,6 +115,7 @@ class PenguinConnectScheduledSendRequest(BaseModel):
     message: str = ""
     scheduled_at: str
     reply_to_message_id: str = ""
+    reply_context_message_id: str = ""
     attachment_paths: list[str] | None = None
     attachments: list[PenguinConnectBrowserAttachment] | None = None
 
@@ -271,6 +273,7 @@ def _scheduled_message_dict(row: sqlite3.Row) -> dict:
         "sender_email": data.get("sender_email") or "",
         "message": data.get("body_text") or "",
         "reply_to_message_id": data.get("reply_to_message_id") or "",
+        "reply_context_message_id": data.get("reply_context_message_id") or "",
         "attachment_count": len(attachment_paths),
         "attachment_paths": attachment_paths,
         "scheduled_at": data.get("scheduled_at") or "",
@@ -382,6 +385,7 @@ def _create_scheduled_message(
     scheduled_id = f"scheduled_{uuid.uuid4().hex}"
     now_iso = _utc_now_iso()
     reply_to_message_id = str(req.reply_to_message_id or "").strip()
+    reply_context_message_id = str(req.reply_context_message_id or "").strip()
     source_provider = str(conversation["source_provider"] or "").lower()
     if reply_to_message_id and source_provider not in {"slack", "whatsapp"}:
         raise HTTPException(
@@ -391,15 +395,17 @@ def _create_scheduled_message(
     try:
         conn.execute(
             """INSERT INTO penguin_connect_scheduled_messages
-               (scheduled_id, conversation_id, sender_email, body_text, reply_to_message_id,
-                attachment_paths, scheduled_at, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)""",
+               (scheduled_id, conversation_id, sender_email, body_text,
+                reply_to_message_id, reply_context_message_id, attachment_paths,
+                scheduled_at, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)""",
             (
                 scheduled_id,
                 conversation_id,
                 (req.sender_email or "").strip(),
                 body_text,
                 reply_to_message_id,
+                reply_context_message_id,
                 json.dumps(attachment_paths),
                 scheduled_at_dt.isoformat(),
                 now_iso,
@@ -490,6 +496,7 @@ def run_due_scheduled_messages(limit: int = 25) -> dict:
                     body_text=row["body_text"] or "",
                     attachment_paths=attachment_paths or None,
                     reply_to_message_id=row["reply_to_message_id"] or "",
+                    reply_context_message_id=row["reply_context_message_id"] or "",
                 )
             except Exception as exc:
                 conn.rollback()
@@ -5941,6 +5948,7 @@ def send_penguinconnect_conversation_message(conversation_id: str, req: PenguinC
             body_text=req.message,
             attachment_paths=attachment_paths or None,
             reply_to_message_id=req.reply_to_message_id,
+            reply_context_message_id=req.reply_context_message_id,
         )
         log_action(
             "api_manual_send_request",

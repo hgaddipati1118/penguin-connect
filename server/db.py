@@ -226,6 +226,7 @@ CREATE TABLE IF NOT EXISTS penguin_connect_scheduled_messages (
     sender_email TEXT NOT NULL DEFAULT '',
     body_text TEXT NOT NULL,
     reply_to_message_id TEXT NOT NULL DEFAULT '',
+    reply_context_message_id TEXT NOT NULL DEFAULT '',
     attachment_paths TEXT NOT NULL DEFAULT '[]',
     scheduled_at TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'scheduled',
@@ -1560,6 +1561,10 @@ def init_db() -> None:
         if "reply_to_message_id" not in scheduled_message_columns:
             conn.execute(
                 "ALTER TABLE penguin_connect_scheduled_messages ADD COLUMN reply_to_message_id TEXT NOT NULL DEFAULT ''"
+            )
+        if "reply_context_message_id" not in scheduled_message_columns:
+            conn.execute(
+                "ALTER TABLE penguin_connect_scheduled_messages ADD COLUMN reply_context_message_id TEXT NOT NULL DEFAULT ''"
             )
         conn.execute(
             """CREATE INDEX IF NOT EXISTS idx_penguin_connect_conversation_management_follow_up

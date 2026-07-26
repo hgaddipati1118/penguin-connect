@@ -469,6 +469,17 @@ function replyTargetMessageId(target) {
   return String(target?.messageId || target?.threadTs || "").trim();
 }
 
+function replyTargetProviderMessageId(target) {
+  if (providerKey(target?.provider) === "slack") {
+    return String(target?.threadTs || target?.messageId || "").trim();
+  }
+  return replyTargetMessageId(target);
+}
+
+function replyTargetContextMessageId(target) {
+  return String(target?.messageId || "").trim();
+}
+
 function cleanDraftReplyTarget(target) {
   const messageId = replyTargetMessageId(target);
   if (!messageId) return null;
@@ -3039,7 +3050,7 @@ function renderReplyTarget() {
   if (!target) return;
   const targetProvider = providerKey(target.provider || state.selected?.source_provider);
   el.composerReplyTitle.textContent = targetProvider === "slack"
-    ? `Replying in ${target.sender || "thread"}`
+    ? `Replying to ${target.sender || "this message"} in thread`
     : `Replying to ${target.sender || "message"}`;
   el.composerReplySnippet.textContent = truncate(
     target.body || (targetProvider === "slack" ? "Slack thread" : "Message"),
@@ -3068,20 +3079,20 @@ function startSlackThreadReply(message) {
     state.expandedSlackThreads.add(threadKey);
   }
   const clickedSender = isOwnMessage(message)
-    ? "You"
+    ? "your message"
     : (message.sender_name || message.sender_email || "");
-  const rootSender = isSlackThreadReply(message)
-    ? (String(message.metadata?.thread_parent_name || "").trim() || clickedSender)
-    : clickedSender;
-  state.replyTarget = {
-    messageId: threadTs,
-    threadTs,
-    provider: "slack",
-    sender: rootSender === "You"
-      ? "your thread"
-      : (rootSender ? `${rootSender}’s thread` : "this thread"),
-    body: message.body_text || "Attachment",
-  };
+  state.replyTarget = window.PenguinThreadLayout?.buildSlackReplyTarget?.({
+    nativeMessageId: slackNativeMessageId(message),
+    threadRootId: threadTs,
+    sender: clickedSender || "this message",
+    body: message.body_text
+      || messageAttachments(message)[0]?.transfer_name
+      || "Attachment",
+  }) || null;
+  if (!state.replyTarget) {
+    toast("This Slack message cannot be replied to yet.", "error");
+    return;
+  }
   renderReplyTarget();
   if (wasCollapsed) renderMessages({ preserveScroll: true });
   scheduleDraftPersistence();
@@ -4565,7 +4576,8 @@ async function deliverPendingSend(pending) {
           sender_email: "",
           message: pending.text,
           attachments,
-          reply_to_message_id: replyTargetMessageId(pending.replyTo),
+          reply_to_message_id: replyTargetProviderMessageId(pending.replyTo),
+          reply_context_message_id: replyTargetContextMessageId(pending.replyTo),
         }),
       });
       removePendingOptimisticMessage(pending);
@@ -4585,7 +4597,8 @@ async function deliverPendingSend(pending) {
           message: pending.text,
           attachments,
           scheduled_at: new Date(Date.now() + 1500).toISOString(),
-          reply_to_message_id: replyTargetMessageId(pending.replyTo),
+          reply_to_message_id: replyTargetProviderMessageId(pending.replyTo),
+          reply_context_message_id: replyTargetContextMessageId(pending.replyTo),
         }),
       },
     );
@@ -4645,8 +4658,17 @@ function addPendingOptimisticMessage(pending) {
       attachment_names: attachmentNames,
       ...(providerKey(pending.conversation.source_provider) === "slack"
         ? {
-            thread_ts: pending.replyTo?.threadTs || replyTargetMessageId(pending.replyTo),
+            thread_ts: replyTargetProviderMessageId(pending.replyTo),
             is_thread_reply: Boolean(pending.replyTo),
+            ...(pending.replyTo
+              ? {
+                  reply_context: {
+                    message_id: replyTargetContextMessageId(pending.replyTo),
+                    sender: pending.replyTo.sender || "",
+                    text: pending.replyTo.body || "",
+                  },
+                }
+              : {}),
           }
         : (pending.replyTo
           ? {
@@ -4731,7 +4753,8 @@ async function scheduleCurrentMessage(event) {
           message: draftText,
           attachments,
           scheduled_at: scheduledAt.toISOString(),
-          reply_to_message_id: replyTargetMessageId(draftReplyTarget),
+          reply_to_message_id: replyTargetProviderMessageId(draftReplyTarget),
+          reply_context_message_id: replyTargetContextMessageId(draftReplyTarget),
         }),
       },
     );

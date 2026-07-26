@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const {
+  buildSlackReplyTarget,
   planSlackThreadDefaults,
 } = require("./thread-layout.js");
 
@@ -61,4 +62,32 @@ test("does not collapse a single thread or orphan replies", () => {
 
   assert.equal(single.defaultOpenThreadId, "thread-a");
   assert.deepEqual(single.collapsedThreadIds, []);
+});
+
+test("targets the Slack thread root while preserving the exact clicked reply", () => {
+  const target = buildSlackReplyTarget({
+    nativeMessageId: "reply-2",
+    threadRootId: "root-1",
+    sender: "Taylor Example",
+    body: "The nested detail",
+  });
+
+  assert.deepEqual(target, {
+    messageId: "reply-2",
+    threadTs: "root-1",
+    provider: "slack",
+    sender: "Taylor Example",
+    body: "The nested detail",
+  });
+});
+
+test("uses a standalone Slack message as both the clicked target and thread root", () => {
+  const target = buildSlackReplyTarget({
+    nativeMessageId: "root-1",
+    sender: "Jordan Example",
+    body: "Start a thread here",
+  });
+
+  assert.equal(target.messageId, "root-1");
+  assert.equal(target.threadTs, "root-1");
 });

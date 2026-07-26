@@ -9879,6 +9879,42 @@ def reconnect_conversation(conn: sqlite3.Connection, conversation_id: str) -> di
     return result
 
 
+def _manual_reply_context(
+    conn: sqlite3.Connection,
+    *,
+    conversation_id: str,
+    source_provider: str,
+    message_id: str,
+) -> dict[str, str]:
+    raw_message_id = str(message_id or "").strip()[:500]
+    if not raw_message_id:
+        return {}
+    provider_message_ids = [raw_message_id]
+    normalized_message_id = raw_message_id
+    if source_provider == "slack":
+        if raw_message_id.startswith("slack:"):
+            normalized_message_id = raw_message_id.split(":", 1)[1]
+        else:
+            provider_message_ids.append(f"slack:{raw_message_id}")
+    placeholders = ", ".join("?" for _ in provider_message_ids)
+    row = conn.execute(
+        f"""SELECT sender_name, sender_email, body_text
+            FROM penguin_connect_messages
+            WHERE conversation_id = ?
+              AND provider_message_id IN ({placeholders})
+            ORDER BY message_timestamp DESC
+            LIMIT 1""",
+        (conversation_id, *provider_message_ids),
+    ).fetchone()
+    context = {"message_id": normalized_message_id}
+    if row is not None:
+        context["sender"] = str(
+            row["sender_name"] or row["sender_email"] or ""
+        ).strip()[:300]
+        context["text"] = str(row["body_text"] or "").strip()[:2000]
+    return context
+
+
 def send_manual_message(
     conn: sqlite3.Connection,
     conversation_id: str,
@@ -9886,6 +9922,7 @@ def send_manual_message(
     body_text: str = "",
     attachment_paths: Optional[list[str]] = None,
     reply_to_message_id: str = "",
+    reply_context_message_id: str = "",
 ) -> dict[str, Any]:
     body_text = _rewrite_markdown_links_for_source_message(body_text)
     attachment_paths = [str(path) for path in (attachment_paths or []) if str(path or "").strip()]
@@ -9910,6 +9947,7 @@ def send_manual_message(
 
     source_provider = _conversation_source_provider(conv)
     reply_to_message_id = str(reply_to_message_id or "").strip()
+    reply_context_message_id = str(reply_context_message_id or "").strip()
     if reply_to_message_id and source_provider not in {"slack", "whatsapp"}:
         return {
             "success": False,
@@ -9963,6 +10001,13 @@ def send_manual_message(
             metadata["is_thread_reply"] = True
         else:
             metadata["reply_context"] = {"message_id": reply_to_message_id}
+    if reply_context_message_id:
+        metadata["reply_context"] = _manual_reply_context(
+            conn,
+            conversation_id=conversation_id,
+            source_provider=source_provider,
+            message_id=reply_context_message_id,
+        )
 
     conn.execute(
         """INSERT OR IGNORE INTO penguin_connect_messages
@@ -9987,6 +10032,7 @@ def send_manual_message(
         "provider_message_id": provider_id,
         "attachment_count": len(attachment_paths),
         "reply_to_message_id": reply_to_message_id,
+        "reply_context_message_id": reply_context_message_id,
     }
     log_action(
         "manual_send_result",
