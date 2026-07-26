@@ -1185,6 +1185,72 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(ask_ctx.exception.status_code, 403)
         self.assertEqual(yolo_ctx.exception.status_code, 403)
 
+    def test_attachment_only_imessage_preview_uses_attachment_name(self):
+        preview, has_attachments = app_module._conversation_preview_text(
+            "\ufffc",
+            {
+                "attachments": [
+                    {
+                        "filename": (
+                            "~/Library/Messages/Attachments/87/07/"
+                            "Screenshot 2026-07-26 at 1.43.40 PM.png"
+                        ),
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(
+            preview,
+            "attachment: Screenshot 2026-07-26 at 1.43.40 PM.png",
+        )
+        self.assertTrue(has_attachments)
+
+    def test_codex_stream_activity_keeps_started_and_completed_tool_status(self):
+        started = app_module._safe_codex_stream_event(
+            {
+                "type": "item.started",
+                "item": {
+                    "id": "item_1",
+                    "type": "command_execution",
+                    "command": "/bin/zsh -lc pwd",
+                    "status": "in_progress",
+                },
+            }
+        )
+        completed = app_module._safe_codex_stream_event(
+            {
+                "type": "item.completed",
+                "item": {
+                    "id": "item_1",
+                    "type": "command_execution",
+                    "command": "/bin/zsh -lc pwd",
+                    "aggregated_output": "/Users/example/Developer/slashy\n",
+                    "status": "completed",
+                },
+            }
+        )
+
+        self.assertEqual(started["item"]["id"], "item_1")
+        self.assertEqual(started["item"]["status"], "in_progress")
+        self.assertEqual(completed["item"]["status"], "completed")
+        self.assertIn("Developer/slashy", completed["item"]["aggregated_output"])
+
+    def test_codex_stream_humanizes_optional_integration_auth_noise(self):
+        event = app_module._codex_non_json_stream_event(
+            (
+                "2026-07-26T23:04:45Z ERROR codex_rmcp_client::oauth: "
+                "OAuth token refresh failed: invalid_grant"
+            )
+        )
+
+        self.assertEqual(event["type"], "penguin.integration_warning")
+        self.assertEqual(
+            event["message"],
+            "Skipped an optional workspace integration that needs sign-in",
+        )
+        self.assertNotIn("invalid_grant", json.dumps(event))
+
     def test_translation_uses_codex_for_non_english_text(self):
         with mock.patch("app._detect_message_language", return_value=("el", 0.99)), mock.patch(
             "app._run_codex_prompt",
@@ -4249,6 +4315,12 @@ class AppHttpIntegrationTests(unittest.TestCase):
             "Live writes are disabled in automated browser sessions",
             inbox_js_response.text,
         )
+        self.assertIn("threadPinButton", inbox_js_response.text)
+        self.assertIn("Boolean(b.is_pinned) - Boolean(a.is_pinned)", inbox_js_response.text)
+        self.assertIn("inboxAgentContext(cleanQuestion, addAgentActivity)", inbox_js_response.text)
+        self.assertIn("activityById", inbox_js_response.text)
+        self.assertIn("liveAnswer", inbox_js_response.text)
+        self.assertIn("penguin.integration_warning", inbox_js_response.text)
         self.assertIn("conversationHasDraft", inbox_js_response.text)
         self.assertIn("scheduleDraftPersistence", inbox_js_response.text)
         self.assertIn("persistCurrentDraftNow", inbox_js_response.text)

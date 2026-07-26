@@ -1452,6 +1452,8 @@ def _safe_codex_stream_event(event: dict) -> dict:
         safe["usage"] = event.get("usage") if isinstance(event.get("usage"), dict) else {}
     if event_type == "error":
         safe["message"] = _redact_codex_stream_text(event.get("message"), 2000)
+    if event_type == "penguin.integration_warning":
+        safe["message"] = _redact_codex_stream_text(event.get("message"), 500)
     item = event.get("item")
     if isinstance(item, dict):
         item_type = str(item.get("type") or "activity")
@@ -1483,6 +1485,20 @@ def _safe_codex_stream_event(event: dict) -> dict:
             ]
         safe["item"] = safe_item
     return safe
+
+
+def _codex_non_json_stream_event(line: str) -> dict:
+    clean = str(line or "").strip()
+    if re.search(
+        r"(?:AuthRequired|invalid_grant|OAuth token refresh failed|needs sign-in)",
+        clean,
+        re.IGNORECASE,
+    ):
+        return {
+            "type": "penguin.integration_warning",
+            "message": "Skipped an optional workspace integration that needs sign-in",
+        }
+    return {"type": "item.completed", "item": {"type": "log", "text": clean}}
 
 
 def _codex_stream_events(prompt: str, mode: str, confirmed: bool):
@@ -1570,7 +1586,7 @@ def _codex_stream_events(prompt: str, mode: str, confirmed: bool):
                     try:
                         event = json.loads(clean)
                     except json.JSONDecodeError:
-                        event = {"type": "item.completed", "item": {"type": "log", "text": clean}}
+                        event = _codex_non_json_stream_event(clean)
                     yield json.dumps(_safe_codex_stream_event(event)) + "\n"
             return_code = process.wait()
             if return_code != 0:
@@ -3987,7 +4003,10 @@ def _preview_attachment_name(attachment: object) -> str:
 
 
 def _conversation_preview_text(body_text: str | None, metadata: dict) -> tuple[str, bool]:
-    text = " ".join((body_text or "").split())
+    # Apple Messages stores U+FFFC as a placeholder for attachment-only rows.
+    # Treating it as visible copy produces a conversation row that looks blank.
+    visible_body = str(body_text or "").replace("\ufffc", "")
+    text = " ".join(visible_body.split())
     attachments = metadata.get("attachments") if isinstance(metadata.get("attachments"), list) else []
     has_attachments = bool(attachments)
     if text:

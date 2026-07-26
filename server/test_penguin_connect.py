@@ -82,6 +82,24 @@ class PenguinConnectTests(unittest.TestCase):
             ("amc_test",),
         ).fetchone()
 
+    def test_activity_hint_ignores_a_conversation_removed_by_concurrent_refresh(self):
+        self.conn.execute(
+            "DELETE FROM penguin_connect_conversations WHERE conversation_id = ?",
+            ("amc_test",),
+        )
+
+        penguin_connect._record_conversation_activity_hint(
+            self.conn,
+            "amc_test",
+            "2026-07-26T23:04:45+00:00",
+        )
+
+        row = self.conn.execute(
+            "SELECT 1 FROM penguin_connect_sync_state WHERE conversation_id = ?",
+            ("amc_test",),
+        ).fetchone()
+        self.assertIsNone(row)
+
     def test_source_message_native_metadata_maps_receipts_and_tapbacks(self):
         metadata = penguin_connect._source_message_native_metadata(
             {

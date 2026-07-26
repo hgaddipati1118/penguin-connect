@@ -189,6 +189,9 @@
               <p id="threadSubtitle"></p>
             </div>
             <div class="thread-header-actions">
+              <button class="icon-button" id="threadPinButton" type="button" title="Pin conversation (S)" aria-label="Pin conversation">
+                <svg><use href="#i-pin"></use></svg>
+              </button>
               <button class="icon-button" id="threadNoteButton" type="button" title="Conversation note (E)" aria-label="Edit conversation note">
                 <svg><use href="#i-note"></use></svg>
               </button>
@@ -757,10 +760,10 @@
             <h3>Views</h3>
             <dl>
               <div><dt><kbd>⇧U</kbd></dt><dd>Unread</dd></div>
-              <div><dt><kbd>⇧S</kbd></dt><dd>Starred</dd></div>
+              <div><dt><kbd>⇧S</kbd></dt><dd>Pinned</dd></div>
               <div><dt><kbd>⇧H</kbd></dt><dd>Reminders</dd></div>
               <div><dt><kbd>G</kbd> then <kbd>A</kbd></dt><dd>All chats</dd></div>
-              <div><dt><kbd>G</kbd> then <kbd>S</kbd></dt><dd>Starred</dd></div>
+              <div><dt><kbd>G</kbd> then <kbd>S</kbd></dt><dd>Pinned</dd></div>
               <div><dt><kbd>G</kbd> then <kbd>E</kbd></dt><dd>Done</dd></div>
               <div><dt><kbd>G</kbd> then <kbd>H</kbd></dt><dd>Reminders</dd></div>
               <div><dt><kbd>G</kbd> then <kbd>L</kbd></dt><dd>Send queue</dd></div>

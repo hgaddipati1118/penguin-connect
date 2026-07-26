@@ -4261,7 +4261,12 @@ def _record_conversation_activity_hint(
     conn.execute(
         """INSERT INTO penguin_connect_sync_state
            (conversation_id, last_message_ts, updated_at)
-           VALUES (?, ?, datetime('now'))
+           SELECT ?, ?, datetime('now')
+           WHERE EXISTS (
+             SELECT 1
+             FROM penguin_connect_conversations
+             WHERE conversation_id = ?
+           )
            ON CONFLICT(conversation_id) DO UPDATE SET
              last_message_ts = CASE
                WHEN penguin_connect_sync_state.last_message_ts IS NULL THEN excluded.last_message_ts
@@ -4269,7 +4274,7 @@ def _record_conversation_activity_hint(
                ELSE penguin_connect_sync_state.last_message_ts
              END,
              updated_at = datetime('now')""",
-        (conversation_id, activity_ts),
+        (conversation_id, activity_ts, conversation_id),
     )
 
 

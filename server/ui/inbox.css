@@ -723,6 +723,22 @@ kbd {
   white-space: nowrap;
 }
 
+.conversation-pin-indicator {
+  display: inline-grid;
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--penguin-soft);
+  color: var(--penguin);
+}
+
+.conversation-pin-indicator svg {
+  width: 10px;
+  height: 10px;
+}
+
 .conversation-preview {
   margin-top: 4px;
   color: var(--ink-soft);
@@ -3289,6 +3305,30 @@ button.message-reaction-chip:hover {
   color: #73372f;
 }
 
+.agent-chat-bubble.streaming {
+  position: relative;
+  padding-right: 18px;
+}
+
+.agent-chat-bubble.streaming::after {
+  position: absolute;
+  right: 9px;
+  bottom: 10px;
+  width: 4px;
+  height: 11px;
+  border-radius: 2px;
+  background: var(--penguin);
+  content: "";
+  animation: agent-stream-caret 0.85s steps(2, jump-none) infinite;
+}
+
+.agent-chat-bubble.activity-status {
+  border-style: dashed;
+  color: var(--ink-faint);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 8.5px;
+}
+
 .agent-answer-content.loading {
   min-height: 180px;
   color: var(--ink-faint);
@@ -3357,6 +3397,17 @@ button.message-reaction-chip:hover {
   text-align: center;
 }
 
+.agent-activity-item.in_progress::before {
+  width: 8px;
+  height: 8px;
+  margin: 2px auto 0;
+  border: 1.5px solid rgba(227, 111, 82, 0.25);
+  border-top-color: var(--penguin);
+  border-radius: 50%;
+  content: "";
+  animation: agent-activity-spin 0.8s linear infinite;
+}
+
 .agent-activity-item.completed::before {
   color: var(--whatsapp);
   content: "✓";
@@ -3370,6 +3421,18 @@ button.message-reaction-chip:hover {
 .agent-activity-item span {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+@keyframes agent-activity-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes agent-stream-caret {
+  50% {
+    opacity: 0;
+  }
 }
 
 .infinite-sentinel {

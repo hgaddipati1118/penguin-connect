@@ -103,7 +103,9 @@ const state = {
     contactAction: null,
     mode: "read",
     yoloArmed: false,
+    liveAnswer: "",
     activity: [],
+    activityById: new Map(),
     busy: false,
   },
   writing: {
@@ -139,6 +141,7 @@ const el = {
   threadProvider: document.querySelector("#threadProvider"),
   threadSubtitle: document.querySelector("#threadSubtitle"),
   threadSearchButton: document.querySelector("#threadSearchButton"),
+  threadPinButton: document.querySelector("#threadPinButton"),
   threadNoteButton: document.querySelector("#threadNoteButton"),
   threadLabelButton: document.querySelector("#threadLabelButton"),
   threadReminderButton: document.querySelector("#threadReminderButton"),
@@ -1257,7 +1260,8 @@ function conversationTimestamp(conversation) {
 
 function sortedConversations(rows = state.conversations) {
   return [...rows].sort((a, b) => (
-    conversationTimestamp(b) - conversationTimestamp(a)
+    Boolean(b.is_pinned) - Boolean(a.is_pinned)
+    || conversationTimestamp(b) - conversationTimestamp(a)
     || conversationName(a).localeCompare(conversationName(b))
   ));
 }
@@ -1687,7 +1691,7 @@ function renderLabelBar() {
   const smartOptions = [
     { value: "all", name: "All" },
     { value: "unread", name: "Unread" },
-    { value: "starred", name: "Starred" },
+    { value: "starred", name: "Pinned" },
     { value: "reminders", name: "Reminders" },
     { value: "archived", name: "Done" },
   ];
@@ -1759,6 +1763,7 @@ function conversationRowFingerprint(conversation) {
     conversation.last_message_has_attachments ? 1 : 0,
     conversationHasDraft(conversation) ? 1 : 0,
     Number(conversation.unread_count || 0),
+    conversation.is_pinned ? 1 : 0,
     (conversation.labels || []).join(","),
   ].join("\u001f");
 }
@@ -1794,11 +1799,21 @@ function reusableConversationRow(conversation, existingRow = null) {
   const nameNode = document.createElement("span");
   nameNode.className = "conversation-name";
   nameNode.textContent = name;
+  if (conversation.is_pinned) {
+    const pin = document.createElement("span");
+    pin.className = "conversation-pin-indicator";
+    pin.title = "Pinned conversation";
+    pin.setAttribute("aria-label", "Pinned conversation");
+    pin.append(createIcon("i-pin"));
+    top.append(nameNode, pin);
+  } else {
+    top.append(nameNode);
+  }
   const time = document.createElement("time");
   time.className = "conversation-time";
   time.dateTime = conversation.last_message_ts || "";
   time.textContent = timeLabel(conversation.last_message_ts);
-  top.append(nameNode, time);
+  top.append(time);
 
   const preview = document.createElement("span");
   preview.className = "conversation-preview";
@@ -2519,6 +2534,10 @@ function renderThreadHeader() {
     el.threadEmpty.hidden = false;
     el.threadContent.hidden = true;
     el.agentContextLabel.textContent = "Across inbox";
+    el.threadPinButton.classList.remove("active");
+    el.threadPinButton.setAttribute("aria-pressed", "false");
+    el.threadPinButton.title = "Pin conversation (S)";
+    el.threadPinButton.setAttribute("aria-label", "Pin conversation");
     el.threadNoteButton.classList.remove("active");
     el.threadLabelButton.classList.remove("active");
     el.threadReminderButton.classList.remove("active");
@@ -2558,6 +2577,18 @@ function renderThreadHeader() {
     conversation.status !== "active" ? conversation.status : "",
   ].filter(Boolean).join(" · ") || "Local conversation";
   el.agentContextLabel.textContent = `${name} first · then inbox`;
+  el.threadPinButton.classList.toggle("active", Boolean(conversation.is_pinned));
+  el.threadPinButton.setAttribute(
+    "aria-pressed",
+    conversation.is_pinned ? "true" : "false",
+  );
+  el.threadPinButton.title = conversation.is_pinned
+    ? "Unpin conversation (S)"
+    : "Pin conversation (S)";
+  el.threadPinButton.setAttribute(
+    "aria-label",
+    conversation.is_pinned ? "Unpin conversation" : "Pin conversation",
+  );
   el.threadNoteButton.classList.toggle("active", Boolean(conversation.note));
   el.threadLabelButton.classList.toggle("active", Boolean(conversation.labels?.length));
   el.threadReminderButton.classList.toggle("active", Boolean(conversation.follow_up_at));
@@ -6799,18 +6830,66 @@ function agentSearchTerms(query) {
   )].slice(0, 8);
 }
 
-async function inboxAgentContext(query) {
+async function inboxAgentContext(query, reportActivity = () => {}) {
   const terms = agentSearchTerms(query);
   const messageQuery = terms.join(" | ") || query;
-  const [payload, hybridPayload, ...contactPayloads] = await Promise.all([
+  const trackedSearch = (id, startedText, completedText, fallback, promise) => {
+    reportActivity({
+      type: "penguin.local_search",
+      id,
+      text: startedText,
+      status: "in_progress",
+    });
+    return promise.then((payload) => {
+      reportActivity({
+        type: "penguin.local_search",
+        id,
+        text: completedText(payload),
+        status: "completed",
+      });
+      return payload;
+    }).catch((error) => {
+      reportActivity({
+        type: "penguin.local_search",
+        id,
+        text: `${startedText} unavailable · continuing`,
+        status: "failed",
+      });
+      return { ...fallback, unavailable: true, error: error.message };
+    });
+  };
+  const messageSearch = trackedSearch(
+    "local-messages",
+    "Searching message history",
+    (payload) => `Searched message history · ${(payload.messages || []).length} matches`,
+    { messages: [] },
     api(`/penguin-connect/messages/search?query=${encodeURIComponent(messageQuery)}&limit=40&view=all`),
+  );
+  const indexedSearch = trackedSearch(
+    "local-index",
+    "Searching semantic index and local files",
+    (payload) => (
+      `Searched semantic index and local files · ${
+        (payload.results || []).length + (payload.spotlight_results || []).length
+      } matches`
+    ),
+    { results: [], spotlight_results: [] },
     api(`/penguin-connect/search/hybrid?query=${encodeURIComponent(query)}&limit=20`),
-    ...terms.slice(0, 3).map((term) => (
-      api(
-        `/penguin-connect/contacts?search=${encodeURIComponent(term)}`
-        + "&limit=12&source=all&include_counts=false&include_thread_stats=false",
-      )
-    )),
+  );
+  const contactSearches = terms.slice(0, 3).map((term, index) => trackedSearch(
+    `local-contacts-${index}`,
+    `Searching contacts for “${term}”`,
+    (payload) => `Searched contacts for “${term}” · ${(payload.contacts || []).length} matches`,
+    { contacts: [] },
+    api(
+      `/penguin-connect/contacts?search=${encodeURIComponent(term)}`
+      + "&limit=12&source=all&include_counts=false&include_thread_stats=false",
+    ),
+  ));
+  const [payload, hybridPayload, ...contactPayloads] = await Promise.all([
+    messageSearch,
+    indexedSearch,
+    ...contactSearches,
   ]);
   const references = [];
   const messageLines = (payload.messages || []).map((message) => {
@@ -6872,9 +6951,15 @@ function renderAgentHistory() {
     el.agentAnswerContent.append(bubble);
   }
   if (state.agent.busy) {
+    if (state.agent.liveAnswer) {
+      const liveAnswer = document.createElement("div");
+      liveAnswer.className = "agent-chat-bubble assistant streaming";
+      liveAnswer.textContent = state.agent.liveAnswer;
+      el.agentAnswerContent.append(liveAnswer);
+    }
     const loading = document.createElement("div");
-    loading.className = "agent-chat-bubble assistant loading";
-    loading.textContent = "Reading local context…";
+    loading.className = "agent-chat-bubble assistant loading activity-status";
+    loading.textContent = state.agent.activity.at(-1)?.text || "Reading local context…";
     el.agentAnswerContent.append(loading);
   }
   el.agentAnswerContent.scrollTop = el.agentAnswerContent.scrollHeight;
@@ -6913,53 +6998,135 @@ function renderAgentHistory() {
 
 function agentActivityCopy(event) {
   const item = event?.item || {};
-  const status = item.status || (event.type === "error" ? "failed" : "");
+  const status = item.status
+    || event.status
+    || (event.type === "item.started" ? "in_progress" : "")
+    || (event.type === "item.completed" ? "completed" : "")
+    || (event.type === "error" ? "failed" : "");
+  const id = String(item.id || event.id || "");
   if (event.type === "penguin.local_search") {
-    return { text: event.text || "Searching messages and files", status };
+    return {
+      id,
+      kind: "search",
+      text: event.text || "Searching messages and files",
+      status,
+    };
   }
   if (event.type === "penguin.started") {
-    return { text: `Opened Slashy workspace in ${event.mode || "read"} mode`, status: "completed" };
+    return {
+      id: "codex-started",
+      kind: "workspace",
+      text: `Opened Slashy workspace in ${event.mode || "read"} mode`,
+      status: "completed",
+    };
   }
   if (event.type === "error") {
-    return { text: event.message || "Codex failed", status: "failed" };
+    return { id, kind: "error", text: event.message || "Codex failed", status: "failed" };
+  }
+  if (event.type === "penguin.integration_warning") {
+    return {
+      id,
+      kind: "warning",
+      text: event.message || "An optional workspace integration needs sign-in",
+      status: "completed",
+    };
   }
   if (item.type === "reasoning") {
-    return { text: item.text || "Reasoning about the request", status };
+    return {
+      id,
+      kind: "reasoning",
+      text: item.text || "Reasoning about the request",
+      status,
+    };
   }
   if (item.type === "command_execution") {
     const output = item.aggregated_output ? `\n${truncate(item.aggregated_output, 500)}` : "";
-    return { text: `Command: ${item.command || "shell command"}${output}`, status };
+    return {
+      id,
+      kind: "command",
+      text: `Command: ${item.command || "shell command"}${output}`,
+      status,
+    };
   }
   if (["mcp_tool_call", "tool_call"].includes(item.type)) {
     return {
+      id,
+      kind: "tool",
       text: `Tool: ${[item.server, item.tool || item.name].filter(Boolean).join(" · ") || "workspace tool"}`,
       status,
     };
   }
   if (item.type === "file_change") {
     const paths = (item.changes || []).map((change) => change.path).filter(Boolean);
-    return { text: `Files changed: ${paths.join(", ") || item.path || "workspace files"}`, status };
+    return {
+      id,
+      kind: "file",
+      text: `Files changed: ${paths.join(", ") || item.path || "workspace files"}`,
+      status,
+    };
   }
   if (item.type === "web_search") {
-    return { text: `Web search: ${item.text || item.query || "searching"}`, status };
+    return {
+      id,
+      kind: "search",
+      text: `Web search: ${item.text || item.query || "searching"}`,
+      status,
+    };
   }
   if (item.type === "agent_message") {
-    return { text: "Composed answer", status: status || "completed" };
+    return { id, kind: "answer", text: "Composed answer", status: status || "completed" };
   }
-  if (item.type === "log" && item.text) return { text: item.text, status };
-  if (event.type === "turn.started") return { text: "Codex started", status: "completed" };
-  if (event.type === "turn.completed") return { text: "Codex finished", status: "completed" };
+  if (item.type === "log" && item.text) {
+    return { id, kind: "log", text: item.text, status };
+  }
+  if (event.type === "turn.started") {
+    return {
+      id: "codex-turn",
+      kind: "reasoning",
+      text: "Codex is reasoning",
+      status: "in_progress",
+    };
+  }
+  if (event.type === "turn.completed") {
+    return {
+      id: "codex-turn",
+      kind: "reasoning",
+      text: "Codex finished",
+      status: "completed",
+    };
+  }
   return null;
 }
 
 function addAgentActivity(event) {
   const activity = agentActivityCopy(event);
   if (!activity) return;
+  if (activity.id && state.agent.activityById.has(activity.id)) {
+    const index = state.agent.activityById.get(activity.id);
+    if (activity.id === "codex-turn" && activity.status === "completed") {
+      state.agent.activity.splice(index, 1);
+      state.agent.activity.push(activity);
+      state.agent.activityById = new Map(
+        state.agent.activity
+          .map((item, itemIndex) => [item.id, itemIndex])
+          .filter(([id]) => Boolean(id)),
+      );
+    } else {
+      state.agent.activity[index] = activity;
+    }
+    renderAgentHistory();
+    return;
+  }
   const previous = state.agent.activity.at(-1);
   if (previous?.text === activity.text && previous?.status === activity.status) return;
   state.agent.activity.push(activity);
   state.agent.activity = state.agent.activity.slice(-60);
-  renderAgentActivity();
+  state.agent.activityById = new Map(
+    state.agent.activity
+      .map((item, index) => [item.id, index])
+      .filter(([id]) => Boolean(id)),
+  );
+  renderAgentHistory();
 }
 
 function renderAgentActivity() {
@@ -6973,7 +7140,11 @@ function renderAgentActivity() {
     el.agentActivityList.append(row);
   }
   el.agentActivity.hidden = !state.agent.activity.length && !state.agent.busy;
-  el.agentActivityStatus.textContent = state.agent.busy ? "Working…" : "Complete";
+  const completed = state.agent.activity.filter((item) => item.status === "completed").length;
+  const running = state.agent.activity.filter((item) => item.status === "in_progress").length;
+  el.agentActivityStatus.textContent = state.agent.busy
+    ? `${completed} done${running ? ` · ${running} active` : " · Working"}`
+    : `${completed} steps · Complete`;
   el.agentActivityList.scrollTop = el.agentActivityList.scrollHeight;
 }
 
@@ -6991,7 +7162,7 @@ function extractAgentContactAction(answer) {
   }
 }
 
-async function streamAgentPrompt(prompt, mode, confirmed) {
+async function streamAgentPrompt(prompt, mode, confirmed, onAnswer = () => {}) {
   const response = await fetch("/penguin-connect/codex/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -7028,6 +7199,7 @@ async function streamAgentPrompt(prompt, mode, confirmed) {
       && event.item?.text
     ) {
       finalAnswer = event.item.text;
+      onAnswer(finalAnswer);
     }
     if (event.type === "error") streamError = event.message || "codex failed";
   };
@@ -7064,7 +7236,9 @@ async function askAgent({ question = "", instruction = "" } = {}) {
   state.agent.references = [];
   state.agent.contactAction = null;
   state.agent.mode = mode;
+  state.agent.liveAnswer = "";
   state.agent.activity = [];
+  state.agent.activityById = new Map();
   el.agentWelcome.hidden = true;
   el.agentQuickActions.hidden = true;
   el.agentAnswer.hidden = false;
@@ -7074,8 +7248,7 @@ async function askAgent({ question = "", instruction = "" } = {}) {
   renderAgentHistory();
 
   try {
-    addAgentActivity({ type: "penguin.local_search", text: "Searching messages, contacts, files, and links" });
-    const inboxContext = await inboxAgentContext(cleanQuestion);
+    const inboxContext = await inboxAgentContext(cleanQuestion, addAgentActivity);
     state.agent.references = inboxContext.references;
     const context = [
       "Primary context — currently selected conversation:",
@@ -7108,7 +7281,10 @@ async function askAgent({ question = "", instruction = "" } = {}) {
       "Local context:",
       context || "No matching local messages were found.",
     ].filter(Boolean).join("\n");
-    const answer = await streamAgentPrompt(prompt, mode, confirmed);
+    const answer = await streamAgentPrompt(prompt, mode, confirmed, (liveAnswer) => {
+      state.agent.liveAnswer = liveAnswer;
+      renderAgentHistory();
+    });
     const parsed = extractAgentContactAction(answer);
     state.agent.answer = parsed.answer;
     state.agent.contactAction = parsed.action;
@@ -7123,6 +7299,7 @@ async function askAgent({ question = "", instruction = "" } = {}) {
     el.agentStatus.textContent = error.message;
   } finally {
     state.agent.busy = false;
+    state.agent.liveAnswer = "";
     updateAgentButton();
     renderAgentHistory();
   }
@@ -7434,12 +7611,14 @@ async function setConversationPinned(conversation, pinned = !conversation.is_pin
     Object.assign(conversation, result);
     invalidateConversationProjection();
     renderConversationList();
-    toast(pinned ? "Conversation starred" : "Conversation unstarred");
+    renderThreadHeader();
+    toast(pinned ? "Conversation pinned" : "Conversation unpinned");
   } catch (error) {
     conversation.is_pinned = previous;
     invalidateConversationProjection();
     renderConversationList();
-    toast(`Could not update star: ${error.message}`, "error");
+    renderThreadHeader();
+    toast(`Could not update pin: ${error.message}`, "error");
   }
 }
 
@@ -7884,6 +8063,7 @@ el.closeThreadSearchButton.addEventListener("click", closeThreadSearch);
 el.threadSearch.addEventListener("input", scheduleThreadSearch);
 el.threadAgentButton.addEventListener("click", () => setAgentOpen(true));
 el.closeAgentButton.addEventListener("click", toggleAgentPane);
+el.threadPinButton.addEventListener("click", () => setConversationPinned(state.selected));
 el.threadNoteButton.addEventListener("click", () => openConversationMeta({ focus: "note" }));
 el.threadLabelButton.addEventListener("click", openLabelPicker);
 el.threadReminderButton.addEventListener("click", () => openConversationMeta({ focus: "reminder" }));
