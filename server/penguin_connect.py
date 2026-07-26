@@ -110,6 +110,7 @@ DEFAULT_SYNC_JOB_MAX_ATTEMPTS = 12
 DEFAULT_SYNC_JOB_LEASE_SECONDS = 180
 DEFAULT_SYNC_JOB_RETRY_BASE_SECONDS = 30
 DEFAULT_SYNC_JOB_RETRY_MAX_BACKOFF_SECONDS = 1800
+DEFAULT_SYNC_JOB_HISTORY_LIMIT = 200
 FULL_IMESSAGE_SYNC_SINCE = datetime(2001, 1, 1, tzinfo=timezone.utc).isoformat()
 FULL_GMAIL_SYNC_SINCE = datetime(1970, 1, 1, tzinfo=timezone.utc).isoformat()
 _sync_runtime_lock = threading.Lock()
@@ -1785,6 +1786,15 @@ def _sync_job_retry_max_backoff_seconds() -> int:
     )
 
 
+def _sync_job_history_limit() -> int:
+    return _env_int(
+        "PENGUIN_CONNECT_SYNC_JOB_HISTORY_LIMIT",
+        DEFAULT_SYNC_JOB_HISTORY_LIMIT,
+        10,
+        5000,
+    )
+
+
 def _sync_job_retry_backoff_seconds(attempt_count: int) -> int:
     base = _sync_job_retry_base_seconds()
     max_backoff = _sync_job_retry_max_backoff_seconds()
@@ -3215,6 +3225,61 @@ def _pending_sync_jobs_count(conn: sqlite3.Connection) -> int:
         (SYNC_JOB_TYPE,),
     ).fetchone()
     return int(row[0] if row else 0)
+
+
+def prune_sync_job_history(
+    conn: sqlite3.Connection,
+    *,
+    per_status_limit: Optional[int] = None,
+) -> dict[str, int]:
+    limit = (
+        _sync_job_history_limit()
+        if per_status_limit is None
+        else max(1, min(int(per_status_limit), 5000))
+    )
+    deleted: dict[str, int] = {}
+    for status in ("failed", "succeeded"):
+        cursor = conn.execute(
+            """DELETE FROM penguin_connect_jobs
+               WHERE job_type = ?
+                 AND status = ?
+                 AND id NOT IN (
+                   SELECT id
+                   FROM penguin_connect_jobs
+                   WHERE job_type = ?
+                     AND status = ?
+                   ORDER BY COALESCE(finished_at, updated_at, created_at) DESC,
+                            id DESC
+                   LIMIT ?
+                 )""",
+            (SYNC_JOB_TYPE, status, SYNC_JOB_TYPE, status, limit),
+        )
+        deleted[status] = max(0, int(cursor.rowcount or 0))
+    deleted["total"] = deleted["failed"] + deleted["succeeded"]
+    return deleted
+
+
+def _fail_pending_sync_jobs_without_gmail(conn: sqlite3.Connection) -> int:
+    now_iso = _now_iso()
+    cursor = conn.execute(
+        """UPDATE penguin_connect_jobs
+           SET status = 'failed',
+               lease_until = NULL,
+               lease_owner = NULL,
+               last_error = 'gmail_not_connected',
+               finished_at = ?,
+               updated_at = ?
+           WHERE job_type = ?
+             AND (
+               status = 'queued'
+               OR (
+                 status = 'leased'
+                 AND (lease_until IS NULL OR lease_until <= ?)
+               )
+             )""",
+        (now_iso, now_iso, SYNC_JOB_TYPE, now_iso),
+    )
+    return max(0, int(cursor.rowcount or 0))
 
 
 def _ready_incremental_sync_job_waiting(conn: sqlite3.Connection) -> bool:
@@ -10096,6 +10161,21 @@ def run_startup_catchup() -> dict[str, Any]:
     conn = get_connection()
     try:
         try:
+            if not get_connected_account(conn):
+                failed = _fail_pending_sync_jobs_without_gmail(conn)
+                pruned = prune_sync_job_history(conn)
+                conn.commit()
+                return {
+                    "success": True,
+                    "mode": "startup_catchup",
+                    "skipped": True,
+                    "reason": "gmail_not_connected",
+                    "queue_enqueued": False,
+                    "queue_pending_jobs": _pending_sync_jobs_count(conn),
+                    "queue_jobs_pruned": pruned["total"],
+                    "queue_jobs_failed": failed,
+                }
+            pruned = prune_sync_job_history(conn)
             enqueue_result = enqueue_sync_job(
                 conn,
                 mode="startup_catchup",
@@ -10120,6 +10200,7 @@ def run_startup_catchup() -> dict[str, Any]:
             result.setdefault("queue_job_id", enqueue_result.get("job_id"))
             result["queue_enqueued"] = bool(enqueue_result.get("enqueued"))
             result["queue_pending_jobs"] = _pending_sync_jobs_count(conn)
+            result["queue_jobs_pruned"] = pruned["total"]
         except sqlite3.OperationalError as exc:
             mapped = _map_sync_sqlite_error(exc)
             log_action("startup_catchup_result", result=mapped)
@@ -10137,6 +10218,21 @@ def run_incremental_sync() -> dict[str, Any]:
     conn = get_connection()
     try:
         try:
+            if not get_connected_account(conn):
+                failed = _fail_pending_sync_jobs_without_gmail(conn)
+                pruned = prune_sync_job_history(conn)
+                conn.commit()
+                return {
+                    "success": True,
+                    "mode": "incremental",
+                    "skipped": True,
+                    "reason": "gmail_not_connected",
+                    "queue_enqueued": False,
+                    "queue_pending_jobs": _pending_sync_jobs_count(conn),
+                    "queue_jobs_pruned": pruned["total"],
+                    "queue_jobs_failed": failed,
+                }
+            pruned = prune_sync_job_history(conn)
             enqueue_result = enqueue_sync_job(
                 conn,
                 mode="incremental",
@@ -10171,6 +10267,7 @@ def run_incremental_sync() -> dict[str, Any]:
             result.setdefault("queue_job_id", enqueue_result.get("job_id"))
             result["queue_enqueued"] = bool(enqueue_result.get("enqueued"))
             result["queue_pending_jobs"] = _pending_sync_jobs_count(conn)
+            result["queue_jobs_pruned"] = pruned["total"]
         except sqlite3.OperationalError as exc:
             mapped = _map_sync_sqlite_error(exc)
             log_action("incremental_sync_result", result=mapped)

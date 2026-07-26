@@ -2205,9 +2205,12 @@ function renderQueueList() {
     const message = document.createElement("span");
     message.textContent = truncate(item.message || `${item.attachment_count} attachment${item.attachment_count === 1 ? "" : "s"}`, 80);
     const when = document.createElement("small");
-    when.textContent = item.last_error
-      ? `Offline · retrying · ${item.attempt_count} attempt${item.attempt_count === 1 ? "" : "s"}`
-      : `${item.status === "sending" ? "Sending" : "Scheduled"} · ${timeLabel(item.scheduled_at)}`;
+    when.textContent = item.status === "failed"
+      ? `Failed · ${item.attempt_count} attempt${item.attempt_count === 1 ? "" : "s"}`
+      : item.last_error
+        ? `Offline · retrying · ${item.attempt_count} attempt${item.attempt_count === 1 ? "" : "s"}`
+        : `${item.status === "sending" ? "Sending" : "Scheduled"} · ${timeLabel(item.scheduled_at)}`;
+    if (item.last_error) when.title = item.last_error;
     copy.append(name, message, when);
     copy.addEventListener("click", () => {
       const conversation = state.conversations.find(
@@ -2230,6 +2233,13 @@ function renderQueueList() {
         await loadQueue();
       });
       row.append(cancel);
+    } else if (item.status === "failed") {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "scheduled-cancel scheduled-retry";
+      retry.textContent = "Retry";
+      retry.addEventListener("click", () => retryScheduledMessage(item.scheduled_id));
+      row.append(retry);
     }
     el.queueList.append(row);
   }
@@ -5387,7 +5397,10 @@ function renderScheduledQueue() {
       : SCHEDULE_FORMATTER.format(when);
     meta.textContent = item.status === "sending"
       ? "Sending now…"
-      : (item.last_error ? `Offline · retry ${whenText}` : `Scheduled ${whenText}`);
+      : item.status === "failed"
+        ? `Failed after ${item.attempt_count} attempt${item.attempt_count === 1 ? "" : "s"}`
+        : (item.last_error ? `Offline · retry ${whenText}` : `Scheduled ${whenText}`);
+    if (item.last_error) meta.title = item.last_error;
     copy.append(message, meta);
     row.append(icon, copy);
     if (item.status === "scheduled") {
@@ -5397,6 +5410,13 @@ function renderScheduledQueue() {
       cancel.textContent = "Cancel";
       cancel.addEventListener("click", () => cancelScheduledMessage(item.scheduled_id));
       row.append(cancel);
+    } else if (item.status === "failed") {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "scheduled-cancel scheduled-retry";
+      retry.textContent = "Retry";
+      retry.addEventListener("click", () => retryScheduledMessage(item.scheduled_id));
+      row.append(retry);
     }
     el.scheduledQueue.append(row);
   }
@@ -5429,6 +5449,23 @@ async function cancelScheduledMessage(scheduledId) {
     toast("Scheduled message cancelled");
   } catch (error) {
     toast(error.message, "error");
+  }
+}
+
+async function retryScheduledMessage(scheduledId) {
+  try {
+    await api(`/penguin-connect/scheduled-messages/${encodeURIComponent(scheduledId)}/retry`, {
+      method: "POST",
+      body: "{}",
+    });
+    await Promise.all([
+      loadScheduledMessages(),
+      state.view === "queue" ? loadQueue() : Promise.resolve(),
+    ]);
+    if (state.view === "queue") renderQueueList();
+    toast("Message queued to retry now");
+  } catch (error) {
+    toast(`Could not retry message: ${error.message}`, "error");
   }
 }
 

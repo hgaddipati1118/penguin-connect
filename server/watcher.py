@@ -216,7 +216,7 @@ def _penguin_connect_polling_loop(generation: int | None = None) -> None:
                 _update_sync_status()
             elif result.get("skipped"):
                 err = result.get("reason") or "skipped"
-                if err in {"queue_idle", "queue_busy"}:
+                if err in {"gmail_not_connected", "queue_idle", "queue_busy"}:
                     _last_error_code = None
                     _shutdown_event.wait(interval)
                     continue

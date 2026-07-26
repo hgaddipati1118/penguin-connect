@@ -53,7 +53,20 @@ class SyncIntegrationTests(unittest.TestCase):
         db.APPLE_MESSAGES_DB = self.old_apple_messages_db
         self.tmpdir.cleanup()
 
+    def _connect_test_gmail_account(self):
+        conn = db.get_connection()
+        try:
+            conn.execute(
+                """INSERT OR IGNORE INTO penguin_connect_accounts
+                   (gmail_email, keychain_service, status)
+                   VALUES ('owner@gmail.com', 'test.gmail', 'connected')"""
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
     def test_watcher_and_manual_sync_are_serialized(self):
+        self._connect_test_gmail_account()
         started = threading.Event()
         manual_done = threading.Event()
         state_lock = threading.Lock()
@@ -204,6 +217,7 @@ class SyncIntegrationTests(unittest.TestCase):
         self.assertEqual(worker_result["result"]["queue_job_status"], "succeeded")
 
     def test_run_incremental_sync_does_not_steal_startup_job(self):
+        self._connect_test_gmail_account()
         conn = db.get_connection()
         try:
             startup = penguin_connect.enqueue_sync_job(

@@ -251,6 +251,7 @@ open http://127.0.0.1:9000/penguin-connect/ui
 ./scripts/penguin_connect_tool.py schedule CONVERSATION_ID --at "2026-07-01T16:30:00-07:00" --message "On it later"
 ./scripts/penguin_connect_tool.py scheduled list CONVERSATION_ID
 ./scripts/penguin_connect_tool.py scheduled cancel SCHEDULED_ID
+./scripts/penguin_connect_tool.py scheduled retry SCHEDULED_ID
 ./scripts/penguin_connect_tool.py contacts search "Taylor"
 ./scripts/penguin_connect_tool.py contacts create --first Taylor --phone +14155550101
 ./scripts/penguin_connect_tool.py contacts refresh
@@ -260,7 +261,9 @@ open http://127.0.0.1:9000/penguin-connect/ui
 The `send` and `schedule` commands route directly through an existing PenguinConnect conversation
 and keep the normal Apple Messages route-safety checks; Gmail is not required
 for local manual sends. They can also attach local files, including audio voice
-memos. The local UI supports replies, scheduled sends for existing conversations, file/image attachments from picker, drag/drop, or paste, in-composer
+memos. Failed offline sends stay visible in the Queue and selected conversation
+with an explicit retry action; reconnecting Gmail is not required for those
+source-native sends. The local UI supports replies, scheduled sends for existing conversations, file/image attachments from picker, drag/drop, or paste, in-composer
 voice memo recording, emoji
 shortcuts, visible-page auto-refresh with new-activity status for cached conversations
 and the selected thread, message-level reply targets and copy actions, thread filtering and unknown-first sorting,

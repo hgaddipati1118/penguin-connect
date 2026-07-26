@@ -101,6 +101,67 @@ class ScheduledSendTests(unittest.TestCase):
             self.assertEqual(cancel_response.status_code, 200)
             self.assertEqual(cancel_response.json()["scheduled_message"]["status"], "cancelled")
 
+    def test_failed_message_can_be_retried_and_delivered(self):
+        due_at = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """INSERT INTO penguin_connect_scheduled_messages
+                   (scheduled_id, conversation_id, sender_email, body_text, attachment_paths,
+                    scheduled_at, status, attempt_count, last_error)
+                   VALUES (?, ?, '', ?, '[]', ?, 'failed', 20, ?)""",
+                (
+                    "scheduled_failed",
+                    "amc_test",
+                    "Try this again",
+                    due_at,
+                    "bridge offline",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with TestClient(app_module.app) as client:
+            retry_response = client.post(
+                "/penguin-connect/scheduled-messages/scheduled_failed/retry",
+                json={},
+            )
+
+        self.assertEqual(retry_response.status_code, 200)
+        retried = retry_response.json()["scheduled_message"]
+        self.assertEqual(retried["status"], "scheduled")
+        self.assertEqual(retried["attempt_count"], 0)
+        self.assertEqual(retried["last_error"], "")
+
+        with mock.patch(
+            "app.penguinconnect_send_manual_message",
+            return_value={"success": True, "provider_message_id": "manual-retry-1"},
+        ):
+            result = app_module.run_due_scheduled_messages()
+
+        self.assertEqual(result["processed"], 1)
+        self.assertEqual(result["results"][0]["status"], "sent")
+
+    def test_only_failed_scheduled_messages_can_be_retried(self):
+        scheduled_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        with TestClient(app_module.app) as client:
+            create_response = client.post(
+                "/penguin-connect/conversations/amc_test/scheduled-messages",
+                json={"message": "Still scheduled", "scheduled_at": scheduled_at},
+            )
+            scheduled_id = create_response.json()["scheduled_message"]["scheduled_id"]
+            retry_response = client.post(
+                f"/penguin-connect/scheduled-messages/{scheduled_id}/retry",
+                json={},
+            )
+
+        self.assertEqual(retry_response.status_code, 400)
+        self.assertEqual(
+            retry_response.json()["detail"],
+            "scheduled_message_not_retryable",
+        )
+
     def test_run_due_scheduled_message_uses_manual_send_path(self):
         due_at = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
         conn = self._get_connection()

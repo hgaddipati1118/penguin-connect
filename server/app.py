@@ -461,6 +461,37 @@ def _cancel_scheduled_message(conn: sqlite3.Connection, scheduled_id: str) -> di
     return {"success": True, "scheduled_message": _scheduled_message_dict(updated)}
 
 
+def _retry_scheduled_message(conn: sqlite3.Connection, scheduled_id: str) -> dict:
+    row = _get_scheduled_message(conn, scheduled_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="scheduled_message_not_found")
+    if row["status"] != "failed":
+        raise HTTPException(status_code=400, detail="scheduled_message_not_retryable")
+    _require_schedulable_conversation(conn, row["conversation_id"])
+    now_iso = _utc_now_iso()
+    conn.execute(
+        """UPDATE penguin_connect_scheduled_messages
+           SET status = 'scheduled',
+               attempt_count = 0,
+               last_error = NULL,
+               provider_message_id = NULL,
+               scheduled_at = ?,
+               updated_at = ?,
+               sent_at = NULL,
+               cancelled_at = NULL
+           WHERE scheduled_id = ? AND status = 'failed'""",
+        (now_iso, now_iso, scheduled_id),
+    )
+    conn.commit()
+    updated = _get_scheduled_message(conn, scheduled_id)
+    log_action(
+        "api_scheduled_send_retry",
+        scheduled_id=scheduled_id,
+        conversation_id=row["conversation_id"],
+    )
+    return {"success": True, "scheduled_message": _scheduled_message_dict(updated)}
+
+
 def run_due_scheduled_messages(limit: int = 25) -> dict:
     conn = get_connection()
     results: list[dict] = []
@@ -6085,6 +6116,17 @@ def cancel_penguinconnect_scheduled_message(scheduled_id: str):
         return _cancel_scheduled_message(conn, scheduled_id)
     finally:
         conn.close()
+
+
+@app.post("/api/penguin-connect/scheduled-messages/{scheduled_id}/retry")
+@app.post("/penguin-connect/scheduled-messages/{scheduled_id}/retry")
+def retry_penguinconnect_scheduled_message(scheduled_id: str):
+    conn = get_connection()
+    try:
+        return _retry_scheduled_message(conn, scheduled_id)
+    finally:
+        conn.close()
+
 
 @app.post("/api/penguin-connect/scheduled-messages/run-due")
 @app.post("/penguin-connect/scheduled-messages/run-due")

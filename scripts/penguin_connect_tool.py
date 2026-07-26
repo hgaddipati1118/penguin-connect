@@ -430,6 +430,25 @@ def command_scheduled_cancel(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_scheduled_retry(args: argparse.Namespace) -> int:
+    payload = _api_json(
+        "POST",
+        f"/penguin-connect/scheduled-messages/{args.scheduled_id}/retry",
+        api_base=args.api_base,
+        payload={},
+        timeout=args.timeout,
+    )
+    if args.json:
+        _print_json(payload)
+        return 0
+
+    row = payload.get("scheduled_message") or {}
+    print(f"retried: {bool(payload.get('success'))}")
+    print(f"scheduled_id: {row.get('scheduled_id') or args.scheduled_id}")
+    print(f"status: {row.get('status') or 'scheduled'}")
+    return 0
+
+
 def command_scheduled_run_due(args: argparse.Namespace) -> int:
     limit = max(1, min(args.limit, 100))
     query = urllib.parse.urlencode({"limit": limit})
@@ -768,7 +787,7 @@ def build_parser() -> argparse.ArgumentParser:
     schedule.add_argument("--json", action="store_true", help="Print raw JSON")
     schedule.set_defaults(func=command_schedule)
 
-    scheduled = sub.add_parser("scheduled", help="List, cancel, or run scheduled sends")
+    scheduled = sub.add_parser("scheduled", help="List, cancel, retry, or run scheduled sends")
     scheduled_sub = scheduled.add_subparsers(dest="scheduled_command", required=True)
 
     scheduled_list = scheduled_sub.add_parser("list", help="List scheduled sends for a conversation")
@@ -780,6 +799,11 @@ def build_parser() -> argparse.ArgumentParser:
     scheduled_cancel.add_argument("scheduled_id")
     scheduled_cancel.add_argument("--json", action="store_true", help="Print raw JSON")
     scheduled_cancel.set_defaults(func=command_scheduled_cancel)
+
+    scheduled_retry = scheduled_sub.add_parser("retry", help="Retry a failed scheduled send now")
+    scheduled_retry.add_argument("scheduled_id")
+    scheduled_retry.add_argument("--json", action="store_true", help="Print raw JSON")
+    scheduled_retry.set_defaults(func=command_scheduled_retry)
 
     scheduled_run_due = scheduled_sub.add_parser("run-due", help="Run due scheduled sends now")
     scheduled_run_due.add_argument("--limit", type=int, default=25)

@@ -364,6 +364,7 @@ Those recurring full verifications also refresh contact-derived display names, s
   - `PENGUIN_CONNECT_SYNC_JOB_LEASE_SECONDS=180`
   - `PENGUIN_CONNECT_SYNC_JOB_RETRY_BASE_SECONDS=30`
   - `PENGUIN_CONNECT_SYNC_JOB_RETRY_MAX_BACKOFF_SECONDS=1800`
+  - `PENGUIN_CONNECT_SYNC_JOB_HISTORY_LIMIT=200` terminal jobs retained per status
 - retry policy defaults:
   - `PENGUIN_CONNECT_RETRY_BASE_SECONDS=30`
   - `PENGUIN_CONNECT_RETRY_MAX_BACKOFF_SECONDS=900`
@@ -407,9 +408,15 @@ curl -s http://127.0.0.1:9000/penguin-connect/conversations/<conversation_id>/sc
   --message "hello later"
 ./scripts/penguin_connect_tool.py scheduled list <conversation_id>
 ./scripts/penguin_connect_tool.py scheduled cancel <scheduled_id>
+./scripts/penguin_connect_tool.py scheduled retry <scheduled_id>
 ```
 
 Operational note:
+- When Gmail is not connected, the watcher stays in local-only mode and does not
+  enqueue Gmail sync work. Existing terminal sync history is bounded, while the
+  separate scheduled/offline send queue remains intact.
+- Failed scheduled/offline sends can be retried from the Queue, the selected
+  conversation, the retry endpoint, or `scheduled retry`.
 - `/api/status` and `/penguin-connect/health` return a cached sync-metrics snapshot so they stay responsive during large backfills and Gmail cooldowns.
 - When `sync_metrics.snapshot_complete` is `false`, the durable queue and runtime state are current, while the detailed delivery counters are still refreshing in the background.
 

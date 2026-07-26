@@ -2831,6 +2831,21 @@ button.message-reaction-chip:hover {
   font-weight: 650;
 }
 
+.scheduled-retry {
+  padding-inline: 8px;
+  border: 1px solid rgba(84, 126, 103, 0.24);
+  border-radius: 8px;
+  background: #eef5f0;
+  color: #356448;
+}
+
+.scheduled-retry:hover,
+.scheduled-retry:focus-visible {
+  border-color: rgba(84, 126, 103, 0.48);
+  background: #e3efe7;
+  outline: none;
+}
+
 .schedule-dialog-body {
   display: grid;
   gap: 12px;

@@ -5652,6 +5652,11 @@ class PenguinConnectTests(unittest.TestCase):
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
         conn.executescript(SCHEMA)
+        conn.execute(
+            """INSERT INTO penguin_connect_accounts
+               (gmail_email, keychain_service, status)
+               VALUES ('owner@gmail.com', 'test.gmail', 'connected')"""
+        )
         try:
             with mock.patch("db.get_connection", return_value=conn), mock.patch(
                 "penguin_connect.sync_conversations",
@@ -5926,6 +5931,16 @@ class PenguinConnectTests(unittest.TestCase):
             db.DB_PATH = Path(tmp) / "cache.db"
             try:
                 db.init_db()
+                conn = db.get_connection()
+                try:
+                    conn.execute(
+                        """INSERT INTO penguin_connect_accounts
+                           (gmail_email, keychain_service, status)
+                           VALUES ('owner@gmail.com', 'test.gmail', 'connected')"""
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
                 with mock.patch(
                     "penguin_connect.sync_conversations",
                     return_value={"success": True, "mode": "incremental", "selected_conversations": 0},
@@ -5961,6 +5976,84 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertFalse(second["enqueued"])
         self.assertEqual(first["job_id"], second["job_id"])
         self.assertEqual(penguin_connect._pending_sync_jobs_count(self.conn), 1)
+
+    def test_prune_sync_job_history_keeps_recent_terminal_and_active_jobs(self):
+        for status in ("failed", "succeeded"):
+            for index in range(5):
+                timestamp = f"2026-07-2{index}T10:00:00+00:00"
+                self.conn.execute(
+                    """INSERT INTO penguin_connect_jobs
+                       (job_type, queue_name, payload_json, status, next_run_at,
+                        created_at, updated_at, finished_at)
+                       VALUES (?, ?, '{}', ?, ?, ?, ?, ?)""",
+                    (
+                        penguin_connect.SYNC_JOB_TYPE,
+                        penguin_connect.SYNC_JOB_QUEUE,
+                        status,
+                        timestamp,
+                        timestamp,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+        for status in ("queued", "leased"):
+            self.conn.execute(
+                """INSERT INTO penguin_connect_jobs
+                   (job_type, queue_name, payload_json, status, next_run_at)
+                   VALUES (?, ?, '{}', ?, ?)""",
+                (
+                    penguin_connect.SYNC_JOB_TYPE,
+                    penguin_connect.SYNC_JOB_QUEUE,
+                    status,
+                    "2026-07-26T10:00:00+00:00",
+                ),
+            )
+
+        pruned = penguin_connect.prune_sync_job_history(
+            self.conn,
+            per_status_limit=2,
+        )
+
+        self.assertEqual(pruned, {"failed": 3, "succeeded": 3, "total": 6})
+        counts = {
+            row["status"]: row["count"]
+            for row in self.conn.execute(
+                """SELECT status, COUNT(*) AS count
+                   FROM penguin_connect_jobs
+                   GROUP BY status"""
+            ).fetchall()
+        }
+        self.assertEqual(
+            counts,
+            {"failed": 2, "leased": 1, "queued": 1, "succeeded": 2},
+        )
+
+    def test_run_incremental_sync_skips_queue_without_connected_gmail(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript(SCHEMA)
+        conn.execute(
+            """INSERT INTO penguin_connect_jobs
+               (job_type, queue_name, dedupe_key, payload_json, status, next_run_at)
+               VALUES (?, ?, 'sync:incremental', '{}', 'queued', ?)""",
+            (
+                penguin_connect.SYNC_JOB_TYPE,
+                penguin_connect.SYNC_JOB_QUEUE,
+                "2026-07-26T10:00:00+00:00",
+            ),
+        )
+        with mock.patch("db.get_connection", return_value=conn), mock.patch(
+            "penguin_connect.sync_conversations",
+        ) as mock_sync:
+            result = penguin_connect.run_incremental_sync()
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["reason"], "gmail_not_connected")
+        self.assertFalse(result["queue_enqueued"])
+        self.assertEqual(result["queue_pending_jobs"], 0)
+        self.assertEqual(result["queue_jobs_failed"], 1)
+        mock_sync.assert_not_called()
 
     def test_sync_job_worker_retries_then_succeeds(self):
         penguin_connect.enqueue_sync_job(
