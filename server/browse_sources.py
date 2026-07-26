@@ -44,21 +44,29 @@ def _extract_text_from_attributed_body(blob):
     if not blob:
         return None
     try:
-        marker = b"NSString\x01\x94\x84\x01+"
-        idx = blob.find(marker)
-        if idx == -1:
+        string_marker = b"NSString\x01"
+        marker_idx = blob.find(string_marker)
+        if marker_idx == -1:
             return None
-        pos = idx + len(marker)
+        archive_marker = b"\x84\x01+"
+        archive_idx = blob.find(
+            archive_marker,
+            marker_idx + len(string_marker),
+            marker_idx + len(string_marker) + 8,
+        )
+        if archive_idx == -1:
+            return None
+        pos = archive_idx + len(archive_marker)
         first = blob[pos]
         if first < 0x80:
             length = first
             pos += 1
         elif first == 0x81:
-            length = blob[pos + 1]
+            length = int.from_bytes(blob[pos + 1 : pos + 3], "little")
             pos += 3
         elif first == 0x82:
-            length = (blob[pos + 1] << 8) | blob[pos + 2]
-            pos += 4
+            length = int.from_bytes(blob[pos + 1 : pos + 5], "little")
+            pos += 5
         else:
             return None
         text = blob[pos : pos + length].decode("utf-8", errors="replace")
@@ -696,7 +704,14 @@ def _native_message_rowid(value):
     return rowid if rowid > 0 else None
 
 
-def fetch_imessage_messages(chat_id, limit=50, since=None, since_native_message_id=None):
+def fetch_imessage_messages(
+    chat_id,
+    limit=50,
+    since=None,
+    since_native_message_id=None,
+    before=None,
+    before_native_message_id=None,
+):
     if not os.path.exists(IMESSAGE_DB):
         return []
 
@@ -709,10 +724,16 @@ def fetch_imessage_messages(chat_id, limit=50, since=None, since_native_message_
 
         since_ns = _iso_to_apple_ns(since)
         since_rowid = _native_message_rowid(since_native_message_id)
+        before_ns = _iso_to_apple_ns(before)
+        before_rowid = _native_message_rowid(before_native_message_id)
         if since_ns and since_rowid:
             date_filter = "AND (m.date > ? OR (m.date = ? AND m.ROWID > ?))"
         elif since_ns:
             date_filter = "AND m.date > ?"
+        elif before_ns and before_rowid:
+            date_filter = "AND (m.date < ? OR (m.date = ? AND m.ROWID < ?))"
+        elif before_ns:
+            date_filter = "AND m.date < ?"
         else:
             date_filter = ""
         limit_clause = "LIMIT ?"
@@ -745,6 +766,11 @@ def fetch_imessage_messages(chat_id, limit=50, since=None, since_native_message_
                 params.extend([since_ns, since_ns, since_rowid])
             else:
                 params.append(since_ns)
+        elif before_ns:
+            if before_rowid:
+                params.extend([before_ns, before_ns, before_rowid])
+            else:
+                params.append(before_ns)
         params.append(safe_limit)
 
         cur.execute(
@@ -823,9 +849,6 @@ def fetch_imessage_messages(chat_id, limit=50, since=None, since_native_message_
                         }
                     )
 
-            if not text and not attachments and not associated_type:
-                continue
-
             messages.append(
                 {
                     "text": text or "",
@@ -842,6 +865,7 @@ def fetch_imessage_messages(chat_id, limit=50, since=None, since_native_message_
                     "associated_message_guid": associated_guid or "",
                     "associated_message_type": int(associated_type or 0),
                     "associated_message_emoji": associated_emoji or "",
+                    "has_attributed_body": bool(attributed_body),
                 }
             )
         return messages

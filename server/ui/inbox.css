@@ -1101,6 +1101,7 @@ kbd {
   padding: 24px max(22px, 6vw) 42px;
   overflow-x: hidden;
   overflow-y: auto;
+  overflow-anchor: none;
   overscroll-behavior: contain;
   scroll-padding-bottom: 42px;
   scroll-behavior: auto;
@@ -1161,6 +1162,7 @@ kbd {
   align-items: center;
   gap: 5px;
   margin: 5px 0;
+  contain: layout paint style;
 }
 
 .message-row.mine {

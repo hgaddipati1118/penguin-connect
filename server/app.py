@@ -34,6 +34,7 @@ from penguin_connect import (
     connect_gmail_account as penguinconnect_connect_gmail_account,
     get_cached_sync_metrics as penguinconnect_get_cached_sync_metrics,
     disconnect_conversation as penguinconnect_disconnect_conversation,
+    backfill_local_conversation_cache as penguinconnect_backfill_local_conversation_cache,
     get_conversation_alias as penguinconnect_get_conversation_alias,
     get_conversation_messages as penguinconnect_get_conversation_messages,
     get_gmail_connection_status as penguinconnect_get_gmail_connection_status,
@@ -3328,7 +3329,7 @@ def _search_messages(
             "messages": [],
         }
 
-    if search:
+    if search and normalized_view != "current":
         for term in _message_search_terms(search) or [search]:
             penguinconnect_import_local_imessage_search_results(conn, term, limit=limit)
 
@@ -3592,25 +3593,25 @@ def _attach_conversation_previews(conn: sqlite3.Connection, result: dict) -> dic
     placeholders = ",".join("?" for _ in ids)
     rows = conn.execute(
         f"""
-        SELECT *
-        FROM (
-            SELECT
-                conversation_id,
-                provider_message_id,
-                direction,
-                sender_email,
-                sender_name,
-                body_text,
-                message_timestamp,
-                metadata,
-                ROW_NUMBER() OVER (
-                    PARTITION BY conversation_id
-                    ORDER BY message_timestamp DESC, id DESC
-                ) as row_number
-            FROM penguin_connect_messages
-            WHERE conversation_id IN ({placeholders})
-        )
-        WHERE row_number = 1
+        SELECT
+            message.conversation_id,
+            message.provider_message_id,
+            message.direction,
+            message.sender_email,
+            message.sender_name,
+            message.body_text,
+            message.message_timestamp,
+            message.metadata
+        FROM penguin_connect_conversations conversation
+        JOIN penguin_connect_messages message
+          ON message.id = (
+              SELECT latest.id
+              FROM penguin_connect_messages latest
+              WHERE latest.conversation_id = conversation.conversation_id
+              ORDER BY latest.message_timestamp DESC, latest.id DESC
+              LIMIT 1
+          )
+        WHERE conversation.conversation_id IN ({placeholders})
         """,
         ids,
     ).fetchall()
@@ -4842,24 +4843,33 @@ def get_penguinconnect_conversations(
     include_whatsapp: bool = False,
     include_imessage: bool = False,
     compact: bool = False,
+    fast: bool = False,
 ):
     conn = get_connection()
     try:
-        result = penguinconnect_list_conversations(conn)
+        result = penguinconnect_list_conversations(
+            conn,
+            discover_sources=not fast,
+            hydrate_previews=not fast,
+        )
         if include_imessage:
             penguinconnect_ensure_conversations_discovered(
                 conn,
                 result.get("gmail_email") or LOCAL_MESSAGES_ACCOUNT_EMAIL,
                 provision_aliases=False,
             )
-            result = penguinconnect_list_conversations(conn)
         if include_whatsapp:
             penguinconnect_ensure_whatsapp_conversations_discovered(
                 conn,
                 result.get("gmail_email") or LOCAL_MESSAGES_ACCOUNT_EMAIL,
                 provision_aliases=False,
             )
-            result = penguinconnect_list_conversations(conn)
+        if include_imessage or include_whatsapp:
+            result = penguinconnect_list_conversations(
+                conn,
+                discover_sources=False,
+                hydrate_previews=True,
+            )
         result = _attach_conversation_unread_counts(conn, result)
         result = _attach_conversation_previews(conn, result)
         result = _attach_conversation_management(conn, result)
@@ -5016,6 +5026,19 @@ def get_penguinconnect_conversation_messages(
             refresh_source=refresh,
             incremental_refresh=incremental,
         )
+        if not result.get("found"):
+            raise HTTPException(status_code=404, detail="conversation_not_found")
+        return result
+    finally:
+        conn.close()
+
+
+@app.post("/api/penguin-connect/conversations/{conversation_id}/cache-backfill")
+@app.post("/penguin-connect/conversations/{conversation_id}/cache-backfill")
+def backfill_penguinconnect_conversation_cache(conversation_id: str):
+    conn = get_connection()
+    try:
+        result = penguinconnect_backfill_local_conversation_cache(conn, conversation_id)
         if not result.get("found"):
             raise HTTPException(status_code=404, detail="conversation_not_found")
         return result

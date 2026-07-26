@@ -344,12 +344,21 @@ def list_recent_imessage_chat_activity(since, limit=500):
     return _IMESSAGE_CHANNEL.list_recent_activity(since, limit=limit)
 
 
-def fetch_imessage_messages(chat_id, limit=50, since=None, since_native_message_id=None):
+def fetch_imessage_messages(
+    chat_id,
+    limit=50,
+    since=None,
+    since_native_message_id=None,
+    before=None,
+    before_native_message_id=None,
+):
     return _IMESSAGE_CHANNEL.fetch_messages(
         chat_id,
         limit=limit,
         since=since,
         since_native_message_id=since_native_message_id,
+        before=before,
+        before_native_message_id=before_native_message_id,
     )
 
 
@@ -4022,7 +4031,12 @@ def _hydrate_local_conversation_previews(conn: sqlite3.Connection, rows: list[sq
     return hydrated
 
 
-def list_conversations(conn: sqlite3.Connection) -> dict[str, Any]:
+def list_conversations(
+    conn: sqlite3.Connection,
+    *,
+    discover_sources: bool = True,
+    hydrate_previews: bool = True,
+) -> dict[str, Any]:
     account = get_connected_account(conn)
     account_email = account["gmail_email"] if account else ""
 
@@ -4036,7 +4050,7 @@ def list_conversations(conn: sqlite3.Connection) -> dict[str, Any]:
                 "SELECT COUNT(*) FROM penguin_connect_conversations WHERE gmail_email = ?",
                 (account_email,),
             ).fetchone()[0]
-            if existing_count == 0:
+            if discover_sources and existing_count == 0:
                 ensure_conversations_discovered(conn, account_email)
         except sqlite3.OperationalError as exc:
             # If another writer is syncing, skip opportunistic discovery for this
@@ -4046,7 +4060,7 @@ def list_conversations(conn: sqlite3.Connection) -> dict[str, Any]:
                 raise
 
         refresh_conversation_exclusions(conn, account_email)
-    else:
+    elif discover_sources:
         try:
             _maybe_discover_local_imessage_conversations(conn)
         except sqlite3.OperationalError as exc:
@@ -4067,7 +4081,8 @@ def list_conversations(conn: sqlite3.Connection) -> dict[str, Any]:
         params = (account_email,)
     query += " ORDER BY COALESCE(s.last_message_ts, c.updated_at) DESC, c.updated_at DESC"
     rows = conn.execute(query, params).fetchall()
-    _hydrate_local_conversation_previews(conn, rows)
+    if hydrate_previews:
+        _hydrate_local_conversation_previews(conn, rows)
 
     conversations = []
     for row in rows:
@@ -4136,6 +4151,7 @@ def _cache_local_source_messages_for_view(
     *,
     limit: int = 200,
     include_history: bool = False,
+    backfill_history: bool = False,
 ) -> int:
     source_provider = _conversation_source_provider(conv)
     if source_provider not in {"imessage", "apple_messages", "sms", "rcs", "whatsapp"}:
@@ -4151,17 +4167,70 @@ def _cache_local_source_messages_for_view(
     ).fetchone()
     since = None if include_history else (state["last_source_ts"] if state else None)
     since_native_message_id = None if include_history else (state["last_source_native_message_id"] if state else None)
-    messages = _fetch_source_messages_for_conversation(
-        conv,
-        limit=max(1, min(int(limit or 200), 1000)),
-        since=since,
-        since_native_message_id=since_native_message_id,
+    requested_limit = max(1, min(int(limit or 200), 5000))
+    supports_cursor_backfill = backfill_history and source_provider in {
+        "imessage",
+        "apple_messages",
+        "sms",
+        "rcs",
+    }
+    before = state["local_cache_backfill_ts"] if state and supports_cursor_backfill else None
+    before_native_message_id = (
+        state["local_cache_backfill_native_message_id"] if state and supports_cursor_backfill else None
     )
+    updates_recent_read_state = not supports_cursor_backfill or not before
+    messages: list[dict[str, Any]] = []
+    backfill_exhausted = False
+    while len(messages) < requested_limit:
+        batch_limit = min(1000, requested_limit - len(messages))
+        batch = _fetch_source_messages_for_conversation(
+            conv,
+            limit=batch_limit,
+            since=since,
+            since_native_message_id=since_native_message_id,
+            before=before if supports_cursor_backfill else None,
+            before_native_message_id=before_native_message_id if supports_cursor_backfill else None,
+        )
+        if not batch:
+            backfill_exhausted = supports_cursor_backfill
+            break
+        messages.extend(batch)
+        if not supports_cursor_backfill or len(batch) < batch_limit:
+            backfill_exhausted = supports_cursor_backfill
+            break
+        oldest = min(
+            batch,
+            key=lambda msg: (
+                msg.get("timestamp") or "",
+                _imessage_native_message_sort_value(msg.get("native_message_id")),
+            ),
+        )
+        next_before = oldest.get("timestamp")
+        next_before_native_message_id = oldest.get("native_message_id")
+        if not next_before or (
+            next_before == before
+            and (next_before_native_message_id or "") == (before_native_message_id or "")
+        ):
+            backfill_exhausted = True
+            break
+        before = next_before
+        before_native_message_id = next_before_native_message_id
     if not messages:
         conn.execute(
             "UPDATE penguin_connect_conversations SET last_synced_at = datetime('now') WHERE conversation_id = ?",
             (conv["conversation_id"],),
         )
+        if supports_cursor_backfill and backfill_exhausted:
+            conn.execute(
+                """INSERT INTO penguin_connect_sync_state
+                   (conversation_id, local_cache_backfill_completed_at, last_synced_at, updated_at)
+                   VALUES (?, datetime('now'), datetime('now'), datetime('now'))
+                   ON CONFLICT(conversation_id) DO UPDATE SET
+                     local_cache_backfill_completed_at = datetime('now'),
+                     last_synced_at = datetime('now'),
+                     updated_at = datetime('now')""",
+                (conv["conversation_id"],),
+            )
         conn.commit()
         return 0
 
@@ -4174,7 +4243,7 @@ def _cache_local_source_messages_for_view(
     )
     unread_count = (
         _get_apple_messages_unread_count_for_conversation(conv)
-        if source_provider in {"imessage", "apple_messages", "sms", "rcs"}
+        if updates_recent_read_state and source_provider in {"imessage", "apple_messages", "sms", "rcs"}
         else 0
     )
     unread_provider_ids: set[str] = set()
@@ -4280,7 +4349,11 @@ def _cache_local_source_messages_for_view(
         if cursor.rowcount > 0:
             stored += 1
 
-    if unread_count is not None and source_provider in {"imessage", "apple_messages", "sms", "rcs"}:
+    if (
+        updates_recent_read_state
+        and unread_count is not None
+        and source_provider in {"imessage", "apple_messages", "sms", "rcs"}
+    ):
         conn.execute(
             """UPDATE penguin_connect_messages
                SET is_read = 1
@@ -4310,6 +4383,32 @@ def _cache_local_source_messages_for_view(
         conn.execute(
             "UPDATE penguin_connect_conversations SET last_synced_at = datetime('now'), updated_at = datetime('now') WHERE conversation_id = ?",
             (conv["conversation_id"],),
+        )
+    if supports_cursor_backfill:
+        oldest = min(
+            messages,
+            key=lambda msg: (
+                msg.get("timestamp") or "",
+                _imessage_native_message_sort_value(msg.get("native_message_id")),
+            ),
+        )
+        conn.execute(
+            """INSERT INTO penguin_connect_sync_state
+               (conversation_id, local_cache_backfill_ts, local_cache_backfill_native_message_id,
+                local_cache_backfill_completed_at, last_synced_at, updated_at)
+               VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+               ON CONFLICT(conversation_id) DO UPDATE SET
+                 local_cache_backfill_ts = excluded.local_cache_backfill_ts,
+                 local_cache_backfill_native_message_id = excluded.local_cache_backfill_native_message_id,
+                 local_cache_backfill_completed_at = excluded.local_cache_backfill_completed_at,
+                 last_synced_at = datetime('now'),
+                 updated_at = datetime('now')""",
+            (
+                conv["conversation_id"],
+                oldest.get("timestamp"),
+                oldest.get("native_message_id"),
+                _now_iso() if backfill_exhausted else None,
+            ),
         )
     if stored or last_ts:
         conn.commit()
@@ -4712,6 +4811,8 @@ def get_conversation_messages(
                 conv,
                 limit=refresh_limit,
                 include_history=True,
+                backfill_history=_conversation_source_provider(conv)
+                in {"imessage", "apple_messages", "sms", "rcs"},
             )
 
     account = conn.execute(
@@ -4798,6 +4899,50 @@ def get_conversation_messages(
         "offset": page_offset,
         "total": total,
         "has_more": page_offset + len(messages) < total,
+    }
+
+
+def backfill_local_conversation_cache(
+    conn: sqlite3.Connection,
+    conversation_id: str,
+    *,
+    limit: int = 5000,
+) -> dict[str, Any]:
+    conv = conn.execute(
+        "SELECT * FROM penguin_connect_conversations WHERE conversation_id = ?",
+        (conversation_id,),
+    ).fetchone()
+    if not conv:
+        return {"found": False, "imported": 0, "completed": False}
+    if _conversation_source_provider(conv) not in {"imessage", "apple_messages", "sms", "rcs"}:
+        return {"found": True, "imported": 0, "completed": True}
+
+    state = conn.execute(
+        """SELECT local_cache_backfill_completed_at
+           FROM penguin_connect_sync_state
+           WHERE conversation_id = ?""",
+        (conversation_id,),
+    ).fetchone()
+    if state and state["local_cache_backfill_completed_at"]:
+        return {"found": True, "imported": 0, "completed": True}
+
+    imported = _cache_local_source_messages_for_view(
+        conn,
+        conv,
+        limit=max(1, min(int(limit or 5000), 5000)),
+        include_history=True,
+        backfill_history=True,
+    )
+    state = conn.execute(
+        """SELECT local_cache_backfill_completed_at
+           FROM penguin_connect_sync_state
+           WHERE conversation_id = ?""",
+        (conversation_id,),
+    ).fetchone()
+    return {
+        "found": True,
+        "imported": imported,
+        "completed": bool(state and state["local_cache_backfill_completed_at"]),
     }
 
 
@@ -6290,6 +6435,8 @@ def _fetch_apple_messages_messages_for_conversation(
     limit: int,
     since: Optional[str],
     since_native_message_id: Optional[str] = None,
+    before: Optional[str] = None,
+    before_native_message_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     safe_limit = max(1, min(int(limit or 50), 1000))
     route_ids = _apple_messages_chat_routes_for_conversation(conv)
@@ -6299,12 +6446,15 @@ def _fetch_apple_messages_messages_for_conversation(
     merged: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     for chat_id in route_ids:
-        for message in fetch_imessage_messages(
-            chat_id,
-            limit=safe_limit,
-            since=since,
-            since_native_message_id=since_native_message_id,
-        ):
+        fetch_kwargs: dict[str, Any] = {
+            "limit": safe_limit,
+            "since": since,
+            "since_native_message_id": since_native_message_id,
+        }
+        if before:
+            fetch_kwargs["before"] = before
+            fetch_kwargs["before_native_message_id"] = before_native_message_id
+        for message in fetch_imessage_messages(chat_id, **fetch_kwargs):
             routed_message = dict(message)
             routed_message["chat_id"] = chat_id
             provider_message_id = _provider_message_id_for_imessage(routed_message)
@@ -6317,7 +6467,8 @@ def _fetch_apple_messages_messages_for_conversation(
         key=lambda message: (
             message.get("timestamp") or "",
             _imessage_native_message_sort_value(message.get("native_message_id")),
-        )
+        ),
+        reverse=not bool(since),
     )
     if len(merged) > safe_limit:
         merged = merged[:safe_limit]
@@ -6362,6 +6513,8 @@ def _fetch_source_messages_for_conversation(
     limit: int,
     since: Optional[str],
     since_native_message_id: Optional[str] = None,
+    before: Optional[str] = None,
+    before_native_message_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Provider-dispatch: fetch messages from the right adapter."""
     source_provider = _conversation_source_provider(conv)
@@ -6369,7 +6522,14 @@ def _fetch_source_messages_for_conversation(
         return _fetch_whatsapp_messages_for_conversation(conv, limit=limit, since=since, since_native_message_id=since_native_message_id)
     if source_provider == "telegram":
         return _fetch_telegram_messages_for_conversation(conv, limit=limit, since=since, since_native_message_id=since_native_message_id)
-    return _fetch_apple_messages_messages_for_conversation(conv, limit=limit, since=since, since_native_message_id=since_native_message_id)
+    return _fetch_apple_messages_messages_for_conversation(
+        conv,
+        limit=limit,
+        since=since,
+        since_native_message_id=since_native_message_id,
+        before=before,
+        before_native_message_id=before_native_message_id,
+    )
 
 
 def _get_apple_messages_unread_count_for_conversation(conv: sqlite3.Row | dict[str, Any]) -> Optional[int]:

@@ -4,7 +4,7 @@ const state = {
   smartView: "all",
   activeLabel: "",
   conversations: [],
-  conversationsVisible: 300,
+  conversationsVisible: 120,
   contacts: [],
   contactsTotal: 0,
   peopleVisible: 200,
@@ -26,7 +26,7 @@ const state = {
   queue: [],
   selected: null,
   messages: [],
-  messagesVisible: 100,
+  messagesVisible: 60,
   messageCache: new Map(),
   preloadingConversations: new Set(),
   messagePagination: {
@@ -252,6 +252,30 @@ const translationQueue = [];
 const WORKSPACE_CACHE_DB = "penguin-local-workspace";
 const WORKSPACE_CACHE_VERSION = 1;
 const WORKSPACE_CACHE_THREAD_LIMIT = 60;
+const CONVERSATION_RENDER_BATCH = 120;
+const MESSAGE_RENDER_WINDOW = 60;
+const MESSAGE_HISTORY_BATCH = 80;
+const CLOCK_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  hour: "numeric",
+  minute: "2-digit",
+});
+const WEEKDAY_FORMATTER = new Intl.DateTimeFormat(undefined, { weekday: "short" });
+const MONTH_DAY_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+});
+const WEEKDAY_MONTH_DAY_YEAR_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+});
+const SCHEDULE_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+});
 let selectionHydrationTimer = 0;
 let latestAnchorFrame = 0;
 let latestAnchorToken = 0;
@@ -262,6 +286,10 @@ let shortcutPrefixTimer = 0;
 let workspaceCacheDatabasePromise = null;
 let workspaceCachePruneScheduled = false;
 let attachmentHistorySyncPromise = null;
+const cacheRepairRequests = new Map();
+let threadSearchTimer = 0;
+let threadSearchRequestToken = 0;
+let threadSearchRestoreVisible = MESSAGE_RENDER_WINDOW;
 
 function apiErrorMessage(payload, response) {
   const detail = payload?.detail;
@@ -557,15 +585,15 @@ function timeLabel(raw) {
   const now = new Date();
   const sameDay = date.toDateString() === now.toDateString();
   if (sameDay) {
-    return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date);
+    return CLOCK_FORMATTER.format(date);
   }
   const yesterday = new Date(now);
   yesterday.setDate(now.getDate() - 1);
   if (date.toDateString() === yesterday.toDateString()) return "Yesterday";
   if (now.getTime() - date.getTime() < 6 * 86400000) {
-    return new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(date);
+    return WEEKDAY_FORMATTER.format(date);
   }
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date);
+  return MONTH_DAY_FORMATTER.format(date);
 }
 
 function fullDateLabel(raw) {
@@ -576,12 +604,10 @@ function fullDateLabel(raw) {
   const yesterday = new Date(now);
   yesterday.setDate(now.getDate() - 1);
   if (date.toDateString() === yesterday.toDateString()) return "Yesterday";
-  return new Intl.DateTimeFormat(undefined, {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    year: date.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
-  }).format(date);
+  if (date.getFullYear() !== now.getFullYear()) {
+    return WEEKDAY_MONTH_DAY_YEAR_FORMATTER.format(date);
+  }
+  return `${WEEKDAY_FORMATTER.format(date)}, ${MONTH_DAY_FORMATTER.format(date)}`;
 }
 
 function truncate(value, limit = 90) {
@@ -910,7 +936,7 @@ function renderLabelBar() {
     button.addEventListener("click", () => {
       state.smartView = option.value;
       state.activeLabel = "";
-      state.conversationsVisible = 300;
+      state.conversationsVisible = CONVERSATION_RENDER_BATCH;
       renderView();
     });
     el.labelBar.append(button);
@@ -933,7 +959,7 @@ function renderLabelBar() {
     select.addEventListener("change", () => {
       state.smartView = "all";
       state.activeLabel = select.value;
-      state.conversationsVisible = 300;
+      state.conversationsVisible = CONVERSATION_RENDER_BATCH;
       renderView();
     });
     el.labelBar.append(select);
@@ -1027,7 +1053,7 @@ function renderConversationList() {
   }
   if (state.conversationsVisible < rows.length) {
     appendInfiniteSentinel(el.conversationList, "Loading more conversations…", () => {
-      state.conversationsVisible += 200;
+      state.conversationsVisible += CONVERSATION_RENDER_BATCH;
       renderConversationList();
     });
   }
@@ -1724,7 +1750,7 @@ function scrollThreadToBottom() {
   el.messageList.scrollTop = el.messageList.scrollHeight;
 }
 
-function stabilizeThreadAtLatest(durationMs = 700) {
+function stabilizeThreadAtLatest(durationMs = 220) {
   const token = ++latestAnchorToken;
   const startedAt = Date.now();
   window.cancelAnimationFrame(latestAnchorFrame);
@@ -1945,6 +1971,7 @@ function renderMessages({
     el.messageList.append(empty);
     return;
   }
+  const messageFragment = document.createDocumentFragment();
 
   const sortedRows = [...state.messages].sort((a, b) => (
     Date.parse(a.message_timestamp || "") - Date.parse(b.message_timestamp || "")
@@ -1965,7 +1992,7 @@ function renderMessages({
     historyLoader.textContent = state.messagePagination.loadingOlder
       ? "Loading older messages…"
       : "Scroll up for older messages";
-    el.messageList.append(historyLoader);
+    messageFragment.append(historyLoader);
   }
 
   let lastDate = "";
@@ -1978,7 +2005,7 @@ function renderMessages({
       const divider = document.createElement("div");
       divider.className = "date-divider";
       divider.textContent = date;
-      el.messageList.append(divider);
+      messageFragment.append(divider);
       lastDate = date;
     }
 
@@ -2036,9 +2063,7 @@ function renderMessages({
     meta.className = "message-meta";
     const time = document.createElement("time");
     time.dateTime = message.message_timestamp || "";
-    time.textContent = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(
-      new Date(message.message_timestamp || Date.now()),
-    );
+    time.textContent = CLOCK_FORMATTER.format(new Date(message.message_timestamp || Date.now()));
     meta.append(time);
     if (message.metadata?.pending_send) {
       const delivery = document.createElement("span");
@@ -2088,7 +2113,7 @@ function renderMessages({
     if (message.metadata?.pending_send) react.hidden = true;
     if (mine) row.append(translate, pin, react, stack);
     else row.append(stack, react, pin, translate);
-    el.messageList.append(row);
+    messageFragment.append(row);
     if (
       state.autoTranslate
       && !mine
@@ -2098,6 +2123,7 @@ function renderMessages({
     }
   }
 
+  el.messageList.append(messageFragment);
   applyThreadSearch();
   const focused = focusMessageId
     ? el.messageList.querySelector(`[data-message-id="${CSS.escape(focusMessageId)}"]`)
@@ -2122,7 +2148,10 @@ async function loadOlderMessages() {
   const conversationId = state.selected?.conversation_id;
   if (!conversationId || state.messagePagination.loadingOlder) return;
   if (state.messagesVisible < state.messages.length) {
-    state.messagesVisible = Math.min(state.messages.length, state.messagesVisible + 100);
+    state.messagesVisible = Math.min(
+      state.messages.length,
+      state.messagesVisible + MESSAGE_HISTORY_BATCH,
+    );
     renderMessages({ preserveTopAnchor: true });
     return;
   }
@@ -2172,7 +2201,10 @@ function updateConversationSelectionUI(previousId, nextId) {
   if (!next) {
     const index = visibleConversations().findIndex((item) => item.conversation_id === nextId);
     if (index >= state.conversationsVisible) {
-      state.conversationsVisible = Math.ceil((index + 1) / 200) * 200;
+      state.conversationsVisible = (
+        Math.ceil((index + 1) / CONVERSATION_RENDER_BATCH)
+        * CONVERSATION_RENDER_BATCH
+      );
       renderConversationList();
       next = el.conversationList.querySelector(
         `[data-conversation-id="${CSS.escape(nextId)}"]`,
@@ -2229,7 +2261,7 @@ async function selectConversation(conversation, { focusMessageId = "" } = {}) {
   }
   const cachedMessages = state.messageCache.get(conversation.conversation_id) || [];
   state.messages = cachedMessages;
-  state.messagesVisible = 100;
+  state.messagesVisible = MESSAGE_RENDER_WINDOW;
   state.messagePagination = {
     hasMore: cachedMessages.length >= 300,
     total: cachedMessages.length,
@@ -2248,6 +2280,7 @@ async function selectConversation(conversation, { focusMessageId = "" } = {}) {
     selectionHydrationTimer = window.setTimeout(() => {
       if (state.selected?.conversation_id === conversation.conversation_id) {
         refreshSelectedMessages().catch((error) => toast(error.message, "error"));
+        repairSelectedConversationCache(conversation).catch(() => {});
         loadScheduledMessages(conversation.conversation_id).catch(() => {});
         markConversationRead(conversation).catch(() => {});
       }
@@ -2275,6 +2308,7 @@ async function selectConversation(conversation, { focusMessageId = "" } = {}) {
       loadScheduledMessages(conversation.conversation_id),
     ]);
     window.setTimeout(() => refreshSelectedMessages(), 50);
+    window.setTimeout(() => repairSelectedConversationCache(conversation).catch(() => {}), 140);
     preloadAdjacentConversations(conversation);
   } catch (error) {
     el.messageList.innerHTML = `<div class="pane-empty"></div>`;
@@ -2302,11 +2336,11 @@ function messagesFingerprint(messages) {
   ].join(":")).join("|");
 }
 
-async function refreshSelectedMessages({ incremental = true } = {}) {
+async function refreshSelectedMessages({ incremental = true, refreshSource = true } = {}) {
   const conversationId = state.selected?.conversation_id;
   if (!conversationId) return;
   const payload = await api(
-    `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/messages?limit=300&offset=0&refresh=true&incremental=${incremental ? "true" : "false"}`,
+    `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/messages?limit=300&offset=0&refresh=${refreshSource ? "true" : "false"}&incremental=${incremental ? "true" : "false"}`,
   );
   if (state.selected?.conversation_id !== conversationId) return;
   let nextMessages = payload.messages || [];
@@ -2324,6 +2358,31 @@ async function refreshSelectedMessages({ incremental = true } = {}) {
   const shouldFollowLatest = state.followLatest;
   state.messages = nextMessages;
   renderMessages({ preserveScroll: !shouldFollowLatest });
+}
+
+async function repairSelectedConversationCache(conversation) {
+  const conversationId = conversation?.conversation_id;
+  if (
+    !conversationId
+    || !["imessage", "apple_messages", "sms", "rcs"].includes(conversation.source_provider)
+  ) return;
+  if (cacheRepairRequests.has(conversationId)) {
+    await cacheRepairRequests.get(conversationId);
+    return;
+  }
+  const repair = api(
+    `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/cache-backfill`,
+    { method: "POST", body: "{}" },
+  );
+  cacheRepairRequests.set(conversationId, repair);
+  try {
+    const result = await repair;
+    if (Number(result.imported || 0) > 0 && state.selected?.conversation_id === conversationId) {
+      await refreshSelectedMessages({ incremental: false, refreshSource: false });
+    }
+  } finally {
+    cacheRepairRequests.delete(conversationId);
+  }
 }
 
 async function preloadRecentMessages() {
@@ -2363,25 +2422,81 @@ async function markConversationRead(conversation) {
 
 function applyThreadSearch() {
   const query = el.threadSearch.value.trim().toLowerCase();
-  const rows = [...el.messageList.querySelectorAll(".message-row")];
   let matches = 0;
-  for (const row of rows) {
-    const visible = !query || row.dataset.searchText.includes(query);
-    row.classList.toggle("search-hidden", !visible);
+  let activeDivider = null;
+  let activeDividerHasMatch = false;
+  const flushDivider = () => {
+    activeDivider?.classList.toggle("search-hidden", Boolean(query) && !activeDividerHasMatch);
+  };
+  for (const child of el.messageList.children) {
+    if (child.classList.contains("date-divider")) {
+      flushDivider();
+      activeDivider = child;
+      activeDividerHasMatch = false;
+      continue;
+    }
+    if (child.classList.contains("message-history-loader")) {
+      child.classList.toggle("search-hidden", Boolean(query));
+      continue;
+    }
+    if (!child.classList.contains("message-row")) continue;
+    const visible = !query || child.dataset.searchText.includes(query);
+    child.classList.toggle("search-hidden", !visible);
+    if (visible) activeDividerHasMatch = true;
     if (visible && query) matches += 1;
   }
+  flushDivider();
   el.threadSearchCount.textContent = query ? `${matches} match${matches === 1 ? "" : "es"}` : "";
 }
 
+function scheduleThreadSearch() {
+  applyThreadSearch();
+  window.clearTimeout(threadSearchTimer);
+  const query = el.threadSearch.value.trim();
+  const conversationId = state.selected?.conversation_id;
+  const requestToken = ++threadSearchRequestToken;
+  if (!query || !conversationId) return;
+  el.threadSearchCount.textContent = "Searching…";
+  threadSearchTimer = window.setTimeout(async () => {
+    try {
+      const payload = await api(
+        `/penguin-connect/messages/search?query=${encodeURIComponent(query)}&limit=500&view=current&conversation_id=${encodeURIComponent(conversationId)}`,
+      );
+      if (
+        requestToken !== threadSearchRequestToken
+        || state.selected?.conversation_id !== conversationId
+        || el.threadSearch.value.trim() !== query
+      ) return;
+      const merged = new Map(
+        state.messages.map((message) => [message.provider_message_id, message]),
+      );
+      for (const message of payload.messages || []) {
+        merged.set(message.provider_message_id, message);
+      }
+      state.messages = [...merged.values()];
+      state.messagesVisible = state.messages.length;
+      renderMessages({ preserveScroll: true });
+    } catch (_error) {
+      if (requestToken === threadSearchRequestToken) {
+        el.threadSearchCount.textContent = "Search unavailable";
+      }
+    }
+  }, 180);
+}
+
 function showThreadSearch() {
+  threadSearchRestoreVisible = state.messagesVisible;
   el.threadSearchBar.hidden = false;
   el.threadSearch.focus();
 }
 
 function closeThreadSearch() {
+  window.clearTimeout(threadSearchTimer);
+  threadSearchRequestToken += 1;
   el.threadSearchBar.hidden = true;
   el.threadSearch.value = "";
-  applyThreadSearch();
+  state.messagesVisible = Math.min(state.messages.length, threadSearchRestoreVisible);
+  renderMessages({ preserveScroll: true });
 }
 
 function resizeComposer() {
@@ -2520,12 +2635,7 @@ function renderScheduledQueue() {
     const when = new Date(item.scheduled_at);
     const whenText = Number.isNaN(when.getTime())
       ? "Queued"
-      : new Intl.DateTimeFormat(undefined, {
-        month: "short",
-        day: "numeric",
-        hour: "numeric",
-        minute: "2-digit",
-      }).format(when);
+      : SCHEDULE_FORMATTER.format(when);
     meta.textContent = item.status === "sending"
       ? "Sending now…"
       : (item.last_error ? `Offline · retry ${whenText}` : `Scheduled ${whenText}`);
@@ -2851,6 +2961,7 @@ async function loadConversations({
     const previousFingerprint = conversationsFingerprint(state.conversations);
     const query = new URLSearchParams();
     query.set("compact", "true");
+    query.set("fast", "true");
     if (discoverWhatsApp) query.set("include_whatsapp", "true");
     if (discoverIMessages) query.set("include_imessage", "true");
     const queryString = query.toString();
@@ -3200,13 +3311,13 @@ function setInboxSmartView(view = "all") {
   state.search.query = "";
   state.linksQuery = "";
   el.globalSearch.value = "";
-  state.conversationsVisible = 300;
+  state.conversationsVisible = CONVERSATION_RENDER_BATCH;
   renderView();
 }
 
 function setSource(source) {
   state.source = ["all", "imessage", "whatsapp"].includes(source) ? source : "all";
-  state.conversationsVisible = 300;
+  state.conversationsVisible = CONVERSATION_RENDER_BATCH;
   for (const button of el.sourceTabs.querySelectorAll("button[data-source]")) {
     const active = button.dataset.source === state.source;
     button.classList.toggle("active", active);
@@ -4331,7 +4442,7 @@ el.emptySearchButton.addEventListener("click", () => el.globalSearch.focus());
 el.refreshButton.addEventListener("click", refreshAll);
 el.threadSearchButton.addEventListener("click", showThreadSearch);
 el.closeThreadSearchButton.addEventListener("click", closeThreadSearch);
-el.threadSearch.addEventListener("input", applyThreadSearch);
+el.threadSearch.addEventListener("input", scheduleThreadSearch);
 el.threadAgentButton.addEventListener("click", () => setAgentOpen(true));
 el.closeAgentButton.addEventListener("click", toggleAgentPane);
 el.threadNoteButton.addEventListener("click", () => openConversationMeta({ focus: "note" }));
@@ -4829,6 +4940,18 @@ async function start() {
   } catch (_error) {
     rememberWorkspaceRevision(null);
   }
+  window.setTimeout(async () => {
+    try {
+      await loadConversations({
+        keepSelection: true,
+        discoverIMessages: true,
+        discoverWhatsApp: true,
+      });
+      rememberWorkspaceRevision(await loadWorkspaceRevision());
+    } catch (_error) {
+      // The cached workspace remains fully usable while source discovery retries later.
+    }
+  }, 600);
 }
 
 start();

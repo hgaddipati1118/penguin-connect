@@ -2121,6 +2121,23 @@ class PenguinConnectTests(unittest.TestCase):
         self.assertEqual(result["conversations"][0]["source_provider"], "imessage")
         self.assertEqual(result["conversations"][0]["source_chat_id"], "chat-123")
 
+    def test_list_conversations_fast_path_skips_source_reads(self):
+        self.conn.execute("DELETE FROM penguin_connect_accounts")
+        with mock.patch(
+            "penguin_connect._maybe_discover_local_imessage_conversations",
+        ) as discover_local, mock.patch(
+            "penguin_connect._hydrate_local_conversation_previews",
+        ) as hydrate_previews:
+            result = penguin_connect.list_conversations(
+                self.conn,
+                discover_sources=False,
+                hydrate_previews=False,
+            )
+
+        discover_local.assert_not_called()
+        hydrate_previews.assert_not_called()
+        self.assertEqual(len(result["conversations"]), 1)
+
     def test_list_conversations_returns_cached_rows_without_gmail_account(self):
         self.conn.execute("DELETE FROM penguin_connect_accounts")
         with mock.patch(
@@ -7157,6 +7174,88 @@ class PenguinConnectTests(unittest.TestCase):
 
         self.assertEqual([r["text"] for r in first_batch], ["m1", "m2", "m3"])
         self.assertEqual([r["text"] for r in second_batch], ["m4", "m5", "m6"])
+
+    def test_fetch_imessage_messages_pages_backwards_without_repeating_boundary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "chat.db")
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                """
+                CREATE TABLE chat (
+                    ROWID INTEGER PRIMARY KEY,
+                    guid TEXT,
+                    chat_identifier TEXT,
+                    display_name TEXT,
+                    service_name TEXT,
+                    is_archived INTEGER DEFAULT 0
+                );
+                CREATE TABLE message (
+                    ROWID INTEGER PRIMARY KEY,
+                    text TEXT,
+                    date INTEGER,
+                    is_from_me INTEGER,
+                    service TEXT,
+                    handle_id INTEGER,
+                    attributedBody BLOB
+                );
+                CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
+                CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+                CREATE TABLE message_attachment_join (message_id INTEGER, attachment_id INTEGER);
+                CREATE TABLE attachment (
+                    ROWID INTEGER PRIMARY KEY,
+                    filename TEXT,
+                    mime_type TEXT,
+                    total_bytes INTEGER,
+                    transfer_name TEXT
+                );
+                """
+            )
+            conn.execute(
+                "INSERT INTO chat(ROWID, guid, chat_identifier, display_name, service_name) VALUES (1, ?, ?, '', 'iMessage')",
+                ("iMessage;-;chat-1", "chat-1"),
+            )
+            base_ns = int(timedelta(days=2).total_seconds() * 1_000_000_000)
+            for rowid in range(1, 8):
+                conn.execute(
+                    """INSERT INTO message
+                       (ROWID, text, date, is_from_me, service, handle_id, attributedBody)
+                       VALUES (?, ?, ?, 0, 'iMessage', NULL, NULL)""",
+                    (rowid, f"m{rowid}", base_ns + rowid * 1_000_000_000),
+                )
+                conn.execute(
+                    "INSERT INTO chat_message_join(chat_id, message_id) VALUES (1, ?)",
+                    (rowid,),
+                )
+            conn.commit()
+            conn.close()
+
+            old_path = browse_sources.IMESSAGE_DB
+            browse_sources.IMESSAGE_DB = db_path
+            try:
+                newest = browse_sources.fetch_imessage_messages("iMessage;-;chat-1", limit=3)
+                boundary = newest[-1]
+                older = browse_sources.fetch_imessage_messages(
+                    "iMessage;-;chat-1",
+                    limit=3,
+                    before=boundary["timestamp"],
+                    before_native_message_id=boundary["native_message_id"],
+                )
+            finally:
+                browse_sources.IMESSAGE_DB = old_path
+
+        self.assertEqual([row["text"] for row in newest], ["m7", "m6", "m5"])
+        self.assertEqual([row["text"] for row in older], ["m4", "m3", "m2"])
+
+    def test_extract_attributed_body_supports_new_archive_version_and_long_text(self):
+        text = "A" * 256
+        blob = (
+            b"\x04\x0bstreamtyped"
+            b"NSMutableString\x01NSString\x01\x95\x84\x01+"
+            b"\x81\x00\x01"
+            + text.encode()
+        )
+
+        self.assertEqual(browse_sources._extract_text_from_attributed_body(blob), text)
 
     def test_fetch_imessage_messages_fails_closed_for_ambiguous_identifier(self):
         with tempfile.TemporaryDirectory() as tmp:

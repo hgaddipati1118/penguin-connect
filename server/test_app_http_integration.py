@@ -413,6 +413,29 @@ class AppHttpIntegrationTests(unittest.TestCase):
             )
         self.assertLess(len(compact_response.content), len(full_response.content))
 
+    def test_conversations_fast_mode_skips_blocking_discovery_and_preview_hydration(self):
+        cached = {
+            "connected": False,
+            "gmail_email": "",
+            "conversations": [],
+        }
+        with mock.patch.object(
+            app_module,
+            "penguinconnect_list_conversations",
+            return_value=cached,
+        ) as list_conversations, TestClient(app_module.app) as client:
+            response = client.get(
+                "/penguin-connect/conversations",
+                params={"compact": True, "fast": True},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        list_conversations.assert_called_once_with(
+            mock.ANY,
+            discover_sources=False,
+            hydrate_previews=False,
+        )
+
     def test_messages_endpoint_forwards_incremental_refresh_mode(self):
         with mock.patch(
             "app.penguinconnect_get_conversation_messages",
@@ -432,6 +455,18 @@ class AppHttpIntegrationTests(unittest.TestCase):
             refresh_source=True,
             incremental_refresh=True,
         )
+
+    def test_cache_backfill_endpoint_repairs_selected_conversation_history(self):
+        with mock.patch(
+            "app.penguinconnect_backfill_local_conversation_cache",
+            return_value={"found": True, "imported": 3381, "completed": True},
+        ) as backfill, TestClient(app_module.app) as client:
+            response = client.post("/penguin-connect/conversations/amc_test/cache-backfill", json={})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["imported"], 3381)
+        backfill.assert_called_once()
+        self.assertEqual(backfill.call_args.args[1], "amc_test")
 
     def test_codex_workspace_modes_require_explicit_write_confirmation(self):
         self.assertEqual(app_module._codex_stream_mode("read", False), ("read", "read-only"))
@@ -1394,6 +1429,43 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertTrue(current_body["messages"])
         self.assertTrue(all(message["conversation_id"] == "amc_test" for message in current_body["messages"]))
         self.assertNotIn("imsg-audio", {message["provider_message_id"] for message in current_body["messages"]})
+
+    def test_current_conversation_search_uses_repaired_cache_without_native_rescan(self):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction, sender_name,
+                    body_text, message_timestamp, is_read, metadata)
+                   VALUES (?, 'imessage', ?, 'imessage_local', ?, ?, ?, 1, '{}')""",
+                (
+                    "amc_test",
+                    "imessage:cached-example",
+                    "Taylor",
+                    "An exact cached example",
+                    "2026-03-11T12:00:00+00:00",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with mock.patch(
+            "app.penguinconnect_import_local_imessage_search_results"
+        ) as native_rescan, TestClient(app_module.app) as client:
+            response = client.get(
+                "/penguin-connect/messages/search",
+                params={
+                    "query": "exact cached example",
+                    "view": "current",
+                    "conversation_id": "amc_test",
+                    "limit": 10,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["count"], 1)
+        native_rescan.assert_not_called()
 
     def test_attachment_endpoint_serves_stored_message_file(self):
         attachment_path = Path(self.tmpdir.name) / "voice-note.m4a"
@@ -2727,6 +2799,12 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("/penguin-connect/attachment-library/status", inbox_js_response.text)
         self.assertIn("renderMentionSuggestions", inbox_js_response.text)
         self.assertIn("event.stopPropagation()", inbox_js_response.text)
+        self.assertIn('query.set("fast", "true")', inbox_js_response.text)
+        self.assertIn("CONVERSATION_RENDER_BATCH = 120", inbox_js_response.text)
+        self.assertIn("MESSAGE_RENDER_WINDOW = 60", inbox_js_response.text)
+        self.assertIn("document.createDocumentFragment()", inbox_js_response.text)
+        self.assertIn("/cache-backfill", inbox_js_response.text)
+        self.assertIn("activeDividerHasMatch", inbox_js_response.text)
         self.assertIn('id="mentionSuggestions"', inbox_response.text)
         self.assertIn('id="mentionButton"', inbox_response.text)
         self.assertIn(".label-filter-select", inbox_css_response.text)

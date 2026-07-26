@@ -162,6 +162,9 @@ CREATE TABLE IF NOT EXISTS penguin_connect_sync_state (
     next_full_verify_at TEXT,
     full_verify_completed_at TEXT,
     backfill_synced_through_ts TEXT,
+    local_cache_backfill_ts TEXT,
+    local_cache_backfill_native_message_id TEXT,
+    local_cache_backfill_completed_at TEXT,
     last_synced_at TEXT,
     updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -1612,6 +1615,14 @@ def init_db() -> None:
         sync_state_columns = {row[1] for row in conn.execute("PRAGMA table_info(penguin_connect_sync_state)").fetchall()}
         if "backfill_synced_through_ts" not in sync_state_columns:
             conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN backfill_synced_through_ts TEXT")
+        if "local_cache_backfill_ts" not in sync_state_columns:
+            conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN local_cache_backfill_ts TEXT")
+        if "local_cache_backfill_native_message_id" not in sync_state_columns:
+            conn.execute(
+                "ALTER TABLE penguin_connect_sync_state ADD COLUMN local_cache_backfill_native_message_id TEXT"
+            )
+        if "local_cache_backfill_completed_at" not in sync_state_columns:
+            conn.execute("ALTER TABLE penguin_connect_sync_state ADD COLUMN local_cache_backfill_completed_at TEXT")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_penguin_connect_jobs_finished ON penguin_connect_jobs(status, finished_at)"
         )
