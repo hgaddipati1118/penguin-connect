@@ -3966,6 +3966,8 @@ class AppHttpIntegrationTests(unittest.TestCase):
             "no-store",
         )
         self.assertIn("nextVisibleCount", list_windowing_js_response.text)
+        self.assertIn("windowStartForIndex", list_windowing_js_response.text)
+        self.assertIn("windowStartForScroll", list_windowing_js_response.text)
         self.assertIn("loadConversations", inbox_js_response.text)
         self.assertIn("hasCachedMessage", inbox_js_response.text)
         self.assertIn("conversation?.chat_type === \"group\" && displayName", inbox_js_response.text)
@@ -4010,6 +4012,10 @@ class AppHttpIntegrationTests(unittest.TestCase):
             "FILE_RENDER_BATCH = renderWindows.files",
             inbox_js_response.text,
         )
+        self.assertIn("conversationWindowStart", inbox_js_response.text)
+        self.assertIn('"aria-posinset"', inbox_js_response.text)
+        self.assertIn('"aria-setsize"', inbox_js_response.text)
+        self.assertIn(".conversation-window-spacer", inbox_css_response.text)
         self.assertIn("MESSAGE_RENDER_WINDOW = 60", inbox_js_response.text)
         self.assertIn("MESSAGE_INITIAL_BATCH = 120", inbox_js_response.text)
         self.assertIn("SLACK_MESSAGE_INITIAL_BATCH = 300", inbox_js_response.text)

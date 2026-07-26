@@ -1,5 +1,8 @@
 const renderWindows = window.PenguinListWindowing.DEFAULT_RENDER_WINDOWS;
+const clampWindowStart = window.PenguinListWindowing.clampWindowStart;
 const nextVisibleCount = window.PenguinListWindowing.nextVisibleCount;
+const windowStartForIndex = window.PenguinListWindowing.windowStartForIndex;
+const windowStartForScroll = window.PenguinListWindowing.windowStartForScroll;
 
 const state = {
   view: "inbox",
@@ -8,6 +11,7 @@ const state = {
   activeLabel: "",
   conversations: [],
   conversationsVisible: renderWindows.conversations,
+  conversationWindowStart: 0,
   contacts: [],
   contactsDetailed: false,
   contactsTotal: 0,
@@ -330,6 +334,8 @@ const DRAFT_LOCAL_DEBOUNCE_MS = 100;
 const DRAFT_SERVER_DEBOUNCE_MS = 650;
 const COMPOSER_IDLE_STATUS = "Messages never leave this Mac except through their original service.";
 const CONVERSATION_RENDER_BATCH = renderWindows.conversations;
+const CONVERSATION_ROW_HEIGHT = 76;
+const CONVERSATION_WINDOW_OVERSCAN = 8;
 const FILE_RENDER_BATCH = renderWindows.files;
 const MESSAGE_RENDER_WINDOW = 60;
 const MESSAGE_INITIAL_BATCH = 120;
@@ -395,6 +401,7 @@ const SCHEDULE_FORMATTER = new Intl.DateTimeFormat(undefined, {
 let selectionHydrationTimer = 0;
 let selectionRenderFrame = 0;
 let selectionPreloadTimer = 0;
+let conversationWindowFrame = 0;
 let latestAnchorFrame = 0;
 let latestAnchorToken = 0;
 let latestAnchorResizeObserver = null;
@@ -1562,6 +1569,8 @@ function renderLabelBar() {
       state.smartView = option.value;
       state.activeLabel = "";
       state.conversationsVisible = CONVERSATION_RENDER_BATCH;
+      state.conversationWindowStart = 0;
+      el.conversationList.scrollTop = 0;
       renderView();
       reconcileConversationSelection();
     });
@@ -1586,6 +1595,8 @@ function renderLabelBar() {
       state.smartView = "all";
       state.activeLabel = select.value;
       state.conversationsVisible = CONVERSATION_RENDER_BATCH;
+      state.conversationWindowStart = 0;
+      el.conversationList.scrollTop = 0;
       renderView();
       reconcileConversationSelection();
     });
@@ -1692,7 +1703,23 @@ function reusableConversationRow(conversation, existingRow = null) {
   return row;
 }
 
-function reconcileConversationList(visibleRows) {
+function conversationWindowSpacer(height, edge) {
+  const spacer = document.createElement("div");
+  spacer.className = `conversation-window-spacer ${edge}`;
+  spacer.style.height = `${Math.max(0, height)}px`;
+  spacer.setAttribute("aria-hidden", "true");
+  return spacer;
+}
+
+function reconcileConversationList(
+  visibleRows,
+  {
+    beforeHeight = 0,
+    afterHeight = 0,
+    windowStart = 0,
+    totalRows = visibleRows.length,
+  } = {},
+) {
   const existingRows = new Map(
     [...el.conversationList.querySelectorAll(":scope > .conversation-row")].map(
       (row) => [row.dataset.conversationId, row],
@@ -1708,17 +1735,39 @@ function reconcileConversationList(visibleRows) {
       conversation,
       existingRows.get(conversation.conversation_id) || null,
     );
+    row.setAttribute("aria-posinset", String(windowStart + index + 1));
+    row.setAttribute("aria-setsize", String(totalRows));
     const current = el.conversationList.children[index];
     if (current !== row) el.conversationList.insertBefore(row, current || null);
   }
   for (const row of [...el.conversationList.querySelectorAll(":scope > .conversation-row")]) {
     if (!desiredIds.has(row.dataset.conversationId)) row.remove();
   }
+  if (beforeHeight > 0) {
+    el.conversationList.insertBefore(
+      conversationWindowSpacer(beforeHeight, "before"),
+      el.conversationList.firstChild,
+    );
+  }
+  if (afterHeight > 0) {
+    el.conversationList.append(
+      conversationWindowSpacer(afterHeight, "after"),
+    );
+  }
 }
 
 function renderConversationList() {
   const rows = visibleConversations();
-  const visibleRows = rows.slice(0, state.conversationsVisible);
+  state.conversationWindowStart = clampWindowStart(
+    state.conversationWindowStart,
+    rows.length,
+    state.conversationsVisible,
+  );
+  const windowEnd = Math.min(
+    rows.length,
+    state.conversationWindowStart + state.conversationsVisible,
+  );
+  const visibleRows = rows.slice(state.conversationWindowStart, windowEnd);
   const previousScrollTop = prepareInfiniteList(el.conversationList);
   el.listSummary.textContent = `${rows.length} conversation${rows.length === 1 ? "" : "s"} · latest first`;
   if (!rows.length) {
@@ -1733,18 +1782,32 @@ function renderConversationList() {
     return;
   }
 
-  reconcileConversationList(visibleRows);
-  if (state.conversationsVisible < rows.length) {
-    appendInfiniteSentinel(el.conversationList, "Loading more conversations…", () => {
-      state.conversationsVisible = nextVisibleCount(
-        state.conversationsVisible,
-        rows.length,
-        CONVERSATION_RENDER_BATCH,
-      );
-      renderConversationList();
-    });
-  }
+  reconcileConversationList(visibleRows, {
+    beforeHeight: state.conversationWindowStart * CONVERSATION_ROW_HEIGHT,
+    afterHeight: (rows.length - windowEnd) * CONVERSATION_ROW_HEIGHT,
+    windowStart: state.conversationWindowStart,
+    totalRows: rows.length,
+  });
   restoreInfiniteListScroll(el.conversationList, previousScrollTop);
+}
+
+function scheduleConversationWindowFromScroll() {
+  if (state.view !== "inbox" || state.search.query) return;
+  window.cancelAnimationFrame(conversationWindowFrame);
+  conversationWindowFrame = window.requestAnimationFrame(() => {
+    conversationWindowFrame = 0;
+    const rows = visibleConversations();
+    const nextStart = windowStartForScroll(
+      el.conversationList.scrollTop,
+      CONVERSATION_ROW_HEIGHT,
+      rows.length,
+      state.conversationsVisible,
+      CONVERSATION_WINDOW_OVERSCAN,
+    );
+    if (nextStart === state.conversationWindowStart) return;
+    state.conversationWindowStart = nextStart;
+    renderConversationList();
+  });
 }
 
 function contactHandle(contact) {
@@ -4602,10 +4665,12 @@ function updateConversationSelectionUI(previousId, nextId) {
   );
   if (!next) {
     const index = visibleConversationIndex(nextId);
-    if (index >= state.conversationsVisible) {
-      state.conversationsVisible = (
-        Math.ceil((index + 1) / CONVERSATION_RENDER_BATCH)
-        * CONVERSATION_RENDER_BATCH
+    if (index >= 0) {
+      state.conversationWindowStart = windowStartForIndex(
+        state.conversationWindowStart,
+        index,
+        visibleConversations().length,
+        state.conversationsVisible,
       );
       renderConversationList();
       next = el.conversationList.querySelector(
@@ -6429,6 +6494,8 @@ function setInboxSmartView(view = "all") {
   state.linksQuery = "";
   el.globalSearch.value = "";
   state.conversationsVisible = CONVERSATION_RENDER_BATCH;
+  state.conversationWindowStart = 0;
+  el.conversationList.scrollTop = 0;
   renderView();
   reconcileConversationSelection();
 }
@@ -6460,6 +6527,8 @@ function reconcileConversationSelection() {
 function setSource(source) {
   state.source = ["all", "imessage", "whatsapp", "slack"].includes(source) ? source : "all";
   state.conversationsVisible = CONVERSATION_RENDER_BATCH;
+  state.conversationWindowStart = 0;
+  el.conversationList.scrollTop = 0;
   for (const button of el.sourceTabs.querySelectorAll("button[data-source]")) {
     const active = button.dataset.source === state.source;
     button.classList.toggle("active", active);
@@ -7589,6 +7658,9 @@ for (const button of el.navButtons) {
 for (const button of el.viewTabButtons) {
   button.addEventListener("click", () => setView(button.dataset.viewTab));
 }
+el.conversationList.addEventListener("scroll", scheduleConversationWindowFromScroll, {
+  passive: true,
+});
 
 el.sourceTabs.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-source]");
