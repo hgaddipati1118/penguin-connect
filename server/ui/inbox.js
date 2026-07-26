@@ -57,6 +57,7 @@ const state = {
   pendingSends: [],
   scheduledMessages: [],
   replyTarget: null,
+  focusedMessageId: "",
   collapsedSlackThreads: new Set(),
   conversationAvatarDraft: "",
   followLatest: true,
@@ -2994,13 +2995,19 @@ function startSlackThreadReply(message) {
   }
   const threadKey = slackThreadKey(threadTs);
   if (threadKey) state.collapsedSlackThreads.delete(threadKey);
+  const clickedSender = isOwnMessage(message)
+    ? "You"
+    : (message.sender_name || message.sender_email || "");
+  const rootSender = isSlackThreadReply(message)
+    ? (String(message.metadata?.thread_parent_name || "").trim() || clickedSender)
+    : clickedSender;
   state.replyTarget = {
     messageId: threadTs,
     threadTs,
     provider: "slack",
-    sender: isOwnMessage(message)
-      ? "yourself"
-      : (message.sender_name || message.sender_email || "this thread"),
+    sender: rootSender === "You"
+      ? "your thread"
+      : (rootSender ? `${rootSender}’s thread` : "this thread"),
     body: message.body_text || "Attachment",
   };
   renderReplyTarget();
@@ -3071,7 +3078,22 @@ function currentMessageById(messageId) {
   ) || null;
 }
 
+function setFocusedMessage(messageId) {
+  const normalizedId = String(messageId || "").trim();
+  state.focusedMessageId = normalizedId;
+  for (const row of el.messageList.querySelectorAll(".message-row")) {
+    const focused = Boolean(
+      normalizedId
+      && String(row.dataset.messageId || "") === normalizedId
+    );
+    row.classList.toggle("message-focused", focused);
+    row.setAttribute("aria-current", focused ? "true" : "false");
+  }
+}
+
 function handleMessageListAction(event) {
+  const row = event.target.closest(".message-row");
+  if (row) setFocusedMessage(row.dataset.messageId);
   const action = event.target.closest("[data-message-action]");
   if (!action || !el.messageList.contains(action)) return;
   const actionName = action.dataset.messageAction;
@@ -3079,7 +3101,6 @@ function handleMessageListAction(event) {
     scrollToNativeReplyTarget(action.dataset.replyMessageId);
     return;
   }
-  const row = action.closest(".message-row");
   const message = currentMessageById(row?.dataset.messageId);
   if (!message) return;
   if (actionName === "toggle-thread") {
@@ -3265,6 +3286,7 @@ function renderMessages({
       "message-row",
       mine ? "mine" : "",
       messageProvider === "slack" ? "slack-message" : "",
+      message.provider_message_id === state.focusedMessageId ? "message-focused" : "",
       isThreadReply ? "message-thread-reply" : "",
       isThreadLastReply ? "message-thread-last-reply" : "",
       replyDepth ? "message-native-reply" : "",
@@ -3285,6 +3307,10 @@ function renderMessages({
       message.sender_email,
       ...messageAttachments(message).map((attachment) => attachment.filename || attachment.transfer_name),
     ].join(" ").toLowerCase();
+    row.setAttribute(
+      "aria-current",
+      message.provider_message_id === state.focusedMessageId ? "true" : "false",
+    );
 
     const stack = document.createElement("div");
     stack.className = "message-stack";
@@ -3681,6 +3707,7 @@ async function selectConversation(
   window.clearTimeout(selectionPreloadTimer);
   state.selected = conversation;
   if (previousConversationId !== conversation.conversation_id) {
+    state.focusedMessageId = "";
     restoreConversationDraft(conversation, selectionToken);
   }
   try {
@@ -6660,7 +6687,18 @@ document.addEventListener("keydown", (event) => {
   } else if (key === "l" || key === "v") {
     event.preventDefault();
     openLabelPicker();
-  } else if (key === "r" || key === "a") {
+  } else if (key === "r") {
+    event.preventDefault();
+    const focusedMessage = currentMessageById(state.focusedMessageId);
+    if (
+      focusedMessage
+      && ["slack", "whatsapp"].includes(providerKey(state.selected?.source_provider))
+    ) {
+      startNativeReply(focusedMessage);
+    } else {
+      focusMessageComposer();
+    }
+  } else if (key === "a") {
     event.preventDefault();
     focusMessageComposer();
   } else if (key === "c") {

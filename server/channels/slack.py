@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import httpx
 
@@ -113,6 +114,34 @@ def _profile_avatar_url(*profiles: Any) -> str:
     return ""
 
 
+def _slack_fallback_text(message: dict[str, Any]) -> str:
+    parts: list[str] = []
+
+    def collect(value: Any) -> None:
+        if isinstance(value, str):
+            normalized = " ".join(value.split())
+            if normalized and normalized not in parts:
+                parts.append(normalized)
+            return
+        if isinstance(value, list):
+            for item in value:
+                collect(item)
+            return
+        if not isinstance(value, dict):
+            return
+        for key in ("fallback", "pretext", "title", "text", "value"):
+            if key in value:
+                collect(value.get(key))
+        for key in ("fields", "blocks", "elements"):
+            if key in value:
+                collect(value.get(key))
+
+    collect(message.get("attachments"))
+    if not parts:
+        collect(message.get("blocks"))
+    return "\n".join(parts)
+
+
 class SlackChannelAdapter:
     provider = "slack"
     provider_label = "Slack"
@@ -178,6 +207,39 @@ class SlackChannelAdapter:
             path.write_text(json.dumps(existing, indent=2, sort_keys=True))
         except OSError:
             pass
+
+    def _upload_external_file(
+        self,
+        upload_url: str,
+        path: Path,
+    ) -> tuple[bool, Optional[str]]:
+        parsed_url = urlparse(str(upload_url or "").strip())
+        hostname = str(parsed_url.hostname or "").lower()
+        if (
+            parsed_url.scheme != "https"
+            or not (
+                hostname == "files.slack.com"
+                or hostname.endswith(".files.slack.com")
+            )
+        ):
+            return False, "slack_invalid_upload_url"
+        try:
+            size = path.stat().st_size
+            with path.open("rb") as source, httpx.Client(timeout=60) as client:
+                response = client.post(
+                    upload_url,
+                    content=source,
+                    headers={
+                        "Content-Type": "application/octet-stream",
+                        "Content-Length": str(size),
+                    },
+                )
+                response.raise_for_status()
+        except OSError:
+            return False, "slack_attachment_unreadable"
+        except httpx.HTTPError:
+            return False, "slack_file_upload_failed"
+        return True, None
 
     def _load_identity(self) -> bool:
         if self._self_user_id:
@@ -292,8 +354,11 @@ class SlackChannelAdapter:
         timestamp = str(message.get("ts") or "").strip()
         thread_ts = str(message.get("thread_ts") or "").strip()
         parent_user_id = str(message.get("parent_user_id") or "").strip()
+        message_text = str(message.get("text") or "").strip()
+        if not message_text:
+            message_text = _slack_fallback_text(message)
         return {
-            "text": self._render_text(message.get("text")),
+            "text": self._render_text(message_text),
             "timestamp": _timestamp_to_iso(timestamp),
             "native_message_id": timestamp,
             "native_guid": timestamp,
@@ -518,7 +583,7 @@ class SlackChannelAdapter:
             safe_limit = max(1, min(int(limit or 50), 300))
             params: dict[str, Any] = {
                 "channel": chat_id,
-                "limit": min(15, safe_limit),
+                "limit": min(100, safe_limit),
                 "inclusive": "false",
             }
             if since:
@@ -640,6 +705,31 @@ class SlackChannelAdapter:
             messages = [message for message in messages if message.get("timestamp")]
             messages.sort(key=lambda message: message.get("timestamp") or "")
             result = messages[-safe_limit:]
+            result_ids = {
+                str(message.get("native_message_id") or "").strip()
+                for message in result
+            }
+            roots_by_id = {
+                str(message.get("native_message_id") or "").strip(): message
+                for message in messages
+                if not message.get("is_thread_reply")
+                and str(message.get("native_message_id") or "").strip()
+            }
+            missing_roots = []
+            for message in result:
+                if not message.get("is_thread_reply"):
+                    continue
+                thread_id = str(message.get("thread_ts") or "").strip()
+                root = roots_by_id.get(thread_id)
+                if root is None or thread_id in result_ids:
+                    continue
+                result_ids.add(thread_id)
+                missing_roots.append(root)
+            if missing_roots:
+                result = sorted(
+                    [*missing_roots, *result],
+                    key=lambda message: message.get("timestamp") or "",
+                )
             self._history_cache[cache_key] = (time.monotonic(), result)
             self._touch_state(
                 workspace=self._workspace_name,
@@ -655,21 +745,71 @@ class SlackChannelAdapter:
         attachment_paths: Optional[list[str]] = None,
         reply_to_message_id: Optional[str] = None,
     ) -> tuple[bool, Optional[str]]:
-        if attachment_paths:
-            return False, "slack_file_upload_not_supported_yet"
         text = str(message_text or "").strip()
-        if not text:
+        paths = [
+            Path(str(raw_path or "").strip()).expanduser()
+            for raw_path in attachment_paths or []
+            if str(raw_path or "").strip()
+        ]
+        prepared_files: list[tuple[Path, str, int]] = []
+        for path in paths:
+            if not path.exists() or not path.is_file():
+                return False, "slack_attachment_missing"
+            try:
+                size = path.stat().st_size
+            except OSError:
+                return False, "slack_attachment_unreadable"
+            if size <= 0:
+                return False, "slack_attachment_empty"
+            prepared_files.append((path, path.name or "attachment", size))
+        if not text and not prepared_files:
             return False, "empty_message"
         thread_ts = str(reply_to_message_id or "").strip()
         if thread_ts.startswith("slack:"):
             thread_ts = thread_ts.split(":", 1)[1]
-        body = {"channel": chat_identifier, "text": text}
-        if thread_ts:
-            body["thread_ts"] = thread_ts
-        payload = self._api(
-            "chat.postMessage",
-            json_body=body,
-        )
+        if prepared_files:
+            completed_files = []
+            for path, filename, size in prepared_files:
+                upload_ticket = self._api(
+                    "files.getUploadURLExternal",
+                    json_body={"filename": filename, "length": size},
+                )
+                if not upload_ticket.get("ok"):
+                    return False, str(
+                        upload_ticket.get("error")
+                        or "slack_file_upload_ticket_failed"
+                    )
+                upload_url = str(upload_ticket.get("upload_url") or "").strip()
+                file_id = str(upload_ticket.get("file_id") or "").strip()
+                if not upload_url or not file_id:
+                    return False, "slack_invalid_upload_ticket"
+                uploaded, upload_error = self._upload_external_file(
+                    upload_url,
+                    path,
+                )
+                if not uploaded:
+                    return False, upload_error or "slack_file_upload_failed"
+                completed_files.append({"id": file_id, "title": filename})
+            body: dict[str, Any] = {
+                "files": completed_files,
+                "channel_id": chat_identifier,
+            }
+            if text:
+                body["initial_comment"] = text
+            if thread_ts:
+                body["thread_ts"] = thread_ts
+            payload = self._api(
+                "files.completeUploadExternal",
+                json_body=body,
+            )
+        else:
+            body = {"channel": chat_identifier, "text": text}
+            if thread_ts:
+                body["thread_ts"] = thread_ts
+            payload = self._api(
+                "chat.postMessage",
+                json_body=body,
+            )
         if not payload.get("ok"):
             return False, str(payload.get("error") or "slack_send_failed")
         self._conversation_cache.clear()

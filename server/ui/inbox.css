@@ -1234,6 +1234,15 @@ kbd {
   justify-content: flex-end;
 }
 
+.message-row.message-focused .message-bubble {
+  outline: 2px solid color-mix(in srgb, var(--provider-color, #5d9b78) 30%, transparent);
+  outline-offset: 2px;
+}
+
+.message-row.message-focused .message-reply-button {
+  opacity: 1;
+}
+
 .message-row.message-thread-reply {
   position: relative;
   padding-left: 22px;

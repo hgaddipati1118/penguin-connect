@@ -194,6 +194,177 @@ class SlackChannelAdapterTests(unittest.TestCase):
         )
         self.assertTrue(messages[2]["is_from_me"])
 
+    def test_scans_requested_history_window_for_older_active_thread_roots(self):
+        adapter = SlackChannelAdapter()
+        adapter._self_user_id = "USELF"
+        adapter._users = {"USELF": "Harsha", "UANH": "Anh"}
+        reply_calls = 0
+
+        def fake_api(method, **kwargs):
+            nonlocal reply_calls
+            if method == "conversations.history":
+                self.assertEqual(kwargs["params"]["limit"], 50)
+                return {
+                    "ok": True,
+                    "messages": [
+                        {
+                            "ts": "1785000001.000100",
+                            "user": "UANH",
+                            "text": "Older active thread",
+                            "reply_count": 1,
+                            "latest_reply": "1785000050.000100",
+                        },
+                        *[
+                            {
+                                "ts": f"17850000{index:02d}.000100",
+                                "user": "USELF",
+                                "text": f"Standalone {index}",
+                            }
+                            for index in range(2, 21)
+                        ],
+                    ],
+                    "response_metadata": {"next_cursor": ""},
+                }
+            if method == "conversations.replies":
+                reply_calls += 1
+                self.assertEqual(kwargs["params"]["ts"], "1785000001.000100")
+                return {
+                    "ok": True,
+                    "messages": [
+                        {
+                            "ts": "1785000001.000100",
+                            "user": "UANH",
+                            "text": "Older active thread",
+                        },
+                        {
+                            "ts": "1785000050.000100",
+                            "thread_ts": "1785000001.000100",
+                            "parent_user_id": "UANH",
+                            "user": "USELF",
+                            "text": "Fresh nested reply",
+                        },
+                    ],
+                    "response_metadata": {"next_cursor": ""},
+                }
+            raise AssertionError(method)
+
+        with mock.patch.object(adapter, "_api", side_effect=fake_api):
+            messages = adapter.fetch_messages("C_PRODUCT", limit=50)
+
+        self.assertEqual(reply_calls, 1)
+        self.assertIn("Fresh nested reply", [message["text"] for message in messages])
+
+    def test_keeps_thread_root_when_tail_window_contains_its_reply(self):
+        adapter = SlackChannelAdapter()
+        adapter._self_user_id = "USELF"
+        adapter._users = {"USELF": "Harsha", "UANH": "Anh"}
+
+        def fake_api(method, **_kwargs):
+            if method == "conversations.history":
+                return {
+                    "ok": True,
+                    "messages": [
+                        {
+                            "ts": "1785000001.000100",
+                            "user": "UANH",
+                            "text": "Thread root",
+                            "reply_count": 1,
+                            "latest_reply": "1785000002.000100",
+                        },
+                        {
+                            "ts": "1785000003.000100",
+                            "user": "USELF",
+                            "text": "New standalone",
+                        },
+                    ],
+                    "response_metadata": {"next_cursor": ""},
+                }
+            if method == "conversations.replies":
+                return {
+                    "ok": True,
+                    "messages": [
+                        {
+                            "ts": "1785000001.000100",
+                            "user": "UANH",
+                            "text": "Thread root",
+                        },
+                        {
+                            "ts": "1785000002.000100",
+                            "thread_ts": "1785000001.000100",
+                            "parent_user_id": "UANH",
+                            "user": "USELF",
+                            "text": "Nested reply",
+                        },
+                    ],
+                    "response_metadata": {"next_cursor": ""},
+                }
+            raise AssertionError(method)
+
+        with mock.patch.object(adapter, "_api", side_effect=fake_api):
+            messages = adapter.fetch_messages("C_PRODUCT", limit=2)
+
+        self.assertEqual(
+            [message["text"] for message in messages],
+            ["Thread root", "Nested reply", "New standalone"],
+        )
+
+    def test_keeps_attachment_only_slack_thread_reply_with_fallback_text(self):
+        adapter = SlackChannelAdapter()
+        adapter._self_user_id = "USELF"
+        adapter._users = {"USELF": "Harsha", "ULINEAR": "Linear"}
+
+        def fake_api(method, **_kwargs):
+            if method == "conversations.history":
+                return {
+                    "ok": True,
+                    "messages": [
+                        {
+                            "ts": "1785000001.000100",
+                            "user": "USELF",
+                            "text": "Please file this",
+                            "reply_count": 1,
+                            "latest_reply": "1785000002.000100",
+                        },
+                    ],
+                    "response_metadata": {"next_cursor": ""},
+                }
+            if method == "conversations.replies":
+                return {
+                    "ok": True,
+                    "messages": [
+                        {
+                            "ts": "1785000001.000100",
+                            "user": "USELF",
+                            "text": "Please file this",
+                        },
+                        {
+                            "ts": "1785000002.000100",
+                            "thread_ts": "1785000001.000100",
+                            "parent_user_id": "USELF",
+                            "user": "ULINEAR",
+                            "text": "",
+                            "attachments": [
+                                {
+                                    "fallback": "Created issue SLA-5404",
+                                    "color": "2f80ed",
+                                }
+                            ],
+                        },
+                    ],
+                    "response_metadata": {"next_cursor": ""},
+                }
+            raise AssertionError(method)
+
+        with mock.patch.object(adapter, "_api", side_effect=fake_api):
+            messages = adapter.fetch_messages("C_PRODUCT", limit=50)
+
+        self.assertEqual(
+            [message["text"] for message in messages],
+            ["Please file this", "Created issue SLA-5404"],
+        )
+        self.assertTrue(messages[1]["is_thread_reply"])
+        self.assertEqual(messages[1]["push_name"], "Linear")
+
     def test_refreshes_history_without_refetching_unchanged_slack_threads(self):
         adapter = SlackChannelAdapter()
         adapter._self_user_id = "USELF"
@@ -289,6 +460,109 @@ class SlackChannelAdapterTests(unittest.TestCase):
             )
 
         self.assertEqual(result, (True, None))
+
+    def test_uploads_attachment_as_a_native_slack_thread_reply(self):
+        adapter = SlackChannelAdapter()
+        attachment = Path(self.tmpdir.name) / "thread-brief.pdf"
+        attachment.write_bytes(b"%PDF")
+        api_calls = []
+
+        def fake_api(method, **kwargs):
+            api_calls.append((method, kwargs))
+            if method == "files.getUploadURLExternal":
+                self.assertEqual(
+                    kwargs["json_body"],
+                    {"filename": "thread-brief.pdf", "length": 4},
+                )
+                return {
+                    "ok": True,
+                    "upload_url": "https://files.slack.com/upload/v1/signed",
+                    "file_id": "FTHREAD",
+                }
+            if method == "files.completeUploadExternal":
+                self.assertEqual(
+                    kwargs["json_body"],
+                    {
+                        "files": [{"id": "FTHREAD", "title": "thread-brief.pdf"}],
+                        "channel_id": "C_PRODUCT",
+                        "initial_comment": "The requested brief",
+                        "thread_ts": "1785000001.000100",
+                    },
+                )
+                return {"ok": True, "files": [{"id": "FTHREAD"}]}
+            raise AssertionError(method)
+
+        with mock.patch.object(adapter, "_api", side_effect=fake_api), mock.patch.object(
+            adapter,
+            "_upload_external_file",
+            return_value=(True, None),
+            create=True,
+        ) as mock_upload:
+            result = adapter.send_message(
+                "C_PRODUCT",
+                "The requested brief",
+                attachment_paths=[str(attachment)],
+                reply_to_message_id="slack:1785000001.000100",
+            )
+
+        self.assertEqual(result, (True, None))
+        mock_upload.assert_called_once_with(
+            "https://files.slack.com/upload/v1/signed",
+            attachment,
+        )
+        self.assertEqual(
+            [method for method, _kwargs in api_calls],
+            ["files.getUploadURLExternal", "files.completeUploadExternal"],
+        )
+
+    def test_allows_attachment_only_slack_message(self):
+        adapter = SlackChannelAdapter()
+        attachment = Path(self.tmpdir.name) / "screenshot.png"
+        attachment.write_bytes(b"png")
+
+        def fake_api(method, **kwargs):
+            if method == "files.getUploadURLExternal":
+                return {
+                    "ok": True,
+                    "upload_url": "https://files.slack.com/upload/v1/signed",
+                    "file_id": "FIMAGE",
+                }
+            if method == "files.completeUploadExternal":
+                self.assertEqual(
+                    kwargs["json_body"],
+                    {
+                        "files": [{"id": "FIMAGE", "title": "screenshot.png"}],
+                        "channel_id": "C_PRODUCT",
+                    },
+                )
+                return {"ok": True, "files": [{"id": "FIMAGE"}]}
+            raise AssertionError(method)
+
+        with mock.patch.object(adapter, "_api", side_effect=fake_api), mock.patch.object(
+            adapter,
+            "_upload_external_file",
+            return_value=(True, None),
+            create=True,
+        ):
+            result = adapter.send_message(
+                "C_PRODUCT",
+                "",
+                attachment_paths=[str(attachment)],
+            )
+
+        self.assertEqual(result, (True, None))
+
+    def test_rejects_missing_slack_attachment_before_calling_api(self):
+        adapter = SlackChannelAdapter()
+        with mock.patch.object(adapter, "_api") as mock_api:
+            result = adapter.send_message(
+                "C_PRODUCT",
+                "This must not post by itself",
+                attachment_paths=[str(Path(self.tmpdir.name) / "missing.pdf")],
+            )
+
+        self.assertEqual(result, (False, "slack_attachment_missing"))
+        mock_api.assert_not_called()
 
     def test_resolves_missing_slack_user_once_with_users_info(self):
         adapter = SlackChannelAdapter()
