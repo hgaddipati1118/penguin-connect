@@ -242,6 +242,8 @@ CREATE INDEX IF NOT EXISTS idx_penguin_connect_alias_conv ON penguin_connect_ali
 CREATE UNIQUE INDEX IF NOT EXISTS idx_penguin_connect_alias_one_active
 ON penguin_connect_aliases(conversation_id) WHERE status = 'active';
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_msg_conv_ts ON penguin_connect_messages(conversation_id, message_timestamp);
+CREATE INDEX IF NOT EXISTS idx_penguin_connect_msg_read_conv_ts
+ON penguin_connect_messages(COALESCE(is_read, 0), conversation_id, message_timestamp);
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_msg_gmail ON penguin_connect_messages(gmail_message_id);
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_message_management_starred
 ON penguin_connect_message_management(conversation_id, is_starred, updated_at);

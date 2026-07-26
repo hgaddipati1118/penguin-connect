@@ -3676,17 +3676,18 @@ def _search_messages(
 def _conversation_unread_counts(conn: sqlite3.Connection) -> dict[str, int]:
     rows = conn.execute(
         """
-        WITH latest_read AS (
-            SELECT conversation_id, MAX(message_timestamp) AS last_read_at
-            FROM penguin_connect_messages
-            WHERE COALESCE(is_read, 0) = 1
-            GROUP BY conversation_id
-        )
-        SELECT m.conversation_id, COUNT(*) as unread_count
+        SELECT m.conversation_id, COUNT(*) AS unread_count
         FROM penguin_connect_messages m
-        LEFT JOIN latest_read r ON r.conversation_id = m.conversation_id
         WHERE COALESCE(m.is_read, 0) = 0
-          AND (r.last_read_at IS NULL OR m.message_timestamp > r.last_read_at)
+          AND m.message_timestamp > COALESCE(
+              (
+                  SELECT MAX(r.message_timestamp)
+                  FROM penguin_connect_messages r
+                  WHERE r.conversation_id = m.conversation_id
+                    AND COALESCE(r.is_read, 0) = 1
+              ),
+              ''
+          )
         GROUP BY m.conversation_id
         """
     ).fetchall()
@@ -5085,7 +5086,8 @@ def get_penguinconnect_conversations(
         result = _attach_conversation_unread_counts(conn, result)
         result = _attach_conversation_previews(conn, result)
         result = _attach_conversation_management(conn, result)
-        result = _attach_conversation_contact_context(conn, result)
+        if not (compact and fast):
+            result = _attach_conversation_contact_context(conn, result)
         conn.commit()
         return _compact_conversation_result(result) if compact else result
     except sqlite3.OperationalError as exc:
@@ -5148,15 +5150,16 @@ def _compact_conversation_result(result: dict) -> dict:
             for key in _COMPACT_CONVERSATION_FIELDS
             if key in conversation
         }
-        compact["contact_context"] = [
-            {
-                key: contact.get(key)
-                for key in _COMPACT_CONTACT_CONTEXT_FIELDS
-                if key in contact
-            }
-            for contact in conversation.get("contact_context") or []
-            if isinstance(contact, dict)
-        ]
+        if "contact_context" in conversation:
+            compact["contact_context"] = [
+                {
+                    key: contact.get(key)
+                    for key in _COMPACT_CONTACT_CONTEXT_FIELDS
+                    if key in contact
+                }
+                for contact in conversation.get("contact_context") or []
+                if isinstance(contact, dict)
+            ]
         compact_rows.append(compact)
     compact_result["conversations"] = compact_rows
     return compact_result

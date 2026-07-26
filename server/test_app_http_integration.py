@@ -611,6 +611,39 @@ class AppHttpIntegrationTests(unittest.TestCase):
             hydrate_previews=False,
         )
 
+    def test_fast_compact_conversations_skip_server_contact_enrichment(self):
+        with mock.patch(
+            "app._attach_conversation_contact_context",
+            side_effect=AssertionError("fast inbox should resolve saved contacts from its local index"),
+        ) as attach_contacts, TestClient(app_module.app) as client:
+            response = client.get(
+                "/penguin-connect/conversations",
+                params={"compact": True, "fast": True},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("contact_context", response.json()["conversations"][0])
+        attach_contacts.assert_not_called()
+
+    def test_messages_have_covering_read_state_index(self):
+        conn = self._get_connection()
+        try:
+            indexes = {
+                row["name"]
+                for row in conn.execute("PRAGMA index_list(penguin_connect_messages)").fetchall()
+            }
+            index_sql = conn.execute(
+                """SELECT sql
+                   FROM sqlite_master
+                   WHERE type = 'index'
+                     AND name = 'idx_penguin_connect_msg_read_conv_ts'"""
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertIn("idx_penguin_connect_msg_read_conv_ts", indexes)
+        self.assertIn("COALESCE(is_read, 0)", index_sql["sql"])
+
     def test_messages_endpoint_forwards_incremental_refresh_mode(self):
         with mock.patch(
             "app.penguinconnect_get_conversation_messages",
@@ -3160,6 +3193,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertIn("contactIndex", inbox_js_response.text)
         self.assertIn("rebuildContactIndex", inbox_js_response.text)
         self.assertIn("contactForHandle", inbox_js_response.text)
+        self.assertIn("conversationContactCandidates", inbox_js_response.text)
         self.assertIn("contactsDetailed: false", inbox_js_response.text)
         self.assertIn('source = "all"', inbox_js_response.text)
         self.assertIn('source: "contacts"', inbox_js_response.text)

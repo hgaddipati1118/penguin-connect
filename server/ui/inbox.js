@@ -897,8 +897,27 @@ function conversationParticipants(conversation) {
   return participants.map((value) => String(value || "").trim()).filter(Boolean);
 }
 
+function conversationContactCandidates(conversation) {
+  const candidates = Array.isArray(conversation?.contact_context)
+    ? [...conversation.contact_context]
+    : [];
+  const seen = new Set(
+    candidates.flatMap((contact) => contactLookupKeys(contact)),
+  );
+  for (const participant of conversationParticipants(conversation)) {
+    const key = normalizedHandle(participant);
+    const contact = key ? contactIndex.get(key) : null;
+    if (!contact) continue;
+    const contactKeys = contactLookupKeys(contact);
+    if (contactKeys.some((contactKey) => seen.has(contactKey))) continue;
+    contactKeys.forEach((contactKey) => seen.add(contactKey));
+    candidates.push(contact);
+  }
+  return candidates;
+}
+
 function savedConversationContact(conversation) {
-  const contacts = Array.isArray(conversation?.contact_context) ? conversation.contact_context : [];
+  const contacts = conversationContactCandidates(conversation);
   return contacts.find((contact) => contact?.is_saved !== false) || contacts[0] || null;
 }
 
@@ -1919,7 +1938,7 @@ function searchConversationRows(query) {
   if (!needle) return [];
   return sortedConversations(state.conversations.filter((conversation) => {
     if (!hasCachedMessage(conversation)) return false;
-    const contacts = Array.isArray(conversation.contact_context) ? conversation.contact_context : [];
+    const contacts = conversationContactCandidates(conversation);
     const haystack = [
       conversationName(conversation),
       conversation.display_name,
@@ -4226,6 +4245,10 @@ async function loadContacts(query = "", {
     state.contactsTotal = state.contacts.length;
     state.peopleVisible = 200;
     invalidateConversationProjection();
+    if (state.view === "inbox" && state.conversations.length) {
+      renderConversationList();
+      renderThreadHeader();
+    }
   }
   return payload.contacts || [];
 }
