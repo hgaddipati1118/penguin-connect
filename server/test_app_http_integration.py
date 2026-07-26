@@ -464,6 +464,16 @@ class AppHttpIntegrationTests(unittest.TestCase):
                                     "whatsapp_chat_jid": "15551234567@s.whatsapp.net",
                                     "whatsapp_message_id": "remote-message-id",
                                 },
+                                {
+                                    "filename": "slack-image.png",
+                                    "transfer_name": "slack-image.png",
+                                    "mime_type": "image/png",
+                                    "remote_url": (
+                                        "https://files.slack.com/files-pri/"
+                                        "T_TEST-F_TEST/download/slack-image.png"
+                                    ),
+                                    "slack_file_id": "F_TEST",
+                                },
                             ],
                         }
                     ),
@@ -511,7 +521,7 @@ class AppHttpIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(
             [attachment["availability"] for attachment in message["attachments"]],
-            ["local", "missing", "downloadable"],
+            ["local", "missing", "downloadable", "downloadable"],
         )
         self.assertNotIn("availability", message["metadata"]["attachments"][0])
         legacy_message = next(
@@ -2327,6 +2337,81 @@ class AppHttpIntegrationTests(unittest.TestCase):
         adapter.download_attachment.assert_called_once_with(
             "15551234567@s.whatsapp.net",
             "legacy-download",
+        )
+
+    def test_attachment_endpoint_downloads_slack_private_file_on_demand(self):
+        downloaded_path = Path(self.tmpdir.name) / "downloaded-slack-image.png"
+        downloaded_path.write_bytes(b"synthetic-slack-image")
+        remote_url = (
+            "https://files.slack.com/files-pri/"
+            "T_TEST-F_TEST/download/slack-image.png"
+        )
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction, sender_name,
+                    body_text, message_timestamp, is_read, metadata)
+                   VALUES (?, 'slack', ?, 'slack_local', ?, '', ?, 1, ?)""",
+                (
+                    "amc_test",
+                    "slack:private-file-download",
+                    "Taylor",
+                    "2026-03-12T12:03:00+00:00",
+                    json.dumps(
+                        {
+                            "source_chat_id": "C_TEST",
+                            "native_message_id": "1785000001.000100",
+                            "attachments": [
+                                {
+                                    "filename": "slack-image.png",
+                                    "transfer_name": "slack-image.png",
+                                    "mime_type": "image/png",
+                                    "remote_url": remote_url,
+                                    "slack_file_id": "F_TEST",
+                                }
+                            ],
+                        }
+                    ),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        adapter = mock.Mock()
+        adapter.download_attachment.return_value = str(downloaded_path)
+
+        with mock.patch("app.get_channel_adapter", return_value=adapter), TestClient(
+            app_module.app
+        ) as client:
+            response = client.get(
+                "/penguin-connect/conversations/amc_test/attachments/0",
+                params={
+                    "provider_message_id": "slack:private-file-download",
+                    "inline": "true",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"synthetic-slack-image")
+        self.assertEqual(response.headers["content-type"], "image/png")
+        adapter.download_attachment.assert_called_once_with(
+            remote_url,
+            "F_TEST",
+            "slack-image.png",
+        )
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                """SELECT metadata
+                   FROM penguin_connect_messages
+                   WHERE provider_message_id = 'slack:private-file-download'"""
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(
+            json.loads(row["metadata"])["attachments"][0]["filename"],
+            str(downloaded_path),
         )
 
     def test_attachment_endpoint_rejects_unknown_attachment(self):

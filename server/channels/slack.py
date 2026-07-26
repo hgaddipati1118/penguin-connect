@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -49,6 +50,44 @@ _REACTION_EMOJI_BY_NAME = {
     "white_check_mark": "✅",
 }
 _keychain_token_cache = ""
+
+
+def is_slack_private_file_url(value: str) -> bool:
+    parsed = urlparse(str(value or "").strip())
+    hostname = str(parsed.hostname or "").lower()
+    return bool(
+        parsed.scheme == "https"
+        and (
+            hostname == "files.slack.com"
+            or hostname.endswith(".files.slack.com")
+        )
+    )
+
+
+def _slack_attachment_cache_dir() -> Path:
+    configured = os.environ.get("PENGUIN_CONNECT_SLACK_ATTACHMENT_DIR", "").strip()
+    return (
+        Path(configured).expanduser()
+        if configured
+        else Path.home() / "penguinconnect-local-bridge-data" / "slack-attachments"
+    )
+
+
+def _slack_attachment_max_bytes() -> int:
+    raw = os.environ.get("PENGUIN_CONNECT_SLACK_ATTACHMENT_MAX_BYTES", "").strip()
+    try:
+        value = int(raw) if raw else 250 * 1024 * 1024
+    except (TypeError, ValueError):
+        value = 250 * 1024 * 1024
+    return max(1024 * 1024, min(value, 1024 * 1024 * 1024))
+
+
+def _safe_slack_attachment_name(value: str, remote_url: str) -> str:
+    candidate = Path(str(value or "").strip()).name
+    if not candidate:
+        candidate = Path(urlparse(remote_url).path).name
+    candidate = re.sub(r"[^A-Za-z0-9._ ()+\-]+", "_", candidate).strip(" .")
+    return (candidate or "slack-file")[:200]
 
 
 def _read_slack_keychain_token() -> str:
@@ -230,6 +269,7 @@ class SlackChannelAdapter:
             str,
             tuple[float, dict[str, Any]],
         ] = {}
+        self._attachment_download_locks: dict[str, threading.Lock] = {}
 
     def _api(
         self,
@@ -307,6 +347,65 @@ class SlackChannelAdapter:
         except httpx.HTTPError:
             return False, "slack_file_upload_failed"
         return True, None
+
+    def download_attachment(
+        self,
+        remote_url: str,
+        file_id: str = "",
+        filename: str = "",
+    ) -> Optional[str]:
+        url = str(remote_url or "").strip()
+        if not is_slack_private_file_url(url):
+            return None
+        token = _slack_token()
+        if not token:
+            return None
+        cache_key = re.sub(r"[^A-Za-z0-9_-]+", "", str(file_id or "").strip())
+        if not cache_key:
+            cache_key = hashlib.sha256(url.encode("utf-8")).hexdigest()[:24]
+        display_name = _safe_slack_attachment_name(filename, url)
+        destination = _slack_attachment_cache_dir() / cache_key / display_name
+        with self._lock:
+            download_lock = self._attachment_download_locks.setdefault(
+                str(destination),
+                threading.Lock(),
+            )
+        with download_lock:
+            if destination.is_file() and destination.stat().st_size > 0:
+                return str(destination)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = destination.with_name(
+                f".{destination.name}.{threading.get_ident()}.part"
+            )
+            maximum_bytes = _slack_attachment_max_bytes()
+            downloaded_bytes = 0
+            try:
+                with httpx.Client(
+                    headers={"Authorization": f"Bearer {token}"},
+                    follow_redirects=True,
+                    timeout=60,
+                ) as client:
+                    with client.stream("GET", url) as response:
+                        response.raise_for_status()
+                        content_length = int(response.headers.get("content-length") or 0)
+                        if content_length > maximum_bytes:
+                            return None
+                        with temporary.open("wb") as destination_file:
+                            for chunk in response.iter_bytes():
+                                if not chunk:
+                                    continue
+                                downloaded_bytes += len(chunk)
+                                if downloaded_bytes > maximum_bytes:
+                                    raise ValueError("slack_attachment_too_large")
+                                destination_file.write(chunk)
+                if downloaded_bytes <= 0:
+                    return None
+                temporary.replace(destination)
+                return str(destination)
+            except (OSError, ValueError, httpx.HTTPError):
+                return None
+            finally:
+                temporary.unlink(missing_ok=True)
 
     def _load_identity(self) -> bool:
         if self._self_user_id:

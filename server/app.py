@@ -54,7 +54,7 @@ from penguin_connect import (
 )
 from browse_sources import IMESSAGE_DB, resolve_apple_messages_chat
 from channels import get_channel_adapter
-from channels.slack import slack_source_paths
+from channels.slack import is_slack_private_file_url, slack_source_paths
 from channels.whatsapp import whatsapp_attachment_count, whatsapp_source_paths
 from db import DB_PATH, get_connection, init_db
 from startup_checks import StartupReadinessError, assert_startup_ready
@@ -2893,6 +2893,10 @@ def _attachment_preview_availability(attachment: dict, message: dict | None = No
         and str(attachment.get("whatsapp_message_id") or "").strip()
     ):
         return "downloadable"
+    if is_slack_private_file_url(
+        str(attachment.get("remote_url") or "").strip()
+    ):
+        return "downloadable"
     metadata = message.get("metadata") if isinstance(message, dict) else {}
     if not isinstance(metadata, dict):
         metadata = {}
@@ -3351,7 +3355,8 @@ def _stored_message_attachment(
     try:
         path = _message_attachment_path(raw_path)
     except HTTPException:
-        is_whatsapp = str(row["provider"] or "").strip().lower() == "whatsapp"
+        provider = str(row["provider"] or "").strip().lower()
+        is_whatsapp = provider == "whatsapp"
         whatsapp_chat_jid = str(
             attachment.get("whatsapp_chat_jid")
             or (metadata.get("source_chat_id") if is_whatsapp else "")
@@ -3362,14 +3367,32 @@ def _stored_message_attachment(
             or (metadata.get("native_message_id") if is_whatsapp else "")
             or ""
         ).strip()
-        adapter = get_channel_adapter("whatsapp")
-        downloaded = (
-            adapter.download_attachment(whatsapp_chat_jid, whatsapp_message_id)
-            if whatsapp_chat_jid
-            and whatsapp_message_id
-            and hasattr(adapter, "download_attachment")
-            else None
-        )
+        downloaded = None
+        if whatsapp_chat_jid and whatsapp_message_id:
+            adapter = get_channel_adapter("whatsapp")
+            if hasattr(adapter, "download_attachment"):
+                downloaded = adapter.download_attachment(
+                    whatsapp_chat_jid,
+                    whatsapp_message_id,
+                )
+        if provider == "slack" and not downloaded:
+            remote_url = str(attachment.get("remote_url") or "").strip()
+            slack_file_id = str(attachment.get("slack_file_id") or "").strip()
+            display_name = str(
+                attachment.get("transfer_name")
+                or attachment.get("filename")
+                or "Slack file"
+            ).strip()
+            adapter = get_channel_adapter("slack")
+            if (
+                is_slack_private_file_url(remote_url)
+                and hasattr(adapter, "download_attachment")
+            ):
+                downloaded = adapter.download_attachment(
+                    remote_url,
+                    slack_file_id,
+                    display_name,
+                )
         if not downloaded:
             raise
         attachment["filename"] = downloaded

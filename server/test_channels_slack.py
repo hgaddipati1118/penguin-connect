@@ -19,6 +19,9 @@ class SlackChannelAdapterTests(unittest.TestCase):
             {
                 "PENGUIN_CONNECT_SLACK_TOKEN": "xoxp-test-token",
                 "PENGUIN_CONNECT_SLACK_STATE_PATH": str(Path(self.tmpdir.name) / "slack-state.json"),
+                "PENGUIN_CONNECT_SLACK_ATTACHMENT_DIR": str(
+                    Path(self.tmpdir.name) / "slack-attachments"
+                ),
             },
             clear=False,
         )
@@ -113,6 +116,56 @@ class SlackChannelAdapterTests(unittest.TestCase):
         self.assertFalse(messages[0]["is_from_me"])
         self.assertTrue(messages[1]["is_from_me"])
         self.assertEqual(sent, (True, None))
+
+    def test_downloads_private_file_once_and_reuses_local_cache(self):
+        adapter = SlackChannelAdapter()
+        response = mock.MagicMock()
+        response.headers = {"content-length": "15"}
+        response.iter_bytes.return_value = [b"synthetic-image"]
+        response.raise_for_status.return_value = None
+        stream_context = mock.MagicMock()
+        stream_context.__enter__.return_value = response
+        client = mock.MagicMock()
+        client.stream.return_value = stream_context
+        client_context = mock.MagicMock()
+        client_context.__enter__.return_value = client
+        remote_url = (
+            "https://files.slack.com/files-pri/T_TEST-F_TEST/download/screenshot.png"
+        )
+
+        with mock.patch("channels.slack.httpx.Client", return_value=client_context) as client_factory:
+            first = adapter.download_attachment(
+                remote_url,
+                "F_TEST",
+                "Screenshot 2026-07-26.png",
+            )
+            second = adapter.download_attachment(
+                remote_url,
+                "F_TEST",
+                "Screenshot 2026-07-26.png",
+            )
+
+        self.assertEqual(first, second)
+        self.assertEqual(Path(first).read_bytes(), b"synthetic-image")
+        self.assertEqual(client_factory.call_count, 1)
+        self.assertEqual(
+            client_factory.call_args.kwargs["headers"],
+            {"Authorization": "Bearer xoxp-test-token"},
+        )
+        client.stream.assert_called_once_with("GET", remote_url)
+
+    def test_rejects_non_slack_private_file_url_without_network_access(self):
+        adapter = SlackChannelAdapter()
+
+        with mock.patch("channels.slack.httpx.Client") as client_factory:
+            result = adapter.download_attachment(
+                "https://example.com/private/file.png",
+                "F_TEST",
+                "file.png",
+            )
+
+        self.assertIsNone(result)
+        client_factory.assert_not_called()
 
     def test_empty_incremental_fetch_preserves_latest_history_checkpoint(self):
         state_path = Path(os.environ["PENGUIN_CONNECT_SLACK_STATE_PATH"])
