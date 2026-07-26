@@ -831,11 +831,18 @@ def _stage_sent_message_attachments(
     return staged_paths, staged_dir
 
 
+_LOCAL_UI_HEADERS = {"Cache-Control": "no-store"}
+
+
 def _ui_file_response(filename: str, media_type: str) -> Response:
     path = UI_DIR / filename
     if not path.exists():
         raise HTTPException(status_code=404, detail="ui_asset_not_found")
-    return Response(path.read_text(encoding="utf-8"), media_type=media_type)
+    return Response(
+        path.read_text(encoding="utf-8"),
+        media_type=media_type,
+        headers=_LOCAL_UI_HEADERS,
+    )
 
 
 def _clean_text(value: str | None, *, max_chars: int = 500) -> str:
@@ -4370,12 +4377,18 @@ app.add_middleware(
 @app.get("/api/penguin-connect/ui", response_class=HTMLResponse)
 @app.get("/penguin-connect/ui", response_class=HTMLResponse)
 def get_penguinconnect_ui():
-    return HTMLResponse((UI_DIR / "inbox.html").read_text(encoding="utf-8"))
+    return HTMLResponse(
+        (UI_DIR / "inbox.html").read_text(encoding="utf-8"),
+        headers=_LOCAL_UI_HEADERS,
+    )
 
 @app.get("/api/penguin-connect/console", response_class=HTMLResponse)
 @app.get("/penguin-connect/console", response_class=HTMLResponse)
 def get_penguinconnect_console():
-    return HTMLResponse((UI_DIR / "index.html").read_text(encoding="utf-8"))
+    return HTMLResponse(
+        (UI_DIR / "index.html").read_text(encoding="utf-8"),
+        headers=_LOCAL_UI_HEADERS,
+    )
 
 @app.get("/api/penguin-connect/ui/inbox.css")
 @app.get("/penguin-connect/ui/inbox.css")
@@ -4385,7 +4398,11 @@ def get_penguinconnect_inbox_css():
 @app.get("/api/penguin-connect/ui/penguin-logo.png")
 @app.get("/penguin-connect/ui/penguin-logo.png")
 def get_penguinconnect_logo():
-    return FileResponse(UI_DIR / "penguin-logo.png", media_type="image/png")
+    return FileResponse(
+        UI_DIR / "penguin-logo.png",
+        media_type="image/png",
+        headers=_LOCAL_UI_HEADERS,
+    )
 
 @app.get("/api/penguin-connect/ui/inbox.js")
 @app.get("/penguin-connect/ui/inbox.js")

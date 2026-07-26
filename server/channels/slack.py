@@ -126,6 +126,10 @@ class SlackChannelAdapter:
         self._self_user_id = ""
         self._workspace_name = ""
         self._history_cache: dict[tuple[str, str, str], tuple[float, list[dict[str, Any]]]] = {}
+        self._thread_cache: dict[
+            tuple[str, str, str, int],
+            tuple[float, list[dict[str, Any]]],
+        ] = {}
         self._conversation_cache: dict[
             tuple[str, int],
             tuple[float, dict[str, Any]],
@@ -505,7 +509,7 @@ class SlackChannelAdapter:
             return []
         with self._lock:
             cache_key = (chat_id, str(since or ""), str(before or ""))
-            cache_ttl = _env_int("PENGUIN_CONNECT_SLACK_HISTORY_MIN_SECONDS", 60, 5, 3600)
+            cache_ttl = _env_int("PENGUIN_CONNECT_SLACK_HISTORY_MIN_SECONDS", 5, 5, 3600)
             cached = self._history_cache.get(cache_key)
             if cached and time.monotonic() - cached[0] < cache_ttl:
                 return [dict(message) for message in cached[1]]
@@ -568,17 +572,64 @@ class SlackChannelAdapter:
                     limit=min(300, safe_limit),
                 )
 
+            thread_cache_ttl = _env_int(
+                "PENGUIN_CONNECT_SLACK_THREAD_MIN_SECONDS",
+                60,
+                5,
+                3600,
+            )
+            now = time.monotonic()
+            hydrated_threads: list[list[dict[str, Any]]] = []
+            thread_jobs: list[
+                tuple[dict[str, Any], tuple[str, str, str, int]]
+            ] = []
+            for root in thread_roots:
+                thread_id = str(root.get("native_message_id") or "").strip()
+                thread_cache_key = (
+                    chat_id,
+                    thread_id,
+                    str(root.get("latest_reply") or "").strip(),
+                    max(0, int(root.get("reply_count") or 0)),
+                )
+                cached_thread = self._thread_cache.get(thread_cache_key)
+                if cached_thread and now - cached_thread[0] < thread_cache_ttl:
+                    hydrated_threads.append(
+                        [dict(message) for message in cached_thread[1]]
+                    )
+                else:
+                    thread_jobs.append((root, thread_cache_key))
+
             thread_workers = min(
-                len(thread_roots),
+                len(thread_jobs),
                 _env_int("PENGUIN_CONNECT_SLACK_THREAD_WORKERS", 4, 1, 8),
             )
-            hydrated_threads: list[list[dict[str, Any]]] = []
             if thread_workers:
                 with ThreadPoolExecutor(
                     max_workers=thread_workers,
                     thread_name_prefix="penguin-slack-thread",
                 ) as executor:
-                    hydrated_threads = list(executor.map(hydrate_thread, thread_roots))
+                    fetched_threads = list(executor.map(
+                        hydrate_thread,
+                        (root for root, _cache_key in thread_jobs),
+                    ))
+                for (_root, thread_cache_key), replies in zip(
+                    thread_jobs,
+                    fetched_threads,
+                    strict=True,
+                ):
+                    durable_replies = [dict(message) for message in replies]
+                    self._thread_cache[thread_cache_key] = (
+                        time.monotonic(),
+                        durable_replies,
+                    )
+                    hydrated_threads.append(durable_replies)
+            if len(self._thread_cache) > 500:
+                newest_threads = sorted(
+                    self._thread_cache.items(),
+                    key=lambda item: item[1][0],
+                    reverse=True,
+                )[:250]
+                self._thread_cache = dict(newest_threads)
             for replies in hydrated_threads:
                 for reply in replies:
                     message_id = str(reply.get("native_message_id") or "").strip()
@@ -623,6 +674,7 @@ class SlackChannelAdapter:
             return False, str(payload.get("error") or "slack_send_failed")
         self._conversation_cache.clear()
         self._history_cache.clear()
+        self._thread_cache.clear()
         self._touch_state(last_sent_channel=chat_identifier, last_sent_ts=str(payload.get("ts") or ""))
         return True, None
 

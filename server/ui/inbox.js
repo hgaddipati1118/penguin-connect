@@ -274,6 +274,7 @@ const CONVERSATION_RENDER_BATCH = 120;
 const MESSAGE_RENDER_WINDOW = 60;
 const MESSAGE_HISTORY_BATCH = 80;
 const LATEST_ANCHOR_OBSERVER_MS = 1600;
+const SLACK_SELECTED_REFRESH_MS = 10000;
 const NATIVE_SCROLL_ANCHORING = window.CSS?.supports?.("overflow-anchor: auto") || false;
 const CLOCK_FORMATTER = new Intl.DateTimeFormat(undefined, {
   hour: "numeric",
@@ -4187,18 +4188,21 @@ async function refreshWorkspaceIfChanged() {
     const localChanged = String(revision.local_revision || "") !== state.workspaceRevision.local;
     const imessageChanged = String(revision.imessage_revision || "") !== state.workspaceRevision.imessage;
     const whatsappChanged = String(revision.whatsapp_revision || "") !== state.workspaceRevision.whatsapp;
+    const slackChanged = String(revision.slack_revision || "") !== state.workspaceRevision.slack;
     const selectedProvider = state.selected ? providerKey(state.selected.source_provider) : "";
     const selectedChanged = localChanged
       || (selectedProvider === "imessage" && imessageChanged)
-      || (selectedProvider === "whatsapp" && whatsappChanged);
+      || (selectedProvider === "whatsapp" && whatsappChanged)
+      || (selectedProvider === "slack" && slackChanged);
     await Promise.all([
       loadConversations({
         keepSelection: true,
         discoverWhatsApp: whatsappChanged,
         discoverIMessages: imessageChanged,
+        discoverSlack: slackChanged,
       }),
       selectedChanged
-        ? refreshSelectedMessages({ incremental: true })
+        ? refreshSelectedMessages({ incremental: selectedProvider !== "slack" })
         : Promise.resolve(),
       loadScheduledMessages(),
       state.view === "queue" ? loadQueue() : Promise.resolve(),
@@ -6259,14 +6263,16 @@ window.setInterval(() => {
 
 window.setInterval(() => {
   if (document.visibilityState !== "visible") return;
-  loadConversations({ keepSelection: true, discoverSlack: true })
-    .then(() => (
-      providerKey(state.selected?.source_provider) === "slack"
-        ? refreshSelectedMessages({ incremental: false })
-        : null
-    ))
-    .catch(() => {});
+  loadConversations({ keepSelection: true, discoverSlack: true }).catch(() => {});
 }, 60000);
+
+window.setInterval(() => {
+  if (
+    document.visibilityState !== "visible"
+    || providerKey(state.selected?.source_provider) !== "slack"
+  ) return;
+  refreshSelectedMessages({ incremental: false }).catch(() => {});
+}, SLACK_SELECTED_REFRESH_MS);
 
 window.setInterval(() => {
   if (document.visibilityState !== "visible") return;

@@ -194,6 +194,78 @@ class SlackChannelAdapterTests(unittest.TestCase):
         )
         self.assertTrue(messages[2]["is_from_me"])
 
+    def test_refreshes_history_without_refetching_unchanged_slack_threads(self):
+        adapter = SlackChannelAdapter()
+        adapter._self_user_id = "USELF"
+        adapter._users = {"USELF": "Harsha", "UANH": "Anh"}
+        history_calls = 0
+        reply_calls = 0
+
+        def fake_api(method, **_kwargs):
+            nonlocal history_calls, reply_calls
+            if method == "conversations.history":
+                history_calls += 1
+                latest_reply = (
+                    "1785000003.000100"
+                    if history_calls >= 3
+                    else "1785000002.000100"
+                )
+                return {
+                    "ok": True,
+                    "messages": [
+                        {
+                            "ts": "1785000001.000100",
+                            "user": "UANH",
+                            "text": "Root question",
+                            "reply_count": 2 if history_calls >= 3 else 1,
+                            "latest_reply": latest_reply,
+                        },
+                    ],
+                    "response_metadata": {"next_cursor": ""},
+                }
+            if method == "conversations.replies":
+                reply_calls += 1
+                replies = [
+                    {
+                        "ts": "1785000001.000100",
+                        "user": "UANH",
+                        "text": "Root question",
+                    },
+                    {
+                        "ts": "1785000002.000100",
+                        "thread_ts": "1785000001.000100",
+                        "user": "USELF",
+                        "text": "First reply",
+                    },
+                ]
+                if history_calls >= 3:
+                    replies.append(
+                        {
+                            "ts": "1785000003.000100",
+                            "thread_ts": "1785000001.000100",
+                            "user": "UANH",
+                            "text": "New reply",
+                        }
+                    )
+                return {
+                    "ok": True,
+                    "messages": replies,
+                    "response_metadata": {"next_cursor": ""},
+                }
+            raise AssertionError(method)
+
+        with mock.patch.object(adapter, "_api", side_effect=fake_api):
+            first = adapter.fetch_messages("C_PRODUCT", limit=50)
+            adapter._history_cache.clear()
+            second = adapter.fetch_messages("C_PRODUCT", limit=50)
+            adapter._history_cache.clear()
+            third = adapter.fetch_messages("C_PRODUCT", limit=50)
+
+        self.assertEqual(history_calls, 3)
+        self.assertEqual(reply_calls, 2)
+        self.assertEqual(second, first)
+        self.assertEqual(third[-1]["text"], "New reply")
+
     def test_sends_reply_into_existing_slack_thread(self):
         adapter = SlackChannelAdapter()
 
