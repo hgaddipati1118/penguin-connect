@@ -151,6 +151,15 @@ const el = {
   closeMessageEditButton: document.querySelector("#closeMessageEditButton"),
   cancelMessageEditButton: document.querySelector("#cancelMessageEditButton"),
   saveMessageEditButton: document.querySelector("#saveMessageEditButton"),
+  messageNoteDialog: document.querySelector("#messageNoteDialog"),
+  messageNoteForm: document.querySelector("#messageNoteForm"),
+  messageNotePreview: document.querySelector("#messageNotePreview"),
+  messageNoteText: document.querySelector("#messageNoteText"),
+  messageNoteStatus: document.querySelector("#messageNoteStatus"),
+  closeMessageNoteButton: document.querySelector("#closeMessageNoteButton"),
+  cancelMessageNoteButton: document.querySelector("#cancelMessageNoteButton"),
+  clearMessageNoteButton: document.querySelector("#clearMessageNoteButton"),
+  saveMessageNoteButton: document.querySelector("#saveMessageNoteButton"),
   messageDeleteDialog: document.querySelector("#messageDeleteDialog"),
   messageDeletePreview: document.querySelector("#messageDeletePreview"),
   messageDeleteStatus: document.querySelector("#messageDeleteStatus"),
@@ -3391,7 +3400,14 @@ function canMutateProviderMessage(message) {
     && (
       messageProvider === "slack"
       || message?.metadata?.provider_can_delete === true
-    );
+  );
+}
+
+function canAnnotateMessage(message) {
+  return Boolean(
+    message?.provider_message_id
+    && !message?.metadata?.pending_send,
+  );
 }
 
 function closeMessageActionPopover({
@@ -3424,7 +3440,8 @@ function positionMessageActionPopover(anchor) {
 }
 
 function openMessageActionPopover(message, anchor) {
-  if (!canMutateProviderMessage(message) || !anchor) return;
+  const canMutate = canMutateProviderMessage(message);
+  if ((!canMutate && !canAnnotateMessage(message)) || !anchor) return;
   closeReactionPicker();
   closeMessageActionPopover();
   state.messageMutation.messageId = String(message.provider_message_id || "");
@@ -3435,8 +3452,20 @@ function openMessageActionPopover(message, anchor) {
   const editButton = el.messageActionPopover.querySelector(
     '[data-message-operation="edit"]',
   );
-  editButton.hidden = provider === "whatsapp"
-    && message?.metadata?.provider_can_edit !== true;
+  const deleteButton = el.messageActionPopover.querySelector(
+    '[data-message-operation="delete"]',
+  );
+  const noteLabel = el.messageActionPopover.querySelector(
+    "[data-message-note-label]",
+  );
+  editButton.hidden = !canMutate || (
+    provider === "whatsapp"
+    && message?.metadata?.provider_can_edit !== true
+  );
+  deleteButton.hidden = !canMutate;
+  noteLabel.textContent = String(message.message_note || "").trim()
+    ? "Edit private note"
+    : "Add private note";
   el.messageActionPopover.hidden = false;
   positionMessageActionPopover(anchor);
   el.messageActionPopover.querySelector("[data-message-operation]:not([hidden])")?.focus({
@@ -3471,6 +3500,95 @@ function openMessageEditDialog() {
   el.messageEditDialog.showModal();
   el.messageEditText.focus();
   el.messageEditText.select();
+}
+
+function closeMessageNoteDialog() {
+  if (state.messageMutation.busy) return;
+  if (el.messageNoteDialog.open) el.messageNoteDialog.close();
+  el.messageNoteStatus.textContent = "Included in local message search.";
+  state.messageMutation.messageId = "";
+}
+
+function openMessageNoteDialog(message = mutationMessage()) {
+  if (!canAnnotateMessage(message)) return;
+  closeMessageActionPopover({ clearSelection: false });
+  state.messageMutation.messageId = String(message.provider_message_id || "");
+  const currentNote = String(message.message_note || "").trim();
+  const messageText = String(message.body_text || "").trim();
+  const attachment = messageAttachments(message)[0];
+  el.messageNotePreview.textContent = messageText
+    ? truncate(messageText, 360)
+    : attachment
+      ? `Attachment: ${attachmentLabel(attachment)}`
+      : "Message without a text preview";
+  el.messageNoteText.value = currentNote;
+  el.messageNoteStatus.textContent = "Included in local message search.";
+  el.clearMessageNoteButton.hidden = !currentNote;
+  el.messageNoteDialog.showModal();
+  el.messageNoteText.focus();
+  el.messageNoteText.setSelectionRange(
+    el.messageNoteText.value.length,
+    el.messageNoteText.value.length,
+  );
+}
+
+async function submitMessageNote(event, { note = null } = {}) {
+  event?.preventDefault?.();
+  if (state.messageMutation.busy || !state.selected) return;
+  const message = mutationMessage();
+  if (!canAnnotateMessage(message)) return;
+  const nextNote = String(note ?? el.messageNoteText.value).trim();
+  if (nextNote.length > 2000) {
+    el.messageNoteStatus.textContent = "Notes can be at most 2,000 characters.";
+    el.messageNoteText.focus();
+    return;
+  }
+  const conversationId = state.selected.conversation_id;
+  const messageId = String(message.provider_message_id || "");
+  const previousNote = String(message.message_note || "");
+  state.messageMutation.busy = true;
+  el.saveMessageNoteButton.disabled = true;
+  el.clearMessageNoteButton.disabled = true;
+  el.cancelMessageNoteButton.disabled = true;
+  el.closeMessageNoteButton.disabled = true;
+  el.messageNoteText.disabled = true;
+  el.messageNoteStatus.textContent = nextNote ? "Saving note locally…" : "Clearing note…";
+  replaceCachedMessage(conversationId, messageId, (current) => ({
+    ...current,
+    message_note: nextNote,
+  }));
+  try {
+    const result = await api(
+      `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/messages/management`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          provider_message_id: messageId,
+          note: nextNote,
+        }),
+      },
+    );
+    replaceCachedMessage(conversationId, messageId, (current) => ({
+      ...current,
+      message_note: result.message_note || "",
+    }));
+    el.messageNoteDialog.close();
+    state.messageMutation.messageId = "";
+    toast(result.has_note ? "Private message note saved" : "Private message note cleared");
+  } catch (error) {
+    replaceCachedMessage(conversationId, messageId, (current) => ({
+      ...current,
+      message_note: previousNote,
+    }));
+    el.messageNoteStatus.textContent = `Could not save note: ${error.message}`;
+  } finally {
+    state.messageMutation.busy = false;
+    el.saveMessageNoteButton.disabled = false;
+    el.clearMessageNoteButton.disabled = false;
+    el.cancelMessageNoteButton.disabled = false;
+    el.closeMessageNoteButton.disabled = false;
+    el.messageNoteText.disabled = false;
+  }
 }
 
 function closeMessageDeleteDialog() {
@@ -3716,6 +3834,8 @@ function handleMessageListAction(event) {
     openReactionPicker(message, action);
   } else if (actionName === "more") {
     openMessageActionPopover(message, action);
+  } else if (actionName === "note") {
+    openMessageNoteDialog(message);
   } else if (actionName === "react-existing") {
     submitProviderReaction(message, {
       name: action.dataset.reactionName,
@@ -3951,6 +4071,7 @@ function renderMessages({
     if (replyDepth) row.style.setProperty("--reply-depth", String(replyDepth));
     row.dataset.searchText = [
       message.body_text,
+      message.message_note,
       message.sender_name,
       message.sender_email,
       ...messageAttachments(message).map((attachment) => attachment.filename || attachment.transfer_name),
@@ -4017,6 +4138,20 @@ function renderMessages({
         list.append(renderInlineAttachment(message, attachment, index));
       }
       bubble.append(list);
+    }
+    const messageNote = String(message.message_note || "").trim();
+    if (messageNote) {
+      const note = document.createElement("button");
+      note.type = "button";
+      note.className = "message-local-note";
+      note.dataset.messageAction = "note";
+      note.append(createIcon("i-note"));
+      const noteText = document.createElement("span");
+      noteText.textContent = truncate(messageNote, 180);
+      note.append(noteText);
+      note.title = "Edit private message note";
+      note.setAttribute("aria-label", `Private note: ${truncate(messageNote, 120)}`);
+      bubble.append(note);
     }
     if (!isThreadReply && messageProvider === "slack" && replyCount > 0) {
       const threadIsCollapsed = slackThreadIsCollapsed(slackNativeMessageId(message));
@@ -4188,9 +4323,9 @@ function renderMessages({
     more.append(createIcon("i-more"));
     more.title = "More message actions";
     more.setAttribute("aria-label", "More message actions");
-    more.hidden = !canMutateProviderMessage(message);
+    more.hidden = !canMutateProviderMessage(message) && !canAnnotateMessage(message);
     if (mine) row.append(more, reply, translate, pin, react, stack);
-    else row.append(stack, reply, react, pin, translate);
+    else row.append(stack, reply, react, pin, translate, more);
     messageRowFingerprints.set(row, renderFingerprint);
     messageChildren.push(row);
     if (
@@ -5861,7 +5996,9 @@ function agentThreadText(limit = 30) {
       const sender = isOwnMessage(message) ? "Me" : (message.sender_name || message.sender_email || "Unknown");
       const attachments = messageAttachments(message).map((item) => basename(item.transfer_name || item.filename));
       const suffix = attachments.length ? ` [attachments: ${attachments.join(", ")}]` : "";
-      return `${message.message_timestamp || ""} | ${sender}: ${truncate(message.body_text, 700)}${suffix}`;
+      const note = String(message.message_note || "").trim();
+      const noteSuffix = note ? ` [private note: ${truncate(note, 300)}]` : "";
+      return `${message.message_timestamp || ""} | ${sender}: ${truncate(message.body_text, 700)}${suffix}${noteSuffix}`;
     })
     .join("\n");
 }
@@ -7071,6 +7208,7 @@ el.reactionMoreButton.addEventListener("click", () => {
 el.messageActionPopover.addEventListener("click", (event) => {
   const button = event.target.closest("[data-message-operation]");
   if (!button) return;
+  if (button.dataset.messageOperation === "note") openMessageNoteDialog();
   if (button.dataset.messageOperation === "edit") openMessageEditDialog();
   if (button.dataset.messageOperation === "delete") openMessageDeleteDialog();
 });
@@ -7119,6 +7257,17 @@ el.messageEditDialog.addEventListener("cancel", (event) => {
 });
 el.messageEditDialog.addEventListener("click", (event) => {
   if (event.target === el.messageEditDialog) closeMessageEditDialog();
+});
+el.messageNoteForm.addEventListener("submit", submitMessageNote);
+el.closeMessageNoteButton.addEventListener("click", closeMessageNoteDialog);
+el.cancelMessageNoteButton.addEventListener("click", closeMessageNoteDialog);
+el.clearMessageNoteButton.addEventListener("click", () => submitMessageNote(null, { note: "" }));
+el.messageNoteDialog.addEventListener("cancel", (event) => {
+  if (state.messageMutation.busy) event.preventDefault();
+  else state.messageMutation.messageId = "";
+});
+el.messageNoteDialog.addEventListener("click", (event) => {
+  if (event.target === el.messageNoteDialog) closeMessageNoteDialog();
 });
 el.confirmMessageDeleteButton.addEventListener("click", confirmMessageDelete);
 el.closeMessageDeleteButton.addEventListener("click", closeMessageDeleteDialog);
@@ -7528,6 +7677,11 @@ document.addEventListener("keydown", (event) => {
   } else if (key === "l" || key === "v") {
     event.preventDefault();
     openLabelPicker();
+  } else if (key === "n") {
+    event.preventDefault();
+    const focusedMessage = currentMessageById(state.focusedMessageId);
+    if (focusedMessage) openMessageNoteDialog(focusedMessage);
+    else toast("Click a message first, then press N to add a note.");
   } else if (key === "r") {
     event.preventDefault();
     const focusedMessage = currentMessageById(state.focusedMessageId);

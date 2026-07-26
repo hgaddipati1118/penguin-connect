@@ -249,6 +249,10 @@
             aria-label="Message actions"
             hidden
           >
+            <button type="button" role="menuitem" data-message-operation="note">
+              <svg><use href="#i-note"></use></svg>
+              <span data-message-note-label>Add private note</span>
+            </button>
             <button type="button" role="menuitem" data-message-operation="edit">
               <svg><use href="#i-compose"></use></svg>
               Edit message
@@ -456,6 +460,32 @@
         <div class="conversation-meta-actions">
           <button class="secondary-button" type="button" id="cancelMessageEditButton">Cancel</button>
           <button class="agent-send-button" type="submit" id="saveMessageEditButton">Save edit</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="compose-dialog message-edit-dialog message-note-dialog" id="messageNoteDialog" aria-labelledby="messageNoteDialogTitle">
+      <form id="messageNoteForm">
+        <header>
+          <div>
+            <p class="overline">Private · stored locally</p>
+            <h2 id="messageNoteDialogTitle">Note on message</h2>
+          </div>
+          <button class="icon-button" type="button" id="closeMessageNoteButton" title="Close" aria-label="Close message note">
+            <svg><use href="#i-close"></use></svg>
+          </button>
+        </header>
+        <div class="message-mutation-body">
+          <blockquote class="message-note-preview" id="messageNotePreview"></blockquote>
+          <label for="messageNoteText">Note</label>
+          <textarea id="messageNoteText" rows="5" maxlength="2000" placeholder="Add context, a decision, or what to remember"></textarea>
+          <p class="message-mutation-status" id="messageNoteStatus" aria-live="polite">Included in local message search.</p>
+        </div>
+        <div class="conversation-meta-actions">
+          <button class="text-button message-note-clear" type="button" id="clearMessageNoteButton">Clear note</button>
+          <span class="action-spacer"></span>
+          <button class="secondary-button" type="button" id="cancelMessageNoteButton">Cancel</button>
+          <button class="agent-send-button" type="submit" id="saveMessageNoteButton">Save note</button>
         </div>
       </form>
     </dialog>
@@ -740,6 +770,7 @@
             <h3>Thread</h3>
             <dl>
               <div><dt><kbd>R</kbd></dt><dd>Reply to selected message</dd></div>
+              <div><dt><kbd>N</kbd></dt><dd>Note selected message</dd></div>
               <div><dt><kbd>↵</kbd> <kbd>A</kbd></dt><dd>Write a message</dd></div>
               <div><dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Scroll messages</dd></div>
               <div><dt><kbd>Space</kbd></dt><dd>Page down</dd></div>
