@@ -23,6 +23,7 @@
   --nav-width: 68px;
   --list-width: 340px;
   --agent-width: 330px;
+  --thread-min-width: 360px;
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 18px;
@@ -100,7 +101,7 @@ svg {
 
 .app-shell {
   display: grid;
-  grid-template-columns: var(--nav-width) var(--list-width) minmax(360px, 1fr) var(--agent-width);
+  grid-template-columns: var(--nav-width) var(--list-width) minmax(var(--thread-min-width), 1fr) var(--agent-width);
   width: 100%;
   height: 100%;
   min-height: 0;
@@ -110,19 +111,26 @@ svg {
 }
 
 .app-shell.agent-closed {
-  grid-template-columns: var(--nav-width) var(--list-width) minmax(360px, 1fr) 0;
+  grid-template-columns: var(--nav-width) var(--list-width) minmax(var(--thread-min-width), 1fr) 0;
 }
 
 .app-shell.list-closed {
-  grid-template-columns: var(--nav-width) 0 minmax(360px, 1fr) var(--agent-width);
+  grid-template-columns: var(--nav-width) 0 minmax(var(--thread-min-width), 1fr) var(--agent-width);
 }
 
 .app-shell.list-closed.agent-closed {
-  grid-template-columns: var(--nav-width) 0 minmax(360px, 1fr) 0;
+  grid-template-columns: var(--nav-width) 0 minmax(var(--thread-min-width), 1fr) 0;
 }
 
 .app-shell.list-closed .conversation-pane {
-  display: none;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.app-shell.agent-closed .agent-pane {
+  visibility: hidden;
+  border-left: 0;
+  pointer-events: none;
 }
 
 .app-nav {
@@ -291,7 +299,9 @@ svg {
 .conversation-pane {
   z-index: 3;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto auto auto auto auto minmax(0, 1fr) auto;
+  overflow: hidden;
   border-right: 1px solid var(--line);
   background: var(--paper);
 }
@@ -935,6 +945,7 @@ kbd {
   position: absolute;
   inset: 0;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto auto minmax(0, 1fr) auto;
   height: auto;
   min-width: 0;
@@ -1084,6 +1095,26 @@ kbd {
   }
 }
 
+@container (max-width: 300px) {
+  .thread-header {
+    gap: 6px;
+    padding-right: 8px;
+    padding-left: 8px;
+  }
+
+  .thread-header .person-avatar.large {
+    display: none;
+  }
+
+  .thread-identity p {
+    display: none;
+  }
+
+  .thread-name-row h2 {
+    font-size: 15px;
+  }
+}
+
 .thread-search-bar {
   z-index: 1;
   display: grid;
@@ -1122,7 +1153,7 @@ kbd {
 
 .message-list {
   min-height: 0;
-  padding: 24px max(22px, 6vw) 42px;
+  padding: 24px clamp(18px, 6cqw, 72px) 42px;
   overflow-x: hidden;
   overflow-y: auto;
   overflow-anchor: auto;
@@ -1780,7 +1811,7 @@ kbd {
 }
 
 .message-attachment-preview iframe {
-  width: min(460px, 68vw);
+  width: min(460px, 100%);
   height: 360px;
   border: 1px solid rgba(32, 40, 36, 0.1);
   border-radius: 9px;
@@ -1865,7 +1896,7 @@ kbd {
   z-index: 2;
   min-width: 0;
   flex: 0 0 auto;
-  padding: 9px max(18px, 5vw) 10px;
+  padding: 9px clamp(14px, 5cqw, 42px) 10px;
   border-top: 1px solid var(--line);
   background: rgba(251, 250, 246, 0.97);
 }
@@ -4029,6 +4060,14 @@ mark {
   color: inherit;
 }
 
+@media (min-width: 981px) and (max-width: 1120px) {
+  :root {
+    --list-width: 300px;
+    --agent-width: 292px;
+    --thread-min-width: 320px;
+  }
+}
+
 @media (max-width: 980px) {
   :root {
     --list-width: 330px;
@@ -4060,7 +4099,7 @@ mark {
   .app-shell.agent-closed,
   .app-shell.list-closed,
   .app-shell.list-closed.agent-closed {
-    grid-template-columns: var(--nav-width) minmax(280px, 1fr);
+    grid-template-columns: var(--nav-width) minmax(0, 1fr);
   }
 
   .thread-pane {

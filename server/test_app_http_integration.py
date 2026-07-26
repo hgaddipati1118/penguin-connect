@@ -3503,6 +3503,26 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(inbox_css_response.status_code, 200)
         self.assertEqual(inbox_css_response.headers["cache-control"], "no-store")
         self.assertIn(".app-shell", inbox_css_response.text)
+        self.assertIn("--thread-min-width: 360px", inbox_css_response.text)
+        self.assertIn(
+            "@media (min-width: 981px) and (max-width: 1120px)",
+            inbox_css_response.text,
+        )
+        self.assertIn("--thread-min-width: 320px", inbox_css_response.text)
+        self.assertIn("--list-width: 300px", inbox_css_response.text)
+        self.assertIn("--agent-width: 292px", inbox_css_response.text)
+        self.assertIn("@container (max-width: 300px)", inbox_css_response.text)
+        self.assertIn(
+            "grid-template-columns: var(--nav-width) minmax(0, 1fr)",
+            inbox_css_response.text,
+        )
+        self.assertIn(".app-shell.list-closed .conversation-pane", inbox_css_response.text)
+        self.assertIn(".app-shell.agent-closed .agent-pane", inbox_css_response.text)
+        self.assertIn("visibility: hidden", inbox_css_response.text)
+        self.assertIn("padding: 24px clamp(18px, 6cqw, 72px) 42px", inbox_css_response.text)
+        self.assertIn("padding: 9px clamp(14px, 5cqw, 42px) 10px", inbox_css_response.text)
+        self.assertIn("width: min(460px, 100%)", inbox_css_response.text)
+        self.assertIn("grid-template-columns: minmax(0, 1fr)", inbox_css_response.text)
         self.assertEqual(logo_response.status_code, 200)
         self.assertEqual(logo_response.headers["cache-control"], "no-store")
         self.assertEqual(logo_response.headers["content-type"], "image/png")
