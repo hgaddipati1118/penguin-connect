@@ -330,6 +330,9 @@
             </div>
           </div>
           <div class="agent-header-actions">
+            <button class="icon-button agent-header-button" id="actionLogButton" type="button" title="Conversation activity" aria-label="Show conversation activity" aria-pressed="false">
+              <svg><use href="#i-note"></use></svg>
+            </button>
             <button class="icon-button agent-header-button" id="newAgentChatButton" type="button" title="New agent chat" aria-label="Start a new Penguin Agent chat">
               <svg><use href="#i-compose"></use></svg>
             </button>
@@ -429,6 +432,41 @@
             </button>
           </div>
         </div>
+
+        <section class="action-log-pane" id="actionLogPane" hidden aria-label="Conversation activity">
+          <header class="action-log-intro">
+            <div>
+              <p class="agent-eyebrow">Conversation memory</p>
+              <h3>Activity</h3>
+              <p id="actionLogContext">Choose a conversation to see what happened.</p>
+            </div>
+            <button class="text-button" id="closeActionLogButton" type="button">Back to Agent</button>
+          </header>
+
+          <form class="action-log-form" id="actionLogForm">
+            <label>
+              <span>Log an action</span>
+              <select id="actionLogType" aria-label="Action type">
+                <option value="manual_note">Note</option>
+                <option value="email_sent">Email sent</option>
+                <option value="call_logged">Call</option>
+                <option value="meeting_logged">Meeting</option>
+                <option value="task_completed">Task done</option>
+              </select>
+            </label>
+            <textarea id="actionLogSummary" rows="3" maxlength="500" placeholder="What happened?" aria-label="Action summary"></textarea>
+            <div class="action-log-form-footer">
+              <label>
+                <span>When</span>
+                <input id="actionLogOccurredAt" type="datetime-local" aria-label="Action date and time" />
+              </label>
+              <button class="agent-send-button" id="addActionLogButton" type="submit">Add</button>
+            </div>
+            <p class="action-log-form-status" id="actionLogStatus" aria-live="polite"></p>
+          </form>
+
+          <div class="action-log-list" id="actionLogList" aria-live="polite"></div>
+        </section>
 
         <div class="agent-composer">
           <textarea id="agentQuestion" rows="2" placeholder="Ask Penguin anything…" aria-label="Ask Penguin Agent"></textarea>

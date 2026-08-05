@@ -114,6 +114,7 @@ class PenguinConnectSendRequest(BaseModel):
     message: str = ""
     reply_to_message_id: str = ""
     reply_context_message_id: str = ""
+    action_source: str = "manual"
     attachment_paths: list[str] | None = None
     attachments: list[PenguinConnectBrowserAttachment] | None = None
 
@@ -123,6 +124,8 @@ class PenguinConnectScheduledSendRequest(BaseModel):
     scheduled_at: str
     reply_to_message_id: str = ""
     reply_context_message_id: str = ""
+    action_source: str = "manual"
+    log_scheduled_action: bool = True
     attachment_paths: list[str] | None = None
     attachments: list[PenguinConnectBrowserAttachment] | None = None
 
@@ -211,6 +214,13 @@ class PenguinConnectConversationManagementRequest(BaseModel):
     draft_text: str | None = None
     follow_up_at: str | None = None
 
+class PenguinConnectConversationActionRequest(BaseModel):
+    action_type: str = "manual_note"
+    summary: str = ""
+    detail: str = ""
+    occurred_at: str = ""
+    source: str = "manual"
+
 class PenguinConnectMessageManagementRequest(BaseModel):
     provider_message_id: str = ""
     starred: bool | None = None
@@ -273,6 +283,127 @@ def _clean_attachment_paths(paths: list[str] | None) -> list[str]:
     return [str(path).strip() for path in (paths or []) if str(path or "").strip()]
 
 
+_CONVERSATION_ACTION_TYPES = {
+    "manual_note",
+    "email_sent",
+    "call_logged",
+    "meeting_logged",
+    "task_completed",
+    "message_sent",
+    "message_scheduled",
+    "scheduled_message_cancelled",
+    "follow_up_set",
+    "follow_up_cleared",
+    "agent_action",
+}
+_CONVERSATION_ACTION_SOURCES = {"manual", "automatic", "penguin_agent"}
+
+
+def _clean_action_type(value: str) -> str:
+    cleaned = str(value or "manual_note").strip().lower()
+    if cleaned not in _CONVERSATION_ACTION_TYPES:
+        raise HTTPException(status_code=400, detail="invalid_action_type")
+    return cleaned
+
+
+def _clean_action_source(value: str, *, default: str = "automatic") -> str:
+    cleaned = str(value or default).strip().lower()
+    return cleaned if cleaned in _CONVERSATION_ACTION_SOURCES else default
+
+
+def _clean_action_occurred_at(value: str) -> str:
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        return _utc_now_iso()
+    try:
+        parsed = datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid_action_occurred_at") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def _conversation_action_dict(row: sqlite3.Row) -> dict:
+    return {
+        "action_id": row["action_id"] or "",
+        "conversation_id": row["conversation_id"] or "",
+        "action_type": row["action_type"] or "",
+        "summary": row["summary"] or "",
+        "detail": row["detail"] or "",
+        "source": row["source"] or "automatic",
+        "occurred_at": row["occurred_at"] or "",
+        "created_at": row["created_at"] or "",
+    }
+
+
+def _record_conversation_action(
+    conn: sqlite3.Connection,
+    conversation_id: str,
+    *,
+    action_type: str,
+    summary: str,
+    detail: str = "",
+    source: str = "automatic",
+    occurred_at: str = "",
+) -> dict:
+    _require_existing_conversation(conn, conversation_id)
+    clean_summary = str(summary or "").strip()[:500]
+    if not clean_summary:
+        raise HTTPException(status_code=400, detail="action_summary_required")
+    action_id = f"action_{uuid.uuid4().hex}"
+    conn.execute(
+        """INSERT INTO penguin_connect_conversation_actions
+           (action_id, conversation_id, action_type, summary, detail, source, occurred_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            action_id,
+            conversation_id,
+            _clean_action_type(action_type),
+            clean_summary,
+            str(detail or "").strip()[:2000],
+            _clean_action_source(source),
+            _clean_action_occurred_at(occurred_at),
+        ),
+    )
+    row = conn.execute(
+        "SELECT * FROM penguin_connect_conversation_actions WHERE action_id = ?",
+        (action_id,),
+    ).fetchone()
+    return _conversation_action_dict(row)
+
+
+def _list_conversation_actions(
+    conn: sqlite3.Connection,
+    conversation_id: str,
+    *,
+    limit: int = 100,
+) -> list[dict]:
+    _require_existing_conversation(conn, conversation_id)
+    rows = conn.execute(
+        """SELECT *
+           FROM penguin_connect_conversation_actions
+           WHERE conversation_id = ?
+           ORDER BY occurred_at DESC, created_at DESC, action_id DESC
+           LIMIT ?""",
+        (conversation_id, max(1, min(int(limit or 100), 500))),
+    ).fetchall()
+    return [_conversation_action_dict(row) for row in rows]
+
+
+def _provider_action_label(provider: str) -> str:
+    normalized = str(provider or "").strip().lower()
+    return {
+        "slack": "Slack",
+        "whatsapp": "WhatsApp",
+        "telegram": "Telegram",
+        "sms": "SMS",
+        "rcs": "RCS",
+        "apple_messages": "iMessage",
+        "imessage": "iMessage",
+    }.get(normalized, "Messaging provider")
+
+
 def _scheduled_message_dict(row: sqlite3.Row) -> dict:
     data = dict(row)
     try:
@@ -288,6 +419,8 @@ def _scheduled_message_dict(row: sqlite3.Row) -> dict:
         "display_name": data.get("display_name") or "",
         "sender_email": data.get("sender_email") or "",
         "message": data.get("body_text") or "",
+        "action_source": data.get("action_source") or "manual",
+        "log_scheduled_action": bool(data.get("log_scheduled_action", 1)),
         "reply_to_message_id": data.get("reply_to_message_id") or "",
         "reply_context_message_id": data.get("reply_context_message_id") or "",
         "attachment_count": len(attachment_paths),
@@ -412,15 +545,17 @@ def _create_scheduled_message(
     try:
         conn.execute(
             """INSERT INTO penguin_connect_scheduled_messages
-               (scheduled_id, conversation_id, sender_email, body_text,
+               (scheduled_id, conversation_id, sender_email, body_text, action_source, log_scheduled_action,
                 reply_to_message_id, reply_context_message_id, attachment_paths,
                 scheduled_at, status, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)""",
             (
                 scheduled_id,
                 conversation_id,
                 (req.sender_email or "").strip(),
                 body_text,
+                _clean_action_source(req.action_source, default="manual"),
+                1 if req.log_scheduled_action else 0,
                 reply_to_message_id,
                 reply_context_message_id,
                 json.dumps(attachment_paths),
@@ -429,6 +564,16 @@ def _create_scheduled_message(
                 now_iso,
             ),
         )
+        if req.log_scheduled_action:
+            _record_conversation_action(
+                conn,
+                conversation_id,
+                action_type="message_scheduled",
+                summary="Scheduled a message",
+                detail=scheduled_at_dt.isoformat(),
+                source=_clean_action_source(req.action_source, default="manual"),
+                occurred_at=now_iso,
+            )
         conn.commit()
     except Exception:
         if staged_dir is not None:
@@ -458,6 +603,16 @@ def _cancel_scheduled_message(conn: sqlite3.Connection, scheduled_id: str) -> di
            WHERE scheduled_id = ? AND status = 'scheduled'""",
         (now_iso, now_iso, scheduled_id),
     )
+    if int(row["log_scheduled_action"] or 0):
+        _record_conversation_action(
+            conn,
+            row["conversation_id"],
+            action_type="scheduled_message_cancelled",
+            summary="Cancelled a scheduled message",
+            detail=str(row["scheduled_at"] or ""),
+            source=_clean_action_source(row["action_source"], default="manual"),
+            occurred_at=now_iso,
+        )
     conn.commit()
     try:
         attachment_paths = json.loads(row["attachment_paths"] or "[]")
@@ -567,6 +722,15 @@ def run_due_scheduled_messages(limit: int = 25) -> dict:
                         str(send_result.get("provider_message_id") or ""),
                         scheduled_id,
                     ),
+                )
+                _record_conversation_action(
+                    conn,
+                    row["conversation_id"],
+                    action_type="message_sent",
+                    summary="Sent a message",
+                    detail=_provider_action_label(row["source_provider"] or ""),
+                    source=_clean_action_source(row["action_source"], default="manual"),
+                    occurred_at=now_iso,
                 )
                 conn.commit()
                 _cleanup_scheduled_staged_attachments(attachment_paths)
@@ -5712,6 +5876,8 @@ def _workspace_revisions(conn: sqlite3.Connection) -> dict[str, str]:
           (SELECT COALESCE(MAX(updated_at), '') FROM penguin_connect_message_management) AS message_management,
           (SELECT COALESCE(MAX(updated_at), '') FROM penguin_connect_conversation_management) AS conversation_management,
           (SELECT COALESCE(MAX(updated_at), '') FROM penguin_connect_scheduled_messages) AS scheduled_messages,
+          (SELECT COUNT(*) FROM penguin_connect_conversation_actions) AS action_count,
+          (SELECT COALESCE(MAX(created_at), '') FROM penguin_connect_conversation_actions) AS actions_created,
           (SELECT COALESCE(MAX(updated_at), '') FROM penguin_connect_contact_management) AS contact_management,
           (SELECT COUNT(*) FROM contacts) AS contact_count,
           (SELECT COALESCE(MAX(imported_at), '') FROM contacts) AS contacts_imported
@@ -5948,6 +6114,7 @@ def set_penguinconnect_conversation_management(
 ):
     conn = get_connection()
     try:
+        previous = _get_conversation_management(conn, conversation_id)
         result = _set_conversation_management(
             conn,
             conversation_id,
@@ -5961,6 +6128,19 @@ def set_penguinconnect_conversation_management(
             draft_text=req.draft_text,
             follow_up_at=req.follow_up_at,
         )
+        if (
+            req.follow_up_at is not None
+            and result.get("follow_up_at") != previous.get("follow_up_at")
+        ):
+            follow_up_at = str(result.get("follow_up_at") or "")
+            _record_conversation_action(
+                conn,
+                conversation_id,
+                action_type="follow_up_set" if follow_up_at else "follow_up_cleared",
+                summary="Snoozed conversation" if follow_up_at else "Cleared snooze",
+                detail=follow_up_at,
+                source="automatic",
+            )
         log_action(
             "api_set_conversation_management",
             conversation_id=conversation_id,
@@ -5975,6 +6155,52 @@ def set_penguinconnect_conversation_management(
         )
         conn.commit()
         return {"success": True, **result}
+    finally:
+        conn.close()
+
+
+@app.get("/api/penguin-connect/conversations/{conversation_id}/actions")
+@app.get("/penguin-connect/conversations/{conversation_id}/actions")
+def list_penguinconnect_conversation_actions(
+    conversation_id: str,
+    limit: int = Query(100, ge=1, le=500),
+):
+    conn = get_connection()
+    try:
+        return {
+            "success": True,
+            "actions": _list_conversation_actions(conn, conversation_id, limit=limit),
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/penguin-connect/conversations/{conversation_id}/actions")
+@app.post("/penguin-connect/conversations/{conversation_id}/actions")
+def create_penguinconnect_conversation_action(
+    conversation_id: str,
+    req: PenguinConnectConversationActionRequest,
+):
+    conn = get_connection()
+    try:
+        action = _record_conversation_action(
+            conn,
+            conversation_id,
+            action_type=req.action_type,
+            summary=req.summary,
+            detail=req.detail,
+            source=_clean_action_source(req.source, default="manual"),
+            occurred_at=req.occurred_at,
+        )
+        conn.commit()
+        log_action(
+            "api_conversation_action_create",
+            conversation_id=conversation_id,
+            action_type=action["action_type"],
+            source=action["source"],
+            has_detail=bool(action["detail"]),
+        )
+        return {"success": True, "action": action}
     finally:
         conn.close()
 
@@ -6456,6 +6682,7 @@ def send_penguinconnect_conversation_message(conversation_id: str, req: PenguinC
     _ensure_external_message_safe(req.message)
     conn = get_connection()
     try:
+        conversation = _require_existing_conversation(conn, conversation_id)
         ui_attachment_paths, staged_dir = _stage_sent_message_attachments(req.attachments)
         attachment_paths = [str(path) for path in (req.attachment_paths or []) if str(path or "").strip()]
         attachment_paths.extend(ui_attachment_paths)
@@ -6478,6 +6705,14 @@ def send_penguinconnect_conversation_message(conversation_id: str, req: PenguinC
         )
         if not result.get("success"):
             raise HTTPException(status_code=400, detail=result.get("error", "penguin_connect_send_failed"))
+        _record_conversation_action(
+            conn,
+            conversation_id,
+            action_type="message_sent",
+            summary="Sent a message",
+            detail=_provider_action_label(conversation["source_provider"] or ""),
+            source=_clean_action_source(req.action_source, default="manual"),
+        )
         conn.commit()
         success = True
         return result

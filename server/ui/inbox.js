@@ -111,6 +111,13 @@ const state = {
     activeSessionId: "",
     historyOpen: false,
   },
+  actionLog: {
+    view: "agent",
+    actions: [],
+    conversationId: "",
+    loading: false,
+  },
+  composerActionSource: "manual",
   writing: {
     original: "",
     result: "",
@@ -216,6 +223,17 @@ const el = {
   runWritingButton: document.querySelector("#runWritingButton"),
   replaceDraftButton: document.querySelector("#replaceDraftButton"),
   agentPane: document.querySelector("#agentPane"),
+  actionLogButton: document.querySelector("#actionLogButton"),
+  actionLogPane: document.querySelector("#actionLogPane"),
+  actionLogContext: document.querySelector("#actionLogContext"),
+  actionLogForm: document.querySelector("#actionLogForm"),
+  actionLogType: document.querySelector("#actionLogType"),
+  actionLogSummary: document.querySelector("#actionLogSummary"),
+  actionLogOccurredAt: document.querySelector("#actionLogOccurredAt"),
+  actionLogStatus: document.querySelector("#actionLogStatus"),
+  actionLogList: document.querySelector("#actionLogList"),
+  addActionLogButton: document.querySelector("#addActionLogButton"),
+  closeActionLogButton: document.querySelector("#closeActionLogButton"),
   closeAgentButton: document.querySelector("#closeAgentButton"),
   newAgentChatButton: document.querySelector("#newAgentChatButton"),
   agentHistoryButton: document.querySelector("#agentHistoryButton"),
@@ -304,14 +322,17 @@ const el = {
 
 const quickAgentActions = {
   summary: {
+    label: "Summarize",
     question: "Summarize this conversation.",
     instruction: "Give me a compact summary, the current state, and anything unresolved.",
   },
   reply: {
+    label: "Draft a reply",
     question: "Draft a reply to the latest message.",
     instruction: "Write one natural, concise reply. Do not add facts that are not in the messages.",
   },
   commitments: {
+    label: "Review commitments",
     question: "What commitments and next steps are in these messages?",
     instruction: "List each commitment, who owns it, and any date mentioned. Flag uncertainty.",
   },
@@ -5171,7 +5192,10 @@ async function selectConversation(
   if (previousConversationId !== conversation.conversation_id) {
     state.focusedMessageId = "";
     state.unreadBoundaryMessageId = "";
+    state.composerActionSource = "manual";
     prepareConversationDraft(conversation, selectionToken);
+    state.actionLog.actions = [];
+    state.actionLog.conversationId = conversation.conversation_id;
   }
   try {
     localStorage.setItem("penguin-last-conversation", conversation.conversation_id);
@@ -5195,6 +5219,11 @@ async function selectConversation(
   el.shell.classList.add("thread-open");
   updateConversationSelectionUI(previousConversationId, conversation.conversation_id);
   renderThreadHeader();
+  if (state.actionLog.view === "activity") {
+    loadConversationActionLog(conversation.conversation_id);
+  } else {
+    renderActionLog();
+  }
   loadMentionParticipants(conversation, selectionToken);
   if (cachedMessages.length) {
     renderCachedConversationSelection(
@@ -5704,6 +5733,9 @@ async function retryScheduledMessage(scheduledId) {
     });
     await Promise.all([
       loadScheduledMessages(),
+      localChanged && state.actionLog.view === "activity" && state.selected
+        ? loadConversationActionLog(state.selected.conversation_id)
+        : Promise.resolve(),
       state.view === "queue" ? loadQueue() : Promise.resolve(),
     ]);
     if (state.view === "queue") renderQueueList();
@@ -5820,6 +5852,7 @@ async function deliverPendingSend(pending) {
         body: JSON.stringify({
           sender_email: "",
           message: pending.providerText,
+          action_source: pending.actionSource,
           attachments,
           reply_to_message_id: replyTargetProviderMessageId(pending.replyTo),
           reply_context_message_id: replyTargetContextMessageId(pending.replyTo),
@@ -5838,6 +5871,9 @@ async function deliverPendingSend(pending) {
     }`;
   }
   await refreshAfterPendingDelivery(pending);
+  if (state.actionLog.view === "activity") {
+    loadConversationActionLog(pending.conversation.conversation_id);
+  }
 }
 
 function armPendingScheduledReconciliation(
@@ -5896,6 +5932,9 @@ async function reconcileScheduledPendingSend(pending) {
       }`;
     }
     await refreshAfterPendingDelivery(pending);
+    if (state.actionLog.view === "activity") {
+      loadConversationActionLog(pending.conversation.conversation_id);
+    }
     return;
   }
   if (delivery?.status === "failed") {
@@ -5930,6 +5969,8 @@ function queueUndoablePendingSend(pending) {
             body: JSON.stringify({
               sender_email: "",
               message: pending.providerText,
+              action_source: pending.actionSource,
+              log_scheduled_action: false,
               attachments,
               scheduled_at: scheduledAt,
               reply_to_message_id: replyTargetProviderMessageId(pending.replyTo),
@@ -6100,6 +6141,7 @@ async function scheduleCurrentMessage(event) {
   const providerText = encodeComposerMessage(draftText, state.selected);
   const draftFiles = [...state.attachments];
   const draftReplyTarget = state.replyTarget ? { ...state.replyTarget } : null;
+  const actionSource = state.composerActionSource || "manual";
   const scheduledAt = new Date(el.scheduleAt.value);
   if (Number.isNaN(scheduledAt.getTime()) || scheduledAt.getTime() <= Date.now()) {
     toast("Choose a future delivery time.", "error");
@@ -6116,6 +6158,7 @@ async function scheduleCurrentMessage(event) {
         body: JSON.stringify({
           sender_email: "",
           message: providerText,
+          action_source: actionSource,
           attachments,
           scheduled_at: scheduledAt.toISOString(),
           reply_to_message_id: replyTargetProviderMessageId(draftReplyTarget),
@@ -6126,6 +6169,7 @@ async function scheduleCurrentMessage(event) {
     clearConversationDraft(conversationId).catch(() => {});
     if (state.selected?.conversation_id === conversationId) {
       el.messageComposer.value = "";
+      state.composerActionSource = "manual";
       state.attachments = [];
       clearReplyTarget({ persist: false });
       renderAttachmentPreview();
@@ -6138,6 +6182,9 @@ async function scheduleCurrentMessage(event) {
       el.composerStatus.textContent = "Scheduled locally · offline retry enabled";
     }
     toast("Message added to the local queue");
+    if (state.actionLog.view === "activity") {
+      loadConversationActionLog(conversationId);
+    }
   } catch (error) {
     toast(error.message, "error");
   } finally {
@@ -6162,6 +6209,7 @@ function restorePendingDraft(pending) {
     resizeComposer();
     updateSendButton();
     scheduleDraftPersistence();
+    state.composerActionSource = pending.actionSource || "manual";
     return;
   }
 
@@ -6220,6 +6268,9 @@ async function undoPendingSend(pending) {
   removePendingOptimisticMessage(pending);
   restorePendingDraft(pending);
   loadScheduledMessages(pending.conversation.conversation_id).catch(() => {});
+  if (state.actionLog.view === "activity") {
+    loadConversationActionLog(pending.conversation.conversation_id);
+  }
   if (pendingConversationIsSelected(pending)) {
     el.composerStatus.textContent = "Send undone · draft restored";
   }
@@ -6239,6 +6290,7 @@ function sendMessage({ instant = false } = {}) {
     providerText: encodeComposerMessage(el.messageComposer.value.trim(), state.selected),
     files: [...state.attachments],
     replyTo: state.replyTarget ? { ...state.replyTarget } : null,
+    actionSource: state.composerActionSource || "manual",
     cancelled: false,
     deliveryFailed: false,
     instant,
@@ -6248,6 +6300,7 @@ function sendMessage({ instant = false } = {}) {
   state.pendingSends.push(pending);
   addPendingOptimisticMessage(pending);
   el.messageComposer.value = "";
+  state.composerActionSource = "manual";
   state.attachments = [];
   clearReplyTarget({ persist: false });
   renderAttachmentPreview();
@@ -6795,9 +6848,13 @@ function clearConversationSelection() {
   window.clearTimeout(selectionPreloadTimer);
   state.selected = null;
   state.messages = [];
+  state.actionLog.actions = [];
+  state.actionLog.conversationId = "";
+  state.actionLog.loading = false;
   disposeMessageListMedia();
   el.messageList.replaceChildren();
   renderThreadHeader();
+  renderActionLog();
   el.shell.classList.remove("thread-open");
 }
 
@@ -6834,13 +6891,225 @@ function setSource(source) {
 
 function setAgentOpen(focus = false) {
   el.shell.classList.remove("agent-closed");
-  if (focus) el.agentQuestion.focus();
+  if (focus) {
+    setActionLogView("agent");
+    el.agentQuestion.focus();
+  }
 }
 
 function toggleAgentPane() {
   const opening = el.shell.classList.contains("agent-closed");
   el.shell.classList.toggle("agent-closed", !opening);
   if (opening) window.setTimeout(() => el.agentQuestion.focus(), 0);
+}
+
+const actionLogPresentation = {
+  manual_note: { label: "Note", icon: "i-note" },
+  email_sent: { label: "Email sent", icon: "i-send" },
+  call_logged: { label: "Call", icon: "i-people" },
+  meeting_logged: { label: "Meeting", icon: "i-people" },
+  task_completed: { label: "Task done", icon: "i-pin" },
+  message_sent: { label: "Message sent", icon: "i-send" },
+  message_scheduled: { label: "Message scheduled", icon: "i-clock" },
+  scheduled_message_cancelled: { label: "Schedule cancelled", icon: "i-close" },
+  follow_up_set: { label: "Snoozed", icon: "i-clock" },
+  follow_up_cleared: { label: "Snooze cleared", icon: "i-clock" },
+  agent_action: { label: "Penguin action", icon: "i-spark" },
+};
+
+function actionLogDetail(action) {
+  const detail = String(action.detail || "").trim();
+  if (!detail) return "";
+  if ([
+    "follow_up_set",
+    "message_scheduled",
+    "scheduled_message_cancelled",
+  ].includes(action.action_type)) {
+    const date = new Date(detail);
+    return Number.isNaN(date.getTime()) ? detail : SCHEDULE_FORMATTER.format(date);
+  }
+  return detail;
+}
+
+function actionLogSourceLabel(source) {
+  if (source === "penguin_agent") return "Penguin";
+  if (source === "manual") return "Manual";
+  return "Auto";
+}
+
+function renderActionLog() {
+  el.actionLogList.replaceChildren();
+  const conversation = state.selected;
+  el.actionLogContext.textContent = conversation
+    ? `${conversationName(conversation)} · stored privately on this Mac`
+    : "Choose a conversation to see what happened.";
+  el.actionLogForm.hidden = !conversation;
+  if (!conversation) {
+    const empty = document.createElement("div");
+    empty.className = "action-log-empty";
+    empty.textContent = "Select a conversation to view its activity and add a manual entry.";
+    el.actionLogList.append(empty);
+    return;
+  }
+  if (state.actionLog.loading) {
+    const loading = document.createElement("div");
+    loading.className = "action-log-empty";
+    loading.textContent = "Loading activity…";
+    el.actionLogList.append(loading);
+    return;
+  }
+  if (!state.actionLog.actions.length) {
+    const empty = document.createElement("div");
+    empty.className = "action-log-empty";
+    empty.textContent = "No activity yet. Sends, snoozes, and Penguin actions will appear here automatically.";
+    el.actionLogList.append(empty);
+    return;
+  }
+
+  let currentDay = "";
+  for (const action of state.actionLog.actions) {
+    const day = fullDateLabel(action.occurred_at);
+    if (day !== currentDay) {
+      currentDay = day;
+      const dayLabel = document.createElement("div");
+      dayLabel.className = "action-log-day";
+      dayLabel.textContent = day;
+      el.actionLogList.append(dayLabel);
+    }
+    const presentation = actionLogPresentation[action.action_type]
+      || { label: "Activity", icon: "i-note" };
+    const row = document.createElement("article");
+    row.className = `action-log-item ${action.action_type}`;
+    const glyph = document.createElement("span");
+    glyph.className = "action-log-glyph";
+    glyph.title = presentation.label;
+    glyph.append(createIcon(presentation.icon));
+    const copy = document.createElement("div");
+    copy.className = "action-log-copy";
+    const summary = document.createElement("strong");
+    summary.textContent = action.summary || presentation.label;
+    copy.append(summary);
+    const detail = actionLogDetail(action);
+    if (detail) {
+      const detailNode = document.createElement("p");
+      detailNode.textContent = detail;
+      copy.append(detailNode);
+    }
+    const meta = document.createElement("div");
+    meta.className = "action-log-meta";
+    const time = document.createElement("time");
+    time.dateTime = action.occurred_at || "";
+    time.textContent = CLOCK_FORMATTER.format(new Date(action.occurred_at));
+    const source = document.createElement("span");
+    source.className = `action-log-source ${action.source || "automatic"}`;
+    source.textContent = actionLogSourceLabel(action.source);
+    meta.append(time, source);
+    row.append(glyph, copy, meta);
+    el.actionLogList.append(row);
+  }
+}
+
+async function loadConversationActionLog(conversationId = state.selected?.conversation_id) {
+  const cleanConversationId = String(conversationId || "");
+  if (!cleanConversationId) {
+    state.actionLog.actions = [];
+    state.actionLog.conversationId = "";
+    state.actionLog.loading = false;
+    renderActionLog();
+    return;
+  }
+  state.actionLog.loading = true;
+  state.actionLog.conversationId = cleanConversationId;
+  renderActionLog();
+  try {
+    const result = await api(
+      `/penguin-connect/conversations/${encodeURIComponent(cleanConversationId)}/actions`,
+    );
+    if (state.selected?.conversation_id !== cleanConversationId) return;
+    state.actionLog.actions = result.actions || [];
+  } catch (error) {
+    if (state.selected?.conversation_id === cleanConversationId) {
+      state.actionLog.actions = [];
+      el.actionLogStatus.textContent = error.message;
+    }
+  } finally {
+    if (state.selected?.conversation_id === cleanConversationId) {
+      state.actionLog.loading = false;
+      renderActionLog();
+    }
+  }
+}
+
+async function recordConversationAction({
+  actionType,
+  summary,
+  detail = "",
+  occurredAt = "",
+  source = "manual",
+  conversationId = state.selected?.conversation_id,
+}) {
+  if (!conversationId) throw new Error("Choose a conversation first");
+  const result = await api(
+    `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/actions`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        action_type: actionType,
+        summary,
+        detail,
+        occurred_at: occurredAt,
+        source,
+      }),
+    },
+  );
+  if (state.selected?.conversation_id === conversationId) {
+    state.actionLog.actions = [
+      result.action,
+      ...state.actionLog.actions.filter((item) => item.action_id !== result.action.action_id),
+    ].sort((a, b) => Date.parse(b.occurred_at || "") - Date.parse(a.occurred_at || ""));
+    renderActionLog();
+  }
+  return result.action;
+}
+
+async function submitManualConversationAction(event) {
+  event.preventDefault();
+  const summary = el.actionLogSummary.value.trim();
+  if (!summary || !state.selected) return;
+  el.addActionLogButton.disabled = true;
+  el.actionLogStatus.textContent = "Saving locally…";
+  try {
+    const occurredAt = el.actionLogOccurredAt.value
+      ? new Date(el.actionLogOccurredAt.value).toISOString()
+      : "";
+    await recordConversationAction({
+      actionType: el.actionLogType.value,
+      summary,
+      occurredAt,
+      source: "manual",
+    });
+    el.actionLogSummary.value = "";
+    el.actionLogOccurredAt.value = "";
+    el.actionLogStatus.textContent = "Added to this conversation";
+  } catch (error) {
+    el.actionLogStatus.textContent = error.message;
+  } finally {
+    el.addActionLogButton.disabled = false;
+  }
+}
+
+function setActionLogView(view) {
+  const activity = view === "activity";
+  state.actionLog.view = activity ? "activity" : "agent";
+  el.actionLogPane.hidden = !activity;
+  el.agentPane.querySelector(".agent-body").hidden = activity;
+  el.agentPane.querySelector(".agent-composer").hidden = activity;
+  el.actionLogButton.setAttribute("aria-pressed", activity ? "true" : "false");
+  el.actionLogButton.setAttribute(
+    "aria-label",
+    activity ? "Show Penguin Agent" : "Show conversation activity",
+  );
+  if (activity) loadConversationActionLog();
 }
 
 function toggleConversationPane() {
@@ -7485,7 +7754,7 @@ async function streamAgentPrompt(prompt, mode, confirmed, onAnswer = () => {}) {
   return finalAnswer.trim();
 }
 
-async function askAgent({ question = "", instruction = "" } = {}) {
+async function askAgent({ question = "", instruction = "", actionLabel = "" } = {}) {
   const cleanQuestion = (question || el.agentQuestion.value).trim();
   if (!cleanQuestion || state.agent.busy) return;
   const mode = el.agentModeSelect.value || "read";
@@ -7569,6 +7838,13 @@ async function askAgent({ question = "", instruction = "" } = {}) {
       text: state.agent.answer,
       timestamp: Date.now(),
     });
+    if (actionLabel && state.selected) {
+      recordConversationAction({
+        actionType: "agent_action",
+        summary: `Used ${actionLabel}`,
+        source: "penguin_agent",
+      }).catch(() => {});
+    }
     el.agentStatus.textContent = "Codex · messages + Slashy workspace";
   } catch (error) {
     state.agent.history.push({
@@ -7689,6 +7965,7 @@ async function runWritingAssistant(instruction) {
 async function rewriteDraftInline() {
   if (!state.selected || state.writing.inlineBusy) return;
   const original = el.messageComposer.value;
+  const originalActionSource = state.composerActionSource;
   state.writing.inlineBusy = true;
   el.writingButton.disabled = true;
   el.messageComposerShell.classList.add("is-rewriting");
@@ -7724,6 +8001,7 @@ async function rewriteDraftInline() {
       return;
     }
     el.messageComposer.value = replacement;
+    state.composerActionSource = "penguin_agent";
     resizeComposer();
     updateSendButton();
     scheduleDraftPersistence();
@@ -7731,6 +8009,7 @@ async function rewriteDraftInline() {
     el.composerStatus.textContent = "Draft replaced with Codex · Undo available";
     actionToast("Draft rewritten", "Undo", () => {
       el.messageComposer.value = original;
+      state.composerActionSource = originalActionSource;
       resizeComposer();
       updateSendButton();
       scheduleDraftPersistence();
@@ -7980,6 +8259,9 @@ async function saveConversationMeta(event) {
       },
     );
     updateSelectedConversationManagement(result);
+    if (state.actionLog.view === "activity") {
+      loadConversationActionLog(state.selected.conversation_id);
+    }
     el.conversationMetaDialog.close();
     toast("Conversation details saved");
   } catch (error) {
@@ -8345,9 +8627,22 @@ el.closeThreadSearchButton.addEventListener("click", closeThreadSearch);
 el.threadSearch.addEventListener("input", scheduleThreadSearch);
 el.threadAgentButton.addEventListener("click", () => setAgentOpen(true));
 el.closeAgentButton.addEventListener("click", toggleAgentPane);
-el.newAgentChatButton.addEventListener("click", startNewAgentChat);
-el.agentHistoryNewButton.addEventListener("click", startNewAgentChat);
+el.actionLogButton.addEventListener("click", () => {
+  el.shell.classList.remove("agent-closed");
+  setActionLogView(state.actionLog.view === "activity" ? "agent" : "activity");
+});
+el.closeActionLogButton.addEventListener("click", () => setActionLogView("agent"));
+el.actionLogForm.addEventListener("submit", submitManualConversationAction);
+el.newAgentChatButton.addEventListener("click", () => {
+  setActionLogView("agent");
+  startNewAgentChat();
+});
+el.agentHistoryNewButton.addEventListener("click", () => {
+  setActionLogView("agent");
+  startNewAgentChat();
+});
 el.agentHistoryButton.addEventListener("click", () => {
+  setActionLogView("agent");
   setAgentHistoryOpen(!state.agent.historyOpen);
 });
 el.threadPinButton.addEventListener("click", () => setConversationPinned(state.selected));
@@ -8603,6 +8898,7 @@ el.writingInstruction.addEventListener("keydown", (event) => {
 el.replaceDraftButton.addEventListener("click", () => {
   if (!state.writing.result) return;
   el.messageComposer.value = state.writing.result;
+  state.composerActionSource = "penguin_agent";
   resizeComposer();
   updateSendButton();
   scheduleDraftPersistence();
@@ -8678,7 +8974,7 @@ el.agentQuickActions.addEventListener("click", (event) => {
   if (!action) return;
   el.agentQuestion.value = action.question;
   updateAgentButton();
-  askAgent(action);
+  askAgent({ ...action, actionLabel: action.label });
 });
 el.copyAgentAnswerButton.addEventListener("click", () => copyText(state.agent.answer));
 el.retryAgentAnswerButton.addEventListener("click", () => {
@@ -8695,6 +8991,7 @@ el.useAgentAnswerButton.addEventListener("click", () => {
   }
   if (!state.selected) return;
   el.messageComposer.value = state.agent.answer;
+  state.composerActionSource = "penguin_agent";
   resizeComposer();
   updateSendButton();
   scheduleDraftPersistence();

@@ -235,11 +235,24 @@ CREATE TABLE IF NOT EXISTS penguin_connect_jobs (
     finished_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS penguin_connect_conversation_actions (
+    action_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES penguin_connect_conversations(conversation_id) ON DELETE CASCADE,
+    action_type TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'automatic',
+    occurred_at TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS penguin_connect_scheduled_messages (
     scheduled_id TEXT PRIMARY KEY,
     conversation_id TEXT NOT NULL REFERENCES penguin_connect_conversations(conversation_id) ON DELETE CASCADE,
     sender_email TEXT NOT NULL DEFAULT '',
     body_text TEXT NOT NULL,
+    action_source TEXT NOT NULL DEFAULT 'manual',
+    log_scheduled_action INTEGER NOT NULL DEFAULT 1,
     reply_to_message_id TEXT NOT NULL DEFAULT '',
     reply_context_message_id TEXT NOT NULL DEFAULT '',
     attachment_paths TEXT NOT NULL DEFAULT '[]',
@@ -268,6 +281,8 @@ CREATE INDEX IF NOT EXISTS idx_penguin_connect_message_management_starred
 ON penguin_connect_message_management(conversation_id, is_starred, updated_at);
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_attachment_intelligence_status
 ON penguin_connect_attachment_intelligence(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_penguin_connect_conversation_actions_recent
+ON penguin_connect_conversation_actions(conversation_id, occurred_at DESC, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_conversation_management_flags
 ON penguin_connect_conversation_management(is_archived, is_pinned, updated_at);
 CREATE INDEX IF NOT EXISTS idx_penguin_connect_jobs_ready ON penguin_connect_jobs(job_type, status, next_run_at, id);
@@ -1658,6 +1673,14 @@ def init_db() -> None:
         scheduled_message_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(penguin_connect_scheduled_messages)").fetchall()
         }
+        if "action_source" not in scheduled_message_columns:
+            conn.execute(
+                "ALTER TABLE penguin_connect_scheduled_messages ADD COLUMN action_source TEXT NOT NULL DEFAULT 'manual'"
+            )
+        if "log_scheduled_action" not in scheduled_message_columns:
+            conn.execute(
+                "ALTER TABLE penguin_connect_scheduled_messages ADD COLUMN log_scheduled_action INTEGER NOT NULL DEFAULT 1"
+            )
         if "reply_to_message_id" not in scheduled_message_columns:
             conn.execute(
                 "ALTER TABLE penguin_connect_scheduled_messages ADD COLUMN reply_to_message_id TEXT NOT NULL DEFAULT ''"

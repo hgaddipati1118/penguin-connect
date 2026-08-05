@@ -49,6 +49,7 @@ Want to help add a new messaging adapter or improve the bridge? Reach out at [ha
 
 - Local Messages UI for conversations, message history, contacts, media, replies, new-chat drafts, attachments, voice memos, and Codex prompts
 - Scheduled sends for existing conversations through registered send adapters
+- Per-conversation activity history records sends, schedules, snoozes, Penguin Agent actions, and manual notes without copying message bodies into the log
 - Messages-only startup is allowed when Gmail is not connected
 - Optional two-way sync between Apple Messages conversations and Gmail threads
 - Optional active alias email per conversation
