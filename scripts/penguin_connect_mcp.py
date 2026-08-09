@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Stdio MCP server for PenguinConnect search, contacts, files, and safe sends."""
+"""MCP server for PenguinConnect search, contacts, files, and safe sends."""
 
 from __future__ import annotations
 
 import argparse
+import hmac
+import ipaddress
 import json
+import os
 import re
 import sys
 import urllib.error
@@ -22,8 +25,51 @@ if str(ROOT_DIR / "scripts") not in sys.path:
 
 import browse_sources
 from channels import get_channel_adapter
+from penguin_connect_mcp_auth import load_token
 from penguin_connect_local_api import resolve_local_api_base
 from search_index import hybrid_search, rebuild_search_index, spotlight_file_search
+
+
+REMOTE_MCP_SCOPE = "penguin-connect"
+DEFAULT_REMOTE_MCP_PORT = 8765
+MIN_REMOTE_MCP_TOKEN_LENGTH = 32
+
+
+class StaticBearerTokenVerifier:
+    """Verify one locally managed bearer token without logging either value."""
+
+    def __init__(self, expected_token: str):
+        self._expected_token = expected_token
+
+    async def verify_token(self, token: str):
+        if not hmac.compare_digest(token, self._expected_token):
+            return None
+        from mcp.server.auth.provider import AccessToken
+
+        return AccessToken(
+            token=token,
+            client_id="penguin-connect-remote-client",
+            scopes=[REMOTE_MCP_SCOPE],
+        )
+
+
+def _is_loopback_host(host: str) -> bool:
+    normalized = (host or "").strip().lower()
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def _load_repo_env() -> None:
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(ROOT_DIR / ".env", override=False)
+    except ImportError:
+        return
 
 
 def _api_json(
@@ -366,13 +412,37 @@ def send_message_data(
     }
 
 
-def create_mcp_server():
+def create_mcp_server(
+    *,
+    host: str = "127.0.0.1",
+    port: int = DEFAULT_REMOTE_MCP_PORT,
+    bearer_token: str = "",
+):
     try:
         from mcp.server.fastmcp import FastMCP
+        from mcp.server.auth.settings import AuthSettings
     except ImportError as exc:
         raise RuntimeError(
             "The MCP SDK is not installed. Run: server/venv/bin/pip install 'mcp>=1.27,<2'"
         ) from exc
+
+    if bearer_token:
+        if len(bearer_token) < MIN_REMOTE_MCP_TOKEN_LENGTH:
+            raise ValueError("Remote MCP bearer token must be at least 32 characters")
+        if not _is_loopback_host(host):
+            raise ValueError(
+                "Remote MCP must bind to a loopback host; expose it through an authenticated HTTPS tunnel."
+            )
+
+    auth_settings = None
+    token_verifier = None
+    if bearer_token:
+        auth_settings = AuthSettings(
+            issuer_url="https://penguin-connect.invalid",
+            resource_server_url=None,
+            required_scopes=[REMOTE_MCP_SCOPE],
+        )
+        token_verifier = StaticBearerTokenVerifier(bearer_token)
 
     mcp = FastMCP(
         "PenguinConnect",
@@ -382,8 +452,20 @@ def create_mcp_server():
             "A brand-new iMessage destination is staged in Messages for human review because "
             "PenguinConnect never guesses an Apple Messages delivery route."
         ),
+        host=host,
+        port=port,
         json_response=True,
+        stateless_http=bool(bearer_token),
+        auth=auth_settings,
+        token_verifier=token_verifier,
     )
+
+    if bearer_token:
+        from starlette.responses import JSONResponse
+
+        @mcp.custom_route("/health", methods=["GET"])
+        async def remote_health(_request):
+            return JSONResponse({"ok": True, "service": "penguin-connect-mcp"})
 
     @mcp.tool()
     def search_contacts(query: str, limit: int = 25) -> dict[str, Any]:
@@ -495,6 +577,7 @@ def create_mcp_server():
 
 
 def main() -> int:
+    _load_repo_env()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--transport",
@@ -502,8 +585,30 @@ def main() -> int:
         default="stdio",
         help="MCP transport (default: stdio)",
     )
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("PENGUIN_CONNECT_MCP_HOST", "127.0.0.1"),
+        help="Streamable HTTP bind host (must remain loopback; default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("PENGUIN_CONNECT_MCP_PORT", str(DEFAULT_REMOTE_MCP_PORT))),
+        help=f"Streamable HTTP port (default: {DEFAULT_REMOTE_MCP_PORT})",
+    )
     args = parser.parse_args()
-    mcp = create_mcp_server()
+    bearer_token = ""
+    if args.transport == "streamable-http":
+        bearer_token = load_token()
+        if not bearer_token:
+            parser.error(
+                "remote MCP token missing; run scripts/penguin_connect_mcp_auth.py --ensure"
+            )
+    mcp = create_mcp_server(
+        host=args.host,
+        port=args.port,
+        bearer_token=bearer_token,
+    )
     mcp.run(transport=args.transport)
     return 0
 

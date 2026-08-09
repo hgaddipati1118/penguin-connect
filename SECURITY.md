@@ -14,8 +14,20 @@ Treat the following as security-relevant:
   fixtures
 - sender-gate bypasses
 - ambiguous route resolution that could send to the wrong Apple Messages thread
-- anything that breaks the local-only runtime assumption
+- anything that exposes an origin service beyond the loopback-only runtime boundary
+- remote MCP endpoints that bypass bearer authentication, TLS ingress, or loopback-only origin binding
 - unsafe handling of contact exports, aliases, or local SQLite data
+
+## Remote MCP Boundary
+
+Penguin's optional remote MCP process must bind only to a loopback address. Publish it through
+an HTTPS tunnel and require the bearer token stored in macOS Keychain. Do not expose the
+Penguin FastAPI port, Apple Messages data, SQLite files, or the WhatsApp bridge API directly to
+the Internet.
+
+Treat the remote MCP bearer token as a full-access local messaging credential. It can authorize
+private searches and message-send tools. Never put it in `.env`, launchd plists, commits, URLs,
+screenshots, or logs. Rotate it immediately if it may have been copied into an untrusted system.
 
 ## Reporting A Vulnerability
 

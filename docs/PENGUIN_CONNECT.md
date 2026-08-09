@@ -131,6 +131,24 @@ the corresponding capability is absent. Edits and deletes also require an exact 
 chat JID/message ID pair and a message sent by the linked WhatsApp account; the bridge
 enforces WhatsApp's native edit window again immediately before sending.
 
+### Remote MCP endpoint (optional)
+
+To operate the Mac-hosted WhatsApp adapter from a remote MCP client, use Penguin's
+authenticated Streamable HTTP server. It binds only to `127.0.0.1`; publish that loopback
+service through Cloudflare Tunnel instead of exposing the WhatsApp API directly.
+
+```bash
+./scripts/penguin_connect_mcp_auth.py --ensure
+./scripts/install_launchd_remote_mcp.sh
+brew install cloudflared
+./scripts/run_penguin_connect_mcp_cloudflare.sh
+```
+
+The last command prints a temporary HTTPS hostname. The MCP endpoint is that hostname plus
+`/mcp`. For a stable hostname and launch-at-login tunnel, follow the named-tunnel configuration
+in the README. Keep the token in macOS Keychain on the server, transfer it to clients only over
+a private channel, and never publish ports `8080`, `8765`, or the Penguin API port directly.
+
 ## Slack Setup (Optional)
 
 Create a Slack app from [`../slack_manifest.example.json`](../slack_manifest.example.json),

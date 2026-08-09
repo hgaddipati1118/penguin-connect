@@ -1,11 +1,11 @@
 # PenguinConnect
 
 [![macOS 13+](https://img.shields.io/badge/platform-macOS%2013%2B-111111)](./docs/PENGUIN_CONNECT.md)
-[![Local only](https://img.shields.io/badge/runtime-127.0.0.1%20only-0f766e)](./SECURITY.md)
+[![Local origin](https://img.shields.io/badge/origin-127.0.0.1-0f766e)](./SECURITY.md)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB)](./server/requirements.txt)
 [![MIT License](https://img.shields.io/badge/license-MIT-16a34a)](./LICENSE)
 
-PenguinConnect is a local messaging control surface for searching, replying to, and managing Apple Messages, WhatsApp, and Slack conversations from your Mac. The runtime is macOS-only, binds to `127.0.0.1`, and can run without Gmail.
+PenguinConnect is a local messaging control surface for searching, replying to, and managing Apple Messages, WhatsApp, and Slack conversations from your Mac. The macOS-only origin services bind to `127.0.0.1` and can run without Gmail. An optional bearer-protected MCP endpoint can be published through an HTTPS tunnel.
 
 It also keeps the older Gmail bridge available for Slashy/email workflows, but the operator UI and CLI are designed to work directly against the local Messages cache and Apple Messages route-safety checks.
 
@@ -28,7 +28,7 @@ flowchart LR
 - **Manage threads locally.** Add private titles, notes, labels, muted/pinned/archived state, follow-up dates, saved views, and group-name context without changing the underlying Messages chat.
 - **Clean up contacts from the same surface.** Search cached Contacts and unsaved participants, create missing contact cards, favorite people, save recipient lists, and jump from a person to related threads or messages.
 - **Ask Codex with real thread context.** Build or run a local Codex prompt from recent messages, notes, tags, search results, contacts, and draft text.
-- **Your messages stay on your Mac.** No hosted service ever touches `chat.db`. The local server binds to `127.0.0.1`; Gmail is optional bridge plumbing, not required for local Messages operation.
+- **Your message stores stay on your Mac.** No hosted service receives `chat.db` or the WhatsApp SQLite store. The local server binds to `127.0.0.1`; an authorized remote MCP client receives only the tool results it requests through the optional HTTPS tunnel.
 - **Safe routing.** If Apple Messages route resolution is ambiguous, PenguinConnect does not send.
 
 ## Current Status
@@ -146,6 +146,89 @@ codex mcp add penguin-connect -- \
 Then run `codex mcp list` or use `/mcp` in Codex to verify the tools. Send tools use a
 two-call preview/confirm flow. A new Apple Messages recipient is opened as an addressed draft
 instead of being auto-sent because PenguinConnect does not guess an unverified Apple route.
+
+### Authenticated remote MCP over Cloudflare Tunnel
+
+Penguin can also expose the same MCP server as bearer-protected Streamable HTTP. The MCP
+process remains bound to `127.0.0.1`; Cloudflare Tunnel supplies the public HTTPS ingress.
+Do not open the MCP, Penguin API, or WhatsApp bridge ports on the router.
+
+Create the token in macOS Keychain and install the local MCP launch agent:
+
+```bash
+./scripts/penguin_connect_mcp_auth.py --ensure
+./scripts/install_launchd_remote_mcp.sh
+curl -s http://127.0.0.1:8765/health | jq
+```
+
+For a temporary development URL, install `cloudflared` and start a Quick Tunnel:
+
+```bash
+brew install cloudflared
+./scripts/run_penguin_connect_mcp_cloudflare.sh
+```
+
+The command prints a random `https://*.trycloudflare.com` origin. Append `/mcp` to form the
+MCP URL. Quick Tunnels change URL when restarted and are for development only.
+
+For a stable hostname, create a named Cloudflare Tunnel and DNS route:
+
+```bash
+cloudflared tunnel login
+cloudflared tunnel create penguin-connect-mcp
+cloudflared tunnel route dns penguin-connect-mcp mcp.example.com
+```
+
+Create `~/.cloudflared/config.yml`, substituting the tunnel UUID, credentials path, and
+hostname:
+
+```yaml
+tunnel: 00000000-0000-0000-0000-000000000000
+credentials-file: /Users/you/.cloudflared/00000000-0000-0000-0000-000000000000.json
+ingress:
+  - hostname: mcp.example.com
+    service: http://127.0.0.1:8765
+    originRequest:
+      httpHostHeader: 127.0.0.1:8765
+  - service: http_status:404
+```
+
+Run the named tunnel interactively:
+
+```bash
+PENGUIN_CONNECT_CLOUDFLARE_TUNNEL=penguin-connect-mcp \
+  ./scripts/run_penguin_connect_mcp_cloudflare.sh
+
+cloudflared tunnel run penguin-connect-mcp
+```
+
+After verifying the named tunnel, install Cloudflare's macOS login service:
+
+```bash
+cloudflared service install
+```
+
+To connect another Codex client, move the token through a password manager or another
+private channel. The server-side helper can copy it without printing it:
+
+```bash
+./scripts/penguin_connect_mcp_auth.py --copy
+```
+
+On the client, load the token without putting it in shell history, then register the HTTPS
+endpoint:
+
+```bash
+read -rsp "Penguin MCP token: " PENGUIN_CONNECT_REMOTE_MCP_TOKEN; echo
+export PENGUIN_CONNECT_REMOTE_MCP_TOKEN
+codex mcp add penguin-connect-remote \
+  --url https://mcp.example.com/mcp \
+  --bearer-token-env-var PENGUIN_CONNECT_REMOTE_MCP_TOKEN
+```
+
+The bearer token grants access to private local search results and guarded send tools. Rotate
+it immediately with `./scripts/penguin_connect_mcp_auth.py --rotate` if it is exposed. The
+server does not print or place the token in its launchd plist.
 
 File search uses the macOS Spotlight index and returns paths plus metadata, not file contents.
 By default it searches Desktop, Documents, and Downloads. Override the roots with a
@@ -338,7 +421,7 @@ Set `PENGUIN_CONNECT_EXCLUDED_CHATS_FILE` to point at a local JSON file with App
 ## Project Layout
 
 - [`server/`](./server): FastAPI app, sync logic, local DB, tests
-- [`server/channels/`](./server/channels): provider adapters; Apple Messages is implemented today
+- [`server/channels/`](./server/channels): provider adapters for Apple Messages, WhatsApp, Slack, and Telegram
 - [`scripts/`](./scripts): setup, doctor, sync, audit, and launch helpers
 - [`docs/`](./docs): setup, troubleshooting, and operations notes
 - [`skills/`](./skills): repo-local guidance for coding agents and future channel integrations
