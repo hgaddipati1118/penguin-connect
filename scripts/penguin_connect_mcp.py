@@ -4,12 +4,17 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import hmac
 import ipaddress
 import json
 import os
 import re
+import secrets
+import subprocess
 import sys
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -33,6 +38,12 @@ from search_index import hybrid_search, rebuild_search_index, spotlight_file_sea
 REMOTE_MCP_SCOPE = "penguin-connect"
 DEFAULT_REMOTE_MCP_PORT = 8765
 MIN_REMOTE_MCP_TOKEN_LENGTH = 32
+REMOTE_CONFIRMATION_TTL_SECONDS = 5 * 60
+MAX_REMOTE_PENDING_CONFIRMATIONS = 256
+MAX_REMOTE_MESSAGE_CHARS = 16_000
+MAX_REMOTE_SEARCH_QUERY_CHARS = 500
+LOCAL_SEND_APPROVAL_TIMEOUT_SECONDS = 30
+_LOCAL_SEND_APPROVAL_LOCK = threading.Lock()
 
 
 class StaticBearerTokenVerifier:
@@ -51,6 +62,53 @@ class StaticBearerTokenVerifier:
             client_id="penguin-connect-remote-client",
             scopes=[REMOTE_MCP_SCOPE],
         )
+
+
+class RemoteConfirmationStore:
+    """Hold short-lived, one-use confirmations without persisting message content."""
+
+    def __init__(
+        self,
+        *,
+        ttl_seconds: int = REMOTE_CONFIRMATION_TTL_SECONDS,
+        max_pending: int = MAX_REMOTE_PENDING_CONFIRMATIONS,
+    ):
+        self._ttl_seconds = max(1, ttl_seconds)
+        self._max_pending = max(1, max_pending)
+        self._pending: dict[str, tuple[float, bytes]] = {}
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _digest(payload: dict[str, str]) -> bytes:
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).digest()
+
+    def _prune_expired(self, now: float) -> None:
+        expired = [token for token, (deadline, _) in self._pending.items() if deadline <= now]
+        for token in expired:
+            self._pending.pop(token, None)
+
+    def issue(self, payload: dict[str, str]) -> str:
+        token = secrets.token_urlsafe(32)
+        now = time.monotonic()
+        with self._lock:
+            self._prune_expired(now)
+            while len(self._pending) >= self._max_pending:
+                self._pending.pop(next(iter(self._pending)))
+            self._pending[token] = (now + self._ttl_seconds, self._digest(payload))
+        return token
+
+    def consume(self, token: str, payload: dict[str, str]) -> bool:
+        if not token:
+            return False
+        now = time.monotonic()
+        with self._lock:
+            self._prune_expired(now)
+            entry = self._pending.pop(token, None)
+        if entry is None:
+            return False
+        deadline, expected_digest = entry
+        return deadline > now and hmac.compare_digest(expected_digest, self._digest(payload))
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -250,6 +308,67 @@ def search_unified_data(
     }
 
 
+def search_whatsapp_data(query: str, limit: int = 25) -> dict[str, Any]:
+    """Return only WhatsApp data for the least-privilege remote toolset."""
+    clean_query = (query or "").strip()
+    if len(clean_query) > MAX_REMOTE_SEARCH_QUERY_CHARS:
+        return {"success": False, "error": "search_query_too_long"}
+    safe_limit = max(1, min(limit, 50))
+    conversations_payload = _api_json(
+        "GET",
+        "/penguin-connect/conversations?include_whatsapp=true",
+    )
+    conversations = [
+        _conversation_summary(conversation)
+        for conversation in conversations_payload.get("conversations") or []
+        if _provider_key(str(conversation.get("source_provider") or "")) == "whatsapp"
+        and _conversation_matches(conversation, clean_query)
+    ][:safe_limit]
+
+    message_params = urllib.parse.urlencode(
+        {"query": clean_query, "limit": safe_limit, "view": "all"}
+    )
+    messages_payload = _api_json(
+        "GET",
+        f"/penguin-connect/messages/search?{message_params}",
+    )
+    messages = [
+        {
+            "conversation_id": message.get("conversation_id"),
+            "provider_message_id": message.get("provider_message_id"),
+            "provider": "whatsapp",
+            "conversation_name": message.get("title") or message.get("display_name") or "Conversation",
+            "sender": message.get("sender_name") or message.get("sender_email") or "",
+            "text": message.get("body_text") or "",
+            "timestamp": message.get("message_timestamp") or "",
+        }
+        for message in messages_payload.get("messages") or []
+        if _provider_key(str(message.get("source_provider") or "")) == "whatsapp"
+    ][:safe_limit]
+
+    native_payload = get_channel_adapter("whatsapp").list_conversations(
+        search=clean_query,
+        limit=safe_limit,
+    )
+    native_chats = [
+        {
+            "chat_id": chat.get("chat_id"),
+            "name": chat.get("name"),
+            "chat_type": chat.get("chat_type"),
+            "participants": chat.get("participants") or [],
+            "last_message_at": chat.get("last_message_at"),
+            "last_message_preview": chat.get("last_message_preview") or "",
+        }
+        for chat in native_payload.get("chats") or []
+    ] if native_payload.get("available") else []
+    return {
+        "query": clean_query,
+        "conversations": conversations,
+        "messages": messages,
+        "native_sources": {"whatsapp": native_chats},
+    }
+
+
 def _recipient_handle(recipient: str) -> tuple[str, list[dict[str, Any]]]:
     clean = (recipient or "").strip()
     if not clean:
@@ -412,6 +531,133 @@ def send_message_data(
     }
 
 
+def _remote_whatsapp_send_payload(
+    recipient: str,
+    message: str,
+    conversation_id: str,
+) -> tuple[dict[str, str] | None, dict[str, Any] | None]:
+    clean_message = (message or "").strip()
+    if not clean_message:
+        return None, {"success": False, "error": "empty_message"}
+    if len(clean_message) > MAX_REMOTE_MESSAGE_CHARS:
+        return None, {"success": False, "error": "message_too_long"}
+
+    clean_conversation_id = (conversation_id or "").strip()
+    clean_recipient = (recipient or "").strip()
+    if clean_conversation_id:
+        payload = _api_json("GET", "/penguin-connect/conversations?include_whatsapp=true")
+        matches = [
+            conversation
+            for conversation in payload.get("conversations") or []
+            if str(conversation.get("conversation_id") or "") == clean_conversation_id
+            and _provider_key(str(conversation.get("source_provider") or "")) == "whatsapp"
+        ]
+        if len(matches) != 1:
+            return None, {"success": False, "error": "whatsapp_conversation_not_found"}
+        clean_recipient = ""
+    else:
+        digits = re.sub(r"\D+", "", clean_recipient.split("@", 1)[0])
+        is_whatsapp_jid = bool(
+            re.fullmatch(r"[0-9:-]+@(s\.whatsapp\.net|g\.us|lid)", clean_recipient)
+        )
+        if not is_whatsapp_jid and len(digits) < 7:
+            return None, {
+                "success": False,
+                "error": "whatsapp_recipient_must_be_phone_or_jid",
+            }
+
+    return {
+        "recipient": clean_recipient,
+        "message": clean_message,
+        "conversation_id": clean_conversation_id,
+    }, None
+
+
+def request_local_whatsapp_send_approval(payload: dict[str, str]) -> bool:
+    """Require a click on this Mac before a remote MCP send can execute."""
+    if not _LOCAL_SEND_APPROVAL_LOCK.acquire(blocking=False):
+        return False
+    destination = payload["conversation_id"] or payload["recipient"]
+    message_preview = payload["message"][:500]
+    script = f"""
+on run argv
+    set destinationText to item 1 of argv
+    set messageText to item 2 of argv
+    try
+        set answer to display dialog "Remote MCP wants to send this WhatsApp message to " & destinationText & ":" & return & return & messageText buttons {{"Deny", "Send"}} default button "Deny" cancel button "Deny" with title "PenguinConnect approval" giving up after {LOCAL_SEND_APPROVAL_TIMEOUT_SECONDS}
+        if gave up of answer then return "DENIED"
+        if button returned of answer is "Send" then return "APPROVED"
+    on error
+        return "DENIED"
+    end try
+    return "DENIED"
+end run
+"""
+    try:
+        try:
+            completed = subprocess.run(
+                ["/usr/bin/osascript", "-e", script, destination, message_preview],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=LOCAL_SEND_APPROVAL_TIMEOUT_SECONDS + 5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return completed.returncode == 0 and completed.stdout.strip() == "APPROVED"
+    finally:
+        _LOCAL_SEND_APPROVAL_LOCK.release()
+
+
+def remote_send_whatsapp_data(
+    confirmations: RemoteConfirmationStore,
+    recipient: str,
+    message: str,
+    *,
+    conversation_id: str = "",
+    confirmation_token: str = "",
+) -> dict[str, Any]:
+    """Preview or execute a WhatsApp-only send with an exact one-use confirmation."""
+    payload, error = _remote_whatsapp_send_payload(recipient, message, conversation_id)
+    if error is not None or payload is None:
+        return error or {"success": False, "error": "invalid_request"}
+
+    if confirmation_token:
+        if not confirmations.consume(confirmation_token, payload):
+            return {"success": False, "error": "invalid_or_expired_confirmation"}
+        if not request_local_whatsapp_send_approval(payload):
+            return {
+                "success": False,
+                "error": "local_approval_denied_or_timed_out",
+            }
+        return send_message_data(
+            payload["recipient"],
+            payload["message"],
+            provider="whatsapp",
+            conversation_id=payload["conversation_id"],
+            attachment_paths=None,
+            confirm=True,
+        )
+
+    result = send_message_data(
+        payload["recipient"],
+        payload["message"],
+        provider="whatsapp",
+        conversation_id=payload["conversation_id"],
+        attachment_paths=None,
+        confirm=False,
+    )
+    if not result.get("confirmation_required"):
+        return result
+    return {
+        **result,
+        "confirmation_token": confirmations.issue(payload),
+        "confirmation_expires_in_seconds": REMOTE_CONFIRMATION_TTL_SECONDS,
+    }
+
+
 def create_mcp_server(
     *,
     host: str = "127.0.0.1",
@@ -444,13 +690,24 @@ def create_mcp_server(
         )
         token_verifier = StaticBearerTokenVerifier(bearer_token)
 
+    is_remote = bool(bearer_token)
     mcp = FastMCP(
         "PenguinConnect",
         instructions=(
-            "Search local iMessage, WhatsApp, Contacts, and files. "
-            "Message sends always require an explicit second call with confirm=true. "
-            "A brand-new iMessage destination is staged in Messages for human review because "
-            "PenguinConnect never guesses an Apple Messages delivery route."
+            (
+                "Search WhatsApp and send text-only WhatsApp messages. The remote surface is "
+                "intentionally restricted: it cannot access Mac Contacts, files, iMessage, "
+                "attachments, or index administration. Sending requires a preview followed by "
+                "a second call with the returned short-lived confirmation_token and an approval "
+                "click in the local PenguinConnect dialog on the Mac."
+            )
+            if is_remote
+            else (
+                "Search local iMessage, WhatsApp, Contacts, and files. "
+                "Message sends always require an explicit second call with confirm=true. "
+                "A brand-new iMessage destination is staged in Messages for human review because "
+                "PenguinConnect never guesses an Apple Messages delivery route."
+            )
         ),
         host=host,
         port=port,
@@ -466,6 +723,39 @@ def create_mcp_server(
         @mcp.custom_route("/health", methods=["GET"])
         async def remote_health(_request):
             return JSONResponse({"ok": True, "service": "penguin-connect-mcp"})
+
+        confirmations = RemoteConfirmationStore()
+
+        @mcp.tool()
+        def search_whatsapp(query: str, limit: int = 25) -> dict[str, Any]:
+            """Search WhatsApp conversations and messages only."""
+            return search_whatsapp_data(query, limit)
+
+        @mcp.tool()
+        def send_whatsapp(
+            recipient: str = "",
+            message: str = "",
+            conversation_id: str = "",
+            confirmation_token: str = "",
+        ) -> dict[str, Any]:
+            """Preview or send a text-only WhatsApp message.
+
+            The first call omits confirmation_token and returns the exact route plus a
+            short-lived token. Repeat the same arguments with that token to send. Tokens
+            are one-use and become invalid if any recipient, conversation, or text changes.
+            The Mac owner must also approve the local dialog within 30 seconds.
+            New destinations must be a phone number or WhatsApp JID; contact-name lookup and
+            local attachment paths are deliberately unavailable remotely.
+            """
+            return remote_send_whatsapp_data(
+                confirmations,
+                recipient,
+                message,
+                conversation_id=conversation_id,
+                confirmation_token=confirmation_token,
+            )
+
+        return mcp
 
     @mcp.tool()
     def search_contacts(query: str, limit: int = 25) -> dict[str, Any]:

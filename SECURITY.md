@@ -25,9 +25,16 @@ an HTTPS tunnel and require the bearer token stored in macOS Keychain. Do not ex
 Penguin FastAPI port, Apple Messages data, SQLite files, or the WhatsApp bridge API directly to
 the Internet.
 
-Treat the remote MCP bearer token as a full-access local messaging credential. It can authorize
-private searches and message-send tools. Never put it in `.env`, launchd plists, commits, URLs,
-screenshots, or logs. Rotate it immediately if it may have been copied into an untrusted system.
+The remote MCP endpoint must expose only its WhatsApp-specific search and text-send tools. It
+must not expose Mac Contacts, files, iMessage, attachment paths, search-index administration,
+or the underlying Penguin and WhatsApp APIs. A remote send must require a short-lived one-use
+confirmation bound to the exact request plus a local approval click on the Mac. A second MCP
+call by itself is not human approval and does not protect against prompt injection.
+
+Treat the remote MCP bearer token as a private WhatsApp read credential. Never put it in `.env`,
+launchd plists, commits, URLs, screenshots, or logs. Rotate it immediately if it may have been
+copied into an untrusted system. Keep Quick Tunnels temporary; use a named tunnel plus a
+compatible ingress access policy for an endpoint intended to stay online.
 
 ## Reporting A Vulnerability
 

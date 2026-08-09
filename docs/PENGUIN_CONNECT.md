@@ -106,6 +106,13 @@ On first run, the bridge displays a QR code. Open WhatsApp on your phone → Set
 
 The bridge stores messages in `~/whatsapp-mcp/whatsapp-bridge/store/messages.db` and exposes an HTTP API on `http://localhost:8080/api`.
 
+After the first interactive login succeeds, install Penguin's launch agent so the bridge
+restarts at login and remains bound to loopback:
+
+```bash
+./scripts/install_launchd_whatsapp_bridge.sh
+```
+
 ### 2) Configure PenguinConnect
 
 Add to your `.env` (or leave defaults):
@@ -148,6 +155,12 @@ The last command prints a temporary HTTPS hostname. The MCP endpoint is that hos
 `/mcp`. For a stable hostname and launch-at-login tunnel, follow the named-tunnel configuration
 in the README. Keep the token in macOS Keychain on the server, transfer it to clients only over
 a private channel, and never publish ports `8080`, `8765`, or the Penguin API port directly.
+
+Remote clients receive only WhatsApp search and text-send tools. They cannot access Mac
+Contacts, files, iMessage, attachments, or index controls. Every send requires a five-minute
+one-use confirmation for the exact request and a local approval click on the Mac; denial or no
+response within 30 seconds fails closed. The underlying WhatsApp bridge must bind to
+`127.0.0.1`, not all network interfaces.
 
 ## Slack Setup (Optional)
 

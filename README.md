@@ -149,13 +149,18 @@ instead of being auto-sent because PenguinConnect does not guess an unverified A
 
 ### Authenticated remote MCP over Cloudflare Tunnel
 
-Penguin can also expose the same MCP server as bearer-protected Streamable HTTP. The MCP
-process remains bound to `127.0.0.1`; Cloudflare Tunnel supplies the public HTTPS ingress.
-Do not open the MCP, Penguin API, or WhatsApp bridge ports on the router.
+Penguin can also expose a deliberately restricted MCP server as bearer-protected Streamable
+HTTP. The MCP process remains bound to `127.0.0.1`; Cloudflare Tunnel supplies the public
+HTTPS ingress. Do not open the MCP, Penguin API, or WhatsApp bridge ports on the router.
+
+The remote endpoint exposes only `search_whatsapp` and text-only `send_whatsapp`. It cannot
+access Mac Contacts, files, iMessage, local attachment paths, or index administration. Local
+stdio MCP clients retain the full toolset.
 
 Create the token in macOS Keychain and install the local MCP launch agent:
 
 ```bash
+./scripts/install_launchd_whatsapp_bridge.sh
 ./scripts/penguin_connect_mcp_auth.py --ensure
 ./scripts/install_launchd_remote_mcp.sh
 curl -s http://127.0.0.1:8765/health | jq
@@ -226,9 +231,18 @@ codex mcp add penguin-connect-remote \
   --bearer-token-env-var PENGUIN_CONNECT_REMOTE_MCP_TOKEN
 ```
 
-The bearer token grants access to private local search results and guarded send tools. Rotate
-it immediately with `./scripts/penguin_connect_mcp_auth.py --rotate` if it is exposed. The
-server does not print or place the token in its launchd plist.
+The bearer token grants access to private WhatsApp search results, so move it only through a
+password manager or another private channel. A send needs all three safeguards: the bearer
+token, a five-minute one-use confirmation token bound to the exact recipient and text, and an
+approval click in the PenguinConnect dialog on this Mac. The dialog denies by default and
+times out after 30 seconds. Remote attachment sending is not available.
+
+Rotate the bearer immediately with `./scripts/penguin_connect_mcp_auth.py --rotate` if it may
+have been exposed. The server does not print the token or place it in its launchd plist.
+
+Quick Tunnels are suitable only for a temporary test. For an endpoint that stays up, use a
+named tunnel on a hostname you control and add Cloudflare Access or another ingress policy
+when your MCP client supports it. Keep the application bearer check as defense in depth.
 
 File search uses the macOS Spotlight index and returns paths plus metadata, not file contents.
 By default it searches Desktop, Documents, and Downloads. Override the roots with a
