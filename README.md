@@ -149,32 +149,53 @@ instead of being auto-sent because PenguinConnect does not guess an unverified A
 
 ### Authenticated remote MCP over Cloudflare Tunnel
 
-Penguin can also expose a deliberately restricted MCP server as bearer-protected Streamable
-HTTP. The MCP process remains bound to `127.0.0.1`; Cloudflare Tunnel supplies the public
-HTTPS ingress. Do not open the MCP, Penguin API, or WhatsApp bridge ports on the router.
+Penguin can create a bearer-protected Streamable HTTP endpoint that Slashy and other MCP
+clients can use while the Mac is online. The origin services stay on `127.0.0.1`; Cloudflare
+Tunnel supplies public HTTPS. Never port-forward Penguin, MCP port `8765`, or WhatsApp port
+`8080`.
 
-The remote endpoint exposes only `search_whatsapp` and text-only `send_whatsapp`. It cannot
-access Mac Contacts, files, iMessage, local attachment paths, or index administration. Local
-stdio MCP clients retain the full toolset.
-
-Create the token in macOS Keychain and install the local MCP launch agent:
-
-```bash
-./scripts/install_launchd_whatsapp_bridge.sh
-./scripts/penguin_connect_mcp_auth.py --ensure
-./scripts/install_launchd_remote_mcp.sh
-curl -s http://127.0.0.1:8765/health | jq
-```
-
-For a temporary development URL, install `cloudflared` and start a Quick Tunnel:
+The one-command setup installs launch-at-login services, saves the bearer only in macOS
+Keychain, and copies a Slashy-compatible connection bundle to the clipboard:
 
 ```bash
 brew install cloudflared
-./scripts/run_penguin_connect_mcp_cloudflare.sh
+./scripts/penguin_connect_remote_setup.py --profile slashy
 ```
 
-The command prints a random `https://*.trycloudflare.com` origin. Append `/mcp` to form the
-MCP URL. Quick Tunnels change URL when restarted and are for development only.
+In Slashy MCP Settings, choose **Add MCP server**, then paste the copied JSON into the custom
+server field. Slashy fills the HTTPS URL and masked API-key field from `server_url` and `token`.
+The command never prints the token. Later, copy the bundle again or inspect the non-secret
+endpoint with:
+
+```bash
+./scripts/penguin_connect_remote_setup.py --copy
+./scripts/penguin_connect_remote_setup.py --status
+```
+
+Three built-in profiles are available:
+
+| Profile | Providers | Remote tools |
+| --- | --- | --- |
+| `read-only` | iMessage + WhatsApp | capabilities, message search/read, contact search |
+| `slashy` | iMessage + WhatsApp | read-only tools plus message send and contact upsert |
+| `whatsapp` | WhatsApp only | legacy `search_whatsapp` and `send_whatsapp` tools |
+
+The default when no valid policy is present remains the original WhatsApp-only surface. No
+remote profile exposes file search, index administration, attachment sending, or local paths.
+The `slashy` profile does not silently grant writes: every send or contact change needs a
+five-minute one-use confirmation bound to the exact payload and an approval click on the Mac.
+The dialog denies by default after 30 seconds. Exact existing iMessage conversations can send;
+a brand-new destination is staged in Messages for human review.
+
+The macOS app exposes **Pair WhatsApp…** and **Connect Slashy MCP…** in its application menu.
+The release build bundles `cloudflared`, the WhatsApp bridge, and its Python runtime installer.
+See [Packaging and distribution](docs/DISTRIBUTION.md) for release signing and first-run details.
+
+#### Stable hostname
+
+The automatic setup uses a Cloudflare Quick Tunnel. It is convenient for testing, but its
+hostname changes if the tunnel process or Mac restarts. When that happens, run setup again and
+replace the connection in Slashy. Do not present a Quick Tunnel as a durable production URL.
 
 For a stable hostname, create a named Cloudflare Tunnel and DNS route:
 
@@ -198,23 +219,16 @@ ingress:
   - service: http_status:404
 ```
 
-Run the named tunnel interactively:
+Run the installer with the named tunnel and public origin exported. The launch agent records
+these non-secret settings, while credentials remain in Cloudflare's config directory:
 
 ```bash
 PENGUIN_CONNECT_CLOUDFLARE_TUNNEL=penguin-connect-mcp \
-  ./scripts/run_penguin_connect_mcp_cloudflare.sh
-
-cloudflared tunnel run penguin-connect-mcp
+PENGUIN_CONNECT_PUBLIC_MCP_URL=https://mcp.example.com \
+  ./scripts/penguin_connect_remote_setup.py --profile slashy
 ```
 
-After verifying the named tunnel, install Cloudflare's macOS login service:
-
-```bash
-cloudflared service install
-```
-
-To connect another Codex client, move the token through a password manager or another
-private channel. The server-side helper can copy it without printing it:
+To connect a client manually, copy only the token through a password manager:
 
 ```bash
 ./scripts/penguin_connect_mcp_auth.py --copy
@@ -231,11 +245,8 @@ codex mcp add penguin-connect-remote \
   --bearer-token-env-var PENGUIN_CONNECT_REMOTE_MCP_TOKEN
 ```
 
-The bearer token grants access to private WhatsApp search results, so move it only through a
-password manager or another private channel. A send needs all three safeguards: the bearer
-token, a five-minute one-use confirmation token bound to the exact recipient and text, and an
-approval click in the PenguinConnect dialog on this Mac. The dialog denies by default and
-times out after 30 seconds. Remote attachment sending is not available.
+The bearer can read every provider enabled by its profile. Treat it like a password, and give
+it only to the intended MCP host. Per-tool toggles in Slashy provide another useful boundary.
 
 Rotate the bearer immediately with `./scripts/penguin_connect_mcp_auth.py --rotate` if it may
 have been exposed. The server does not print the token or place it in its launchd plist.

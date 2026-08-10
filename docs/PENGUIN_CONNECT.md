@@ -140,27 +140,27 @@ enforces WhatsApp's native edit window again immediately before sending.
 
 ### Remote MCP endpoint (optional)
 
-To operate the Mac-hosted WhatsApp adapter from a remote MCP client, use Penguin's
-authenticated Streamable HTTP server. It binds only to `127.0.0.1`; publish that loopback
-service through Cloudflare Tunnel instead of exposing the WhatsApp API directly.
+To let Slashy operate authorized iMessage, WhatsApp, and Contacts capabilities on this Mac,
+run the packaged app's **Connect Slashy MCP…** action or use the setup command. The origin
+services bind only to `127.0.0.1`; Cloudflare Tunnel publishes the authenticated MCP service,
+not the underlying Penguin or WhatsApp APIs.
 
 ```bash
-./scripts/penguin_connect_mcp_auth.py --ensure
-./scripts/install_launchd_remote_mcp.sh
 brew install cloudflared
-./scripts/run_penguin_connect_mcp_cloudflare.sh
+./scripts/penguin_connect_remote_setup.py --profile slashy
 ```
 
-The last command prints a temporary HTTPS hostname. The MCP endpoint is that hostname plus
-`/mcp`. For a stable hostname and launch-at-login tunnel, follow the named-tunnel configuration
-in the README. Keep the token in macOS Keychain on the server, transfer it to clients only over
-a private channel, and never publish ports `8080`, `8765`, or the Penguin API port directly.
+The command installs persistent launch agents and copies a JSON connection bundle for Slashy's
+MCP Settings. Use `--profile read-only` to omit write tools. Full `slashy` access includes
+scoped message reads, contact search, exact-route sends, and contact upsert. Files, attachment
+paths, attachment sends, and index controls remain unavailable remotely. Every write requires
+an exact one-use confirmation plus a local approval click; denial or no response within 30
+seconds fails closed.
 
-Remote clients receive only WhatsApp search and text-send tools. They cannot access Mac
-Contacts, files, iMessage, attachments, or index controls. Every send requires a five-minute
-one-use confirmation for the exact request and a local approval click on the Mac; denial or no
-response within 30 seconds fails closed. The underlying WhatsApp bridge must bind to
-`127.0.0.1`, not all network interfaces.
+The bearer remains in Keychain. `--copy` copies the bundle without printing the bearer;
+`penguin_connect_mcp_auth.py --rotate` revokes existing clients. Quick Tunnel hostnames change
+after a restart. Configure the named-tunnel environment described in the README for a stable
+hostname. Never publish ports `8080`, `8765`, or the Penguin API port directly.
 
 ## Slack Setup (Optional)
 

@@ -31,6 +31,11 @@ if str(ROOT_DIR / "scripts") not in sys.path:
 import browse_sources
 from channels import get_channel_adapter
 from penguin_connect_mcp_auth import load_token
+from penguin_connect_mcp_config import (
+    RemoteAccessPolicy,
+    load_remote_policy,
+    policy_for_profile,
+)
 from penguin_connect_local_api import resolve_local_api_base
 from search_index import hybrid_search, rebuild_search_index, spotlight_file_search
 
@@ -232,6 +237,37 @@ def search_contacts_data(query: str, limit: int = 25) -> dict[str, Any]:
     return {"query": query, "count": len(contacts), "contacts": contacts}
 
 
+def search_remote_contacts_data(query: str, limit: int = 25) -> dict[str, Any]:
+    """Search saved Mac Contacts without consulting message bodies or participants."""
+    clean_query = (query or "").strip()
+    if len(clean_query) > MAX_REMOTE_SEARCH_QUERY_CHARS:
+        return {"success": False, "error": "search_query_too_long"}
+    params = urllib.parse.urlencode(
+        {
+            "search": "",
+            "limit": 5000,
+            "source": "contacts",
+            "include_counts": "false",
+            "include_thread_stats": "false",
+        }
+    )
+    payload = _api_json("GET", f"/penguin-connect/contacts?{params}")
+    needle = clean_query.lower()
+    contacts = []
+    for raw_contact in payload.get("contacts") or []:
+        contact = _contact_summary(raw_contact)
+        searchable = " ".join(
+            str(contact.get(key) or "")
+            for key in ("name", "organization", "phone", "email", "primary_handle")
+        ).lower()
+        if needle and needle not in searchable:
+            continue
+        contacts.append(contact)
+        if len(contacts) >= max(1, min(limit, 50)):
+            break
+    return {"success": True, "query": clean_query, "count": len(contacts), "contacts": contacts}
+
+
 def search_unified_data(
     query: str,
     *,
@@ -326,7 +362,12 @@ def search_whatsapp_data(query: str, limit: int = 25) -> dict[str, Any]:
     ][:safe_limit]
 
     message_params = urllib.parse.urlencode(
-        {"query": clean_query, "limit": safe_limit, "view": "all"}
+        {
+            "query": clean_query,
+            "limit": safe_limit,
+            "view": "all",
+            "refresh_source": "false",
+        }
     )
     messages_payload = _api_json(
         "GET",
@@ -366,6 +407,154 @@ def search_whatsapp_data(query: str, limit: int = 25) -> dict[str, Any]:
         "conversations": conversations,
         "messages": messages,
         "native_sources": {"whatsapp": native_chats},
+    }
+
+
+def _remote_provider(value: object) -> str:
+    """Normalize only providers that the remote policy can explicitly allow."""
+    normalized = str(value or "").strip().lower()
+    if normalized in {"imessage", "whatsapp"}:
+        return normalized
+    return normalized
+
+
+def _remote_message_summary(message: dict[str, Any]) -> dict[str, Any]:
+    attachments = []
+    for attachment in message.get("attachments") or []:
+        if not isinstance(attachment, dict):
+            continue
+        attachments.append(
+            {
+                key: value
+                for key, value in attachment.items()
+                if key not in {"path", "local_path", "absolute_path", "source_path"}
+            }
+        )
+    result = {
+        "conversation_id": message.get("conversation_id"),
+        "provider_message_id": message.get("provider_message_id"),
+        "provider": _remote_provider(message.get("source_provider")),
+        "conversation_name": message.get("title") or message.get("display_name") or "Conversation",
+        "sender": message.get("sender_name") or message.get("sender_email") or "",
+        "body_text": message.get("body_text") or message.get("text") or "",
+        "message_timestamp": message.get("message_timestamp") or message.get("timestamp") or "",
+        "is_from_me": bool(message.get("is_from_me")),
+        "attachments": attachments,
+    }
+    return {key: value for key, value in result.items() if value not in (None, "", [])}
+
+
+def search_remote_messages_data(
+    query: str,
+    *,
+    provider: str = "all",
+    providers: tuple[str, ...] = ("imessage", "whatsapp"),
+    limit: int = 25,
+) -> dict[str, Any]:
+    """Search only message providers allowed by an authenticated remote policy."""
+    clean_query = (query or "").strip()
+    if len(clean_query) > MAX_REMOTE_SEARCH_QUERY_CHARS:
+        return {"success": False, "error": "search_query_too_long"}
+    allowed = frozenset(providers)
+    selected = (provider or "all").strip().lower()
+    if selected != "all" and selected not in allowed:
+        return {
+            "success": False,
+            "error": "provider_not_allowed",
+            "allowed_providers": sorted(allowed),
+        }
+    safe_limit = max(1, min(limit, 50))
+
+    conversations_payload = _api_json(
+        "GET", "/penguin-connect/conversations?include_whatsapp=true"
+    )
+    conversations = [
+        conversation
+        for conversation in conversations_payload.get("conversations") or []
+        if _remote_provider(conversation.get("source_provider")) in allowed
+        and (
+            selected == "all"
+            or _remote_provider(conversation.get("source_provider")) == selected
+        )
+        and _conversation_matches(conversation, clean_query)
+    ][:safe_limit]
+
+    message_params = urllib.parse.urlencode(
+        {"query": clean_query, "limit": safe_limit, "view": "all"}
+    )
+    messages_payload = _api_json(
+        "GET", f"/penguin-connect/messages/search?{message_params}"
+    )
+    messages = [
+        _remote_message_summary(message)
+        for message in messages_payload.get("messages") or []
+        if _remote_provider(message.get("source_provider")) in allowed
+        and (
+            selected == "all"
+            or _remote_provider(message.get("source_provider")) == selected
+        )
+    ][:safe_limit]
+    return {
+        "success": True,
+        "query": clean_query,
+        "provider": selected,
+        "conversations": [_conversation_summary(item) for item in conversations],
+        "messages": messages,
+    }
+
+
+def _remote_conversation(
+    conversation_id: str,
+    providers: tuple[str, ...],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    clean_id = (conversation_id or "").strip()
+    if not clean_id:
+        return None, {"success": False, "error": "conversation_id_required"}
+    payload = _api_json("GET", "/penguin-connect/conversations?include_whatsapp=true")
+    matches = [
+        conversation
+        for conversation in payload.get("conversations") or []
+        if str(conversation.get("conversation_id") or "") == clean_id
+        and _remote_provider(conversation.get("source_provider")) in frozenset(providers)
+    ]
+    if len(matches) != 1:
+        return None, {"success": False, "error": "conversation_not_allowed"}
+    return matches[0], None
+
+
+def read_remote_messages_data(
+    conversation_id: str,
+    *,
+    providers: tuple[str, ...],
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Read one exact allowed conversation without exposing local attachment paths."""
+    conversation, error = _remote_conversation(conversation_id, providers)
+    if error is not None or conversation is None:
+        return error or {"success": False, "error": "conversation_not_allowed"}
+    safe_limit = max(1, min(limit, 200))
+    encoded_id = urllib.parse.quote((conversation_id or "").strip(), safe="")
+    params = urllib.parse.urlencode(
+        {
+            "limit": safe_limit,
+            "refresh": "true",
+            "compact": "true",
+            "sparse": "true",
+        }
+    )
+    payload = _api_json(
+        "GET", f"/penguin-connect/conversations/{encoded_id}/messages?{params}"
+    )
+    return {
+        "success": bool(payload.get("found", True)),
+        "conversation_id": (conversation_id or "").strip(),
+        "provider": _remote_provider(conversation.get("source_provider")),
+        "conversation": _conversation_summary(conversation),
+        "messages": [
+            _remote_message_summary(message) for message in payload.get("messages") or []
+        ],
+        "total": payload.get("total"),
+        "has_more": bool(payload.get("has_more", False)),
     }
 
 
@@ -573,20 +762,30 @@ def _remote_whatsapp_send_payload(
     }, None
 
 
-def request_local_whatsapp_send_approval(payload: dict[str, str]) -> bool:
-    """Require a click on this Mac before a remote MCP send can execute."""
+def request_local_mcp_approval(
+    action: str,
+    destination: str,
+    detail: str,
+    *,
+    approve_button: str,
+) -> bool:
+    """Require an explicit click on this Mac before any remote write executes."""
     if not _LOCAL_SEND_APPROVAL_LOCK.acquire(blocking=False):
         return False
-    destination = payload["conversation_id"] or payload["recipient"]
-    message_preview = payload["message"][:500]
+    safe_action = (action or "Remote MCP request")[:100]
+    safe_destination = (destination or "Unknown destination")[:300]
+    safe_detail = (detail or "")[:500]
+    safe_button = (approve_button or "Approve")[:40]
     script = f"""
 on run argv
-    set destinationText to item 1 of argv
-    set messageText to item 2 of argv
+    set actionText to item 1 of argv
+    set destinationText to item 2 of argv
+    set detailText to item 3 of argv
+    set approveText to item 4 of argv
     try
-        set answer to display dialog "Remote MCP wants to send this WhatsApp message to " & destinationText & ":" & return & return & messageText buttons {{"Deny", "Send"}} default button "Deny" cancel button "Deny" with title "PenguinConnect approval" giving up after {LOCAL_SEND_APPROVAL_TIMEOUT_SECONDS}
+        set answer to display dialog actionText & return & return & destinationText & return & return & detailText buttons {{"Deny", approveText}} default button "Deny" cancel button "Deny" with title "PenguinConnect approval" giving up after {LOCAL_SEND_APPROVAL_TIMEOUT_SECONDS}
         if gave up of answer then return "DENIED"
-        if button returned of answer is "Send" then return "APPROVED"
+        if button returned of answer is approveText then return "APPROVED"
     on error
         return "DENIED"
     end try
@@ -596,7 +795,15 @@ end run
     try:
         try:
             completed = subprocess.run(
-                ["/usr/bin/osascript", "-e", script, destination, message_preview],
+                [
+                    "/usr/bin/osascript",
+                    "-e",
+                    script,
+                    safe_action,
+                    safe_destination,
+                    safe_detail,
+                    safe_button,
+                ],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
@@ -609,6 +816,16 @@ end run
         return completed.returncode == 0 and completed.stdout.strip() == "APPROVED"
     finally:
         _LOCAL_SEND_APPROVAL_LOCK.release()
+
+
+def request_local_whatsapp_send_approval(payload: dict[str, str]) -> bool:
+    """Compatibility wrapper for the original WhatsApp-only remote profile."""
+    return request_local_mcp_approval(
+        "Remote MCP wants to send this WhatsApp message:",
+        payload["conversation_id"] or payload["recipient"],
+        payload["message"],
+        approve_button="Send",
+    )
 
 
 def remote_send_whatsapp_data(
@@ -658,11 +875,197 @@ def remote_send_whatsapp_data(
     }
 
 
+def _remote_message_send_payload(
+    recipient: str,
+    message: str,
+    provider: str,
+    conversation_id: str,
+    providers: tuple[str, ...],
+) -> tuple[dict[str, str] | None, dict[str, Any] | None]:
+    clean_message = (message or "").strip()
+    if not clean_message:
+        return None, {"success": False, "error": "empty_message"}
+    if len(clean_message) > MAX_REMOTE_MESSAGE_CHARS:
+        return None, {"success": False, "error": "message_too_long"}
+    allowed = frozenset(providers)
+    selected = (provider or "").strip().lower()
+    clean_id = (conversation_id or "").strip()
+    clean_recipient = (recipient or "").strip()
+
+    if clean_id:
+        conversation, error = _remote_conversation(clean_id, providers)
+        if error is not None or conversation is None:
+            return None, error or {"success": False, "error": "conversation_not_allowed"}
+        conversation_provider = _remote_provider(conversation.get("source_provider"))
+        if selected and selected != conversation_provider:
+            return None, {"success": False, "error": "conversation_provider_mismatch"}
+        selected = conversation_provider
+        clean_recipient = ""
+    else:
+        if selected not in allowed:
+            return None, {
+                "success": False,
+                "error": "provider_required_or_not_allowed",
+                "allowed_providers": sorted(allowed),
+            }
+        if selected == "whatsapp":
+            digits = re.sub(r"\D+", "", clean_recipient.split("@", 1)[0])
+            is_jid = bool(
+                re.fullmatch(r"[0-9:-]+@(s\.whatsapp\.net|g\.us|lid)", clean_recipient)
+            )
+            if not is_jid and len(digits) < 7:
+                return None, {
+                    "success": False,
+                    "error": "whatsapp_recipient_must_be_phone_or_jid",
+                }
+        elif selected == "imessage":
+            digits = re.sub(r"\D+", "", clean_recipient)
+            if "@" not in clean_recipient and len(digits) < 7:
+                return None, {
+                    "success": False,
+                    "error": "imessage_recipient_must_be_phone_or_email",
+                }
+
+    return {
+        "action": "message.send",
+        "recipient": clean_recipient,
+        "message": clean_message,
+        "provider": selected,
+        "conversation_id": clean_id,
+    }, None
+
+
+def remote_send_message_data(
+    confirmations: RemoteConfirmationStore,
+    recipient: str,
+    message: str,
+    *,
+    provider: str,
+    conversation_id: str = "",
+    confirmation_token: str = "",
+    providers: tuple[str, ...],
+) -> dict[str, Any]:
+    """Preview or execute one exact scoped message send with local approval."""
+    payload, error = _remote_message_send_payload(
+        recipient, message, provider, conversation_id, providers
+    )
+    if error is not None or payload is None:
+        return error or {"success": False, "error": "invalid_request"}
+
+    if confirmation_token:
+        if not confirmations.consume(confirmation_token, payload):
+            return {"success": False, "error": "invalid_or_expired_confirmation"}
+        destination = payload["conversation_id"] or payload["recipient"]
+        if not request_local_mcp_approval(
+            f"Remote MCP wants to send this {payload['provider']} message:",
+            destination,
+            payload["message"],
+            approve_button="Send",
+        ):
+            return {"success": False, "error": "local_approval_denied_or_timed_out"}
+        return send_message_data(
+            payload["recipient"],
+            payload["message"],
+            provider=payload["provider"],
+            conversation_id=payload["conversation_id"],
+            attachment_paths=None,
+            confirm=True,
+        )
+
+    result = send_message_data(
+        payload["recipient"],
+        payload["message"],
+        provider=payload["provider"],
+        conversation_id=payload["conversation_id"],
+        attachment_paths=None,
+        confirm=False,
+    )
+    if not result.get("confirmation_required"):
+        return result
+    return {
+        **result,
+        "confirmation_token": confirmations.issue(payload),
+        "confirmation_expires_in_seconds": REMOTE_CONFIRMATION_TTL_SECONDS,
+    }
+
+
+def remote_upsert_contact_data(
+    confirmations: RemoteConfirmationStore,
+    *,
+    match_handle: str = "",
+    first_name: str = "",
+    last_name: str = "",
+    organization: str = "",
+    phone: str = "",
+    email: str = "",
+    confirmation_token: str = "",
+) -> dict[str, Any]:
+    """Create or update one contact after exact confirmation and a local click."""
+    payload = {
+        "action": "contact.upsert",
+        "match_handle": (match_handle or "").strip()[:320],
+        "first_name": (first_name or "").strip()[:200],
+        "last_name": (last_name or "").strip()[:200],
+        "organization": (organization or "").strip()[:300],
+        "phone": (phone or "").strip()[:100],
+        "email": (email or "").strip()[:320],
+    }
+    if not any(value for key, value in payload.items() if key != "action"):
+        return {"success": False, "error": "contact_identity_required"}
+    if payload["email"] and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", payload["email"]):
+        return {"success": False, "error": "invalid_email"}
+    if payload["phone"] and len(re.sub(r"\D+", "", payload["phone"])) < 7:
+        return {"success": False, "error": "invalid_phone"}
+
+    display_name = " ".join(
+        value for value in (payload["first_name"], payload["last_name"]) if value
+    ) or payload["organization"] or payload["match_handle"] or payload["phone"] or payload["email"]
+    if not confirmation_token:
+        return {
+            "success": False,
+            "confirmation_required": True,
+            "preview": {
+                "action": "update_contact" if payload["match_handle"] else "create_contact",
+                "name": display_name,
+                "phone": payload["phone"],
+                "email": payload["email"],
+            },
+            "confirmation_token": confirmations.issue(payload),
+            "confirmation_expires_in_seconds": REMOTE_CONFIRMATION_TTL_SECONDS,
+        }
+    if not confirmations.consume(confirmation_token, payload):
+        return {"success": False, "error": "invalid_or_expired_confirmation"}
+    if not request_local_mcp_approval(
+        "Remote MCP wants to save this Mac contact:",
+        display_name,
+        "\n".join(value for value in (payload["phone"], payload["email"]) if value),
+        approve_button="Save",
+    ):
+        return {"success": False, "error": "local_approval_denied_or_timed_out"}
+    result = _api_json(
+        "POST",
+        "/penguin-connect/contacts",
+        payload={
+            "match_handle": payload["match_handle"],
+            "first_name": payload["first_name"],
+            "last_name": payload["last_name"],
+            "organization": payload["organization"],
+            "phones": [payload["phone"]] if payload["phone"] else [],
+            "emails": [payload["email"]] if payload["email"] else [],
+            "phone_label": "mobile",
+            "email_label": "home",
+            "refresh_after": True,
+        },
+    )
+    return {"success": bool(result.get("success", True)), "result": result}
+
+
 def create_mcp_server(
     *,
     host: str = "127.0.0.1",
     port: int = DEFAULT_REMOTE_MCP_PORT,
     bearer_token: str = "",
+    remote_policy: RemoteAccessPolicy | None = None,
 ):
     try:
         from mcp.server.fastmcp import FastMCP
@@ -691,16 +1094,22 @@ def create_mcp_server(
         token_verifier = StaticBearerTokenVerifier(bearer_token)
 
     is_remote = bool(bearer_token)
+    policy = remote_policy or load_remote_policy()
+    if not is_remote and remote_policy is not None:
+        raise ValueError("A remote MCP policy requires an authenticated HTTP server")
+    if policy.local_approval_required is not True:
+        raise ValueError("Remote MCP writes must require local approval")
+    remote_instructions = (
+        f"Remote PenguinConnect profile '{policy.profile}' allows scopes "
+        f"{', '.join(policy.scopes)} for providers {', '.join(policy.providers)}. "
+        "Local file paths, attachments, file search, and index administration are unavailable. "
+        "Every write requires an exact one-use confirmation token and an approval click on the Mac. "
+        "A brand-new iMessage destination is staged in Messages for human review."
+    )
     mcp = FastMCP(
         "PenguinConnect",
         instructions=(
-            (
-                "Search WhatsApp and send text-only WhatsApp messages. The remote surface is "
-                "intentionally restricted: it cannot access Mac Contacts, files, iMessage, "
-                "attachments, or index administration. Sending requires a preview followed by "
-                "a second call with the returned short-lived confirmation_token and an approval "
-                "click in the local PenguinConnect dialog on the Mac."
-            )
+            remote_instructions
             if is_remote
             else (
                 "Search local iMessage, WhatsApp, Contacts, and files. "
@@ -725,6 +1134,112 @@ def create_mcp_server(
             return JSONResponse({"ok": True, "service": "penguin-connect-mcp"})
 
         confirmations = RemoteConfirmationStore()
+
+        if policy.profile != "whatsapp":
+
+            @mcp.tool()
+            def get_capabilities() -> dict[str, Any]:
+                """Return the exact scopes and providers enabled by this Mac owner."""
+                return {
+                    "profile": policy.profile,
+                    "scopes": list(policy.scopes),
+                    "providers": list(policy.providers),
+                    "writes_require_local_approval": True,
+                    "remote_attachments": False,
+                    "new_imessage_destination": "staged_for_human_review",
+                }
+
+            if policy.allows("messages.read"):
+
+                @mcp.tool()
+                def search_messages(
+                    query: str,
+                    provider: Literal["all", "imessage", "whatsapp"] = "all",
+                    limit: int = 25,
+                ) -> dict[str, Any]:
+                    """Search messages only in providers authorized by the Mac owner."""
+                    return search_remote_messages_data(
+                        query,
+                        provider=provider,
+                        providers=policy.providers,
+                        limit=limit,
+                    )
+
+                @mcp.tool()
+                def read_messages(
+                    conversation_id: str,
+                    limit: int = 100,
+                ) -> dict[str, Any]:
+                    """Read one exact authorized conversation with path-safe attachments."""
+                    return read_remote_messages_data(
+                        conversation_id,
+                        providers=policy.providers,
+                        limit=limit,
+                    )
+
+            if policy.allows("contacts.read"):
+
+                @mcp.tool()
+                def search_contacts(query: str, limit: int = 25) -> dict[str, Any]:
+                    """Search Mac Contacts without exposing files or unrelated message channels."""
+                    return search_remote_contacts_data(query, limit)
+
+            if policy.allows("messages.send"):
+
+                @mcp.tool()
+                def send_message(
+                    recipient: str = "",
+                    message: str = "",
+                    provider: Literal["imessage", "whatsapp"] | None = None,
+                    conversation_id: str = "",
+                    confirmation_token: str = "",
+                ) -> dict[str, Any]:
+                    """Preview or send a text message using an exact authorized route.
+
+                    Repeat the same arguments with the short-lived confirmation_token. The token
+                    is one-use, and the Mac owner must approve the local dialog. Attachments and
+                    contact-name routing are unavailable remotely. A new iMessage destination is
+                    staged in Messages for human review rather than silently sent.
+                    """
+                    return remote_send_message_data(
+                        confirmations,
+                        recipient,
+                        message,
+                        provider=provider or "",
+                        conversation_id=conversation_id,
+                        confirmation_token=confirmation_token,
+                        providers=policy.providers,
+                    )
+
+            if policy.allows("contacts.write"):
+
+                @mcp.tool()
+                def upsert_contact(
+                    match_handle: str = "",
+                    first_name: str = "",
+                    last_name: str = "",
+                    organization: str = "",
+                    phone: str = "",
+                    email: str = "",
+                    confirmation_token: str = "",
+                ) -> dict[str, Any]:
+                    """Preview, then create or update one contact after local Mac approval.
+
+                    To update, set match_handle to an exact existing phone or email. Repeat the
+                    unchanged request with the returned one-use confirmation_token.
+                    """
+                    return remote_upsert_contact_data(
+                        confirmations,
+                        match_handle=match_handle,
+                        first_name=first_name,
+                        last_name=last_name,
+                        organization=organization,
+                        phone=phone,
+                        email=email,
+                        confirmation_token=confirmation_token,
+                    )
+
+            return mcp
 
         @mcp.tool()
         def search_whatsapp(query: str, limit: int = 25) -> dict[str, Any]:

@@ -5,10 +5,27 @@ LABEL="com.penguinconnect.whatsapp-bridge"
 LAUNCHD_DOMAIN="gui/$(id -u)"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 PLIST_PATH="$LAUNCH_AGENTS_DIR/$LABEL.plist"
-BRIDGE_DIR="${PENGUIN_CONNECT_WHATSAPP_BRIDGE_DIR:-$HOME/whatsapp-mcp/whatsapp-bridge}"
+SOURCE_BIN="${PENGUIN_CONNECT_WHATSAPP_BRIDGE_BIN:-}"
+if [ -n "$SOURCE_BIN" ]; then
+  BRIDGE_DIR="${PENGUIN_CONNECT_WHATSAPP_BRIDGE_DIR:-$HOME/Library/Application Support/PenguinConnect/whatsapp-bridge}"
+else
+  BRIDGE_DIR="${PENGUIN_CONNECT_WHATSAPP_BRIDGE_DIR:-$HOME/whatsapp-mcp/whatsapp-bridge}"
+fi
 BRIDGE_BIN="$BRIDGE_DIR/whatsapp-bridge"
 DATA_DIR="${PENGUIN_CONNECT_DATA_DIR:-$HOME/penguinconnect-local-bridge-data}"
 LOG_DIR="$DATA_DIR/logs"
+
+if [ -n "$SOURCE_BIN" ]; then
+  if [ ! -x "$SOURCE_BIN" ]; then
+    echo "Missing bundled WhatsApp bridge binary at $SOURCE_BIN" >&2
+    exit 1
+  fi
+  mkdir -p "$BRIDGE_DIR"
+  if [ "$SOURCE_BIN" != "$BRIDGE_BIN" ]; then
+    cp "$SOURCE_BIN" "$BRIDGE_BIN"
+    chmod 755 "$BRIDGE_BIN"
+  fi
+fi
 
 if [ ! -x "$BRIDGE_BIN" ]; then
   echo "Missing WhatsApp bridge binary at $BRIDGE_BIN" >&2

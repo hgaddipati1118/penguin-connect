@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHON_BIN="$ROOT_DIR/server/venv/bin/python"
+PYTHON_BIN="${PENGUIN_CONNECT_PYTHON_BIN:-$ROOT_DIR/server/venv/bin/python}"
 
 if [ ! -x "$PYTHON_BIN" ]; then
   echo "Missing virtualenv python at $PYTHON_BIN" >&2

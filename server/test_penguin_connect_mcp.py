@@ -118,11 +118,47 @@ class PenguinConnectRemoteMcpTests(unittest.IsolatedAsyncioTestCase):
             host="127.0.0.1",
             port=8765,
             bearer_token="synthetic-secret-with-at-least-thirty-two-characters",
+            remote_policy=penguin_connect_mcp.policy_for_profile("whatsapp"),
         )
 
         self.assertEqual(
             [tool.name for tool in server._tool_manager.list_tools()],
             ["search_whatsapp", "send_whatsapp"],
+        )
+
+    def test_slashy_profile_exposes_scoped_personal_messaging_tools(self):
+        policy = penguin_connect_mcp.policy_for_profile("slashy")
+        server = penguin_connect_mcp.create_mcp_server(
+            host="127.0.0.1",
+            port=8765,
+            bearer_token="synthetic-secret-with-at-least-thirty-two-characters",
+            remote_policy=policy,
+        )
+
+        self.assertEqual(
+            [tool.name for tool in server._tool_manager.list_tools()],
+            [
+                "get_capabilities",
+                "search_messages",
+                "read_messages",
+                "search_contacts",
+                "send_message",
+                "upsert_contact",
+            ],
+        )
+
+    def test_read_only_profile_omits_all_remote_write_tools(self):
+        policy = penguin_connect_mcp.policy_for_profile("read-only")
+        server = penguin_connect_mcp.create_mcp_server(
+            host="127.0.0.1",
+            port=8765,
+            bearer_token="synthetic-secret-with-at-least-thirty-two-characters",
+            remote_policy=policy,
+        )
+
+        self.assertEqual(
+            [tool.name for tool in server._tool_manager.list_tools()],
+            ["get_capabilities", "search_messages", "read_messages", "search_contacts"],
         )
 
     def test_local_stdio_server_retains_full_toolset(self):
@@ -346,6 +382,160 @@ class PenguinConnectRemoteMcpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(named["error"], "whatsapp_recipient_must_be_phone_or_jid")
         self.assertEqual(wrong_provider["error"], "whatsapp_conversation_not_found")
 
+    def test_remote_read_messages_rejects_provider_outside_policy(self):
+        policy = penguin_connect_mcp.policy_for_profile("slashy")
+        with mock.patch.object(
+            penguin_connect_mcp,
+            "_api_json",
+            return_value={
+                "conversations": [
+                    {
+                        "conversation_id": "private-slack-chat",
+                        "source_provider": "slack",
+                    }
+                ]
+            },
+        ) as api:
+            result = penguin_connect_mcp.read_remote_messages_data(
+                "private-slack-chat",
+                providers=policy.providers,
+            )
+
+        self.assertEqual(result["error"], "conversation_not_allowed")
+        self.assertEqual(api.call_count, 1)
+
+    def test_remote_read_messages_uses_compact_path_safe_response(self):
+        policy = penguin_connect_mcp.policy_for_profile("slashy")
+
+        def fake_api(_method, path, **_kwargs):
+            if path.startswith("/penguin-connect/conversations?"):
+                return {
+                    "conversations": [
+                        {
+                            "conversation_id": "synthetic-imessage-chat",
+                            "source_provider": "imessage",
+                        }
+                    ]
+                }
+            self.assertIn("compact=true", path)
+            self.assertIn("sparse=true", path)
+            return {
+                "found": True,
+                "messages": [
+                    {
+                        "provider_message_id": "synthetic-message",
+                        "body_text": "Synthetic text",
+                        "attachments": [{"filename": "example.pdf", "availability": "local"}],
+                    }
+                ],
+            }
+
+        with mock.patch.object(penguin_connect_mcp, "_api_json", side_effect=fake_api):
+            result = penguin_connect_mcp.read_remote_messages_data(
+                "synthetic-imessage-chat",
+                providers=policy.providers,
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["provider"], "imessage")
+        self.assertEqual(result["messages"][0]["body_text"], "Synthetic text")
+        self.assertNotIn("path", result["messages"][0]["attachments"][0])
+
+    def test_remote_contact_search_uses_saved_contacts_without_message_context(self):
+        def fake_api(_method, path, **_kwargs):
+            self.assertIn("search=", path)
+            self.assertIn("source=contacts", path)
+            self.assertIn("include_counts=false", path)
+            self.assertIn("include_thread_stats=false", path)
+            return {
+                "contacts": [
+                    {
+                        "contact_key": "synthetic-contact",
+                        "display_name": "Synthetic Person",
+                        "phone": "+15555550123",
+                        "is_saved": True,
+                    }
+                ]
+            }
+
+        with mock.patch.object(penguin_connect_mcp, "_api_json", side_effect=fake_api):
+            result = penguin_connect_mcp.search_remote_contacts_data("Synthetic")
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["contacts"][0]["contact_key"], "synthetic-contact")
+
+    def test_generic_remote_send_supports_exact_imessage_conversation(self):
+        policy = penguin_connect_mcp.policy_for_profile("slashy")
+        confirmations = penguin_connect_mcp.RemoteConfirmationStore()
+        conversation = {
+            "conversation_id": "synthetic-imessage-chat",
+            "source_provider": "imessage",
+        }
+
+        def fake_api(_method, path, **_kwargs):
+            if path.startswith("/penguin-connect/conversations?"):
+                return {"conversations": [conversation]}
+            return {"success": True}
+
+        with mock.patch.object(
+            penguin_connect_mcp,
+            "_api_json",
+            side_effect=fake_api,
+        ), mock.patch.object(
+            penguin_connect_mcp,
+            "request_local_mcp_approval",
+            return_value=True,
+        ):
+            preview = penguin_connect_mcp.remote_send_message_data(
+                confirmations,
+                "",
+                "Synthetic message",
+                provider="imessage",
+                conversation_id="synthetic-imessage-chat",
+                providers=policy.providers,
+            )
+            sent = penguin_connect_mcp.remote_send_message_data(
+                confirmations,
+                "",
+                "Synthetic message",
+                provider="imessage",
+                conversation_id="synthetic-imessage-chat",
+                confirmation_token=preview["confirmation_token"],
+                providers=policy.providers,
+            )
+
+        self.assertTrue(preview["confirmation_required"])
+        self.assertTrue(sent["success"])
+
+    def test_remote_contact_upsert_requires_exact_confirmation_and_local_approval(self):
+        confirmations = penguin_connect_mcp.RemoteConfirmationStore()
+        with mock.patch.object(
+            penguin_connect_mcp,
+            "request_local_mcp_approval",
+            return_value=True,
+        ) as approve, mock.patch.object(
+            penguin_connect_mcp,
+            "_api_json",
+            return_value={"success": True, "updated": False},
+        ) as api:
+            preview = penguin_connect_mcp.remote_upsert_contact_data(
+                confirmations,
+                first_name="Synthetic",
+                phone="+15555550123",
+            )
+            rejected = penguin_connect_mcp.remote_upsert_contact_data(
+                confirmations,
+                first_name="Changed",
+                phone="+15555550123",
+                confirmation_token=preview["confirmation_token"],
+            )
+
+        self.assertTrue(preview["confirmation_required"])
+        self.assertEqual(rejected["error"], "invalid_or_expired_confirmation")
+        approve.assert_not_called()
+        api.assert_not_called()
+
     def test_remote_server_rejects_non_loopback_bind(self):
         with self.assertRaisesRegex(ValueError, "loopback"):
             penguin_connect_mcp.create_mcp_server(
@@ -396,6 +586,7 @@ class PenguinConnectRemoteMcpTests(unittest.IsolatedAsyncioTestCase):
             host="127.0.0.1",
             port=8765,
             bearer_token=token,
+            remote_policy=penguin_connect_mcp.policy_for_profile("whatsapp"),
         )
         headers = {
             "Accept": "application/json, text/event-stream",

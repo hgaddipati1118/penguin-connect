@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHON_BIN="$ROOT_DIR/server/venv/bin/python"
+PYTHON_BIN="${PENGUIN_CONNECT_PYTHON_BIN:-$ROOT_DIR/server/venv/bin/python}"
 CLOUDFLARED_BIN="${PENGUIN_CONNECT_CLOUDFLARED_BIN:-$(command -v cloudflared || true)}"
 
 if [ -z "$CLOUDFLARED_BIN" ] || [ ! -x "$CLOUDFLARED_BIN" ]; then

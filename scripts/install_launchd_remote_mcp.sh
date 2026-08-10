@@ -9,7 +9,7 @@ LOG_DIR="$DATA_DIR/logs"
 LAUNCHD_DOMAIN="gui/$(id -u)"
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHON_BIN="$ROOT_DIR/server/venv/bin/python"
+PYTHON_BIN="${PENGUIN_CONNECT_PYTHON_BIN:-$ROOT_DIR/server/venv/bin/python}"
 RUNNER="$ROOT_DIR/scripts/run_penguin_connect_remote_mcp.sh"
 
 if [ ! -x "$PYTHON_BIN" ]; then
@@ -31,12 +31,13 @@ PY
 
 mkdir -p "$LAUNCH_AGENTS_DIR" "$LOG_DIR"
 
-"$PYTHON_BIN" - "$PLIST_PATH" "$LABEL" "$RUNNER" "$ROOT_DIR" "$LOG_DIR" <<'PY'
+"$PYTHON_BIN" - "$PLIST_PATH" "$LABEL" "$RUNNER" "$ROOT_DIR" "$LOG_DIR" "$PYTHON_BIN" <<'PY'
+import os
 import plistlib
 import sys
 from pathlib import Path
 
-plist_path, label, runner, root_dir, log_dir = sys.argv[1:]
+plist_path, label, runner, root_dir, log_dir, python_bin = sys.argv[1:]
 payload = {
     "Label": label,
     "ProgramArguments": [runner],
@@ -46,8 +47,20 @@ payload = {
     "ThrottleInterval": 10,
     "StandardOutPath": str(Path(log_dir) / "remote-mcp.out.log"),
     "StandardErrorPath": str(Path(log_dir) / "remote-mcp.err.log"),
-    "EnvironmentVariables": {"PYTHONUNBUFFERED": "1"},
+    "EnvironmentVariables": {
+        "PYTHONUNBUFFERED": "1",
+        "PENGUIN_CONNECT_PYTHON_BIN": python_bin,
+    },
 }
+for key in (
+    "PENGUIN_CONNECT_DATA_DIR",
+    "PENGUIN_CONNECT_MCP_CONFIG_PATH",
+    "PENGUIN_CONNECT_MCP_PORT",
+    "PENGUIN_CONNECT_WHATSAPP_API_URL",
+    "PENGUIN_CONNECT_WHATSAPP_DB_PATH",
+):
+    if os.environ.get(key):
+        payload["EnvironmentVariables"][key] = os.environ[key]
 with open(plist_path, "wb") as handle:
     plistlib.dump(payload, handle)
 PY
