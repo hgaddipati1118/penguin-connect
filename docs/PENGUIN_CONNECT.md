@@ -1,14 +1,26 @@
-# PenguinConnect (Mac Local Bridge)
+# PenguinConnect (Mac Local Messages Console)
 
-PenguinConnect bridges messaging conversations to a user's Gmail inbox using per-conversation alias addresses.
+PenguinConnect runs a local Apple Messages console on your Mac for `iMessage`, `SMS`, and `RCS` search, replies, contact cleanup, attachments, voice memos, new-chat drafts, and thread management. It can also bridge messaging conversations to a user's Gmail inbox using per-conversation alias addresses, but Gmail is optional for local Messages operation.
 
-Current implemented source adapter: Apple Messages (`iMessage`, `SMS`, `RCS`).
+Implemented source adapters:
 
-Planned next source adapters: WhatsApp and Telegram.
+- **Apple Messages** (`iMessage`, `SMS`, `RCS`)
+- **WhatsApp** (via whatsapp-mcp Go bridge)
+- **Telegram** (via Telethon MTProto API)
 
-This bridge is macOS local-only and runs on `127.0.0.1`.
+This runtime is macOS local-only and runs on `127.0.0.1`.
 
-## Fast Path: Guided Setup CLI
+## Fast Path: Local Messages UI
+
+```bash
+cd /path/to/penguin-connect
+./scripts/run_penguin_connect_bridge.sh
+open http://127.0.0.1:9000/penguin-connect/ui
+```
+
+Local startup allows missing Gmail by default with `PENGUIN_CONNECT_ALLOW_MISSING_GMAIL_STARTUP=1`. Apple Messages access is still required, so run from `Terminal.app` with Full Disk Access enabled.
+
+## Optional Gmail Bridge Setup
 
 ```bash
 cd /path/to/penguin-connect
@@ -25,7 +37,7 @@ Optional flags:
 - `--skip-sync-smoke` to skip final sync endpoint smoke test
 - `--explain-only` to print steps without executing
 
-## Setup Order (Required Sequence)
+## Gmail Bridge Setup Order
 
 1. Get Google OAuth client JSON.
 2. Connect Gmail to local bridge (requests full Gmail mailbox access scope).
@@ -40,6 +52,7 @@ Optional flags:
 - Reads sibling Apple Messages DM routes during source-to-Gmail sync so route changes between `iMessage`, `RCS`, and `SMS` do not silently drop messages.
 - Keeps Apple Messages group chats separate and uses the group title when one exists.
 - Polls Gmail for replies to alias addresses and sends those replies back to the source provider.
+- Schedules local sends for existing conversations through the registered Apple Messages, WhatsApp, Slack, and Telegram adapters, including native Slack thread replies.
 - Mirrors Apple Messages read state back into Gmail `UNREAD` labels using the conversation unread count, so the latest synced inbound source messages clear once the conversation is read in Messages.
 - Only Gmail messages from `SENT` that still target the exact conversation alias are eligible for Gmail-to-source delivery; drafts are ignored.
 - Incremental Gmail reply detection keeps a per-conversation pending sent-activity marker until that conversation is actually synced, and it falls back to a recent sent-mail scan when the global Gmail history cursor has already moved past a valid alias reply.
@@ -72,6 +85,149 @@ cd /path/to/penguin-connect/server
 python3 -m venv venv
 venv/bin/pip install -r requirements.txt
 ```
+
+## WhatsApp Setup (Optional)
+
+WhatsApp bridging requires the [whatsapp-mcp](https://github.com/nicebytes/whatsapp-mcp) Go bridge running locally.
+
+### 1) Install and start the WhatsApp bridge
+
+```bash
+# Clone and build whatsapp-mcp
+git clone https://github.com/nicebytes/whatsapp-mcp.git ~/whatsapp-mcp
+cd ~/whatsapp-mcp/whatsapp-bridge
+go build -o whatsapp-bridge .
+
+# Start the bridge (will show a QR code on first run — scan with WhatsApp)
+./whatsapp-bridge
+```
+
+On first run, the bridge displays a QR code. Open WhatsApp on your phone → Settings → Linked Devices → Link a Device → scan the QR code.
+
+The bridge stores messages in `~/whatsapp-mcp/whatsapp-bridge/store/messages.db` and exposes an HTTP API on `http://localhost:8080/api`.
+
+After the first interactive login succeeds, install Penguin's launch agent so the bridge
+restarts at login and remains bound to loopback:
+
+```bash
+./scripts/install_launchd_whatsapp_bridge.sh
+```
+
+### 2) Configure PenguinConnect
+
+Add to your `.env` (or leave defaults):
+
+```bash
+# Path to the WhatsApp bridge SQLite database
+PENGUIN_CONNECT_WHATSAPP_DB_PATH=~/whatsapp-mcp/whatsapp-bridge/store/messages.db
+# WhatsApp bridge API URL for sending messages
+PENGUIN_CONNECT_WHATSAPP_API_URL=http://localhost:8080/api
+```
+
+### 3) Verify
+
+```bash
+./scripts/penguin_connect_doctor.py
+```
+
+Look for `[OK] whatsapp_bridge` and `[OK] whatsapp_api`. Once the bridge is running, PenguinConnect discovers WhatsApp conversations automatically on server start.
+
+Penguin's extended local bridge advertises its supported operations at
+`GET /api/capabilities`. Native reply, reaction, edit, and delete controls fail closed when
+the corresponding capability is absent. Edits and deletes also require an exact cached
+chat JID/message ID pair and a message sent by the linked WhatsApp account; the bridge
+enforces WhatsApp's native edit window again immediately before sending.
+
+### Remote MCP endpoint (optional)
+
+To let Slashy operate authorized iMessage, WhatsApp, and Contacts capabilities on this Mac,
+run the packaged app's **Connect Slashy MCP…** action or use the setup command. The origin
+services bind only to `127.0.0.1`; Cloudflare Tunnel publishes the authenticated MCP service,
+not the underlying Penguin or WhatsApp APIs.
+
+```bash
+brew install cloudflared
+./scripts/penguin_connect_remote_setup.py --profile slashy
+```
+
+The command installs persistent launch agents and copies a JSON connection bundle for Slashy's
+MCP Settings. Use `--profile read-only` to omit write tools. Full `slashy` access includes
+scoped message reads, contact search, exact-route sends, contact upsert, and group creation.
+Files, attachment paths, attachment sends, and index controls remain unavailable remotely.
+Every MCP action requires the long Keychain bearer plus today's six-character access code.
+Writes also require an exact one-use confirmation bound to the unchanged payload. WhatsApp
+groups are created from exact phone numbers or user JIDs; iMessage groups open as addressed
+drafts and require the user to press Send in Messages.
+
+The bearer and daily-code derivation secret remain in Keychain. `--copy` copies a bundle using
+today's rotating code without printing either underlying secret; `--copy-daily-code` copies only
+the six-character code for clients that request it separately. `penguin_connect_mcp_auth.py
+--rotate` revokes existing clients. Quick Tunnel hostnames change
+after a restart. Configure the named-tunnel environment described in the README for a stable
+hostname. Never publish ports `8080`, `8765`, or the Penguin API port directly.
+
+## Slack Setup (Optional)
+
+Create a Slack app from [`../slack_manifest.example.json`](../slack_manifest.example.json),
+install it into the intended workspace, and copy its `xoxp-` user token. Store the token in
+macOS Keychain instead of `.env`:
+
+```bash
+./scripts/penguin_connect_slack_auth.py --store-from-clipboard
+./scripts/penguin_connect_slack_auth.py --status
+```
+
+The manifest grants read/search access plus native message, file, thread, and reaction
+writes. Existing installations created before reactions were supported must update and
+reinstall the app once to grant `reactions:write`, then store the replacement token.
+
+## Telegram Setup (Optional)
+
+Telegram bridging uses [Telethon](https://github.com/LonamiWebs/Telethon) (MTProto user client) for full access to your message history.
+
+### 1) Get Telegram API credentials
+
+1. Go to [https://my.telegram.org](https://my.telegram.org) → API development tools
+2. Create an application (title: "PenguinConnect", platform: "Other")
+3. Copy the `api_id` and `api_hash`
+
+### 2) Configure PenguinConnect
+
+Add to your `.env`:
+
+```bash
+PENGUIN_CONNECT_TELEGRAM_API_ID=<your api_id>
+PENGUIN_CONNECT_TELEGRAM_API_HASH=<your api_hash>
+```
+
+### 3) Authenticate (one-time)
+
+```bash
+cd /path/to/penguin-connect
+server/venv/bin/python scripts/telegram_auth.py
+```
+
+This will prompt for:
+- Your phone number (with country code, e.g. `+1...`)
+- A verification code sent to your Telegram app
+- Your 2FA password (if enabled)
+
+The session is saved to `~/penguin-connect-data/telegram.session`. You only need to do this once.
+
+### 4) Verify
+
+```bash
+./scripts/penguin_connect_doctor.py
+```
+
+Look for `[OK] telegram_auth`. Once authenticated, PenguinConnect discovers Telegram conversations automatically on server start.
+
+### Telegram troubleshooting
+
+- **Session expired**: Re-run `server/venv/bin/python scripts/telegram_auth.py`
+- **FloodWaitError**: Telegram rate limiting — wait the indicated time and retry
+- **2FA required**: The auth script prompts for your password automatically
+- **Session locked**: Only one process can use a Telegram session file at a time. Stop the bridge before running the auth script.
 
 Optional reply-cleanup setting:
 
@@ -119,7 +275,7 @@ cd /path/to/penguin-connect
 ./scripts/run_penguin_connect_bridge.sh
 ```
 
-Normal startup now fails fast if Apple Messages access is missing or Gmail has not been connected yet. For first-time setup only, the guided setup flow starts the bridge with a temporary bootstrap override so you can complete Gmail OAuth.
+Normal startup fails fast if Apple Messages access is missing. Missing Gmail is allowed by default so the local Messages UI can run without OAuth; set `PENGUIN_CONNECT_ALLOW_MISSING_GMAIL_STARTUP=0` only if you want Gmail bridge readiness to block startup.
 
 Run Gmail connect helper:
 
@@ -196,7 +352,7 @@ The incremental watcher and startup worker now lease only their own queued job m
 
 If startup catch-up or backfill is actively importing iMessage history, PenguinConnect now checks for a queued incremental job after every 5 successful Gmail imports and yields early when fresh hot-work is waiting. Override that chunk size with `PENGUIN_CONNECT_STARTUP_INCREMENTAL_PREEMPTION_IMPORT_COUNT`.
 
-When that yield happens during an initial Apple Messages bootstrap, the next startup/backfill pass resumes from the saved `(last_imessage_ts, last_imessage_native_message_id)` cursor instead of rescanning the conversation from the beginning.
+When that yield happens during an initial Apple Messages bootstrap, the next startup/backfill pass resumes from the saved `(last_source_ts, last_source_native_message_id)` cursor instead of rescanning the conversation from the beginning.
 
 Queue, selection, and per-message sync state are committed before PenguinConnect moves on to the next remote Gmail or Apple Messages call. That keeps the concurrent startup and watcher lanes from holding SQLite write locks across network waits or send retries.
 
@@ -219,6 +375,8 @@ Those recurring full verifications also refresh contact-derived display names, s
 ## Polling and Auto-Start
 
 - default polling: `PENGUIN_CONNECT_POLL_SECONDS=30`
+- scheduled send polling: `PENGUIN_CONNECT_SCHEDULED_SEND_POLL_SECONDS=15`
+- disable scheduled send worker: `PENGUIN_CONNECT_SCHEDULED_SENDS_ENABLED=0`
 - incremental sync batch cap: `PENGUIN_CONNECT_INCREMENTAL_CONVERSATIONS_PER_RUN`
   - leave unset to let incremental runs expand to all currently hot conversations up to the built-in cap
 - optional startup catch-up cap: `PENGUIN_CONNECT_STARTUP_CATCHUP_CONVERSATIONS_PER_RUN` (unset means all pending bootstrap conversations)
@@ -241,6 +399,7 @@ Those recurring full verifications also refresh contact-derived display names, s
   - `PENGUIN_CONNECT_SYNC_JOB_LEASE_SECONDS=180`
   - `PENGUIN_CONNECT_SYNC_JOB_RETRY_BASE_SECONDS=30`
   - `PENGUIN_CONNECT_SYNC_JOB_RETRY_MAX_BACKOFF_SECONDS=1800`
+  - `PENGUIN_CONNECT_SYNC_JOB_HISTORY_LIMIT=200` terminal jobs retained per status
 - retry policy defaults:
   - `PENGUIN_CONNECT_RETRY_BASE_SECONDS=30`
   - `PENGUIN_CONNECT_RETRY_MAX_BACKOFF_SECONDS=900`
@@ -274,10 +433,25 @@ curl -s -X POST http://127.0.0.1:9000/penguin-connect/conversations/sync \
 ./scripts/penguin_connect_excluded_chats.py
 curl -s -X POST http://127.0.0.1:9000/penguin-connect/conversations/<conversation_id>/send \
   -H 'Content-Type: application/json' \
-  -d '{"sender_email":"you@gmail.com","message":"hello"}' | jq
+  -d '{"message":"hello"}' | jq
+curl -s -X POST http://127.0.0.1:9000/penguin-connect/conversations/<conversation_id>/scheduled-messages \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"hello later","scheduled_at":"2026-07-01T16:30:00-07:00"}' | jq
+curl -s http://127.0.0.1:9000/penguin-connect/conversations/<conversation_id>/scheduled-messages | jq
+./scripts/penguin_connect_tool.py schedule <conversation_id> \
+  --at "2026-07-01T16:30:00-07:00" \
+  --message "hello later"
+./scripts/penguin_connect_tool.py scheduled list <conversation_id>
+./scripts/penguin_connect_tool.py scheduled cancel <scheduled_id>
+./scripts/penguin_connect_tool.py scheduled retry <scheduled_id>
 ```
 
 Operational note:
+- When Gmail is not connected, the watcher stays in local-only mode and does not
+  enqueue Gmail sync work. Existing terminal sync history is bounded, while the
+  separate scheduled/offline send queue remains intact.
+- Failed scheduled/offline sends can be retried from the Queue, the selected
+  conversation, the retry endpoint, or `scheduled retry`.
 - `/api/status` and `/penguin-connect/health` return a cached sync-metrics snapshot so they stay responsive during large backfills and Gmail cooldowns.
 - When `sync_metrics.snapshot_complete` is `false`, the durable queue and runtime state are current, while the detailed delivery counters are still refreshing in the background.
 

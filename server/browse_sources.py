@@ -9,6 +9,26 @@ from datetime import datetime, timedelta, timezone
 IMESSAGE_DB = os.path.expanduser("~/Library/Messages/chat.db")
 APPLE_EPOCH = datetime(2001, 1, 1, tzinfo=timezone.utc)
 APPLE_MESSAGES_SERVICES = ("iMessage", "SMS", "RCS")
+SUPPORTED_ATTACHMENT_EXTENSIONS = {
+    ".aac",
+    ".aif",
+    ".aiff",
+    ".amr",
+    ".caf",
+    ".gif",
+    ".heic",
+    ".jpeg",
+    ".jpg",
+    ".m4a",
+    ".mov",
+    ".mp3",
+    ".mp4",
+    ".ogg",
+    ".opus",
+    ".pdf",
+    ".png",
+    ".wav",
+}
 
 
 def _apple_ts_to_iso(ts):
@@ -24,21 +44,29 @@ def _extract_text_from_attributed_body(blob):
     if not blob:
         return None
     try:
-        marker = b"NSString\x01\x94\x84\x01+"
-        idx = blob.find(marker)
-        if idx == -1:
+        string_marker = b"NSString\x01"
+        marker_idx = blob.find(string_marker)
+        if marker_idx == -1:
             return None
-        pos = idx + len(marker)
+        archive_marker = b"\x84\x01+"
+        archive_idx = blob.find(
+            archive_marker,
+            marker_idx + len(string_marker),
+            marker_idx + len(string_marker) + 8,
+        )
+        if archive_idx == -1:
+            return None
+        pos = archive_idx + len(archive_marker)
         first = blob[pos]
         if first < 0x80:
             length = first
             pos += 1
         elif first == 0x81:
-            length = blob[pos + 1]
+            length = int.from_bytes(blob[pos + 1 : pos + 3], "little")
             pos += 3
         elif first == 0x82:
-            length = (blob[pos + 1] << 8) | blob[pos + 2]
-            pos += 4
+            length = int.from_bytes(blob[pos + 1 : pos + 5], "little")
+            pos += 5
         else:
             return None
         text = blob[pos : pos + length].decode("utf-8", errors="replace")
@@ -52,6 +80,18 @@ def _service_to_provider(service_name):
     if normalized in {"imessage", "sms", "rcs"}:
         return normalized
     return "imessage"
+
+
+def _is_supported_attachment(filename, mime_type, transfer_name=""):
+    mime = (mime_type or "").strip().lower()
+    if mime.startswith(("image/", "video/", "audio/")) or mime == "application/pdf":
+        return True
+
+    for value in (filename, transfer_name):
+        ext = os.path.splitext((value or "").strip())[1].lower()
+        if ext in SUPPORTED_ATTACHMENT_EXTENSIONS:
+            return True
+    return False
 
 
 def _service_rank(service_name):
@@ -223,6 +263,27 @@ def browse_imessage_chats(search=None, limit=100):
             params.append(safe_limit)
         cur.execute(
             f"""
+            WITH message_stats AS (
+                SELECT
+                    cmj.chat_id,
+                    COUNT(DISTINCT cmj.message_id) AS msg_count,
+                    MAX(m.date) AS last_msg_date
+                FROM chat_message_join cmj
+                JOIN message m ON m.ROWID = cmj.message_id
+                GROUP BY cmj.chat_id
+            ),
+            latest_material_messages AS (
+                SELECT
+                    cmj.chat_id,
+                    MAX(m.date) AS latest_message_date,
+                    m.text,
+                    m.attributedBody
+                FROM chat_message_join cmj
+                JOIN message m ON m.ROWID = cmj.message_id
+                WHERE (m.text IS NOT NULL AND m.text != '')
+                   OR m.attributedBody IS NOT NULL
+                GROUP BY cmj.chat_id
+            )
             SELECT
                 c.ROWID,
                 c.guid,
@@ -230,35 +291,57 @@ def browse_imessage_chats(search=None, limit=100):
                 c.display_name,
                 {room_name_expr},
                 c.service_name,
-                COUNT(DISTINCT cmj.message_id) as msg_count,
-                MAX(m.date) as last_msg_date
+                stats.msg_count,
+                stats.last_msg_date,
+                latest.text,
+                latest.attributedBody
             FROM chat c
-            LEFT JOIN chat_message_join cmj ON cmj.chat_id = c.ROWID
-            LEFT JOIN message m ON m.ROWID = cmj.message_id
+            JOIN message_stats stats ON stats.chat_id = c.ROWID
+            LEFT JOIN latest_material_messages latest
+              ON latest.chat_id = c.ROWID
             WHERE c.guid IS NOT NULL
               AND c.service_name IN ('iMessage', 'SMS', 'RCS')
-            GROUP BY c.ROWID
-            HAVING msg_count > 0
-            ORDER BY last_msg_date DESC
+            ORDER BY stats.last_msg_date DESC
             {limit_clause}
             """,
             params,
         )
         raw_chats = cur.fetchall()
 
+        participants_by_chat = {}
+        chat_rowids = [row[0] for row in raw_chats]
+        for chunk_start in range(0, len(chat_rowids), 800):
+            rowid_chunk = chat_rowids[chunk_start:chunk_start + 800]
+            placeholders = ",".join("?" for _ in rowid_chunk)
+            cur.execute(
+                f"""
+                SELECT chj.chat_id, h.id
+                FROM chat_handle_join chj
+                JOIN handle h ON h.ROWID = chj.handle_id
+                WHERE chj.chat_id IN ({placeholders})
+                ORDER BY chj.chat_id, h.ROWID
+                """,
+                rowid_chunk,
+            )
+            for chat_rowid, handle_id in cur.fetchall():
+                if handle_id:
+                    participants_by_chat.setdefault(chat_rowid, []).append(handle_id)
+
         chats = []
         for row in raw_chats:
-            chat_rowid, chat_guid, chat_identifier, display_name, room_name, service, msg_count, last_date = row
-
-            cur.execute(
-                """
-                SELECT h.id FROM handle h
-                JOIN chat_handle_join chj ON chj.handle_id = h.ROWID
-                WHERE chj.chat_id = ?
-                """,
-                (chat_rowid,),
-            )
-            participants = [p[0] for p in cur.fetchall() if p and p[0]]
+            (
+                chat_rowid,
+                chat_guid,
+                chat_identifier,
+                display_name,
+                room_name,
+                service,
+                msg_count,
+                last_date,
+                last_message_text,
+                last_message_attributed_body,
+            ) = row
+            participants = participants_by_chat.get(chat_rowid, [])
 
             is_group = len(participants) > 1
             chat_type = "group" if is_group else "dm"
@@ -276,25 +359,10 @@ def browse_imessage_chats(search=None, limit=100):
                 if s not in searchable:
                     continue
 
-            cur.execute(
-                """
-                SELECT m.text, m.attributedBody
-                FROM message m
-                JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
-                WHERE cmj.chat_id = ?
-                  AND ((m.text IS NOT NULL AND m.text != '') OR m.attributedBody IS NOT NULL)
-                ORDER BY m.date DESC
-                LIMIT 1
-                """,
-                (chat_rowid,),
-            )
-            last_msg_row = cur.fetchone()
-            last_msg = ""
-            if last_msg_row:
-                last_msg = last_msg_row[0] or ""
-                if not last_msg and last_msg_row[1]:
-                    last_msg = _extract_text_from_attributed_body(last_msg_row[1]) or ""
-                last_msg = last_msg[:120]
+            last_msg = last_message_text or ""
+            if not last_msg and last_message_attributed_body:
+                last_msg = _extract_text_from_attributed_body(last_message_attributed_body) or ""
+            last_msg = last_msg[:120]
 
             chats.append(
                 {
@@ -317,6 +385,245 @@ def browse_imessage_chats(search=None, limit=100):
         return {"available": True, "chats": chats}
     except Exception as exc:
         return {"available": False, "reason": str(exc)}
+    finally:
+        conn.close()
+
+
+def search_imessage_messages(query, limit=50):
+    needle = (query or "").strip().lower()
+    if not needle:
+        return {"available": True, "messages": []}
+    if not os.path.exists(IMESSAGE_DB):
+        return {"available": False, "reason": "chat.db not found"}
+
+    conn = sqlite3.connect(f"file:{IMESSAGE_DB}?mode=ro", uri=True)
+    try:
+        cur = conn.cursor()
+        room_name_expr = _chat_room_name_expr(conn)
+        like = f"%{needle}%"
+        safe_limit = max(1, min(int(limit or 50), 1000))
+        cur.execute(
+            f"""
+            SELECT DISTINCT
+                m.ROWID,
+                m.text,
+                m.date,
+                m.is_from_me,
+                m.service,
+                h.id as handle_id,
+                m.attributedBody,
+                c.guid,
+                c.chat_identifier,
+                c.display_name,
+                {room_name_expr},
+                c.service_name
+            FROM message m
+            JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+            JOIN chat c ON c.ROWID = cmj.chat_id
+            LEFT JOIN handle h ON m.handle_id = h.ROWID
+            WHERE c.guid IS NOT NULL
+              AND c.service_name IN ('iMessage', 'SMS', 'RCS')
+              AND (
+                   lower(COALESCE(m.text, '')) LIKE ?
+                OR lower(COALESCE(h.id, '')) LIKE ?
+                OR lower(COALESCE(c.chat_identifier, '')) LIKE ?
+                OR lower(COALESCE(c.display_name, '')) LIKE ?
+                OR lower(COALESCE({room_name_expr}, '')) LIKE ?
+              )
+            ORDER BY m.date DESC, m.ROWID DESC
+            LIMIT ?
+            """,
+            (like, like, like, like, like, safe_limit),
+        )
+
+        messages = []
+        for row in cur.fetchall():
+            (
+                msg_rowid,
+                text,
+                date,
+                is_from_me,
+                service,
+                handle_id,
+                attributed_body,
+                chat_guid,
+                chat_identifier,
+                display_name,
+                room_name,
+                chat_service,
+            ) = row
+            if not text and attributed_body:
+                text = _extract_text_from_attributed_body(attributed_body)
+
+            cur.execute(
+                """
+                SELECT a.filename, a.mime_type, a.total_bytes, a.transfer_name
+                FROM attachment a
+                JOIN message_attachment_join maj ON maj.attachment_id = a.ROWID
+                WHERE maj.message_id = ?
+                """,
+                (msg_rowid,),
+            )
+            attachments = []
+            for a_row in cur.fetchall():
+                fname, mime, size, transfer_name = a_row
+                if fname and _is_supported_attachment(fname, mime, transfer_name):
+                    attachments.append(
+                        {
+                            "filename": fname,
+                            "mime_type": mime or "",
+                            "size": size or 0,
+                            "transfer_name": transfer_name or "",
+                        }
+                    )
+
+            messages.append(
+                {
+                    "chat_id": chat_guid,
+                    "chat_identifier": chat_identifier or "",
+                    "chat_name": _preferred_source_chat_title(display_name, room_name, chat_identifier, chat_guid),
+                    "source_provider": _service_to_provider(chat_service),
+                    "service": service or chat_service or "iMessage",
+                    "native_message_id": str(msg_rowid),
+                    "timestamp": _apple_ts_to_iso(date),
+                    "is_from_me": bool(is_from_me),
+                    "handle": handle_id or "",
+                    "text": text or "",
+                    "attachments": attachments if attachments else None,
+                }
+            )
+        return {"available": True, "messages": messages}
+    except Exception as exc:
+        return {"available": False, "reason": str(exc)}
+    finally:
+        conn.close()
+
+
+def list_imessage_attachment_messages(limit=1000, offset=0):
+    """Return recent iMessage/SMS/RCS messages with attachment metadata."""
+    if not os.path.exists(IMESSAGE_DB):
+        return {"available": False, "reason": "chat.db not found", "messages": [], "total": 0}
+
+    conn = sqlite3.connect(f"file:{IMESSAGE_DB}?mode=ro", uri=True)
+    try:
+        cur = conn.cursor()
+        room_name_expr = _chat_room_name_expr(conn)
+        safe_limit = max(1, min(int(limit or 1000), 5000))
+        safe_offset = max(0, int(offset or 0))
+        total = cur.execute(
+            """SELECT COUNT(DISTINCT maj.message_id)
+               FROM message_attachment_join maj
+               JOIN attachment a ON a.ROWID = maj.attachment_id
+               WHERE a.filename IS NOT NULL"""
+        ).fetchone()[0]
+        cur.execute(
+            f"""
+            WITH recent AS (
+                SELECT DISTINCT
+                    m.ROWID,
+                    m.text,
+                    m.date,
+                    m.is_from_me,
+                    m.service,
+                    m.handle_id,
+                    m.attributedBody
+                FROM message m
+                JOIN message_attachment_join maj ON maj.message_id = m.ROWID
+                JOIN attachment a ON a.ROWID = maj.attachment_id
+                WHERE a.filename IS NOT NULL
+                ORDER BY m.date DESC, m.ROWID DESC
+                LIMIT ? OFFSET ?
+            )
+            SELECT
+                r.ROWID,
+                r.text,
+                r.date,
+                r.is_from_me,
+                r.service,
+                h.id,
+                r.attributedBody,
+                c.guid,
+                c.chat_identifier,
+                c.display_name,
+                {room_name_expr},
+                c.service_name,
+                a.filename,
+                a.mime_type,
+                a.total_bytes,
+                a.transfer_name
+            FROM recent r
+            JOIN chat_message_join cmj ON cmj.message_id = r.ROWID
+            JOIN chat c ON c.ROWID = cmj.chat_id
+            LEFT JOIN handle h ON r.handle_id = h.ROWID
+            JOIN message_attachment_join maj ON maj.message_id = r.ROWID
+            JOIN attachment a ON a.ROWID = maj.attachment_id
+            WHERE c.guid IS NOT NULL
+              AND c.service_name IN ('iMessage', 'SMS', 'RCS')
+              AND a.filename IS NOT NULL
+            ORDER BY r.date DESC, r.ROWID DESC, a.ROWID
+            """,
+            (safe_limit, safe_offset),
+        )
+        messages_by_key = {}
+        for row in cur.fetchall():
+            (
+                msg_rowid,
+                text,
+                date,
+                is_from_me,
+                service,
+                handle_id,
+                attributed_body,
+                chat_guid,
+                chat_identifier,
+                display_name,
+                room_name,
+                chat_service,
+                filename,
+                mime_type,
+                size,
+                transfer_name,
+            ) = row
+            key = (str(msg_rowid), chat_guid)
+            message = messages_by_key.get(key)
+            if message is None:
+                if not text and attributed_body:
+                    text = _extract_text_from_attributed_body(attributed_body)
+                message = {
+                    "chat_id": chat_guid,
+                    "chat_identifier": chat_identifier or "",
+                    "chat_name": _preferred_source_chat_title(
+                        display_name, room_name, chat_identifier, chat_guid
+                    ),
+                    "source_provider": _service_to_provider(chat_service),
+                    "service": service or chat_service or "iMessage",
+                    "native_message_id": str(msg_rowid),
+                    "timestamp": _apple_ts_to_iso(date),
+                    "is_from_me": bool(is_from_me),
+                    "handle": handle_id or "",
+                    "text": text or "",
+                    "attachments": [],
+                }
+                messages_by_key[key] = message
+            if _is_supported_attachment(filename, mime_type, transfer_name):
+                message["attachments"].append(
+                    {
+                        "filename": filename,
+                        "mime_type": mime_type or "",
+                        "size": size or 0,
+                        "transfer_name": transfer_name or "",
+                    }
+                )
+        messages = [item for item in messages_by_key.values() if item["attachments"]]
+        return {
+            "available": True,
+            "messages": messages,
+            "total": int(total or 0),
+            "limit": safe_limit,
+            "offset": safe_offset,
+        }
+    except Exception as exc:
+        return {"available": False, "reason": str(exc), "messages": [], "total": 0}
     finally:
         conn.close()
 
@@ -425,7 +732,14 @@ def _native_message_rowid(value):
     return rowid if rowid > 0 else None
 
 
-def fetch_imessage_messages(chat_id, limit=50, since=None, since_native_message_id=None):
+def fetch_imessage_messages(
+    chat_id,
+    limit=50,
+    since=None,
+    since_native_message_id=None,
+    before=None,
+    before_native_message_id=None,
+):
     if not os.path.exists(IMESSAGE_DB):
         return []
 
@@ -438,43 +752,122 @@ def fetch_imessage_messages(chat_id, limit=50, since=None, since_native_message_
 
         since_ns = _iso_to_apple_ns(since)
         since_rowid = _native_message_rowid(since_native_message_id)
+        before_ns = _iso_to_apple_ns(before)
+        before_rowid = _native_message_rowid(before_native_message_id)
         if since_ns and since_rowid:
             date_filter = "AND (m.date > ? OR (m.date = ? AND m.ROWID > ?))"
         elif since_ns:
             date_filter = "AND m.date > ?"
+        elif before_ns and before_rowid:
+            date_filter = "AND (m.date < ? OR (m.date = ? AND m.ROWID < ?))"
+        elif before_ns:
+            date_filter = "AND m.date < ?"
         else:
             date_filter = ""
         limit_clause = "LIMIT ?"
         order_direction = "ASC" if since_ns else "DESC"
 
         safe_limit = max(1, min(int(limit or 50), 1000))
+        message_columns = {
+            str(row[1])
+            for row in cur.execute("PRAGMA table_info(message)").fetchall()
+        }
+
+        def message_column(name, fallback):
+            return f"m.{name}" if name in message_columns else fallback
+
+        native_guid_select = message_column("guid", "''")
+        delivered_select = message_column("is_delivered", "0")
+        date_delivered_select = message_column("date_delivered", "0")
+        date_read_select = message_column("date_read", "0")
+        associated_guid_select = message_column("associated_message_guid", "''")
+        associated_type_select = message_column("associated_message_type", "0")
+        associated_emoji_select = message_column("associated_message_emoji", "''")
+        has_native_reply_context = "thread_originator_guid" in message_columns
+        if has_native_reply_context:
+            reply_parent_join = """
+            LEFT JOIN message reply_parent
+              ON reply_parent.guid = REPLACE(
+                   REPLACE(COALESCE(m.thread_originator_guid, ''), 'p:0/', ''),
+                   'bp:',
+                   ''
+                 )
+            LEFT JOIN handle reply_handle ON reply_parent.handle_id = reply_handle.ROWID
+            """
+            reply_message_id_select = """
+                COALESCE(
+                    reply_parent.guid,
+                    REPLACE(
+                        REPLACE(COALESCE(m.thread_originator_guid, ''), 'p:0/', ''),
+                        'bp:',
+                        ''
+                    )
+                )
+            """
+            reply_sender_select = """
+                CASE
+                    WHEN reply_parent.is_from_me = 1 THEN 'Me'
+                    ELSE COALESCE(reply_handle.id, '')
+                END
+            """
+            reply_text_select = "reply_parent.text"
+            reply_attributed_body_select = "reply_parent.attributedBody"
+        else:
+            reply_parent_join = ""
+            reply_message_id_select = "''"
+            reply_sender_select = "''"
+            reply_text_select = "''"
+            reply_attributed_body_select = "NULL"
+        reaction_filter = (
+            "OR COALESCE(m.associated_message_type, 0) != 0"
+            if "associated_message_type" in message_columns
+            else ""
+        )
         params = [chat_rowid]
         if since_ns:
             if since_rowid:
                 params.extend([since_ns, since_ns, since_rowid])
             else:
                 params.append(since_ns)
+        elif before_ns:
+            if before_rowid:
+                params.extend([before_ns, before_ns, before_rowid])
+            else:
+                params.append(before_ns)
         params.append(safe_limit)
 
         cur.execute(
             f"""
             SELECT DISTINCT
                 m.ROWID,
+                {native_guid_select},
                 m.text,
                 m.date,
                 m.is_from_me,
                 m.service,
                 h.id as handle_id,
-                m.attributedBody
+                m.attributedBody,
+                {delivered_select},
+                {date_delivered_select},
+                {date_read_select},
+                {associated_guid_select},
+                {associated_type_select},
+                {associated_emoji_select},
+                {reply_message_id_select},
+                {reply_sender_select},
+                {reply_text_select},
+                {reply_attributed_body_select}
             FROM message m
             JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
             LEFT JOIN handle h ON m.handle_id = h.ROWID
             LEFT JOIN message_attachment_join maj ON maj.message_id = m.ROWID
+            {reply_parent_join}
             WHERE cmj.chat_id = ?
               {date_filter}
               AND ((m.text IS NOT NULL AND m.text != '')
                    OR m.attributedBody IS NOT NULL
-                   OR maj.attachment_id IS NOT NULL)
+                   OR maj.attachment_id IS NOT NULL
+                   {reaction_filter})
             ORDER BY m.date {order_direction}, m.ROWID {order_direction}
             {limit_clause}
             """,
@@ -483,9 +876,30 @@ def fetch_imessage_messages(chat_id, limit=50, since=None, since_native_message_
 
         messages = []
         for row in cur.fetchall():
-            msg_rowid, text, date, is_from_me, service, handle_id, attributed_body = row
+            (
+                msg_rowid,
+                native_guid,
+                text,
+                date,
+                is_from_me,
+                service,
+                handle_id,
+                attributed_body,
+                is_delivered,
+                date_delivered,
+                date_read,
+                associated_guid,
+                associated_type,
+                associated_emoji,
+                reply_to_message_id,
+                reply_to_sender,
+                reply_to_text,
+                reply_attributed_body,
+            ) = row
             if not text and attributed_body:
                 text = _extract_text_from_attributed_body(attributed_body)
+            if not reply_to_text and reply_attributed_body:
+                reply_to_text = _extract_text_from_attributed_body(reply_attributed_body)
 
             cur.execute(
                 """
@@ -493,16 +907,13 @@ def fetch_imessage_messages(chat_id, limit=50, since=None, since_native_message_
                 FROM attachment a
                 JOIN message_attachment_join maj ON maj.attachment_id = a.ROWID
                 WHERE maj.message_id = ?
-                  AND a.mime_type IS NOT NULL
-                  AND (a.mime_type LIKE 'image/%' OR a.mime_type LIKE 'video/%'
-                       OR a.mime_type LIKE 'audio/%' OR a.mime_type LIKE 'application/pdf')
                 """,
                 (msg_rowid,),
             )
             attachments = []
             for a_row in cur.fetchall():
                 fname, mime, size, transfer_name = a_row
-                if fname:
+                if fname and _is_supported_attachment(fname, mime, transfer_name):
                     attachments.append(
                         {
                             "filename": fname,
@@ -511,9 +922,6 @@ def fetch_imessage_messages(chat_id, limit=50, since=None, since_native_message_
                             "transfer_name": transfer_name or "",
                         }
                     )
-
-            if not text and not attachments:
-                continue
 
             messages.append(
                 {
@@ -524,6 +932,17 @@ def fetch_imessage_messages(chat_id, limit=50, since=None, since_native_message_
                     "handle": handle_id or "",
                     "attachments": attachments if attachments else None,
                     "native_message_id": str(msg_rowid),
+                    "native_guid": native_guid or "",
+                    "is_delivered": bool(is_delivered),
+                    "date_delivered": _apple_ts_to_iso(date_delivered) if date_delivered else "",
+                    "date_read": _apple_ts_to_iso(date_read) if date_read else "",
+                    "associated_message_guid": associated_guid or "",
+                    "associated_message_type": int(associated_type or 0),
+                    "associated_message_emoji": associated_emoji or "",
+                    "reply_to_message_id": reply_to_message_id or "",
+                    "reply_to_sender": reply_to_sender or "",
+                    "reply_to_text": reply_to_text or "",
+                    "has_attributed_body": bool(attributed_body),
                 }
             )
         return messages

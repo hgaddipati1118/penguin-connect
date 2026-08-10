@@ -131,6 +131,31 @@ class WatcherTests(unittest.TestCase):
         self.assertIsNone(status["penguin_connect"]["last_sync"])
         self.assertIsNone(watcher._last_error_code)
 
+    def test_polling_loop_treats_disconnected_gmail_as_local_only_mode(self):
+        def fake_run_incremental_sync():
+            watcher._shutdown_event.set()
+            return {
+                "success": True,
+                "skipped": True,
+                "reason": "gmail_not_connected",
+            }
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PENGUIN_CONNECT_POLL_SECONDS": "10",
+                "PENGUIN_CONNECT_POLL_INITIAL_DELAY_SECONDS": "0",
+            },
+            clear=False,
+        ), mock.patch(
+            "penguin_connect.run_incremental_sync",
+            side_effect=fake_run_incremental_sync,
+        ), mock.patch("watcher.log_action"), mock.patch("builtins.print") as mock_print:
+            watcher._penguin_connect_polling_loop()
+
+        self.assertIsNone(watcher._last_error_code)
+        mock_print.assert_not_called()
+
     def test_polling_loop_triggers_contacts_refresh(self):
         def fake_run_incremental_sync():
             watcher._shutdown_event.set()

@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,10 @@ from penguin_connect_local_api import resolve_local_api_base
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 IMESSAGE_DB = Path.home() / "Library" / "Messages" / "chat.db"
+_DEFAULT_WHATSAPP_DB = Path.home() / "whatsapp-mcp" / "whatsapp-bridge" / "store" / "messages.db"
+_DEFAULT_TELEGRAM_SESSION = Path.home() / "penguin-connect-data" / "telegram.session"
+_SLACK_KEYCHAIN_SERVICE = "com.penguinconnect.slack.oauth-token"
+_SLACK_KEYCHAIN_ACCOUNT = "penguin-connect-slack-user"
 
 
 @dataclass
@@ -117,6 +122,100 @@ def _check_penguinconnect_conversations(api_base: str) -> CheckResult:
         return CheckResult("penguinconnect_conversations", False, str(exc))
 
 
+def _check_whatsapp_bridge() -> CheckResult:
+    db_path = Path(os.environ.get("PENGUIN_CONNECT_WHATSAPP_DB_PATH", str(_DEFAULT_WHATSAPP_DB)))
+    if not db_path.exists():
+        return CheckResult("whatsapp_bridge", False, f"messages.db not found: {db_path}")
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        count = conn.execute("SELECT COUNT(*) FROM chats").fetchone()[0]
+        msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        conn.close()
+        return CheckResult("whatsapp_bridge", True, f"readable ({count} chats, {msg_count} messages)")
+    except Exception as exc:
+        return CheckResult("whatsapp_bridge", False, f"not readable: {exc}")
+
+
+def _check_whatsapp_api() -> CheckResult:
+    api_url = os.environ.get("PENGUIN_CONNECT_WHATSAPP_API_URL", "http://localhost:8080/api")
+    try:
+        r = requests.get(api_url.rstrip("/").rsplit("/api", 1)[0] + "/health", timeout=5)
+        if r.status_code == 200:
+            return CheckResult("whatsapp_api", True, f"reachable at {api_url}")
+        return CheckResult("whatsapp_api", False, f"http {r.status_code}")
+    except requests.ConnectionError:
+        return CheckResult("whatsapp_api", False, f"not reachable at {api_url} — is whatsapp-mcp bridge running?")
+    except Exception as exc:
+        return CheckResult("whatsapp_api", False, str(exc))
+
+
+def _check_telegram_auth() -> CheckResult:
+    session_path = Path(os.environ.get(
+        "PENGUIN_CONNECT_TELEGRAM_SESSION_PATH",
+        str(_DEFAULT_TELEGRAM_SESSION).replace(".session", ""),
+    ))
+    session_file = Path(str(session_path) + ".session") if not str(session_path).endswith(".session") else session_path
+    if not session_file.exists():
+        return CheckResult("telegram_auth", False, f"session file not found: {session_file}")
+    api_id = os.environ.get("PENGUIN_CONNECT_TELEGRAM_API_ID")
+    api_hash = os.environ.get("PENGUIN_CONNECT_TELEGRAM_API_HASH")
+    if not api_id or not api_hash:
+        return CheckResult("telegram_auth", False, "PENGUIN_CONNECT_TELEGRAM_API_ID/API_HASH not set")
+    try:
+        size = session_file.stat().st_size
+        if size < 100:
+            return CheckResult("telegram_auth", False, f"session file too small ({size} bytes) — may be invalid")
+        return CheckResult("telegram_auth", True, f"session exists ({size} bytes), credentials set")
+    except Exception as exc:
+        return CheckResult("telegram_auth", False, str(exc))
+
+
+def _slack_token() -> str:
+    configured = os.environ.get("PENGUIN_CONNECT_SLACK_TOKEN", "").strip()
+    if configured:
+        return configured
+    try:
+        result = subprocess.run(
+            [
+                "security",
+                "find-generic-password",
+                "-a",
+                _SLACK_KEYCHAIN_ACCOUNT,
+                "-s",
+                _SLACK_KEYCHAIN_SERVICE,
+                "-w",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return (result.stdout or "").strip() if result.returncode == 0 else ""
+
+
+def _check_slack_auth() -> CheckResult:
+    token = _slack_token()
+    if not token:
+        return CheckResult(
+            "slack_auth",
+            False,
+            "not connected — install Penguin in Slack and store its user token in Keychain",
+        )
+    try:
+        response = requests.get(
+            "https://slack.com/api/auth.test",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=5,
+        )
+        payload = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        return CheckResult("slack_auth", False, str(exc))
+    if not payload.get("ok"):
+        return CheckResult("slack_auth", False, str(payload.get("error") or "Slack rejected token"))
+    return CheckResult("slack_auth", True, f"connected: {payload.get('team') or 'unknown workspace'}")
+
+
 def _check_required_env() -> CheckResult:
     val = os.environ.get("PENGUIN_CONNECT_POLL_SECONDS", "30")
     try:
@@ -133,6 +232,10 @@ def run_checks(api_base: str) -> list[CheckResult]:
         _check_python,
         _check_required_env,
         _check_imessage_access,
+        _check_whatsapp_bridge,
+        _check_whatsapp_api,
+        _check_telegram_auth,
+        _check_slack_auth,
         _check_cache_db,
         lambda: _check_backend(api_base),
         lambda: _check_gmail_status(api_base),
@@ -179,6 +282,16 @@ def main() -> int:
                     "-H 'Content-Type: application/json' "
                     "-d '{\"mode\":\"startup_catchup\"}'"
                 )
+            elif f.name == "whatsapp_bridge":
+                print("- Install and start the whatsapp-mcp bridge (Go): https://github.com/nicebytes/whatsapp-mcp")
+                print("  DB path configurable via PENGUIN_CONNECT_WHATSAPP_DB_PATH.")
+            elif f.name == "whatsapp_api":
+                print("- Start the whatsapp-mcp bridge: cd ~/whatsapp-mcp && go run .")
+                print("  API URL configurable via PENGUIN_CONNECT_WHATSAPP_API_URL (default: http://localhost:8080/api).")
+            elif f.name == "telegram_auth":
+                print("- Set PENGUIN_CONNECT_TELEGRAM_API_ID and PENGUIN_CONNECT_TELEGRAM_API_HASH")
+                print("  (from https://my.telegram.org → API development tools)")
+                print("  Then run: python scripts/telegram_auth.py")
             elif f.name == "penguin_connect_poll_seconds":
                 print("- Set PENGUIN_CONNECT_POLL_SECONDS to a valid integer (recommended: 30).")
 

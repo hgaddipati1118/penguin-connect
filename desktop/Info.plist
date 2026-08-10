@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleDisplayName</key>
+  <string>Penguin</string>
+  <key>CFBundleExecutable</key>
+  <string>Penguin</string>
+  <key>CFBundleIconFile</key>
+  <string>PenguinIcon</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.penguinconnect.desktop</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>Penguin</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.1.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>13.0</string>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Penguin uses Apple events to open Messages and update Contacts only when you ask.</string>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+  </dict>
+  <key>NSContactsUsageDescription</key>
+  <string>Penguin uses Contacts to match conversations with people and apply contact updates you request.</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSPrincipalClass</key>
+  <string>NSApplication</string>
+  <key>PenguinRepoPath</key>
+  <string>__PENGUIN_REPO_PATH__</string>
+</dict>
+</plist>

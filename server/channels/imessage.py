@@ -37,12 +37,16 @@ class IMessageChannelAdapter:
         limit: int = 50,
         since: Optional[str] = None,
         since_native_message_id: Optional[str] = None,
+        before: Optional[str] = None,
+        before_native_message_id: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         return fetch_imessage_messages(
             chat_id,
             limit=limit,
             since=since,
             since_native_message_id=since_native_message_id,
+            before=before,
+            before_native_message_id=before_native_message_id,
         )
 
     def send_message(

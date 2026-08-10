@@ -25,6 +25,10 @@ classifiers = [
     "Topic :: Communications :: Chat",
 ]
 
+[project.optional-dependencies]
+mcp = ["mcp>=1.27,<2"]
+semantic-search = ["sqlite-vec>=0.1.9,<0.2"]
+
 [project.urls]
 Homepage = "https://github.com/hgaddipati1118/penguin-connect"
 Repository = "https://github.com/hgaddipati1118/penguin-connect"

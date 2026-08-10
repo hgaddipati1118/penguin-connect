@@ -50,7 +50,7 @@ Important runtime constraint: setup and bridge commands must be run from
 - `README.md`: user-facing project overview and install instructions
 - `docs/PENGUIN_CONNECT.md`: setup, troubleshooting, operational commands
 - `server/`: FastAPI app, sync logic, local DB, tests
-- `server/channels/`: provider adapters; Apple Messages is implemented today
+- `server/channels/`: provider adapters (Apple Messages, WhatsApp, Telegram)
 - `scripts/`: setup, doctor, sync, audit, and launch helpers
 - `skills/`: repo-local instructions for open source workflow and future channel
   integrations
@@ -60,8 +60,8 @@ Important runtime constraint: setup and bridge commands must be run from
 
 - Keep the bridge local-only on `127.0.0.1` unless the task explicitly changes
   that contract.
-- The runtime is macOS-only today because Apple Messages is the first source
-  adapter.
+- The runtime is macOS-only today. Source adapters: Apple Messages, WhatsApp
+  (via whatsapp-mcp bridge), and Telegram (via Telethon).
 - `conversation_id` is the primary logical identity.
 - Apple Messages direct messages may unify across sibling `iMessage`, `SMS`,
   and `RCS` routes; group chats stay separate per exact chat.

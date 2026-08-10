@@ -37,7 +37,8 @@ was actually verified.
 1. Copy `.env.example` to `.env`.
 2. Create the virtual environment under [`server/`](./server) and install
    [`server/requirements.txt`](./server/requirements.txt).
-3. Run bridge and setup commands from `Terminal.app` on macOS with Full Disk
+3. Install Node.js 18+ for the frontend syntax and unit checks.
+4. Run bridge and setup commands from `Terminal.app` on macOS with Full Disk
    Access enabled.
 
 ```bash

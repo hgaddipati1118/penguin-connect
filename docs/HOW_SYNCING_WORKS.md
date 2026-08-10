@@ -13,7 +13,8 @@ Each lane has its own lock, so incremental and backfill can run concurrently —
 
 ## Incremental Sync
 
-The watcher polls every 30 seconds (configurable 10–300s). Each poll enqueues an incremental sync job that:
+The watcher polls every 30 seconds (configurable 10–300s). When Gmail is
+connected, each poll enqueues an incremental sync job that:
 
 1. **Finds hot conversations** — conversations with iMessage activity in the last ~13 minutes or pending Gmail replies
 2. **Expands to fit** — if 8 conversations are hot, it syncs all 8 (up to a cap of 20). If nothing is hot, it round-robins through one conversation per poll
@@ -21,6 +22,11 @@ The watcher polls every 30 seconds (configurable 10–300s). Each poll enqueues 
 4. **Imports to Gmail** and updates the cursor after each message
 
 Because incremental runs every 30 seconds and only touches active conversations, most messages appear in Gmail within a minute.
+
+Without a connected Gmail account, the watcher stays in local-only mode and does
+not create Gmail sync jobs. iMessage, WhatsApp, and Slack browsing/sending keep
+using their local or native adapters, including the separate durable offline-send
+queue.
 
 ## Startup Catch-Up
 
@@ -87,8 +93,8 @@ If the streak hits 8, backfill stands down entirely for an hour. This prevents o
 
 Every message import updates two cursor values in the database:
 
-- `last_imessage_ts`: The timestamp of the last successfully imported message
-- `last_imessage_native_message_id`: A tiebreaker for messages with identical timestamps
+- `last_source_ts`: The timestamp of the last successfully imported message
+- `last_source_native_message_id`: A tiebreaker for messages with identical timestamps
 
 On the next sync — whether it's a normal poll, a resume after preemption, or a restart after a crash — the query uses these cursors to fetch only messages newer than the last import. No rescanning, no duplicates.
 

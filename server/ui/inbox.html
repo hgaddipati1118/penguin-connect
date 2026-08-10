@@ -1,0 +1,871 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Penguin</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/penguin-connect/ui/inbox.css" />
+  </head>
+  <body>
+    <svg class="icon-sprite" aria-hidden="true">
+      <symbol id="i-inbox" viewBox="0 0 24 24">
+        <path d="M4 4.75h16v13.5H4zM4 14h4l1.5 2h5l1.5-2h4" />
+      </symbol>
+      <symbol id="i-people" viewBox="0 0 24 24">
+        <circle cx="9" cy="8" r="3.25" />
+        <path d="M3.5 19c.45-3.35 2.25-5 5.5-5s5.05 1.65 5.5 5M15 6.25a3 3 0 0 1 0 5.5M16.5 14c2.35.35 3.68 2.02 4 5" />
+      </symbol>
+      <symbol id="i-search" viewBox="0 0 24 24">
+        <circle cx="10.5" cy="10.5" r="6" />
+        <path d="m15 15 4.25 4.25" />
+      </symbol>
+      <symbol id="i-spark" viewBox="0 0 24 24">
+        <path d="M12 2.75c.55 4.1 2.65 6.2 6.75 6.75-4.1.55-6.2 2.65-6.75 6.75-.55-4.1-2.65-6.2-6.75-6.75C9.35 8.95 11.45 6.85 12 2.75Z" />
+        <path d="M18.5 15.75c.23 1.7 1.05 2.52 2.75 2.75-1.7.23-2.52 1.05-2.75 2.75-.23-1.7-1.05-2.52-2.75-2.75 1.7-.23 2.52-1.05 2.75-2.75Z" />
+      </symbol>
+      <symbol id="i-compose" viewBox="0 0 24 24">
+        <path d="M12 20H4v-8l9.5-9.5a2.12 2.12 0 0 1 3 3L7 15v2h2l9.5-9.5" />
+      </symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24">
+        <path d="M19 8a8 8 0 1 0 .5 7M19 3v5h-5" />
+      </symbol>
+      <symbol id="i-panel" viewBox="0 0 24 24">
+        <rect x="3" y="4" width="18" height="16" rx="1" />
+        <path d="M15 4v16" />
+      </symbol>
+      <symbol id="i-paperclip" viewBox="0 0 24 24">
+        <path d="m8.5 12.5 6.75-6.75a3 3 0 1 1 4.25 4.25l-8.25 8.25a5 5 0 0 1-7.07-7.07l8.07-8.08M6.3 13.3l7.45-7.45" />
+      </symbol>
+      <symbol id="i-send" viewBox="0 0 24 24">
+        <path d="m3.5 4 17 8-17 8 3-8-3-8Z" />
+        <path d="M6.5 12h14" />
+      </symbol>
+      <symbol id="i-close" viewBox="0 0 24 24">
+        <path d="m6 6 12 12M18 6 6 18" />
+      </symbol>
+      <symbol id="i-copy" viewBox="0 0 24 24">
+        <rect x="8" y="8" width="11" height="11" rx="1" />
+        <path d="M16 8V5H5v11h3" />
+      </symbol>
+      <symbol id="i-arrow" viewBox="0 0 24 24">
+        <path d="m9 5 7 7-7 7" />
+      </symbol>
+      <symbol id="i-reply" viewBox="0 0 24 24">
+        <path d="m9.5 7-5 5 5 5" />
+        <path d="M5 12h7.25c4.1 0 6.25 2 6.25 6" />
+      </symbol>
+      <symbol id="i-note" viewBox="0 0 24 24">
+        <path d="M5 3.75h14v16.5H5zM8.5 8h7M8.5 12h7M8.5 16h4" />
+      </symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="8.5" />
+        <path d="M12 7.5V12l3.25 2" />
+      </symbol>
+      <symbol id="i-link" viewBox="0 0 24 24">
+        <path d="M9.5 14.5 14.5 9.5M7.75 16.25l-1.2 1.2a3.54 3.54 0 0 1-5-5l3.7-3.7a3.54 3.54 0 0 1 5 0M16.25 7.75l1.2-1.2a3.54 3.54 0 0 1 5 5l-3.7 3.7a3.54 3.54 0 0 1-5 0" />
+      </symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24">
+        <path d="M3.5 6.5h6l2 2h9v10h-17z" />
+      </symbol>
+      <symbol id="i-pin" viewBox="0 0 24 24">
+        <path d="M8 3.5h8M9 3.5l1 6-4 3v2h12v-2l-4-3 1-6M12 14.5v6" />
+      </symbol>
+      <symbol id="i-more" viewBox="0 0 24 24">
+        <circle cx="5" cy="12" r="1" />
+        <circle cx="12" cy="12" r="1" />
+        <circle cx="19" cy="12" r="1" />
+      </symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24">
+        <path d="M4.5 7h15M9 3.5h6l1 3.5H8l1-3.5ZM7 7l.75 13.5h8.5L17 7M10 10.5v6M14 10.5v6" />
+      </symbol>
+    </svg>
+
+    <main class="app-shell">
+      <nav class="app-nav" aria-label="Penguin navigation">
+        <div class="brand-mark" aria-label="Penguin">
+          <img src="/penguin-connect/ui/penguin-logo.png" alt="">
+        </div>
+        <div class="nav-stack">
+          <button class="nav-button active" type="button" data-view="inbox" title="Inbox" aria-label="Inbox">
+            <svg><use href="#i-inbox"></use></svg>
+          </button>
+          <button class="nav-button" type="button" data-view="files" title="Files" aria-label="Files">
+            <svg><use href="#i-paperclip"></use></svg>
+          </button>
+          <button class="nav-button" type="button" data-view="links" title="Links" aria-label="Links">
+            <svg><use href="#i-link"></use></svg>
+          </button>
+          <button class="nav-button" type="button" data-view="queue" title="Queue" aria-label="Queue">
+            <svg><use href="#i-clock"></use></svg>
+          </button>
+          <button class="nav-button" type="button" data-view="people" title="People" aria-label="People">
+            <svg><use href="#i-people"></use></svg>
+          </button>
+        </div>
+        <div class="nav-spacer"></div>
+        <button class="nav-button nav-help-button" id="shortcutHelpButton" type="button" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
+          <span>?</span>
+        </button>
+        <div class="connection-orbit" id="connectionOrbit" title="Checking local bridge">
+          <span></span>
+        </div>
+      </nav>
+
+      <section class="conversation-pane" aria-label="Conversations and contacts">
+        <header class="pane-header">
+          <div>
+            <p class="overline">Penguin</p>
+            <h1 id="paneTitle">Inbox</h1>
+          </div>
+          <div class="pane-header-actions">
+            <button class="icon-button" id="addContactButton" type="button" title="Add or update contact" aria-label="Add or update contact" hidden>
+              <svg><use href="#i-people"></use></svg>
+            </button>
+            <button class="icon-button" id="composeButton" type="button" title="New message" aria-label="New message">
+              <svg><use href="#i-compose"></use></svg>
+            </button>
+          </div>
+        </header>
+
+        <label class="global-search">
+          <svg><use href="#i-search"></use></svg>
+          <input id="globalSearch" type="search" placeholder="Search messages and people" autocomplete="off" />
+          <kbd>⌘K</kbd>
+        </label>
+
+        <div class="source-tabs" id="sourceTabs" role="group" aria-label="Message source">
+          <button class="active" type="button" data-source="all">All</button>
+          <button type="button" data-source="imessage"><span class="source-dot imessage"></span>iMessage</button>
+          <button type="button" data-source="whatsapp"><span class="source-dot whatsapp"></span>WhatsApp</button>
+          <button type="button" data-source="slack"><span class="source-dot slack"></span>Slack</button>
+        </div>
+        <div class="label-bar" id="labelBar" aria-label="Conversation folders"></div>
+
+        <div class="list-summary">
+          <span id="listSummary">Loading conversations</span>
+          <button class="text-button" id="refreshButton" type="button">
+            <svg><use href="#i-refresh"></use></svg>
+            Refresh
+          </button>
+        </div>
+
+        <div class="pane-list" id="conversationList" role="list" aria-live="polite"></div>
+        <div class="pane-list people-list" id="peopleList" role="list" aria-live="polite" hidden></div>
+        <div class="pane-list files-list" id="filesList" role="list" aria-live="polite" hidden></div>
+        <div class="pane-list links-list" id="linksList" role="list" aria-live="polite" hidden></div>
+        <div class="pane-list queue-list" id="queueList" role="list" aria-live="polite" hidden></div>
+        <div class="pane-list search-list" id="searchList" role="list" aria-live="polite" hidden></div>
+
+        <footer class="pane-footer">
+          <span id="syncStatus"><span class="status-dot"></span> Local only</span>
+          <a href="/penguin-connect/console">Open power console</a>
+        </footer>
+      </section>
+
+      <section class="thread-pane" aria-label="Selected conversation">
+        <div class="thread-empty" id="threadEmpty">
+          <div class="empty-emblem">
+            <span></span><span></span><span></span>
+          </div>
+          <p class="overline">One place for your people</p>
+          <h2>Choose a conversation</h2>
+          <p>iMessage and WhatsApp stay in one timeline, ordered by the latest activity.</p>
+          <button class="secondary-button" type="button" id="emptySearchButton">
+            <svg><use href="#i-search"></use></svg>
+            Search your messages
+          </button>
+        </div>
+
+        <div class="thread-content" id="threadContent" hidden>
+          <header class="thread-header">
+            <div class="person-avatar large" id="threadAvatar"></div>
+            <div class="thread-identity">
+              <div class="thread-name-row">
+                <h2 id="threadTitle">Conversation</h2>
+                <span class="provider-pill" id="threadProvider"></span>
+              </div>
+              <p id="threadSubtitle"></p>
+            </div>
+            <div class="thread-header-actions">
+              <button class="icon-button" id="threadPinButton" type="button" title="Pin conversation (S)" aria-label="Pin conversation">
+                <svg><use href="#i-pin"></use></svg>
+              </button>
+              <button class="icon-button" id="threadNoteButton" type="button" title="Conversation note (E)" aria-label="Edit conversation note">
+                <svg><use href="#i-note"></use></svg>
+              </button>
+              <button class="icon-button" id="threadLabelButton" type="button" title="Organize with labels (L)" aria-label="Organize conversation with labels (L)">
+                <svg><use href="#i-folder"></use></svg>
+              </button>
+              <button class="icon-button" id="threadReminderButton" type="button" title="Follow-up reminder (H)" aria-label="Set follow-up reminder">
+                <svg><use href="#i-clock"></use></svg>
+              </button>
+              <button class="icon-button" id="threadSearchButton" type="button" title="Search this conversation" aria-label="Search this conversation">
+                <svg><use href="#i-search"></use></svg>
+              </button>
+              <button class="icon-button" id="threadAgentButton" type="button" title="Ask Penguin Agent" aria-label="Ask Penguin Agent">
+                <svg><use href="#i-spark"></use></svg>
+              </button>
+            </div>
+          </header>
+
+          <div class="thread-search-bar" id="threadSearchBar" hidden>
+            <label>
+              <svg><use href="#i-search"></use></svg>
+              <input id="threadSearch" type="search" placeholder="Find in this conversation" autocomplete="off" />
+            </label>
+            <span id="threadSearchCount"></span>
+            <button class="icon-button compact" id="closeThreadSearchButton" type="button" title="Close search" aria-label="Close search">
+              <svg><use href="#i-close"></use></svg>
+            </button>
+          </div>
+          <div class="pinned-messages-bar" id="pinnedMessagesBar" hidden aria-label="Pinned messages"></div>
+
+          <div class="message-list" id="messageList" role="log" aria-live="polite"></div>
+          <div
+            class="reaction-popover"
+            id="reactionPopover"
+            role="dialog"
+            aria-label="React to message"
+            aria-modal="false"
+            hidden
+          >
+            <div class="reaction-popover-heading">
+              <strong>React</strong>
+              <span id="reactionProviderLabel">Slack</span>
+            </div>
+            <div class="reaction-options" role="group" aria-label="Choose a reaction">
+              <button type="button" data-reaction-name="+1" data-reaction-emoji="👍" title="Thumbs up">👍</button>
+              <button type="button" data-reaction-name="heart" data-reaction-emoji="❤️" title="Heart">❤️</button>
+              <button type="button" data-reaction-name="joy" data-reaction-emoji="😂" title="Laugh">😂</button>
+              <button type="button" data-reaction-name="tada" data-reaction-emoji="🎉" title="Celebrate">🎉</button>
+              <button type="button" data-reaction-name="eyes" data-reaction-emoji="👀" title="Looking">👀</button>
+              <button type="button" data-reaction-name="white_check_mark" data-reaction-emoji="✅" title="Done">✅</button>
+            </div>
+            <button class="reaction-more-button" id="reactionMoreButton" type="button">More in Slack</button>
+          </div>
+          <div
+            class="message-action-popover"
+            id="messageActionPopover"
+            role="menu"
+            aria-label="Message actions"
+            hidden
+          >
+            <button type="button" role="menuitem" data-message-operation="note">
+              <svg><use href="#i-note"></use></svg>
+              <span data-message-note-label>Add private note</span>
+            </button>
+            <button type="button" role="menuitem" data-message-operation="edit">
+              <svg><use href="#i-compose"></use></svg>
+              Edit message
+            </button>
+            <button class="destructive" type="button" role="menuitem" data-message-operation="delete">
+              <svg><use href="#i-trash"></use></svg>
+              Delete message
+            </button>
+          </div>
+
+          <div class="composer-wrap">
+            <div class="scheduled-queue" id="scheduledQueue" aria-label="Scheduled message queue" hidden></div>
+            <div class="attachment-preview" id="attachmentPreview" hidden></div>
+            <div class="composer-reply-context" id="composerReplyContext" hidden>
+              <span class="composer-reply-icon"><svg><use href="#i-reply"></use></svg></span>
+              <span class="composer-reply-copy">
+                <strong id="composerReplyTitle">Replying to message</strong>
+                <small id="composerReplySnippet"></small>
+              </span>
+              <button class="composer-reply-clear" id="clearReplyTargetButton" type="button" title="Cancel reply" aria-label="Cancel reply">
+                <svg><use href="#i-close"></use></svg>
+              </button>
+            </div>
+            <div class="composer" id="messageComposerShell">
+              <textarea id="messageComposer" rows="1" placeholder="Write a message" aria-label="Write a message"></textarea>
+              <div class="mention-suggestions" id="mentionSuggestions" role="listbox" aria-label="Mention a participant" hidden></div>
+              <span class="composer-ai-state" id="composerAiState" aria-live="polite" hidden>
+                <svg><use href="#i-spark"></use></svg>
+                Rewriting…
+              </span>
+              <div class="composer-toolbar">
+                <div class="composer-tools">
+                  <label class="attach-button" for="attachmentInput" title="Attach files" aria-label="Attach files">
+                    <svg><use href="#i-paperclip"></use></svg>
+                  </label>
+                  <input id="attachmentInput" type="file" multiple hidden />
+                  <button class="gif-button" id="gifButton" type="button" title="Find a GIF (⌘G)" aria-label="Find a GIF">GIF</button>
+                  <button class="mention-button" id="mentionButton" type="button" title="Mention a participant (@)" aria-label="Mention a participant">@</button>
+                  <button class="writing-button" id="writingButton" type="button" title="Write with Codex (⌘J)" aria-label="Write with Codex (⌘J)">
+                    <svg><use href="#i-spark"></use></svg>
+                  </button>
+                </div>
+                <div class="composer-tools composer-tools-right">
+                  <label class="auto-translate-toggle" title="Automatically translate clearly non-English messages">
+                    <input id="autoTranslateToggle" type="checkbox" checked />
+                    Translate
+                  </label>
+                  <button class="schedule-send-button" id="scheduleSendButton" type="button" title="Schedule message (⌘⇧L)" aria-label="Schedule message" disabled>
+                    <svg><use href="#i-clock"></use></svg>
+                  </button>
+                  <button class="send-button" id="sendButton" type="button" title="Send message (Enter)" aria-label="Send message" disabled>
+                    <svg><use href="#i-send"></use></svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div class="composer-meta">
+              <span id="composerStatus">Messages never leave this Mac except through their original service.</span>
+              <span><kbd>↵</kbd> send · <kbd>⌘⇧↵</kbd> now · <kbd>⌘⇧L</kbd> later</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="agent-pane" id="agentPane" aria-label="Penguin Agent">
+        <header class="agent-header">
+          <div class="agent-title">
+            <span class="agent-mark"><svg><use href="#i-spark"></use></svg></span>
+            <div>
+              <h2>Penguin Agent</h2>
+              <p id="agentStatus">Checking Codex</p>
+            </div>
+          </div>
+          <div class="agent-header-actions">
+            <button class="icon-button agent-header-button" id="actionLogButton" type="button" title="Conversation activity" aria-label="Show conversation activity" aria-pressed="false">
+              <svg><use href="#i-note"></use></svg>
+            </button>
+            <button class="icon-button agent-header-button" id="newAgentChatButton" type="button" title="New agent chat" aria-label="Start a new Penguin Agent chat">
+              <svg><use href="#i-compose"></use></svg>
+            </button>
+            <button class="icon-button agent-header-button" id="agentHistoryButton" type="button" title="Agent chat history" aria-label="Show Penguin Agent chat history" aria-expanded="false">
+              <svg><use href="#i-clock"></use></svg>
+            </button>
+            <button class="icon-button agent-close-button" id="closeAgentButton" type="button" title="Close agent (⌘/)" aria-label="Close Penguin Agent">
+              <svg><use href="#i-panel"></use></svg>
+            </button>
+          </div>
+        </header>
+
+        <div class="agent-body">
+          <section class="agent-control-strip" aria-label="Agent context and workspace access">
+            <div class="agent-context">
+              <span class="context-orbit"></span>
+              <span id="agentScopeSummary">Current chat first, then your inbox</span>
+            </div>
+            <label class="agent-workspace-mode">
+              <span>Access</span>
+              <select id="agentModeSelect" aria-label="Penguin Agent workspace access">
+                <option value="read">Read</option>
+                <option value="ask">Ask first</option>
+                <option value="yolo">Full access</option>
+              </select>
+              <small id="agentModeHelp">Read-only · uses the Slashy coordination root</small>
+            </label>
+          </section>
+
+          <section class="agent-history-panel" id="agentHistoryPanel" hidden aria-label="Recent Penguin Agent chats">
+            <div class="agent-history-head">
+              <div>
+                <p>Recent chats</p>
+                <small id="agentHistoryCount">Saved privately on this Mac</small>
+              </div>
+              <button class="text-button" id="agentHistoryNewButton" type="button">New chat</button>
+            </div>
+            <div class="agent-history-list" id="agentHistoryList"></div>
+          </section>
+
+          <div class="agent-welcome" id="agentWelcome">
+            <p class="agent-eyebrow">Message intelligence</p>
+            <h3>What should we do next?</h3>
+            <p>Ask about this chat, search every conversation, or turn an answer into a draft.</p>
+          </div>
+
+          <div class="agent-quick-actions" id="agentQuickActions">
+            <button type="button" data-agent-action="summary">
+              <span><svg><use href="#i-spark"></use></svg>Summarize</span>
+              <small>Catch me up</small>
+            </button>
+            <button type="button" data-agent-action="reply">
+              <span><svg><use href="#i-compose"></use></svg>Draft a reply</span>
+              <small>Match my tone</small>
+            </button>
+            <button type="button" data-agent-action="commitments">
+              <span><svg><use href="#i-clock"></use></svg>Commitments</span>
+              <small>Promises and next steps</small>
+            </button>
+            <button type="button" data-agent-action="contact">
+              <span><svg><use href="#i-people"></use></svg>Update contact</span>
+              <small>From this conversation</small>
+            </button>
+          </div>
+
+          <div class="agent-answer" id="agentAnswer" hidden>
+            <div class="agent-answer-head">
+              <span>Agent chat</span>
+              <div>
+                <button class="text-button" id="retryAgentAnswerButton" type="button">Retry</button>
+                <button class="text-button" id="copyAgentAnswerButton" type="button">
+                  <svg><use href="#i-copy"></use></svg>
+                  Copy
+                </button>
+              </div>
+            </div>
+            <div class="agent-answer-content" id="agentAnswerContent"></div>
+            <details class="agent-activity" id="agentActivity" open hidden>
+              <summary>
+                <span>Live activity</span>
+                <small id="agentActivityStatus">Starting…</small>
+              </summary>
+              <div class="agent-activity-list" id="agentActivityList"></div>
+            </details>
+            <section class="agent-sources" id="agentSources" hidden aria-label="Sources used">
+              <div class="agent-sources-head">
+                <strong>Sources used</strong>
+                <small>Chats Penguin searched for this answer</small>
+              </div>
+              <div class="agent-references" id="agentReferences"></div>
+            </section>
+            <button class="secondary-button full-width" id="agentContactActionButton" type="button" hidden>
+              Review contact update
+            </button>
+            <button class="secondary-button full-width" id="useAgentAnswerButton" type="button">
+              Use as message draft
+            </button>
+          </div>
+        </div>
+
+        <section class="action-log-pane" id="actionLogPane" hidden aria-label="Conversation activity">
+          <header class="action-log-intro">
+            <div>
+              <p class="agent-eyebrow">Conversation memory</p>
+              <h3>Activity</h3>
+              <p id="actionLogContext">Choose a conversation to see what happened.</p>
+            </div>
+            <button class="text-button" id="closeActionLogButton" type="button">Back to Agent</button>
+          </header>
+
+          <form class="action-log-form" id="actionLogForm">
+            <label>
+              <span>Log an action</span>
+              <select id="actionLogType" aria-label="Action type">
+                <option value="manual_note">Note</option>
+                <option value="email_sent">Email sent</option>
+                <option value="call_logged">Call</option>
+                <option value="meeting_logged">Meeting</option>
+                <option value="task_completed">Task done</option>
+              </select>
+            </label>
+            <textarea id="actionLogSummary" rows="3" maxlength="500" placeholder="What happened?" aria-label="Action summary"></textarea>
+            <div class="action-log-form-footer">
+              <label>
+                <span>When</span>
+                <input id="actionLogOccurredAt" type="datetime-local" aria-label="Action date and time" />
+              </label>
+              <button class="agent-send-button" id="addActionLogButton" type="submit">Add</button>
+            </div>
+            <p class="action-log-form-status" id="actionLogStatus" aria-live="polite"></p>
+          </form>
+
+          <div class="action-log-list" id="actionLogList" aria-live="polite"></div>
+        </section>
+
+        <div class="agent-composer">
+          <textarea id="agentQuestion" rows="2" placeholder="Ask Penguin anything…" aria-label="Ask Penguin Agent"></textarea>
+          <div>
+            <span id="agentContextLabel">No chat selected</span>
+            <button class="agent-send-button" id="askAgentButton" type="button" disabled>
+              Send
+              <svg><use href="#i-arrow"></use></svg>
+            </button>
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <dialog class="compose-dialog" id="composeDialog" aria-labelledby="composeDialogTitle">
+      <form method="dialog">
+        <header>
+          <div>
+            <p class="overline">Start from a person</p>
+            <h2 id="composeDialogTitle">New message</h2>
+          </div>
+          <button class="icon-button" value="cancel" title="Close" aria-label="Close">
+            <svg><use href="#i-close"></use></svg>
+          </button>
+        </header>
+        <label class="dialog-search">
+          <svg><use href="#i-search"></use></svg>
+          <input id="composeSearch" type="search" placeholder="Search contacts or existing chats" autocomplete="off" />
+        </label>
+        <div class="compose-results" id="composeResults" role="list"></div>
+        <p class="dialog-note">New outbound threads use an existing safe route. The power console can stage a brand-new Apple Messages draft.</p>
+      </form>
+    </dialog>
+
+    <dialog class="compose-dialog message-edit-dialog" id="messageEditDialog" aria-labelledby="messageEditDialogTitle">
+      <form id="messageEditForm">
+        <header>
+          <div>
+            <p class="overline" id="messageEditProviderLabel">Slack</p>
+            <h2 id="messageEditDialogTitle">Edit message</h2>
+          </div>
+          <button class="icon-button" type="button" id="closeMessageEditButton" title="Close" aria-label="Close edit message">
+            <svg><use href="#i-close"></use></svg>
+          </button>
+        </header>
+        <div class="message-mutation-body">
+          <label for="messageEditText">Message</label>
+          <textarea id="messageEditText" rows="6" maxlength="20000" required></textarea>
+          <p class="message-mutation-status" id="messageEditStatus" aria-live="polite"></p>
+        </div>
+        <div class="conversation-meta-actions">
+          <button class="secondary-button" type="button" id="cancelMessageEditButton">Cancel</button>
+          <button class="agent-send-button" type="submit" id="saveMessageEditButton">Save edit</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="compose-dialog message-edit-dialog message-note-dialog" id="messageNoteDialog" aria-labelledby="messageNoteDialogTitle">
+      <form id="messageNoteForm">
+        <header>
+          <div>
+            <p class="overline">Private · stored locally</p>
+            <h2 id="messageNoteDialogTitle">Note on message</h2>
+          </div>
+          <button class="icon-button" type="button" id="closeMessageNoteButton" title="Close" aria-label="Close message note">
+            <svg><use href="#i-close"></use></svg>
+          </button>
+        </header>
+        <div class="message-mutation-body">
+          <blockquote class="message-note-preview" id="messageNotePreview"></blockquote>
+          <label for="messageNoteText">Note</label>
+          <textarea id="messageNoteText" rows="5" maxlength="2000" placeholder="Add context, a decision, or what to remember"></textarea>
+          <p class="message-mutation-status" id="messageNoteStatus" aria-live="polite">Included in local message search.</p>
+        </div>
+        <div class="conversation-meta-actions">
+          <button class="text-button message-note-clear" type="button" id="clearMessageNoteButton">Clear note</button>
+          <span class="action-spacer"></span>
+          <button class="secondary-button" type="button" id="cancelMessageNoteButton">Cancel</button>
+          <button class="agent-send-button" type="submit" id="saveMessageNoteButton">Save note</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog
+      class="compose-dialog message-delete-dialog"
+      id="messageDeleteDialog"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="messageDeleteDialogTitle"
+      aria-describedby="messageDeleteDialogDescription"
+    >
+      <div class="message-delete-sheet">
+        <header>
+          <div>
+            <p class="overline" id="messageDeleteProviderLabel">Slack</p>
+            <h2 id="messageDeleteDialogTitle">Delete message?</h2>
+          </div>
+          <button class="icon-button" type="button" id="closeMessageDeleteButton" title="Close" aria-label="Close delete confirmation">
+            <svg><use href="#i-close"></use></svg>
+          </button>
+        </header>
+        <div class="message-mutation-body">
+          <p id="messageDeleteDialogDescription">This removes the message from Slack for everyone. It cannot be undone here.</p>
+          <blockquote id="messageDeletePreview"></blockquote>
+          <p class="message-mutation-status" id="messageDeleteStatus" aria-live="polite"></p>
+        </div>
+        <div class="conversation-meta-actions">
+          <button class="secondary-button" type="button" id="cancelMessageDeleteButton">Cancel</button>
+          <button class="agent-send-button destructive-button" type="button" id="confirmMessageDeleteButton">Delete from Slack</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog class="compose-dialog gif-dialog" id="gifDialog" aria-labelledby="gifDialogTitle">
+      <div class="gif-picker">
+        <header>
+          <div>
+            <p class="overline">Powered by GIPHY</p>
+            <h2 id="gifDialogTitle">Find a GIF</h2>
+          </div>
+          <button class="icon-button" type="button" id="closeGifButton" title="Close" aria-label="Close GIF picker">
+            <svg><use href="#i-close"></use></svg>
+          </button>
+        </header>
+        <label class="dialog-search">
+          <svg><use href="#i-search"></use></svg>
+          <input id="gifSearch" type="search" placeholder="Search reactions and GIFs" autocomplete="off" />
+        </label>
+        <div class="gif-results" id="gifResults" role="listbox" aria-label="GIF results"></div>
+        <p class="dialog-note" id="gifStatus">
+          Arrow keys move · Enter adds to your message · <a href="https://giphy.com/" target="_blank" rel="noreferrer">GIPHY</a>
+        </p>
+      </div>
+    </dialog>
+
+    <dialog class="compose-dialog contact-card-dialog" id="contactCardDialog" aria-labelledby="contactCardTitle">
+      <div class="contact-card">
+        <header>
+          <div>
+            <p class="overline">Contact</p>
+            <h2 id="contactCardTitle">Person</h2>
+            <p class="contact-card-subtitle" id="contactCardSubtitle"></p>
+          </div>
+          <button class="icon-button" type="button" id="closeContactCardButton" title="Close" aria-label="Close contact card">
+            <svg><use href="#i-close"></use></svg>
+          </button>
+        </header>
+        <div class="contact-card-details" id="contactCardDetails"></div>
+        <div class="contact-card-section">
+          <span class="search-section-title"><span>Conversations</span><span id="contactCardConversationCount">0</span></span>
+          <div class="contact-card-conversations" id="contactCardConversations"></div>
+        </div>
+        <div class="conversation-meta-actions">
+          <button class="secondary-button" type="button" id="editContactCardButton">Edit contact</button>
+          <button class="agent-send-button" type="button" id="doneContactCardButton">Done</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog class="compose-dialog contact-dialog" id="contactDialog" aria-labelledby="contactDialogTitle">
+      <form id="contactForm">
+        <header>
+          <div>
+            <p class="overline">Apple Contacts</p>
+            <h2 id="contactDialogTitle">Add or update contact</h2>
+          </div>
+          <button class="icon-button" type="button" id="closeContactDialogButton" title="Close" aria-label="Close">
+            <svg><use href="#i-close"></use></svg>
+          </button>
+        </header>
+        <div class="conversation-meta-fields contact-fields">
+          <label>
+            <span>Existing phone or email (optional)</span>
+            <input id="contactMatchHandle" type="text" placeholder="Fill this to update an existing contact" />
+          </label>
+          <div class="contact-name-fields">
+            <label><span>First name</span><input id="contactFirstName" type="text" autocomplete="given-name" /></label>
+            <label><span>Last name</span><input id="contactLastName" type="text" autocomplete="family-name" /></label>
+          </div>
+          <label><span>Organization</span><input id="contactOrganization" type="text" autocomplete="organization" /></label>
+          <label><span>Phone</span><input id="contactPhone" type="tel" autocomplete="tel" /></label>
+          <label><span>Email</span><input id="contactEmail" type="email" autocomplete="email" /></label>
+        </div>
+        <div class="conversation-meta-actions">
+          <button class="secondary-button" type="button" id="cancelContactButton">Cancel</button>
+          <button class="agent-send-button" type="submit" id="saveContactButton">Save contact</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="compose-dialog conversation-meta-dialog" id="conversationMetaDialog" aria-labelledby="conversationMetaTitle">
+      <form id="conversationMetaForm">
+        <header>
+          <div>
+            <p class="overline">Conversation details</p>
+            <h2 id="conversationMetaTitle">Organize conversation</h2>
+          </div>
+          <button class="icon-button" type="button" id="closeConversationMetaButton" title="Close" aria-label="Close">
+            <svg><use href="#i-close"></use></svg>
+          </button>
+        </header>
+        <div class="conversation-meta-fields">
+          <label class="conversation-label-field">
+            <span>Custom conversation name</span>
+            <input id="conversationTitleInput" type="text" maxlength="160" placeholder="Keep the native name" />
+          </label>
+          <div class="conversation-avatar-field">
+            <span class="conversation-avatar-preview" id="conversationAvatarPreview"></span>
+            <label class="secondary-button conversation-avatar-upload" for="conversationAvatarInput">Choose group image</label>
+            <input id="conversationAvatarInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
+            <button class="text-button" id="removeConversationAvatarButton" type="button">Remove</button>
+          </div>
+          <div class="conversation-participants-field" id="conversationParticipantsField" hidden>
+            <span>Participants</span>
+            <div class="conversation-participant-list" id="conversationParticipantList"></div>
+            <button class="secondary-button" id="manageParticipantsButton" type="button">Manage in provider</button>
+            <small>Participant membership is changed in the native iMessage or WhatsApp group.</small>
+          </div>
+          <label>
+            <span>Private note</span>
+            <textarea id="conversationNote" rows="6" placeholder="Add context, decisions, or anything to remember"></textarea>
+          </label>
+          <label>
+            <span>Follow up</span>
+            <input id="conversationFollowUp" type="datetime-local" />
+          </label>
+          <label class="conversation-label-field">
+            <span>Labels / folders</span>
+            <input id="conversationLabels" type="text" placeholder="Friends, Work, Waiting" />
+            <small>Separate labels with commas. They become folders in the inbox.</small>
+          </label>
+        </div>
+        <div class="conversation-meta-actions">
+          <button class="secondary-button" type="button" id="clearConversationFollowUpButton">Clear reminder</button>
+          <button class="agent-send-button" type="submit">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="compose-dialog label-picker-dialog" id="labelPickerDialog" aria-labelledby="labelPickerTitle" tabindex="-1">
+      <div class="label-picker">
+        <header>
+          <div>
+            <p class="overline">Organize conversation</p>
+            <h2 id="labelPickerTitle">Labels</h2>
+          </div>
+          <button class="icon-button" type="button" id="closeLabelPickerButton" title="Close" aria-label="Close labels">
+            <svg><use href="#i-close"></use></svg>
+          </button>
+        </header>
+        <div class="label-picker-options" id="labelPickerOptions"></div>
+        <form class="label-picker-create" id="labelPickerCreateForm">
+          <input id="newLabelInput" type="text" maxlength="48" placeholder="Create a label" autocomplete="off" />
+          <button class="secondary-button" type="submit">Add</button>
+        </form>
+        <div class="conversation-meta-actions">
+          <span class="label-picker-hint"><kbd>1–9</kbd> toggle · <kbd>↵</kbd> apply</span>
+          <button class="agent-send-button" type="button" id="applyLabelsButton">Apply labels</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog class="compose-dialog conversation-meta-dialog schedule-dialog" id="scheduleDialog" aria-labelledby="scheduleDialogTitle">
+      <form id="scheduleForm">
+        <header>
+          <div>
+            <p class="overline">Local delivery queue</p>
+            <h2 id="scheduleDialogTitle">Schedule message</h2>
+          </div>
+          <button class="icon-button" type="button" id="closeScheduleButton" title="Close" aria-label="Close">
+            <svg><use href="#i-close"></use></svg>
+          </button>
+        </header>
+        <div class="schedule-dialog-body">
+          <label>
+            <span>Send at</span>
+            <input id="scheduleAt" type="datetime-local" required />
+          </label>
+          <div class="schedule-preview" id="schedulePreview"></div>
+          <p>Penguin stores this locally and retries automatically if the provider is offline.</p>
+        </div>
+        <div class="conversation-meta-actions">
+          <button class="secondary-button" type="button" id="cancelScheduleButton">Cancel</button>
+          <button class="agent-send-button" type="submit" id="confirmScheduleButton">Add to queue</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="compose-dialog writing-dialog" id="writingDialog" aria-labelledby="writingDialogTitle">
+      <div>
+        <header>
+          <div>
+            <p class="overline">Your signed-in Codex session</p>
+            <h2 id="writingDialogTitle">Write with Codex</h2>
+          </div>
+          <button class="icon-button" type="button" id="closeWritingButton" title="Close" aria-label="Close writing assistant">
+            <svg><use href="#i-close"></use></svg>
+          </button>
+        </header>
+        <div class="writing-dialog-body">
+          <div class="writing-source" id="writingSource"></div>
+          <div class="writing-actions" aria-label="Writing actions">
+            <button type="button" data-writing-action="grammar">Fix grammar</button>
+            <button type="button" data-writing-action="concise">Make concise</button>
+            <button type="button" data-writing-action="warm">Make warmer</button>
+            <button type="button" data-writing-action="reply">Draft a reply</button>
+          </div>
+          <label class="writing-custom">
+            <span>Or tell Codex what to change</span>
+            <textarea id="writingInstruction" rows="2" placeholder="Make this clearer and keep my casual tone"></textarea>
+          </label>
+          <button class="secondary-button full-width" type="button" id="runWritingButton">Apply instruction</button>
+          <p class="writing-status" id="writingStatus">Inference uses your Codex subscription.</p>
+          <div class="writing-result" id="writingResult" hidden></div>
+        </div>
+        <div class="conversation-meta-actions">
+          <button class="secondary-button" type="button" id="cancelWritingButton">Cancel</button>
+          <button class="agent-send-button" type="button" id="replaceDraftButton" disabled>Replace draft</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog class="compose-dialog shortcut-dialog" id="shortcutDialog" aria-labelledby="shortcutDialogTitle">
+      <div class="shortcut-sheet">
+        <header>
+          <div>
+            <p class="overline">Keyboard first</p>
+            <h2 id="shortcutDialogTitle">Keyboard shortcuts</h2>
+          </div>
+          <button class="icon-button" type="button" id="closeShortcutButton" title="Close" aria-label="Close keyboard shortcuts">
+            <svg><use href="#i-close"></use></svg>
+          </button>
+        </header>
+        <div class="shortcut-groups">
+          <section>
+            <h3>Inbox</h3>
+            <dl>
+              <div><dt><kbd>J</kbd> <kbd>K</kbd></dt><dd>Next / previous chat</dd></div>
+              <div><dt><kbd>E</kbd></dt><dd>Done / archive</dd></div>
+              <div><dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>Archive and move</dd></div>
+              <div><dt><kbd>S</kbd></dt><dd>Star / unstar</dd></div>
+              <div><dt><kbd>U</kbd></dt><dd>Read / unread</dd></div>
+              <div><dt><kbd>H</kbd></dt><dd>Set reminder</dd></div>
+              <div><dt><kbd>L</kbd> <kbd>V</kbd></dt><dd>Add labels</dd></div>
+            </dl>
+          </section>
+          <section>
+            <h3>Views</h3>
+            <dl>
+              <div><dt><kbd>⇧U</kbd></dt><dd>Unread</dd></div>
+              <div><dt><kbd>⇧S</kbd></dt><dd>Pinned</dd></div>
+              <div><dt><kbd>⇧H</kbd></dt><dd>Reminders</dd></div>
+              <div><dt><kbd>G</kbd> then <kbd>A</kbd></dt><dd>All chats</dd></div>
+              <div><dt><kbd>G</kbd> then <kbd>S</kbd></dt><dd>Pinned</dd></div>
+              <div><dt><kbd>G</kbd> then <kbd>E</kbd></dt><dd>Done</dd></div>
+              <div><dt><kbd>G</kbd> then <kbd>H</kbd></dt><dd>Reminders</dd></div>
+              <div><dt><kbd>G</kbd> then <kbd>L</kbd></dt><dd>Send queue</dd></div>
+            </dl>
+          </section>
+          <section>
+            <h3>Thread</h3>
+            <dl>
+              <div><dt><kbd>R</kbd></dt><dd>Reply to selected message</dd></div>
+              <div><dt><kbd>N</kbd></dt><dd>Note selected message</dd></div>
+              <div><dt><kbd>↵</kbd> <kbd>A</kbd></dt><dd>Write a message</dd></div>
+              <div><dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Scroll messages</dd></div>
+              <div><dt><kbd>Space</kbd></dt><dd>Page down</dd></div>
+              <div><dt><kbd>⇧Space</kbd></dt><dd>Page up</dd></div>
+              <div><dt><kbd>⇧G</kbd></dt><dd>Jump to newest</dd></div>
+              <div><dt><kbd>C</kbd></dt><dd>New message</dd></div>
+            </dl>
+          </section>
+          <section>
+            <h3>Compose & panels</h3>
+            <dl>
+              <div><dt><kbd>⌘J</kbd></dt><dd>Rewrite draft inline</dd></div>
+              <div><dt><kbd>⌘⇧↵</kbd></dt><dd>Send immediately</dd></div>
+              <div><dt><kbd>⌘⇧L</kbd></dt><dd>Send later</dd></div>
+              <div><dt><kbd>⌘K</kbd> <kbd>/</kbd></dt><dd>Search</dd></div>
+              <div><dt><kbd>⌘B</kbd></dt><dd>Toggle inbox</dd></div>
+              <div><dt><kbd>⌘/</kbd></dt><dd>Toggle agent</dd></div>
+              <div><dt><kbd>⌘G</kbd></dt><dd>Find a GIF</dd></div>
+              <div><dt><kbd>?</kbd></dt><dd>Show this guide</dd></div>
+            </dl>
+          </section>
+        </div>
+      </div>
+    </dialog>
+
+    <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="true"></div>
+    <script src="/penguin-connect/ui/browser-safety.js"></script>
+    <script src="/penguin-connect/ui/thread-layout.js"></script>
+    <script src="/penguin-connect/ui/refresh-coordinator.js"></script>
+    <script src="/penguin-connect/ui/composer-mentions.js"></script>
+    <script src="/penguin-connect/ui/conversation-navigation.js"></script>
+    <script src="/penguin-connect/ui/list-windowing.js"></script>
+    <script src="/penguin-connect/ui/media-preview-queue.js"></script>
+    <script src="/penguin-connect/ui/workspace-cache-policy.js"></script>
+    <script src="/penguin-connect/ui/agent-history.js"></script>
+    <script src="/penguin-connect/ui/inbox.js"></script>
+  </body>
+</html>

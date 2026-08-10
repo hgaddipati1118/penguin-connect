@@ -93,11 +93,11 @@ def thread_key_for_chat(chat: Mapping[str, Any]) -> str:
             if normalized:
                 return f"dm:{normalized}"
         normalized = _normalize_thread_participant(
-            _clean_str(_value(chat, "chat_identifier") or _value(chat, "imessage_chat_identifier"))
+            _clean_str(_value(chat, "chat_identifier") or _value(chat, "source_chat_identifier"))
         )
         if normalized:
             return f"dm:{normalized}"
-    chat_id = _clean_str(_value(chat, "chat_id") or _value(chat, "imessage_chat_id") or _value(chat, "chat_identifier"))
+    chat_id = _clean_str(_value(chat, "chat_id") or _value(chat, "source_chat_id") or _value(chat, "chat_identifier"))
     return f"chat:{chat_id}" if chat_id else ""
 
 
@@ -105,7 +105,7 @@ def _conversation_source_provider(chat: Mapping[str, Any]) -> str:
     chat_type = _clean_str(_value(chat, "chat_type")).lower()
     if chat_type == "dm":
         return "apple_messages"
-    return _normalize_source_provider(_value(chat, "source_provider") or _value(chat, "imessage_service_name"))
+    return _normalize_source_provider(_value(chat, "source_provider") or _value(chat, "source_service_name"))
 
 
 def deterministic_conversation_id(gmail_email: str, source_chat_id: str, source_provider: str = "imessage") -> str:
@@ -122,7 +122,7 @@ def conversation_id_for_chat(chat: Mapping[str, Any], gmail_email: str | None) -
 
     provider = _conversation_source_provider(chat)
     thread_key = thread_key_for_chat(chat)
-    chat_id = _clean_str(_value(chat, "chat_id") or _value(chat, "imessage_chat_id"))
+    chat_id = _clean_str(_value(chat, "chat_id") or _value(chat, "source_chat_id"))
     source_key = thread_key if provider == "apple_messages" else chat_id
     if not source_key:
         return ""
@@ -235,8 +235,8 @@ def build_excluded_chat_entry(
 ) -> dict[str, Any]:
     entry: dict[str, Any] = {
         "thread_key": thread_key_for_chat(chat),
-        "chat_id": _clean_str(_value(chat, "chat_id") or _value(chat, "imessage_chat_id")),
-        "chat_identifier": _clean_str(_value(chat, "chat_identifier") or _value(chat, "imessage_chat_identifier")),
+        "chat_id": _clean_str(_value(chat, "chat_id") or _value(chat, "source_chat_id")),
+        "chat_identifier": _clean_str(_value(chat, "chat_identifier") or _value(chat, "source_chat_identifier")),
         "display_name": _clean_str(_value(chat, "display_name") or _value(chat, "name")),
         "chat_type": _clean_str(_value(chat, "chat_type")).lower(),
         "source_provider": _conversation_source_provider(chat),
@@ -252,8 +252,8 @@ def build_excluded_chat_entry(
 def candidate_keys_for_chat(chat: Mapping[str, Any], gmail_email: str | None = None) -> set[str]:
     keys = {
         _clean_str(_value(chat, "conversation_id")),
-        _clean_str(_value(chat, "chat_id") or _value(chat, "imessage_chat_id")),
-        _clean_str(_value(chat, "chat_identifier") or _value(chat, "imessage_chat_identifier")),
+        _clean_str(_value(chat, "chat_id") or _value(chat, "source_chat_id")),
+        _clean_str(_value(chat, "chat_identifier") or _value(chat, "source_chat_identifier")),
         thread_key_for_chat(chat),
     }
     derived_conversation_id = conversation_id_for_chat(chat, gmail_email)
@@ -296,7 +296,7 @@ def apply_excluded_chats_to_account(
     exclusions: list[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     rows = conn.execute(
-        """SELECT conversation_id, source_provider, imessage_chat_id, imessage_chat_identifier,
+        """SELECT conversation_id, source_provider, source_chat_id, source_chat_identifier,
                   display_name, chat_type, participants, exclude_from_sync
            FROM penguin_connect_conversations
            WHERE gmail_email = ?""",

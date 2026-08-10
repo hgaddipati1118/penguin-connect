@@ -1,3 +1,4 @@
+import argparse
 import sqlite3
 import sys
 import tempfile
@@ -16,6 +17,7 @@ import import_contacts
 import penguin_connect_backfill
 import penguin_connect_excluded_chats
 import penguin_connect_setup
+import penguin_connect_tool
 import penguin_connect_verify_contact_resolution
 
 
@@ -316,6 +318,248 @@ class ScriptTests(unittest.TestCase):
         self.assertIn("amc_hidden", by_id)
         self.assertIn("amc_visible", by_id)
         self.assertEqual(by_id["amc_visible"]["reason"], "quiet thread")
+
+    def test_tool_search_matches_conversation_participants(self):
+        conversation = {
+            "conversation_id": "amc_123",
+            "display_name": "Weekend Plans",
+            "participants": ["+14155550101", "ava@example.com"],
+        }
+
+        self.assertTrue(penguin_connect_tool._conversation_matches(conversation, "ava@example.com"))
+        self.assertFalse(penguin_connect_tool._conversation_matches(conversation, "not-here"))
+
+    def test_tool_contact_create_script_escapes_fields(self):
+        script = penguin_connect_tool._build_contact_create_script(
+            first_name='Ava "AJ"',
+            last_name="Stone",
+            organization="Example Co",
+            phones=["+14155550101"],
+            emails=["ava@example.com"],
+        )
+
+        self.assertIn('first name:"Ava \\"AJ\\""', script)
+        self.assertIn('make new phone at end of phones of newPerson', script)
+        self.assertIn('value:"+14155550101"', script)
+        self.assertIn('make new email at end of emails of newPerson', script)
+        self.assertIn('value:"ava@example.com"', script)
+
+    def test_tool_group_draft_lists_participants_and_message(self):
+        draft = penguin_connect_tool._build_group_draft(
+            ["+14155550101", "ava@example.com"],
+            "Dinner at 7?",
+        )
+
+        self.assertEqual(draft, "To: +14155550101, ava@example.com\n\nDinner at 7?\n")
+
+    def test_tool_group_draft_builds_addressed_messages_url(self):
+        url = penguin_connect_tool._messages_address_url(["+14155550101", "ava@example.com"])
+
+        self.assertEqual(url, "sms://open?addresses=%2B14155550101%2C%20ava%40example.com")
+
+    def test_tool_resolve_attachment_paths_requires_existing_file(self):
+        with tempfile.NamedTemporaryFile(suffix=".m4a") as audio_file:
+            resolved = penguin_connect_tool._resolve_attachment_paths([audio_file.name])
+
+        self.assertEqual(len(resolved), 1)
+        self.assertTrue(resolved[0].endswith(".m4a"))
+        with self.assertRaises(penguin_connect_tool.ToolError):
+            penguin_connect_tool._resolve_attachment_paths(["/tmp/missing-voice-memo.m4a"])
+
+    def test_tool_schedule_posts_scheduled_message_payload(self):
+        calls = []
+
+        def fake_api(method, path, *, api_base, payload=None, timeout=20.0):
+            calls.append(
+                {
+                    "method": method,
+                    "path": path,
+                    "api_base": api_base,
+                    "payload": payload,
+                    "timeout": timeout,
+                }
+            )
+            return {
+                "success": True,
+                "scheduled_message": {
+                    "scheduled_id": "scheduled_123",
+                    "conversation_id": "amc_test",
+                    "scheduled_at": "2026-07-01T16:30:00-07:00",
+                    "status": "scheduled",
+                },
+            }
+
+        args = argparse.Namespace(
+            conversation_id="amc_test",
+            sender_email="ops@example.test",
+            message="Later",
+            message_file=None,
+            attachment_paths=[],
+            scheduled_at="2026-07-01T16:30:00-07:00",
+            api_base="http://127.0.0.1:9000",
+            timeout=3.0,
+            json=False,
+        )
+
+        with mock.patch.object(penguin_connect_tool, "_api_json", side_effect=fake_api), mock.patch("builtins.print"):
+            result = penguin_connect_tool.command_schedule(args)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(calls[0]["method"], "POST")
+        self.assertEqual(calls[0]["path"], "/penguin-connect/conversations/amc_test/scheduled-messages")
+        self.assertEqual(
+            calls[0]["payload"],
+            {
+                "sender_email": "ops@example.test",
+                "message": "Later",
+                "attachment_paths": None,
+                "scheduled_at": "2026-07-01T16:30:00-07:00",
+            },
+        )
+
+    def test_tool_scheduled_commands_call_expected_api_paths(self):
+        calls = []
+
+        def fake_api(method, path, *, api_base, payload=None, timeout=20.0):
+            calls.append((method, path, payload))
+            if path.endswith("/scheduled-messages"):
+                return {"success": True, "scheduled_messages": []}
+            if path.endswith("/cancel"):
+                return {
+                    "success": True,
+                    "scheduled_message": {"scheduled_id": "scheduled_123", "status": "cancelled"},
+                }
+            return {"success": True, "processed": 0, "results": []}
+
+        with mock.patch.object(penguin_connect_tool, "_api_json", side_effect=fake_api), mock.patch("builtins.print"):
+            penguin_connect_tool.command_scheduled_list(
+                argparse.Namespace(conversation_id="amc_test", api_base="http://127.0.0.1:9000", timeout=3.0, json=False)
+            )
+            penguin_connect_tool.command_scheduled_cancel(
+                argparse.Namespace(scheduled_id="scheduled_123", api_base="http://127.0.0.1:9000", timeout=3.0, json=False)
+            )
+            penguin_connect_tool.command_scheduled_run_due(
+                argparse.Namespace(limit=5, api_base="http://127.0.0.1:9000", timeout=3.0, json=False)
+            )
+
+        self.assertEqual(calls[0], ("GET", "/penguin-connect/conversations/amc_test/scheduled-messages", None))
+        self.assertEqual(calls[1], ("POST", "/penguin-connect/scheduled-messages/scheduled_123/cancel", {}))
+        self.assertEqual(calls[2], ("POST", "/penguin-connect/scheduled-messages/run-due?limit=5", {}))
+
+    def test_tool_formats_scheduled_message(self):
+        formatted = penguin_connect_tool._format_scheduled_message(
+            {
+                "scheduled_id": "scheduled_123",
+                "status": "scheduled",
+                "scheduled_at": "2026-07-01T16:30:00-07:00",
+                "source_provider": "whatsapp",
+                "message": "Later",
+                "attachment_count": 1,
+            }
+        )
+
+        self.assertIn("scheduled_123", formatted)
+        self.assertIn("whatsapp", formatted)
+        self.assertIn("Later", formatted)
+        self.assertIn("attachments: 1", formatted)
+
+    def test_tool_formats_audio_attachment_summary(self):
+        summary = penguin_connect_tool._format_message_attachment_summary(
+            {
+                "metadata": {
+                    "attachments": [
+                        {
+                            "filename": "/tmp/Audio Message.caf",
+                            "mime_type": "audio/x-caf",
+                            "transfer_name": "Audio Message.caf",
+                        }
+                    ]
+                }
+            }
+        )
+
+        self.assertIn("audio:Audio Message.caf", summary)
+
+    def test_tool_search_bridge_messages_matches_body_and_attachment_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cache.db"
+            conn = sqlite3.connect(str(db_path))
+            conn.executescript(
+                """
+                CREATE TABLE penguin_connect_conversations (
+                    conversation_id TEXT PRIMARY KEY,
+                    display_name TEXT,
+                    source_provider TEXT,
+                    source_service_name TEXT,
+                    source_chat_identifier TEXT,
+                    participants TEXT
+                );
+                CREATE TABLE penguin_connect_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id TEXT,
+                    provider TEXT,
+                    provider_message_id TEXT,
+                    direction TEXT,
+                    sender_email TEXT,
+                    sender_name TEXT,
+                    subject TEXT,
+                    body_text TEXT,
+                    message_timestamp TEXT,
+                    metadata TEXT,
+                    gmail_message_id TEXT,
+                    gmail_thread_id TEXT
+                );
+                """
+            )
+            conn.execute(
+                """INSERT INTO penguin_connect_conversations
+                   (conversation_id, display_name, source_provider, source_service_name, source_chat_identifier, participants)
+                   VALUES ('amc_test', 'Weekend Plans', 'imessage', 'iMessage', 'chat-123', '["ava@example.com"]')"""
+            )
+            conn.execute(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction, sender_name, subject,
+                    body_text, message_timestamp, metadata)
+                   VALUES (?, 'imessage', 'imsg-1', 'imessage_to_gmail', ?, ?, ?, ?, ?)""",
+                (
+                    "amc_test",
+                    "Ava",
+                    "Weekend Plans",
+                    "Voice memo from dinner",
+                    "2026-03-10T10:00:00+00:00",
+                    '{"attachments":[{"transfer_name":"voice-note.m4a","mime_type":"audio/mp4"}]}',
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+            original_cache_db = penguin_connect_tool.CACHE_DB
+            penguin_connect_tool.CACHE_DB = db_path
+            try:
+                body_rows = penguin_connect_tool._search_bridge_messages("dinner", limit=5)
+                attachment_rows = penguin_connect_tool._search_bridge_messages("voice-note", limit=5)
+            finally:
+                penguin_connect_tool.CACHE_DB = original_cache_db
+
+        self.assertEqual(len(body_rows), 1)
+        self.assertEqual(body_rows[0]["conversation_id"], "amc_test")
+        self.assertEqual(len(attachment_rows), 1)
+        self.assertEqual(attachment_rows[0]["attachments"][0]["transfer_name"], "voice-note.m4a")
+
+    def test_tool_formats_message_search_row(self):
+        row = {
+            "conversation_id": "amc_test",
+            "display_name": "Weekend Plans",
+            "sender_name": "Ava",
+            "body_text": "Voice memo from dinner",
+            "message_timestamp": "2026-03-10T10:00:00+00:00",
+        }
+
+        formatted = penguin_connect_tool._format_search_message_row(row)
+
+        self.assertIn("amc_test", formatted)
+        self.assertIn("Weekend Plans", formatted)
+        self.assertIn("Voice memo", formatted)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,25 @@
+{
+  "excluded_chats": [
+    {
+      "chat_id": "120363417070616432@g.us",
+      "display_name": "Dash -- General Company GC",
+      "chat_type": "group",
+      "source_provider": "whatsapp",
+      "reason": "High-volume company GC — keep out of Gmail bridge"
+    },
+    {
+      "chat_id": "120363420700479806@g.us",
+      "display_name": "Dashy Dash Chat",
+      "chat_type": "group",
+      "source_provider": "whatsapp",
+      "reason": "High-volume company chat — keep out of Gmail bridge"
+    },
+    {
+      "chat_id": "120363426134827399@g.us",
+      "display_name": "Slashy Daily Tasks",
+      "chat_type": "group",
+      "source_provider": "whatsapp",
+      "reason": "Daily tasks chat — keep out of Gmail bridge"
+    }
+  ]
+}

@@ -53,7 +53,20 @@ class SyncIntegrationTests(unittest.TestCase):
         db.APPLE_MESSAGES_DB = self.old_apple_messages_db
         self.tmpdir.cleanup()
 
+    def _connect_test_gmail_account(self):
+        conn = db.get_connection()
+        try:
+            conn.execute(
+                """INSERT OR IGNORE INTO penguin_connect_accounts
+                   (gmail_email, keychain_service, status)
+                   VALUES ('owner@gmail.com', 'test.gmail', 'connected')"""
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
     def test_watcher_and_manual_sync_are_serialized(self):
+        self._connect_test_gmail_account()
         started = threading.Event()
         manual_done = threading.Event()
         state_lock = threading.Lock()
@@ -204,6 +217,7 @@ class SyncIntegrationTests(unittest.TestCase):
         self.assertEqual(worker_result["result"]["queue_job_status"], "succeeded")
 
     def test_run_incremental_sync_does_not_steal_startup_job(self):
+        self._connect_test_gmail_account()
         conn = db.get_connection()
         try:
             startup = penguin_connect.enqueue_sync_job(
@@ -274,7 +288,7 @@ class SyncIntegrationTests(unittest.TestCase):
             )
             conn.execute(
                 """INSERT INTO penguin_connect_conversations
-                   (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants, alias_email, status)
+                   (gmail_email, source_provider, conversation_id, source_chat_id, display_name, chat_type, participants, alias_email, status)
                    VALUES (?, 'apple_messages', ?, ?, ?, 'group', '[]', ?, 'active')""",
                 (
                     "owner@gmail.com",
@@ -407,7 +421,7 @@ class SyncIntegrationTests(unittest.TestCase):
         def fake_discovery(worker_conn, gmail_email):
             worker_conn.execute(
                 """INSERT INTO penguin_connect_conversations
-                   (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants, alias_email, status)
+                   (gmail_email, source_provider, conversation_id, source_chat_id, display_name, chat_type, participants, alias_email, status)
                    VALUES (?, 'apple_messages', ?, ?, ?, 'dm', '[]', ?, 'active')""",
                 (
                     gmail_email,
@@ -582,7 +596,7 @@ class SyncIntegrationTests(unittest.TestCase):
         )
         conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants, alias_email, status)
+               (gmail_email, source_provider, conversation_id, source_chat_id, display_name, chat_type, participants, alias_email, status)
                VALUES (?, 'apple_messages', ?, ?, ?, 'dm', '[]', ?, 'active')""",
             (
                 "owner@gmail.com",
@@ -679,7 +693,7 @@ class SyncIntegrationTests(unittest.TestCase):
         )
         conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants, alias_email, status)
+               (gmail_email, source_provider, conversation_id, source_chat_id, display_name, chat_type, participants, alias_email, status)
                VALUES (?, 'apple_messages', ?, ?, ?, 'dm', '[]', ?, 'active')""",
             (
                 "owner@gmail.com",
@@ -824,7 +838,7 @@ class SyncIntegrationTests(unittest.TestCase):
             raw_conn.executescript(legacy_schema)
             raw_conn.execute(
                 """INSERT INTO penguin_connect_conversations
-                   (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants, alias_email, status)
+                   (gmail_email, source_provider, conversation_id, source_chat_id, display_name, chat_type, participants, alias_email, status)
                    VALUES ('owner@gmail.com', 'imessage', 'amc_legacy', 'chat-legacy', 'Legacy Conversation', 'dm', '[]', 'owner+am-legacy@gmail.com', 'active')"""
             )
             raw_conn.execute(
@@ -837,7 +851,7 @@ class SyncIntegrationTests(unittest.TestCase):
             )
             raw_conn.execute(
                 """INSERT INTO penguin_connect_sync_state
-                   (conversation_id, last_imessage_ts, last_gmail_ts, last_synced_at, updated_at)
+                   (conversation_id, last_source_ts, last_gmail_ts, last_synced_at, updated_at)
                    VALUES ('amc_legacy', '2026-03-04T10:00:00+00:00', '2026-03-04T10:00:00+00:00', '2026-03-04 10:05:00', '2026-03-04 10:05:00')"""
             )
             raw_conn.commit()
@@ -852,7 +866,7 @@ class SyncIntegrationTests(unittest.TestCase):
             conv = migrated_conn.execute(
                 """SELECT conversation_id
                    FROM penguin_connect_conversations
-                   WHERE imessage_chat_id = 'chat-legacy'"""
+                   WHERE source_chat_id = 'chat-legacy'"""
             ).fetchone()
             row = migrated_conn.execute(
                 """SELECT initial_sync_completed_at, initial_sync_empty_verified_at, last_message_ts, next_full_verify_at, full_verify_completed_at
@@ -880,7 +894,7 @@ class SyncIntegrationTests(unittest.TestCase):
         conn = db.get_connection()
         conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants, alias_email, status)
+               (gmail_email, source_provider, conversation_id, source_chat_id, display_name, chat_type, participants, alias_email, status)
                VALUES (?, 'imessage', ?, ?, ?, 'dm', '[]', ?, 'active')""",
             (
                 "owner@gmail.com",
@@ -892,7 +906,7 @@ class SyncIntegrationTests(unittest.TestCase):
         )
         conn.execute(
             """INSERT INTO penguin_connect_sync_state
-               (conversation_id, last_imessage_ts, initial_sync_completed_at, next_full_verify_at, full_verify_completed_at, last_synced_at, updated_at)
+               (conversation_id, last_source_ts, initial_sync_completed_at, next_full_verify_at, full_verify_completed_at, last_synced_at, updated_at)
                VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))""",
             (
                 "amc_false_bootstrap",
@@ -912,7 +926,7 @@ class SyncIntegrationTests(unittest.TestCase):
             conv = migrated_conn.execute(
                 """SELECT conversation_id
                    FROM penguin_connect_conversations
-                   WHERE imessage_chat_id = 'chat-false-bootstrap'"""
+                   WHERE source_chat_id = 'chat-false-bootstrap'"""
             ).fetchone()
             row = migrated_conn.execute(
                 """SELECT initial_sync_completed_at, next_full_verify_at, full_verify_completed_at
@@ -933,7 +947,7 @@ class SyncIntegrationTests(unittest.TestCase):
         conn = db.get_connection()
         conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants, alias_email, status)
+               (gmail_email, source_provider, conversation_id, source_chat_id, display_name, chat_type, participants, alias_email, status)
                VALUES (?, 'imessage', ?, ?, ?, 'dm', '[]', ?, 'active')""",
             (
                 "owner@gmail.com",
@@ -971,7 +985,7 @@ class SyncIntegrationTests(unittest.TestCase):
             conv = migrated_conn.execute(
                 """SELECT conversation_id, gmail_thread_id
                    FROM penguin_connect_conversations
-                   WHERE imessage_chat_id = 'chat-thread-backfill'"""
+                   WHERE source_chat_id = 'chat-thread-backfill'"""
             ).fetchone()
             row = migrated_conn.execute(
                 "SELECT gmail_thread_id FROM penguin_connect_conversations WHERE conversation_id = ?",
@@ -988,7 +1002,7 @@ class SyncIntegrationTests(unittest.TestCase):
         conn = db.get_connection()
         conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, source_provider, conversation_id, source_chat_id, display_name, chat_type, participants,
                 alias_email, status)
                VALUES (?, 'apple_messages', ?, ?, ?, 'dm', ?, ?, 'active')""",
             (
@@ -1050,7 +1064,7 @@ class SyncIntegrationTests(unittest.TestCase):
         )
         conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, source_provider, conversation_id, source_chat_id, display_name, chat_type, participants,
                 alias_email, status)
                VALUES (?, 'apple_messages', ?, ?, ?, 'dm', ?, ?, 'active')""",
             (
@@ -1120,7 +1134,7 @@ class SyncIntegrationTests(unittest.TestCase):
         conn = db.get_connection()
         conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, source_provider, conversation_id, source_chat_id, display_name, chat_type, participants,
                 alias_email, status)
                VALUES (?, 'imessage', ?, ?, ?, 'dm', ?, ?, 'active')""",
             (
@@ -1168,7 +1182,7 @@ class SyncIntegrationTests(unittest.TestCase):
         conn = db.get_connection()
         conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, source_provider, conversation_id, source_chat_id, display_name, chat_type, participants,
                 alias_email, status)
                VALUES (?, 'imessage', ?, ?, ?, 'dm', ?, ?, 'active')""",
             (
@@ -1217,7 +1231,7 @@ class SyncIntegrationTests(unittest.TestCase):
         conn = db.get_connection()
         conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, source_provider, conversation_id, source_chat_id, display_name, chat_type, participants,
                 alias_email, status)
                VALUES (?, 'imessage', ?, ?, ?, 'dm', ?, ?, 'active')""",
             (
@@ -1274,7 +1288,7 @@ class SyncIntegrationTests(unittest.TestCase):
         conn = db.get_connection()
         conn.execute(
             """INSERT INTO penguin_connect_conversations
-               (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants,
+               (gmail_email, source_provider, conversation_id, source_chat_id, display_name, chat_type, participants,
                 alias_email, status)
                VALUES (?, 'imessage', ?, ?, ?, 'dm', ?, ?, 'active')""",
             (
@@ -1342,8 +1356,8 @@ class SyncIntegrationTests(unittest.TestCase):
         conn.close()
 
         legacy_schema = db.SCHEMA.replace("    source_provider TEXT NOT NULL DEFAULT 'imessage',\n", "").replace(
-            "    UNIQUE(gmail_email, source_provider, imessage_chat_id)\n",
-            "    UNIQUE(gmail_email, imessage_chat_id)\n",
+            "    UNIQUE(gmail_email, source_provider, source_chat_id)\n",
+            "    UNIQUE(gmail_email, source_chat_id)\n",
         )
         old_id = penguin_connect._legacy_conversation_id("owner@gmail.com", "chat-legacy")
         new_id = penguin_connect.deterministic_conversation_id("owner@gmail.com", "chat-legacy", "imessage")
@@ -1353,7 +1367,7 @@ class SyncIntegrationTests(unittest.TestCase):
             raw_conn.executescript(legacy_schema)
             raw_conn.execute(
                 """INSERT INTO penguin_connect_conversations
-                   (gmail_email, conversation_id, imessage_chat_id, display_name, chat_type, participants, alias_email, status)
+                   (gmail_email, conversation_id, source_chat_id, display_name, chat_type, participants, alias_email, status)
                    VALUES (?, ?, ?, ?, 'dm', '[]', ?, 'active')""",
                 ("owner@gmail.com", old_id, "chat-legacy", "Legacy Chat", "owner+am-legacy@gmail.com"),
             )
@@ -1371,7 +1385,7 @@ class SyncIntegrationTests(unittest.TestCase):
             )
             raw_conn.execute(
                 """INSERT INTO penguin_connect_sync_state
-                   (conversation_id, last_imessage_ts, last_gmail_ts, last_synced_at, updated_at)
+                   (conversation_id, last_source_ts, last_gmail_ts, last_synced_at, updated_at)
                    VALUES (?, '2026-03-04T10:00:00+00:00', NULL, '2026-03-04 10:05:00', '2026-03-04 10:05:00')""",
                 (old_id,),
             )
@@ -1384,7 +1398,7 @@ class SyncIntegrationTests(unittest.TestCase):
         migrated_conn = db.get_connection()
         try:
             conv = migrated_conn.execute(
-                "SELECT conversation_id, source_provider FROM penguin_connect_conversations WHERE imessage_chat_id = ?",
+                "SELECT conversation_id, source_provider FROM penguin_connect_conversations WHERE source_chat_id = ?",
                 ("chat-legacy",),
             ).fetchone()
             provider_unique_indexes = []
@@ -1413,7 +1427,7 @@ class SyncIntegrationTests(unittest.TestCase):
 
         self.assertEqual(conv["conversation_id"], new_id)
         self.assertEqual(conv["source_provider"], "imessage")
-        self.assertIn(["gmail_email", "source_provider", "imessage_chat_id"], provider_unique_indexes)
+        self.assertIn(["gmail_email", "source_provider", "source_chat_id"], provider_unique_indexes)
         self.assertEqual(alias["conversation_id"], new_id)
         self.assertEqual(message["conversation_id"], new_id)
         self.assertEqual(sync_state["conversation_id"], new_id)
@@ -1423,9 +1437,14 @@ class SyncIntegrationTests(unittest.TestCase):
         conn = db.get_connection()
         conn.close()
 
-        legacy_schema = db.SCHEMA.replace("    exclude_from_sync INTEGER NOT NULL DEFAULT 0,\n", "").replace(
-            "CREATE INDEX IF NOT EXISTS idx_penguin_connect_conv_status ON penguin_connect_conversations(gmail_email, source_provider, status);\n",
-            "",
+        legacy_schema = (
+            db.SCHEMA
+            .replace("    exclude_from_sync INTEGER NOT NULL DEFAULT 0,\n", "")
+            .replace("    participant_names TEXT NOT NULL DEFAULT '{}',\n", "")
+            .replace(
+                "CREATE INDEX IF NOT EXISTS idx_penguin_connect_conv_status ON penguin_connect_conversations(gmail_email, source_provider, status);\n",
+                "",
+            )
         )
 
         raw_conn = sqlite3.connect(str(db.DB_PATH))
@@ -1433,7 +1452,7 @@ class SyncIntegrationTests(unittest.TestCase):
             raw_conn.executescript(legacy_schema)
             raw_conn.execute(
                 """INSERT INTO penguin_connect_conversations
-                   (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants, alias_email, status)
+                   (gmail_email, source_provider, conversation_id, source_chat_id, display_name, chat_type, participants, alias_email, status)
                    VALUES (?, 'imessage', ?, ?, ?, 'group', '[]', ?, 'active')""",
                 ("owner@gmail.com", "amc_legacy_excluded", "chat-legacy-excluded", "Legacy Group", "owner+legacy@gmail.com"),
             )
@@ -1449,9 +1468,9 @@ class SyncIntegrationTests(unittest.TestCase):
                 row["name"] for row in migrated_conn.execute("PRAGMA table_info(penguin_connect_conversations)").fetchall()
             }
             row = migrated_conn.execute(
-                """SELECT exclude_from_sync
+                """SELECT exclude_from_sync, participant_names
                    FROM penguin_connect_conversations
-                   WHERE imessage_chat_id = ?""",
+                   WHERE source_chat_id = ?""",
                 ("chat-legacy-excluded",),
             ).fetchone()
             indexes = {
@@ -1462,7 +1481,9 @@ class SyncIntegrationTests(unittest.TestCase):
             migrated_conn.close()
 
         self.assertIn("exclude_from_sync", columns)
+        self.assertIn("participant_names", columns)
         self.assertEqual(row["exclude_from_sync"], 0)
+        self.assertEqual(row["participant_names"], "{}")
         self.assertIn("idx_penguin_connect_conv_excluded", indexes)
 
     def test_init_db_adds_gmail_rate_limit_streak_to_existing_poll_state_table(self):
@@ -1512,6 +1533,96 @@ class SyncIntegrationTests(unittest.TestCase):
 
         self.assertIn("gmail_rate_limit_streak", columns)
         self.assertEqual(row["gmail_rate_limit_streak"], 0)
+
+    def test_init_db_adds_title_note_and_labels_to_existing_management_table(self):
+        conn = db.get_connection()
+        conn.close()
+        if db.DB_PATH.exists():
+            db.DB_PATH.unlink()
+
+        legacy_schema = (
+            db.SCHEMA.replace("    note TEXT NOT NULL DEFAULT '',\n", "")
+            .replace("    title TEXT NOT NULL DEFAULT '',\n", "")
+            .replace("    labels TEXT NOT NULL DEFAULT '[]',\n", "")
+            .replace("    draft_text TEXT NOT NULL DEFAULT '',\n", "")
+            .replace("    is_muted INTEGER NOT NULL DEFAULT 0,\n", "")
+        )
+
+        raw_conn = sqlite3.connect(str(db.DB_PATH))
+        try:
+            raw_conn.executescript(legacy_schema)
+            raw_conn.execute(
+                """INSERT INTO penguin_connect_accounts
+                   (gmail_email, keychain_service, send_as_aliases, status)
+                   VALUES (?, ?, ?, 'connected')""",
+                (
+                    "owner@gmail.com",
+                    "penguinconnect-local-bridge.gmail.owner@gmail.com",
+                    '["owner@gmail.com"]',
+                ),
+            )
+            raw_conn.execute(
+                """INSERT INTO penguin_connect_conversations
+                   (gmail_email, conversation_id, source_chat_id, display_name, alias_email, status)
+                   VALUES (?, ?, ?, ?, ?, 'active')""",
+                (
+                    "owner@gmail.com",
+                    "amc_test",
+                    "iMessage;-;chat-test",
+                    "Taylor",
+                    "owner+am-test@gmail.com",
+                ),
+            )
+            raw_conn.execute(
+                """INSERT INTO penguin_connect_conversation_management
+                   (conversation_id, is_pinned, is_archived)
+                   VALUES (?, 1, 0)""",
+                ("amc_test",),
+            )
+            raw_conn.commit()
+        finally:
+            raw_conn.close()
+
+        db.init_db()
+
+        migrated_conn = db.get_connection()
+        try:
+            columns = {
+                row["name"]
+                for row in migrated_conn.execute(
+                    "PRAGMA table_info(penguin_connect_conversation_management)"
+                ).fetchall()
+            }
+            row = migrated_conn.execute(
+                """SELECT c.conversation_id, m.is_pinned, m.is_archived, m.is_muted, m.title, m.note, m.labels, m.draft_text
+                   FROM penguin_connect_conversations c
+                   JOIN penguin_connect_conversation_management m
+                     ON m.conversation_id = c.conversation_id
+                   LIMIT 1""",
+            ).fetchone()
+            indexes = {
+                row["name"]
+                for row in migrated_conn.execute(
+                    "PRAGMA index_list(penguin_connect_conversation_management)"
+                ).fetchall()
+            }
+        finally:
+            migrated_conn.close()
+
+        self.assertIn("title", columns)
+        self.assertIn("note", columns)
+        self.assertIn("labels", columns)
+        self.assertIn("draft_text", columns)
+        self.assertIn("is_muted", columns)
+        self.assertIn("idx_penguin_connect_conversation_management_muted", indexes)
+        self.assertIsNotNone(row)
+        self.assertEqual(row["is_pinned"], 1)
+        self.assertEqual(row["is_archived"], 0)
+        self.assertEqual(row["is_muted"], 0)
+        self.assertEqual(row["title"], "")
+        self.assertEqual(row["note"], "")
+        self.assertEqual(row["labels"], "[]")
+        self.assertEqual(row["draft_text"], "")
 
     def test_init_db_adds_gmail_backfill_budget_columns_to_existing_poll_state_table(self):
         conn = db.get_connection()
@@ -1578,20 +1689,20 @@ class SyncIntegrationTests(unittest.TestCase):
         self.assertEqual(row["gmail_backfill_daily_import_count"], 0)
         self.assertIsNone(row["gmail_backfill_daily_window_started_at"])
 
-    def test_init_db_backfills_last_imessage_native_message_id_for_existing_sync_rows(self):
+    def test_init_db_backfills_last_source_native_message_id_for_existing_sync_rows(self):
         conn = db.get_connection()
         conn.close()
         if db.DB_PATH.exists():
             db.DB_PATH.unlink()
 
-        legacy_schema = db.SCHEMA.replace("    last_imessage_native_message_id TEXT,\n", "")
+        legacy_schema = db.SCHEMA.replace("    last_source_native_message_id TEXT,\n", "")
 
         raw_conn = sqlite3.connect(str(db.DB_PATH))
         try:
             raw_conn.executescript(legacy_schema)
             raw_conn.execute(
                 """INSERT INTO penguin_connect_conversations
-                   (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants, alias_email, status)
+                   (gmail_email, source_provider, conversation_id, source_chat_id, display_name, chat_type, participants, alias_email, status)
                    VALUES (?, 'imessage', ?, ?, ?, 'group', '[]', ?, 'active')""",
                 ("owner@gmail.com", "amc_resume_cursor", "chat-resume", "Resume Cursor", "owner+resume@gmail.com"),
             )
@@ -1630,7 +1741,7 @@ class SyncIntegrationTests(unittest.TestCase):
             )
             raw_conn.execute(
                 """INSERT INTO penguin_connect_sync_state
-                   (conversation_id, last_imessage_ts, last_gmail_ts, last_message_ts, last_synced_at, updated_at)
+                   (conversation_id, last_source_ts, last_gmail_ts, last_message_ts, last_synced_at, updated_at)
                    VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))""",
                 ("amc_resume_cursor", same_ts, None, same_ts),
             )
@@ -1652,7 +1763,7 @@ class SyncIntegrationTests(unittest.TestCase):
                 ("Resume Cursor",),
             ).fetchone()
             row = migrated_conn.execute(
-                """SELECT last_imessage_ts, last_imessage_native_message_id
+                """SELECT last_source_ts, last_source_native_message_id
                    FROM penguin_connect_sync_state
                    WHERE conversation_id = ?""",
                 (conv["conversation_id"],),
@@ -1660,17 +1771,17 @@ class SyncIntegrationTests(unittest.TestCase):
         finally:
             migrated_conn.close()
 
-        self.assertIn("last_imessage_native_message_id", columns)
-        self.assertEqual(row["last_imessage_ts"], same_ts)
-        self.assertEqual(row["last_imessage_native_message_id"], "2")
+        self.assertIn("last_source_native_message_id", columns)
+        self.assertEqual(row["last_source_ts"], same_ts)
+        self.assertEqual(row["last_source_native_message_id"], "2")
 
     def test_init_db_migrates_apple_messages_routes_to_guid_and_service_provider(self):
         conn = db.get_connection()
         conn.close()
 
         legacy_schema = (
-            db.SCHEMA.replace("    imessage_chat_identifier TEXT,\n", "")
-            .replace("    imessage_service_name TEXT,\n", "")
+            db.SCHEMA.replace("    source_chat_identifier TEXT,\n", "")
+            .replace("    source_service_name TEXT,\n", "")
         )
         old_id = penguin_connect.deterministic_conversation_id("owner@gmail.com", "chat-legacy", "imessage")
         new_id = penguin_connect.deterministic_conversation_id("owner@gmail.com", "SMS;+;chat-legacy-guid", "sms")
@@ -1711,7 +1822,7 @@ class SyncIntegrationTests(unittest.TestCase):
             raw_conn.executescript(legacy_schema)
             raw_conn.execute(
                 """INSERT INTO penguin_connect_conversations
-                   (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants, alias_email, status)
+                   (gmail_email, source_provider, conversation_id, source_chat_id, display_name, chat_type, participants, alias_email, status)
                    VALUES (?, 'imessage', ?, ?, ?, 'dm', '[]', ?, 'active')""",
                 ("owner@gmail.com", old_id, "chat-legacy", "Legacy Chat", "owner+am-legacy@gmail.com"),
             )
@@ -1729,7 +1840,7 @@ class SyncIntegrationTests(unittest.TestCase):
             )
             raw_conn.execute(
                 """INSERT INTO penguin_connect_sync_state
-                   (conversation_id, last_imessage_ts, last_gmail_ts, last_synced_at, updated_at)
+                   (conversation_id, last_source_ts, last_gmail_ts, last_synced_at, updated_at)
                    VALUES (?, NULL, '2026-03-04T10:00:00+00:00', '2026-03-04 10:05:00', '2026-03-04 10:05:00')""",
                 (old_id,),
             )
@@ -1742,7 +1853,7 @@ class SyncIntegrationTests(unittest.TestCase):
         migrated_conn = db.get_connection()
         try:
             conv = migrated_conn.execute(
-                """SELECT conversation_id, source_provider, imessage_chat_id, imessage_chat_identifier, imessage_service_name
+                """SELECT conversation_id, source_provider, source_chat_id, source_chat_identifier, source_service_name
                    FROM penguin_connect_conversations
                    WHERE conversation_id = ?""",
                 (new_id,),
@@ -1765,9 +1876,9 @@ class SyncIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(conv)
         self.assertEqual(conv["conversation_id"], new_id)
         self.assertEqual(conv["source_provider"], "sms")
-        self.assertEqual(conv["imessage_chat_id"], "SMS;+;chat-legacy-guid")
-        self.assertEqual(conv["imessage_chat_identifier"], "chat-legacy")
-        self.assertEqual(conv["imessage_service_name"], "SMS")
+        self.assertEqual(conv["source_chat_id"], "SMS;+;chat-legacy-guid")
+        self.assertEqual(conv["source_chat_identifier"], "chat-legacy")
+        self.assertEqual(conv["source_service_name"], "SMS")
         self.assertEqual(alias["conversation_id"], new_id)
         self.assertEqual(message["conversation_id"], new_id)
         self.assertEqual(sync_state["conversation_id"], new_id)
@@ -1777,8 +1888,8 @@ class SyncIntegrationTests(unittest.TestCase):
         conn.close()
 
         legacy_schema = (
-            db.SCHEMA.replace("    imessage_chat_identifier TEXT,\n", "")
-            .replace("    imessage_service_name TEXT,\n", "")
+            db.SCHEMA.replace("    source_chat_identifier TEXT,\n", "")
+            .replace("    source_service_name TEXT,\n", "")
         )
         old_id = penguin_connect.deterministic_conversation_id("owner@gmail.com", "chat-shared", "imessage")
         new_id = penguin_connect.deterministic_conversation_id("owner@gmail.com", "SMS;+;chat-shared", "sms")
@@ -1829,7 +1940,7 @@ class SyncIntegrationTests(unittest.TestCase):
             raw_conn.executescript(legacy_schema)
             raw_conn.execute(
                 """INSERT INTO penguin_connect_conversations
-                   (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants, alias_email, status)
+                   (gmail_email, source_provider, conversation_id, source_chat_id, display_name, chat_type, participants, alias_email, status)
                    VALUES (?, 'imessage', ?, ?, ?, 'dm', '[]', ?, 'active')""",
                 ("owner@gmail.com", old_id, "chat-shared", "Legacy Shared Chat", "owner+am-shared@gmail.com"),
             )
@@ -1848,7 +1959,7 @@ class SyncIntegrationTests(unittest.TestCase):
         migrated_conn = db.get_connection()
         try:
             conv = migrated_conn.execute(
-                """SELECT conversation_id, source_provider, imessage_chat_id, imessage_chat_identifier, imessage_service_name
+                """SELECT conversation_id, source_provider, source_chat_id, source_chat_identifier, source_service_name
                    FROM penguin_connect_conversations
                    WHERE conversation_id = ?""",
                 (new_id,),
@@ -1862,9 +1973,9 @@ class SyncIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(conv)
         self.assertEqual(conv["conversation_id"], new_id)
         self.assertEqual(conv["source_provider"], "sms")
-        self.assertEqual(conv["imessage_chat_id"], "SMS;+;chat-shared")
-        self.assertEqual(conv["imessage_chat_identifier"], "chat-shared")
-        self.assertEqual(conv["imessage_service_name"], "SMS")
+        self.assertEqual(conv["source_chat_id"], "SMS;+;chat-shared")
+        self.assertEqual(conv["source_chat_identifier"], "chat-shared")
+        self.assertEqual(conv["source_service_name"], "SMS")
         self.assertEqual(moved_message["conversation_id"], new_id)
 
     def test_init_db_resolves_ambiguous_apple_messages_identifier_when_only_one_route_has_activity(self):
@@ -1872,8 +1983,8 @@ class SyncIntegrationTests(unittest.TestCase):
         conn.close()
 
         legacy_schema = (
-            db.SCHEMA.replace("    imessage_chat_identifier TEXT,\n", "")
-            .replace("    imessage_service_name TEXT,\n", "")
+            db.SCHEMA.replace("    source_chat_identifier TEXT,\n", "")
+            .replace("    source_service_name TEXT,\n", "")
         )
         old_id = penguin_connect.deterministic_conversation_id("owner@gmail.com", "chat-group-shared", "imessage")
         new_id = penguin_connect.deterministic_conversation_id("owner@gmail.com", "SMS;+;chat-group-shared", "sms")
@@ -1919,7 +2030,7 @@ class SyncIntegrationTests(unittest.TestCase):
             raw_conn.executescript(legacy_schema)
             raw_conn.execute(
                 """INSERT INTO penguin_connect_conversations
-                   (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants, alias_email, status)
+                   (gmail_email, source_provider, conversation_id, source_chat_id, display_name, chat_type, participants, alias_email, status)
                    VALUES (?, 'imessage', ?, ?, ?, 'group', ?, ?, 'active')""",
                 (
                     "owner@gmail.com",
@@ -1939,7 +2050,7 @@ class SyncIntegrationTests(unittest.TestCase):
         migrated_conn = db.get_connection()
         try:
             conv = migrated_conn.execute(
-                """SELECT conversation_id, source_provider, imessage_chat_id, imessage_chat_identifier, imessage_service_name
+                """SELECT conversation_id, source_provider, source_chat_id, source_chat_identifier, source_service_name
                    FROM penguin_connect_conversations
                    WHERE conversation_id = ?""",
                 (new_id,),
@@ -1950,17 +2061,17 @@ class SyncIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(conv)
         self.assertEqual(conv["conversation_id"], new_id)
         self.assertEqual(conv["source_provider"], "sms")
-        self.assertEqual(conv["imessage_chat_id"], "SMS;+;chat-group-shared")
-        self.assertEqual(conv["imessage_chat_identifier"], "chat-group-shared")
-        self.assertEqual(conv["imessage_service_name"], "SMS")
+        self.assertEqual(conv["source_chat_id"], "SMS;+;chat-group-shared")
+        self.assertEqual(conv["source_chat_identifier"], "chat-group-shared")
+        self.assertEqual(conv["source_service_name"], "SMS")
 
     def test_init_db_merges_legacy_group_row_into_existing_canonical_route(self):
         conn = db.get_connection()
         conn.close()
 
         legacy_schema = (
-            db.SCHEMA.replace("    imessage_chat_identifier TEXT,\n", "")
-            .replace("    imessage_service_name TEXT,\n", "")
+            db.SCHEMA.replace("    source_chat_identifier TEXT,\n", "")
+            .replace("    source_service_name TEXT,\n", "")
         )
         old_id = penguin_connect.deterministic_conversation_id("owner@gmail.com", "chat-group-existing", "imessage")
         target_id = penguin_connect.deterministic_conversation_id("owner@gmail.com", "SMS;+;chat-group-existing", "sms")
@@ -2006,7 +2117,7 @@ class SyncIntegrationTests(unittest.TestCase):
             raw_conn.executescript(legacy_schema)
             raw_conn.execute(
                 """INSERT INTO penguin_connect_conversations
-                   (gmail_email, source_provider, conversation_id, imessage_chat_id, display_name, chat_type, participants, alias_email, status)
+                   (gmail_email, source_provider, conversation_id, source_chat_id, display_name, chat_type, participants, alias_email, status)
                    VALUES (?, 'imessage', ?, ?, ?, 'group', ?, ?, 'active')""",
                 (
                     "owner@gmail.com",
@@ -2019,7 +2130,7 @@ class SyncIntegrationTests(unittest.TestCase):
             )
             raw_conn.execute(
                 """INSERT INTO penguin_connect_conversations
-                   (gmail_email, source_provider, conversation_id, imessage_chat_id, imessage_chat_identifier, imessage_service_name,
+                   (gmail_email, source_provider, conversation_id, source_chat_id, source_chat_identifier, source_service_name,
                     display_name, chat_type, participants, alias_email, status)
                    VALUES (?, 'sms', ?, ?, ?, 'SMS', ?, 'group', ?, ?, 'active')""",
                 (
@@ -2046,7 +2157,7 @@ class SyncIntegrationTests(unittest.TestCase):
             )
             raw_conn.execute(
                 """INSERT INTO penguin_connect_sync_state
-                   (conversation_id, last_imessage_ts, last_gmail_ts, last_message_ts, initial_sync_completed_at, last_synced_at, updated_at)
+                   (conversation_id, last_source_ts, last_gmail_ts, last_message_ts, initial_sync_completed_at, last_synced_at, updated_at)
                    VALUES (?, '2026-03-01T10:00:00+00:00', '2026-03-01T10:05:00+00:00', '2026-03-01T10:05:00+00:00',
                            '2026-03-01T10:06:00+00:00', '2026-03-01T10:06:00+00:00', '2026-03-01T10:06:00+00:00')""",
                 (old_id,),
@@ -2060,7 +2171,7 @@ class SyncIntegrationTests(unittest.TestCase):
         migrated_conn = db.get_connection()
         try:
             target = migrated_conn.execute(
-                """SELECT conversation_id, source_provider, imessage_chat_id, imessage_chat_identifier, imessage_service_name, alias_email
+                """SELECT conversation_id, source_provider, source_chat_id, source_chat_identifier, source_service_name, alias_email
                    FROM penguin_connect_conversations
                    WHERE conversation_id = ?""",
                 (target_id,),
@@ -2086,12 +2197,77 @@ class SyncIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(target)
         self.assertIsNone(legacy)
         self.assertEqual(target["source_provider"], "sms")
-        self.assertEqual(target["imessage_chat_id"], "SMS;+;chat-group-existing")
+        self.assertEqual(target["source_chat_id"], "SMS;+;chat-group-existing")
         self.assertEqual(alias["conversation_id"], target_id)
         self.assertEqual(alias["status"], "active")
         self.assertEqual(message["conversation_id"], target_id)
         self.assertEqual(sync_state["conversation_id"], target_id)
         self.assertEqual(sync_state["last_gmail_ts"], "2026-03-01T10:05:00+00:00")
+
+    def test_init_db_repairs_mislabeled_local_slack_thread_rows(self):
+        conn = db.get_connection()
+        try:
+            conn.execute(
+                """INSERT INTO penguin_connect_conversations
+                   (gmail_email, source_provider, conversation_id, source_chat_id,
+                    source_chat_identifier, source_service_name, display_name,
+                    chat_type, participants, status)
+                   VALUES ('owner@gmail.com', 'slack', 'synthetic-slack-cache',
+                           'C_SYNTHETIC', 'C_SYNTHETIC', 'Slack', '#synthetic',
+                           'channel', '[]', 'active')"""
+            )
+            conn.executemany(
+                """INSERT INTO penguin_connect_messages
+                   (conversation_id, provider, provider_message_id, direction,
+                    body_text, message_timestamp, metadata)
+                   VALUES ('synthetic-slack-cache', ?, ?, ?, 'synthetic', ?, ?)""",
+                [
+                    (
+                        "imessage",
+                        "slack:synthetic-root",
+                        "imessage_local",
+                        "2026-03-01T10:00:00+00:00",
+                        json.dumps(
+                            {
+                                "local_cache_only": True,
+                                "native_message_id": "synthetic-root",
+                            }
+                        ),
+                    ),
+                    (
+                        "manual",
+                        "manual:synthetic-send",
+                        "manual_to_imessage",
+                        "2026-03-01T10:01:00+00:00",
+                        json.dumps({"thread_ts": "synthetic-root"}),
+                    ),
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        db.init_db()
+
+        repaired_conn = db.get_connection()
+        try:
+            rows = repaired_conn.execute(
+                """SELECT provider_message_id, provider, direction
+                   FROM penguin_connect_messages
+                   WHERE provider_message_id IN (
+                       'slack:synthetic-root',
+                       'manual:synthetic-send'
+                   )
+                   ORDER BY provider_message_id"""
+            ).fetchall()
+        finally:
+            repaired_conn.close()
+
+        by_id = {row["provider_message_id"]: row for row in rows}
+        repaired = by_id["slack:synthetic-root"]
+        self.assertEqual((repaired["provider"], repaired["direction"]), ("slack", "slack_local"))
+        manual = by_id["manual:synthetic-send"]
+        self.assertEqual((manual["provider"], manual["direction"]), ("manual", "manual_to_imessage"))
 
 
 if __name__ == "__main__":

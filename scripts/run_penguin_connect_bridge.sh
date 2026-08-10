@@ -31,7 +31,7 @@ fi
 
 PORT="${PENGUIN_CONNECT_PORT:-9000}"
 RESTART_ON_CRASH="${PENGUIN_CONNECT_RESTART_ON_CRASH:-1}"
-PYTHON_BIN="$REPO_DIR/server/venv/bin/python"
+PYTHON_BIN="${PENGUIN_CONNECT_PYTHON_BIN:-$REPO_DIR/server/venv/bin/python}"
 
 if lsof -ti :"$PORT" >/dev/null 2>&1; then
   echo "[PenguinConnect] Port $PORT already in use; not starting duplicate server."
