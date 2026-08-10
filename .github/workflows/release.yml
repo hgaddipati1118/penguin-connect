@@ -46,8 +46,15 @@ jobs:
           go-version: "1.25.x"
           cache: false
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
       - name: Install test tools
-        run: brew install ripgrep
+        run: |
+          brew install ripgrep
+          python -m pip install -r server/requirements.txt
 
       - name: Run tests
         run: ./scripts/check.sh
