@@ -100,6 +100,9 @@ func penguinOnboardingHTMLPage(initialStep: Int = 0) -> String {
           .choice strong { display: block; margin-bottom: 7px; }
           .choice span { color: var(--muted); font-size: 12px; }
           .endpoint { margin-top: 13px; padding: 12px 14px; border-radius: 12px; background: rgba(23,36,31,.06); color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+          .access-code { margin-top: 14px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 15px 17px; border: 1px solid rgba(40,95,76,.25); border-radius: 16px; background: var(--green-soft); }
+          .access-code small { display: block; color: var(--muted); }
+          .access-code output { color: var(--green); font: 750 24px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .14em; }
           .notice { margin-top: 13px; padding: 12px 14px; border-radius: 12px; background: #fff3d8; color: #775b22; font-size: 12px; }
           .spinner { width: 14px; height: 14px; border: 2px solid rgba(23,36,31,.16); border-top-color: var(--green); border-radius: 50%; animation: spin .8s linear infinite; }
           @keyframes spin { to { transform: rotate(360deg); } }
@@ -123,7 +126,7 @@ func penguinOnboardingHTMLPage(initialStep: Int = 0) -> String {
             <section class="panel" data-step="0">
               <div class="eyebrow">Private Mac companion</div>
               <h1>Your messages, under your control.</h1>
-              <p class="lede">Penguin connects iMessage, WhatsApp, and Contacts to tools you approve. Local services remain on loopback, secrets stay in Keychain, and every remote write needs your click.</p>
+              <p class="lede">Penguin connects iMessage, WhatsApp, and Contacts to tools you approve. Local services remain on loopback, secrets stay in Keychain, and every remote request needs today's access code.</p>
               <div class="card"><div class="row"><div><strong>Nothing is uploaded in bulk</strong><small>Clients receive only individual tool results they request.</small></div><span class="status ok"><span class="dot"></span>Local first</span></div></div>
               <div class="actions"><button class="button" onclick="go(1)">Set up Penguin</button></div>
             </section>
@@ -143,10 +146,10 @@ func penguinOnboardingHTMLPage(initialStep: Int = 0) -> String {
             </section>
             <section class="panel" data-step="3">
               <div class="eyebrow">Step 4</div><h1>Choose what Slashy may do.</h1>
-              <p class="lede">Reads happen with the bearer credential. Writes also require an exact one-use confirmation and a local approval dialog on this Mac.</p>
+              <p class="lede">Every request uses a six-character code that changes each day. Writes also require an exact one-use confirmation bound to the requested action.</p>
               <div class="choices">
                 <label class="choice"><input type="radio" name="profile" value="read-only" checked><strong>Read only</strong><span>Search and read messages and Contacts. No send or contact changes.</span></label>
-                <label class="choice"><input type="radio" name="profile" value="slashy"><strong>Full access</strong><span>Add send and contact-upsert requests, each gated by your Mac approval.</span></label>
+                <label class="choice"><input type="radio" name="profile" value="slashy"><strong>Full access</strong><span>Add sending, contact changes, and group creation. Every request requires today's code.</span></label>
               </div>
               <p class="lede" style="margin: 22px 0 10px">Choose the encrypted public connection.</p>
               <div class="choices">
@@ -158,9 +161,10 @@ func penguinOnboardingHTMLPage(initialStep: Int = 0) -> String {
             </section>
             <section class="panel" data-step="4">
               <div class="eyebrow">Ready</div><h1>Connect Penguin to Slashy.</h1>
-              <p id="ready-detail" class="lede">Your connection bundle is copied. It contains the HTTPS URL and a bearer stored in Keychain; Penguin never prints the bearer.</p>
+              <p id="ready-detail" class="lede">Your connection bundle is copied. It contains today's access credential and expires when the six-character code rotates at the start of the next local day.</p>
               <div id="endpoint" class="endpoint">Waiting for endpoint…</div>
-              <div class="actions"><button class="button" onclick="post('copyConnection')">Copy connection again</button><button class="button secondary" onclick="post('openSlashy')">Open Slashy</button><button class="button secondary" onclick="post('rotateToken')">Rotate key</button></div>
+              <div class="access-code"><div><strong>Today's access code</strong><small>Required for every MCP action</small></div><output id="daily-code" aria-live="polite">••••••</output></div>
+              <div class="actions"><button class="button" onclick="post('copyConnection')">Copy today's connection</button><button class="button secondary" onclick="post('copyDailyCode')">Copy code</button><button class="button secondary" onclick="post('openSlashy')">Open Slashy</button><button class="button secondary" onclick="post('rotateToken')">Rotate key</button></div>
               <div class="actions"><button class="button" onclick="post('finish')">Open Penguin</button></div>
             </section>
           </main>
@@ -182,6 +186,7 @@ func penguinOnboardingHTMLPage(initialStep: Int = 0) -> String {
             if (step === 1) post('checkPermissions');
             if (step === 2) post('checkWhatsApp');
             if (step === 3) post('remoteStatus');
+            if (step === 4) post('dailyCode');
           }
           function setupRemote() {
             const profile = document.querySelector('input[name=profile]:checked')?.value || 'read-only';
@@ -221,6 +226,9 @@ func penguinOnboardingHTMLPage(initialStep: Int = 0) -> String {
             },
             remoteStatus(active, endpoint) {
               if (active && endpoint) document.getElementById('endpoint').textContent = endpoint;
+            },
+            dailyCode(code) {
+              document.getElementById('daily-code').textContent = code || '••••••';
             }
           };
           go(step);

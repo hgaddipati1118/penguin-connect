@@ -7,6 +7,7 @@ import io
 import os
 import sys
 import unittest
+from datetime import date
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
@@ -50,6 +51,75 @@ class PenguinConnectMcpAuthTests(unittest.TestCase):
         self.assertEqual(token, "synthetic-existing-token")
         self.assertFalse(created)
         store.assert_not_called()
+
+    def test_daily_code_is_stable_for_day_and_changes_next_day(self):
+        secret = "synthetic-daily-code-secret"
+
+        first = penguin_connect_mcp_auth.daily_access_code(
+            secret,
+            day=date(2026, 8, 9),
+        )
+        repeated = penguin_connect_mcp_auth.daily_access_code(
+            secret,
+            day=date(2026, 8, 9),
+        )
+        next_day = penguin_connect_mcp_auth.daily_access_code(
+            secret,
+            day=date(2026, 8, 10),
+        )
+
+        self.assertEqual(first, repeated)
+        self.assertNotEqual(first, next_day)
+        self.assertEqual(len(first), 6)
+        self.assertTrue(set(first).issubset(set(penguin_connect_mcp_auth.DAILY_CODE_ALPHABET)))
+
+    def test_connection_token_requires_valid_six_character_code(self):
+        token = penguin_connect_mcp_auth.connection_token(
+            "synthetic-long-install-token",
+            "AB7K9Z",
+        )
+
+        self.assertEqual(token, "synthetic-long-install-token.AB7K9Z")
+        with self.assertRaises(ValueError):
+            penguin_connect_mcp_auth.connection_token(
+                "synthetic-long-install-token",
+                "123456",
+            )
+
+    def test_ensure_daily_secret_preserves_existing_secret(self):
+        with mock.patch.object(
+            penguin_connect_mcp_auth,
+            "read_keychain_daily_code_secret",
+            return_value="synthetic-existing-daily-secret",
+        ), mock.patch.object(
+            penguin_connect_mcp_auth,
+            "store_keychain_daily_code_secret",
+        ) as store:
+            secret, created = penguin_connect_mcp_auth.ensure_daily_code_secret()
+
+        self.assertEqual(secret, "synthetic-existing-daily-secret")
+        self.assertFalse(created)
+        store.assert_not_called()
+
+    def test_copy_uses_composed_daily_access_token_not_bare_bearer(self):
+        completed = penguin_connect_mcp_auth.subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(
+            penguin_connect_mcp_auth,
+            "load_token",
+            return_value="synthetic-long-bearer",
+        ), mock.patch.object(
+            penguin_connect_mcp_auth,
+            "connection_token",
+            return_value="synthetic-long-bearer.AB7K9Z",
+        ), mock.patch.object(
+            penguin_connect_mcp_auth.subprocess,
+            "run",
+            return_value=completed,
+        ) as run, redirect_stdout(io.StringIO()):
+            result = penguin_connect_mcp_auth._copy_token()
+
+        self.assertEqual(result, 0)
+        self.assertEqual(run.call_args.kwargs["input"], "synthetic-long-bearer.AB7K9Z")
 
     def test_rotate_restarts_the_loaded_remote_service(self):
         with mock.patch.object(

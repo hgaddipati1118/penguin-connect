@@ -64,9 +64,15 @@ The setup assistant guides the user through:
 
 The app installs separate launch agents for the WhatsApp bridge and authenticated MCP origin.
 Cloudflare's temporary option has its own launch agent; stable Tailscale Funnel state is managed
-by the signed-in Tailscale app. All origin services bind to loopback. The bearer is generated on
-the Mac, stored in Keychain, omitted from logs and launchd plists, and placed on the clipboard
-only when the user requests a connection bundle.
+by the signed-in Tailscale app. All origin services bind to loopback. Independent bearer and
+daily-code secrets are generated on the Mac, stored in Keychain, and omitted from logs and
+launchd plists. A requested connection bundle combines the bearer with today's six-character
+code; the resulting wire credential expires at the next local midnight.
+
+If a source-based installation already has a paired session under
+`~/whatsapp-mcp/whatsapp-bridge/store`, the packaged installer migrates only its session and
+message databases into Application Support when the destination is still unpaired. It leaves
+the legacy store untouched and preserves the fresh unpaired destination as a timestamped backup.
 
 ## Endpoint durability
 
@@ -93,7 +99,8 @@ Never ship one shared Cloudflare tunnel credential inside the app. For a named t
 
 The setup assistant's **Stop remote access** action stops and disables the public tunnel and
 remote MCP launch agent. The app's **Rotate key** action immediately invalidates the old bearer
-and copies a replacement bundle.
+and copies a replacement bundle. **Copy Today’s Access Code** is also available from the Penguin
+menu; copying the connection again always includes the current code.
 
 For removal, run the packaged uninstaller before moving the app to Trash:
 
@@ -118,11 +125,14 @@ Before publishing, verify on a clean user account and both supported CPU archite
 - first-run runtime installation completes;
 - the local UI and MCP health endpoints listen only on `127.0.0.1`;
 - WhatsApp pairing survives an app and Mac restart;
-- an unauthorized or wrong bearer receives HTTP 401;
+- a missing bearer, missing daily code, wrong bearer, wrong daily code, or previous-day bundle receives HTTP 401;
 - Read Only lists no write tools;
-- Full Access requires exact confirmation and a local click for every write;
+- every MCP action requires today's six-character code in addition to the install bearer;
+- Full Access requires exact one-use confirmation for every write, without opening a Mac dialog;
+- WhatsApp group creation accepts only exact unique phone numbers or user JIDs;
+- iMessage group creation stages an addressed draft and does not silently send;
 - unknown providers, local attachment paths, and local-only MCP tools cannot be retrieved;
 - rotating the Keychain bearer revokes the old Slashy connection;
 - Tailscale Funnel restart preserves the public URL;
 - stopping remote access survives logout/login until setup explicitly re-enables it;
-- the default uninstaller revokes the bearer without deleting local session data.
+- the default uninstaller revokes both Keychain secrets without deleting local session data.

@@ -17,6 +17,13 @@ penguin_connect_mcp = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = penguin_connect_mcp
 SPEC.loader.exec_module(penguin_connect_mcp)
 
+REMOTE_TOKEN = "synthetic-secret-with-at-least-thirty-two-characters"
+DAILY_CODE_SECRET = "synthetic-daily-code-secret-with-at-least-thirty-two-characters"
+
+
+def remote_wire_token() -> str:
+    return f"{REMOTE_TOKEN}.{penguin_connect_mcp.daily_access_code(DAILY_CODE_SECRET)}"
+
 
 class PenguinConnectMcpTests(unittest.TestCase):
     def test_existing_conversation_send_requires_confirmation(self):
@@ -91,21 +98,61 @@ class PenguinConnectMcpTests(unittest.TestCase):
 
 class PenguinConnectRemoteMcpTests(unittest.IsolatedAsyncioTestCase):
     async def test_static_bearer_verifier_accepts_only_exact_token(self):
-        token = "synthetic-secret-with-at-least-thirty-two-characters"
-        verifier = penguin_connect_mcp.StaticBearerTokenVerifier(token)
+        verifier = penguin_connect_mcp.StaticBearerTokenVerifier(
+            REMOTE_TOKEN,
+            DAILY_CODE_SECRET,
+        )
 
-        accepted = await verifier.verify_token(token)
-        rejected = await verifier.verify_token(f"{token}-with-suffix")
+        accepted = await verifier.verify_token(remote_wire_token())
+        rejected = await verifier.verify_token(f"{REMOTE_TOKEN}.WRONG2")
 
         self.assertIsNotNone(accepted)
         self.assertEqual(accepted.scopes, ["penguin-connect"])
         self.assertIsNone(rejected)
 
+    async def test_daily_code_guesses_are_rate_limited(self):
+        limiter = penguin_connect_mcp.DailyCodeAttemptLimiter(
+            max_failures=2,
+            window_seconds=60,
+            lockout_seconds=60,
+        )
+        verifier = penguin_connect_mcp.StaticBearerTokenVerifier(
+            REMOTE_TOKEN,
+            DAILY_CODE_SECRET,
+            attempt_limiter=limiter,
+        )
+
+        self.assertIsNone(await verifier.verify_token(f"{REMOTE_TOKEN}.AAAAAA"))
+        self.assertIsNone(await verifier.verify_token(f"{REMOTE_TOKEN}.BBBBBB"))
+        self.assertIsNotNone(await verifier.verify_token(remote_wire_token()))
+        self.assertIsNone(await verifier.verify_token(f"{REMOTE_TOKEN}.CCCCCC"))
+
+    async def test_yesterdays_code_does_not_lock_out_today_after_midnight(self):
+        limiter = penguin_connect_mcp.DailyCodeAttemptLimiter(
+            max_failures=1,
+            window_seconds=60,
+            lockout_seconds=60,
+        )
+        verifier = penguin_connect_mcp.StaticBearerTokenVerifier(
+            REMOTE_TOKEN,
+            DAILY_CODE_SECRET,
+            attempt_limiter=limiter,
+        )
+        today = penguin_connect_mcp.dt.datetime.now().astimezone().date()
+        yesterday = penguin_connect_mcp.daily_access_code(
+            DAILY_CODE_SECRET,
+            day=today - penguin_connect_mcp.dt.timedelta(days=1),
+        )
+
+        self.assertIsNone(await verifier.verify_token(f"{REMOTE_TOKEN}.{yesterday}"))
+        self.assertIsNotNone(await verifier.verify_token(remote_wire_token()))
+
     def test_remote_server_uses_loopback_and_stateless_http(self):
         server = penguin_connect_mcp.create_mcp_server(
             host="127.0.0.1",
             port=8765,
-            bearer_token="synthetic-secret-with-at-least-thirty-two-characters",
+            bearer_token=REMOTE_TOKEN,
+            daily_code_secret=DAILY_CODE_SECRET,
         )
 
         self.assertEqual(server.settings.host, "127.0.0.1")
@@ -117,7 +164,8 @@ class PenguinConnectRemoteMcpTests(unittest.IsolatedAsyncioTestCase):
         server = penguin_connect_mcp.create_mcp_server(
             host="127.0.0.1",
             port=8765,
-            bearer_token="synthetic-secret-with-at-least-thirty-two-characters",
+            bearer_token=REMOTE_TOKEN,
+            daily_code_secret=DAILY_CODE_SECRET,
             remote_policy=penguin_connect_mcp.policy_for_profile("whatsapp"),
         )
 
@@ -131,7 +179,8 @@ class PenguinConnectRemoteMcpTests(unittest.IsolatedAsyncioTestCase):
         server = penguin_connect_mcp.create_mcp_server(
             host="127.0.0.1",
             port=8765,
-            bearer_token="synthetic-secret-with-at-least-thirty-two-characters",
+            bearer_token=REMOTE_TOKEN,
+            daily_code_secret=DAILY_CODE_SECRET,
             remote_policy=policy,
         )
 
@@ -144,6 +193,7 @@ class PenguinConnectRemoteMcpTests(unittest.IsolatedAsyncioTestCase):
                 "search_contacts",
                 "send_message",
                 "upsert_contact",
+                "create_group_chat",
             ],
         )
 
@@ -152,7 +202,8 @@ class PenguinConnectRemoteMcpTests(unittest.IsolatedAsyncioTestCase):
         server = penguin_connect_mcp.create_mcp_server(
             host="127.0.0.1",
             port=8765,
-            bearer_token="synthetic-secret-with-at-least-thirty-two-characters",
+            bearer_token=REMOTE_TOKEN,
+            daily_code_secret=DAILY_CODE_SECRET,
             remote_policy=policy,
         )
 
@@ -245,11 +296,7 @@ class PenguinConnectRemoteMcpTests(unittest.IsolatedAsyncioTestCase):
             penguin_connect_mcp,
             "send_message_data",
             side_effect=fake_send,
-        ) as send, mock.patch.object(
-            penguin_connect_mcp,
-            "request_local_whatsapp_send_approval",
-            return_value=True,
-        ):
+        ) as send:
             preview = penguin_connect_mcp.remote_send_whatsapp_data(
                 confirmations,
                 "+15555550123",
@@ -289,11 +336,7 @@ class PenguinConnectRemoteMcpTests(unittest.IsolatedAsyncioTestCase):
             penguin_connect_mcp,
             "send_message_data",
             side_effect=fake_send,
-        ) as send, mock.patch.object(
-            penguin_connect_mcp,
-            "request_local_whatsapp_send_approval",
-            return_value=True,
-        ):
+        ) as send:
             preview = penguin_connect_mcp.remote_send_whatsapp_data(
                 confirmations,
                 "+15555550123",
@@ -316,7 +359,7 @@ class PenguinConnectRemoteMcpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(replayed["error"], "invalid_or_expired_confirmation")
         self.assertEqual(sum(bool(call.kwargs.get("confirm")) for call in send.mock_calls), 1)
 
-    def test_remote_send_does_not_send_when_local_approval_is_denied(self):
+    def test_remote_send_does_not_open_a_local_approval_dialog(self):
         confirmations = penguin_connect_mcp.RemoteConfirmationStore()
 
         def fake_send(_recipient, _message, **kwargs):
@@ -333,25 +376,24 @@ class PenguinConnectRemoteMcpTests(unittest.IsolatedAsyncioTestCase):
             "send_message_data",
             side_effect=fake_send,
         ) as send, mock.patch.object(
-            penguin_connect_mcp,
-            "request_local_whatsapp_send_approval",
-            return_value=False,
-        ) as approve:
+            penguin_connect_mcp.subprocess,
+            "run",
+        ) as local_process:
             preview = penguin_connect_mcp.remote_send_whatsapp_data(
                 confirmations,
                 "+15555550123",
                 "Synthetic message",
             )
-            denied = penguin_connect_mcp.remote_send_whatsapp_data(
+            sent = penguin_connect_mcp.remote_send_whatsapp_data(
                 confirmations,
                 "+15555550123",
                 "Synthetic message",
                 confirmation_token=preview["confirmation_token"],
             )
 
-        self.assertEqual(denied["error"], "local_approval_denied_or_timed_out")
-        approve.assert_called_once()
-        self.assertFalse(any(call.kwargs.get("confirm") for call in send.mock_calls))
+        self.assertTrue(sent["success"])
+        local_process.assert_not_called()
+        self.assertEqual(sum(bool(call.kwargs.get("confirm")) for call in send.mock_calls), 1)
 
     def test_remote_send_rejects_contact_names_and_non_whatsapp_conversations(self):
         confirmations = penguin_connect_mcp.RemoteConfirmationStore()
@@ -482,10 +524,6 @@ class PenguinConnectRemoteMcpTests(unittest.IsolatedAsyncioTestCase):
             penguin_connect_mcp,
             "_api_json",
             side_effect=fake_api,
-        ), mock.patch.object(
-            penguin_connect_mcp,
-            "request_local_mcp_approval",
-            return_value=True,
         ):
             preview = penguin_connect_mcp.remote_send_message_data(
                 confirmations,
@@ -508,13 +546,9 @@ class PenguinConnectRemoteMcpTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(preview["confirmation_required"])
         self.assertTrue(sent["success"])
 
-    def test_remote_contact_upsert_requires_exact_confirmation_and_local_approval(self):
+    def test_remote_contact_upsert_requires_exact_confirmation(self):
         confirmations = penguin_connect_mcp.RemoteConfirmationStore()
         with mock.patch.object(
-            penguin_connect_mcp,
-            "request_local_mcp_approval",
-            return_value=True,
-        ) as approve, mock.patch.object(
             penguin_connect_mcp,
             "_api_json",
             return_value={"success": True, "updated": False},
@@ -533,15 +567,166 @@ class PenguinConnectRemoteMcpTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(preview["confirmation_required"])
         self.assertEqual(rejected["error"], "invalid_or_expired_confirmation")
-        approve.assert_not_called()
         api.assert_not_called()
+
+    def test_group_create_rejects_contact_names_and_duplicates(self):
+        confirmations = penguin_connect_mcp.RemoteConfirmationStore()
+        policy = penguin_connect_mcp.policy_for_profile("slashy")
+
+        named = penguin_connect_mcp.remote_create_group_chat_data(
+            confirmations,
+            provider="whatsapp",
+            participants=["Synthetic Contact", "+15555550124"],
+            name="Synthetic group",
+            providers=policy.providers,
+        )
+        name_with_digits = penguin_connect_mcp.remote_create_group_chat_data(
+            confirmations,
+            provider="whatsapp",
+            participants=["Agent 15555550123", "+15555550124"],
+            name="Synthetic group",
+            providers=policy.providers,
+        )
+        duplicate = penguin_connect_mcp.remote_create_group_chat_data(
+            confirmations,
+            provider="imessage",
+            participants=["+1 (555) 555-0123", "15555550123"],
+            first_message="Synthetic message",
+            providers=policy.providers,
+        )
+
+        self.assertEqual(
+            named["error"],
+            "whatsapp_participants_must_be_phone_or_user_jid",
+        )
+        self.assertEqual(
+            name_with_digits["error"],
+            "whatsapp_participants_must_be_phone_or_user_jid",
+        )
+        self.assertEqual(duplicate["error"], "group_participants_must_be_unique")
+
+    def test_whatsapp_group_create_requires_exact_confirmation(self):
+        confirmations = penguin_connect_mcp.RemoteConfirmationStore()
+        policy = penguin_connect_mcp.policy_for_profile("slashy")
+        adapter = mock.Mock()
+        adapter.send_message.return_value = (True, "")
+        with mock.patch.object(
+            penguin_connect_mcp,
+            "_whatsapp_bridge_json",
+            return_value={"success": True, "group_jid": "synthetic-group@g.us"},
+        ) as create, mock.patch.object(
+            penguin_connect_mcp,
+            "get_channel_adapter",
+            return_value=adapter,
+        ):
+            preview = penguin_connect_mcp.remote_create_group_chat_data(
+                confirmations,
+                provider="whatsapp",
+                participants=["+15555550123", "+15555550124"],
+                name="Synthetic group",
+                first_message="Synthetic message",
+                providers=policy.providers,
+            )
+            rejected = penguin_connect_mcp.remote_create_group_chat_data(
+                confirmations,
+                provider="whatsapp",
+                participants=["+15555550123", "+15555550125"],
+                name="Synthetic group",
+                first_message="Synthetic message",
+                confirmation_token=preview["confirmation_token"],
+                providers=policy.providers,
+            )
+
+        self.assertTrue(preview["confirmation_required"])
+        self.assertEqual(rejected["error"], "invalid_or_expired_confirmation")
+        create.assert_not_called()
+        adapter.send_message.assert_not_called()
+
+    def test_whatsapp_group_create_uses_loopback_bridge_then_sends_first_message(self):
+        confirmations = penguin_connect_mcp.RemoteConfirmationStore()
+        policy = penguin_connect_mcp.policy_for_profile("slashy")
+        adapter = mock.Mock()
+        adapter.send_message.return_value = (True, "")
+        with mock.patch.object(
+            penguin_connect_mcp,
+            "_whatsapp_bridge_json",
+            return_value={"success": True, "group_jid": "synthetic-group@g.us"},
+        ) as create, mock.patch.object(
+            penguin_connect_mcp,
+            "get_channel_adapter",
+            return_value=adapter,
+        ):
+            arguments = {
+                "provider": "whatsapp",
+                "participants": ["+15555550123", "+15555550124"],
+                "name": "Synthetic group",
+                "first_message": "Synthetic message",
+                "providers": policy.providers,
+            }
+            preview = penguin_connect_mcp.remote_create_group_chat_data(
+                confirmations,
+                **arguments,
+            )
+            created = penguin_connect_mcp.remote_create_group_chat_data(
+                confirmations,
+                confirmation_token=preview["confirmation_token"],
+                **arguments,
+            )
+
+        self.assertTrue(created["success"])
+        self.assertEqual(created["group_id"], "synthetic-group@g.us")
+        create.assert_called_once_with(
+            "/groups/create",
+            {
+                "name": "Synthetic group",
+                "participants": ["15555550123", "15555550124"],
+            },
+        )
+        adapter.send_message.assert_called_once_with(
+            "synthetic-group@g.us",
+            "Synthetic message",
+            attachment_paths=None,
+        )
+
+    def test_imessage_group_create_stages_multi_recipient_draft(self):
+        confirmations = penguin_connect_mcp.RemoteConfirmationStore()
+        policy = penguin_connect_mcp.policy_for_profile("slashy")
+        arguments = {
+            "provider": "imessage",
+            "participants": ["+15555550123", "synthetic@example.com"],
+            "name": "Synthetic group",
+            "first_message": "Synthetic message",
+            "providers": policy.providers,
+        }
+        with mock.patch.object(
+            penguin_connect_mcp,
+            "_api_json",
+            return_value={"success": True},
+        ) as api:
+            preview = penguin_connect_mcp.remote_create_group_chat_data(
+                confirmations,
+                **arguments,
+            )
+            staged = penguin_connect_mcp.remote_create_group_chat_data(
+                confirmations,
+                confirmation_token=preview["confirmation_token"],
+                **arguments,
+            )
+
+        self.assertTrue(staged["success"])
+        self.assertTrue(staged["staged_not_created"])
+        self.assertTrue(staged["manual_send_required"])
+        request = api.call_args.kwargs["payload"]
+        self.assertEqual(request["participants"], ["15555550123", "synthetic@example.com"])
+        self.assertEqual(request["message"], "Synthetic message")
 
     def test_remote_server_rejects_non_loopback_bind(self):
         with self.assertRaisesRegex(ValueError, "loopback"):
             penguin_connect_mcp.create_mcp_server(
                 host="0.0.0.0",
                 port=8765,
-                bearer_token="synthetic-secret-with-at-least-thirty-two-characters",
+                bearer_token=REMOTE_TOKEN,
+                daily_code_secret=DAILY_CODE_SECRET,
             )
 
     def test_remote_server_rejects_weak_bearer_token(self):
@@ -550,6 +735,7 @@ class PenguinConnectRemoteMcpTests(unittest.IsolatedAsyncioTestCase):
                 host="127.0.0.1",
                 port=8765,
                 bearer_token="too-short",
+                daily_code_secret=DAILY_CODE_SECRET,
             )
 
     def test_remote_http_rejects_missing_or_wrong_bearer_token(self):
@@ -558,7 +744,8 @@ class PenguinConnectRemoteMcpTests(unittest.IsolatedAsyncioTestCase):
         server = penguin_connect_mcp.create_mcp_server(
             host="127.0.0.1",
             port=8765,
-            bearer_token="synthetic-secret-with-at-least-thirty-two-characters",
+            bearer_token=REMOTE_TOKEN,
+            daily_code_secret=DAILY_CODE_SECRET,
         )
         with TestClient(server.streamable_http_app()) as client:
             missing = client.post(
@@ -574,23 +761,41 @@ class PenguinConnectRemoteMcpTests(unittest.IsolatedAsyncioTestCase):
                     "Authorization": "Bearer wrong-secret",
                 },
             )
+            missing_daily_code = client.post(
+                "/mcp",
+                json={},
+                headers={
+                    "Accept": "application/json, text/event-stream",
+                    "Authorization": f"Bearer {REMOTE_TOKEN}",
+                },
+            )
+            wrong_daily_code = client.post(
+                "/mcp",
+                json={},
+                headers={
+                    "Accept": "application/json, text/event-stream",
+                    "Authorization": f"Bearer {REMOTE_TOKEN}.WRONG2",
+                },
+            )
 
         self.assertEqual(missing.status_code, 401)
         self.assertEqual(wrong.status_code, 401)
+        self.assertEqual(missing_daily_code.status_code, 401)
+        self.assertEqual(wrong_daily_code.status_code, 401)
 
     def test_remote_protocol_rejects_hidden_local_tool(self):
         from starlette.testclient import TestClient
 
-        token = "synthetic-secret-with-at-least-thirty-two-characters"
         server = penguin_connect_mcp.create_mcp_server(
             host="127.0.0.1",
             port=8765,
-            bearer_token=token,
+            bearer_token=REMOTE_TOKEN,
+            daily_code_secret=DAILY_CODE_SECRET,
             remote_policy=penguin_connect_mcp.policy_for_profile("whatsapp"),
         )
         headers = {
             "Accept": "application/json, text/event-stream",
-            "Authorization": f"Bearer {token}",
+            "Authorization": f"Bearer {remote_wire_token()}",
             "Content-Type": "application/json",
             "MCP-Protocol-Version": "2025-06-18",
         }

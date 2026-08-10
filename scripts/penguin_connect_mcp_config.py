@@ -15,6 +15,7 @@ VALID_REMOTE_SCOPES = frozenset(
         "contacts.read",
         "messages.send",
         "contacts.write",
+        "groups.create",
     }
 )
 VALID_REMOTE_PROVIDERS = frozenset({"imessage", "whatsapp"})
@@ -25,7 +26,7 @@ class RemoteAccessPolicy:
     profile: str
     scopes: tuple[str, ...]
     providers: tuple[str, ...]
-    local_approval_required: bool = True
+    daily_code_required: bool = True
 
     def allows(self, scope: str) -> bool:
         return scope in self.scopes
@@ -55,6 +56,7 @@ _PROFILES = {
             "contacts.read",
             "messages.send",
             "contacts.write",
+            "groups.create",
         ),
         providers=("imessage", "whatsapp"),
     ),
@@ -87,15 +89,18 @@ def _validated_policy(data: object) -> RemoteAccessPolicy:
     profile = str(data.get("profile") or "").strip().lower()
     scopes = tuple(str(value or "").strip() for value in data.get("scopes") or [])
     providers = tuple(str(value or "").strip().lower() for value in data.get("providers") or [])
-    approval_required = data.get("local_approval_required")
+    daily_code_required = data.get("daily_code_required")
+    if daily_code_required is None and data.get("local_approval_required") is True:
+        # Upgrade the previous per-write local-click policy without dropping scopes.
+        daily_code_required = True
     if not profile or not scopes or not providers:
         raise ValueError("Remote MCP policy is incomplete")
     if len(scopes) != len(set(scopes)) or not set(scopes).issubset(VALID_REMOTE_SCOPES):
         raise ValueError("Remote MCP policy contains an unsupported scope")
     if len(providers) != len(set(providers)) or not set(providers).issubset(VALID_REMOTE_PROVIDERS):
         raise ValueError("Remote MCP policy contains an unsupported provider")
-    if approval_required is not True:
-        raise ValueError("Remote MCP writes must require local approval")
+    if daily_code_required is not True:
+        raise ValueError("Remote MCP access must require the rotating daily code")
     expected = policy_for_profile(profile)
     candidate = RemoteAccessPolicy(profile, scopes, providers, True)
     if candidate != expected:

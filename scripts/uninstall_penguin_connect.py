@@ -19,6 +19,10 @@ LAUNCH_AGENT_LABELS = (
 )
 KEYCHAIN_ITEMS = (
     ("penguin-connect-remote-mcp", "com.penguinconnect.remote-mcp.bearer-token"),
+    (
+        "penguin-connect-remote-mcp-daily-code",
+        "com.penguinconnect.remote-mcp.daily-code-secret",
+    ),
 )
 APP_SUPPORT = Path.home() / "Library" / "Application Support" / "PenguinConnect"
 ENDPOINT_STATE = APP_SUPPORT / "remote-endpoint.json"

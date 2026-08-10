@@ -22,7 +22,13 @@ SCRIPTS_DIR = ROOT_DIR / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from penguin_connect_mcp_auth import ensure_token, load_token
+from penguin_connect_mcp_auth import (
+    connection_token,
+    daily_access_code,
+    ensure_daily_code_secret,
+    ensure_token,
+    load_token,
+)
 from penguin_connect_mcp_config import (
     RemoteAccessPolicy,
     policy_for_profile,
@@ -100,13 +106,15 @@ def build_connection_bundle(
     origin: str,
     token: str,
     policy: RemoteAccessPolicy,
+    *,
+    daily_code: str | None = None,
 ) -> dict[str, Any]:
     if not token:
         raise ValueError("The remote MCP token is unavailable")
     return {
         "name": "PenguinConnect",
         "server_url": f"{normalize_public_origin(origin)}/mcp",
-        "token": token,
+        "token": connection_token(token, daily_code),
         "transport": "streamable_http",
         "profile": policy.profile,
         "scopes": list(policy.scopes),
@@ -175,7 +183,12 @@ def endpoint_tunnel_kind(path: Path | None = None) -> str:
 
 
 def copy_connection_bundle(origin: str, token: str, policy: RemoteAccessPolicy) -> None:
-    bundle = build_connection_bundle(origin, token, policy)
+    bundle = build_connection_bundle(
+        origin,
+        token,
+        policy,
+        daily_code=daily_access_code(),
+    )
     completed = subprocess.run(
         ["/usr/bin/pbcopy"],
         input=json.dumps(bundle, indent=2, sort_keys=True) + "\n",
@@ -319,6 +332,7 @@ def setup_remote(profile_name: str, tunnel: str) -> str:
     policy = policy_for_profile(profile_name)
     save_remote_policy(policy)
     token, _created = ensure_token()
+    ensure_daily_code_secret()
     _run_installer("install_launchd_whatsapp_bridge.sh")
     _run_installer("install_launchd_remote_mcp.sh")
     if tunnel == "tailscale":

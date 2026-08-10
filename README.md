@@ -154,8 +154,9 @@ clients can use while the Mac is online. The origin services stay on `127.0.0.1`
 Funnel supplies a stable public HTTPS address by default. Never port-forward Penguin, MCP port
 `8765`, WhatsApp API port `8080`, or pairing port `8081`.
 
-The one-command setup installs launch-at-login services, saves the bearer only in macOS
-Keychain, and copies a Slashy-compatible connection bundle to the clipboard:
+The one-command setup installs launch-at-login services, saves two independent high-entropy
+secrets only in macOS Keychain, and copies a Slashy-compatible connection bundle to the
+clipboard. The wire credential also includes a six-character code that rotates each local day:
 
 ```bash
 open https://tailscale.com/download/mac
@@ -174,6 +175,7 @@ endpoint with:
 
 ```bash
 ./scripts/penguin_connect_remote_setup.py --copy
+./scripts/penguin_connect_mcp_auth.py --copy-daily-code
 ./scripts/penguin_connect_remote_setup.py --status
 ```
 
@@ -182,15 +184,18 @@ Three built-in profiles are available:
 | Profile | Providers | Remote tools |
 | --- | --- | --- |
 | `read-only` | iMessage + WhatsApp | capabilities, message search/read, contact search |
-| `slashy` | iMessage + WhatsApp | read-only tools plus message send and contact upsert |
+| `slashy` | iMessage + WhatsApp | read-only tools plus message send, contact upsert, and group creation |
 | `whatsapp` | WhatsApp only | legacy `search_whatsapp` and `send_whatsapp` tools |
 
 The default when no valid policy is present remains the original WhatsApp-only surface. No
 remote profile exposes file search, index administration, attachment sending, or local paths.
-The `slashy` profile does not silently grant writes: every send or contact change needs a
-five-minute one-use confirmation bound to the exact payload and an approval click on the Mac.
-The dialog denies by default after 30 seconds. Exact existing iMessage conversations can send;
-a brand-new destination is staged in Messages for human review.
+Every MCP request requires the long install bearer plus today's six-character access code.
+The app shows and copies the code locally; copying the connection bundle includes today's code,
+and yesterday's bundle fails authentication after local midnight. The code alone is never
+accepted. Wrong daily-code guesses are rate limited. Writes additionally need a five-minute,
+one-use confirmation bound to the exact payload. Exact existing iMessage conversations can
+send; a brand-new destination or iMessage group is staged in Messages for human review.
+WhatsApp groups can be created from exact phone numbers or user JIDs after that confirmation.
 
 The macOS app exposes a native **Penguin Setup…** assistant that handles permissions,
 loopback-only WhatsApp QR pairing, access-profile selection, endpoint creation, key rotation,
@@ -242,7 +247,7 @@ PENGUIN_CONNECT_PUBLIC_MCP_URL=https://mcp.example.com \
   ./scripts/penguin_connect_remote_setup.py --profile slashy --tunnel cloudflare-quick
 ```
 
-To connect a client manually, copy only the token through a password manager:
+To connect a client manually, copy today's composed access token through a password manager:
 
 ```bash
 ./scripts/penguin_connect_mcp_auth.py --copy
@@ -259,8 +264,9 @@ codex mcp add penguin-connect-remote \
   --bearer-token-env-var PENGUIN_CONNECT_REMOTE_MCP_TOKEN
 ```
 
-The bearer can read every provider enabled by its profile. Treat it like a password, and give
-it only to the intended MCP host. Per-tool toggles in Slashy provide another useful boundary.
+The copied value contains the long bearer plus today's rotating code and can read every provider
+enabled by its profile. Treat it like a password, give it only to the intended MCP host, and
+refresh it after local midnight. Per-tool toggles in Slashy provide another useful boundary.
 
 Rotate the bearer immediately with `./scripts/penguin_connect_mcp_auth.py --rotate` if it may
 have been exposed. The server does not print the token or place it in its launchd plist.

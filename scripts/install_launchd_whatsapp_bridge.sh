@@ -14,6 +14,16 @@ fi
 BRIDGE_BIN="$BRIDGE_DIR/whatsapp-bridge"
 DATA_DIR="${PENGUIN_CONNECT_DATA_DIR:-$HOME/penguinconnect-local-bridge-data}"
 LOG_DIR="$DATA_DIR/logs"
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+LEGACY_BRIDGE_DIR="${PENGUIN_CONNECT_LEGACY_WHATSAPP_BRIDGE_DIR:-$HOME/whatsapp-mcp/whatsapp-bridge}"
+
+launchctl bootout "$LAUNCHD_DOMAIN/$LABEL" >/dev/null 2>&1 || true
+for _attempt in $(seq 1 20); do
+  if ! launchctl print "$LAUNCHD_DOMAIN/$LABEL" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.25
+done
 
 if [ -n "$SOURCE_BIN" ]; then
   if [ ! -x "$SOURCE_BIN" ]; then
@@ -21,6 +31,10 @@ if [ -n "$SOURCE_BIN" ]; then
     exit 1
   fi
   mkdir -p "$BRIDGE_DIR"
+  chmod 700 "$BRIDGE_DIR"
+  /usr/bin/python3 "$ROOT_DIR/scripts/migrate_whatsapp_store.py" \
+    --legacy "$LEGACY_BRIDGE_DIR/store" \
+    --destination "$BRIDGE_DIR/store"
   if [ "$SOURCE_BIN" != "$BRIDGE_BIN" ]; then
     cp "$SOURCE_BIN" "$BRIDGE_BIN"
     chmod 755 "$BRIDGE_BIN"
@@ -34,6 +48,7 @@ if [ ! -x "$BRIDGE_BIN" ]; then
 fi
 
 mkdir -p "$LAUNCH_AGENTS_DIR" "$LOG_DIR"
+chmod 700 "$LOG_DIR"
 
 /usr/bin/python3 - "$PLIST_PATH" "$LABEL" "$BRIDGE_BIN" "$BRIDGE_DIR" "$LOG_DIR" <<'PY'
 import plistlib
@@ -56,13 +71,6 @@ with open(plist_path, "wb") as handle:
     plistlib.dump(payload, handle)
 PY
 
-launchctl bootout "$LAUNCHD_DOMAIN/$LABEL" >/dev/null 2>&1 || true
-for _attempt in $(seq 1 20); do
-  if ! launchctl print "$LAUNCHD_DOMAIN/$LABEL" >/dev/null 2>&1; then
-    break
-  fi
-  sleep 0.25
-done
 launchctl enable "$LAUNCHD_DOMAIN/$LABEL" >/dev/null 2>&1 || true
 launchctl bootstrap "$LAUNCHD_DOMAIN" "$PLIST_PATH"
 

@@ -67,7 +67,8 @@ struct PenguinDesktopSupportTests {
         expect(onboarding.contains("name=\"profile\" value=\"read-only\" checked"), "remote access defaults to read only")
         expect(onboarding.contains("name=\"tunnel\" value=\"tailscale\" checked"), "stable Tailscale URLs are the default")
         expect(onboarding.contains("id=\"contacts-button\""), "Contacts permission can adapt after macOS denial")
-        expect(onboarding.contains("every remote write needs your click"), "write approval is disclosed before setup")
+        expect(onboarding.contains("every remote request needs today's access code"), "daily access code is disclosed before setup")
+        expect(onboarding.contains("id=\"daily-code\""), "today's access code has a visible local display")
 
         let bounded = penguinOnboardingHTMLPage(initialStep: 999)
         expect(bounded.contains("let step = 4;"), "onboarding bounds untrusted initial step values")

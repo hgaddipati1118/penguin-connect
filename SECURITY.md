@@ -22,7 +22,7 @@ Treat the following as security-relevant:
 ## Remote MCP Boundary
 
 Penguin's optional remote MCP process must bind only to a loopback address. Publish it through
-an HTTPS tunnel and require the bearer token stored in macOS Keychain. Do not expose the
+an HTTPS tunnel and require both the bearer and rotating-code secrets stored in macOS Keychain. Do not expose the
 Penguin FastAPI port, Apple Messages data, SQLite files, or the WhatsApp bridge API directly to
 the Internet.
 
@@ -34,14 +34,20 @@ Slack, Telegram, Gmail, or the underlying Penguin and WhatsApp APIs. Provider fi
 use the source provider before normalization so an unknown channel cannot be treated as
 iMessage.
 
-Every remote write must require a short-lived one-use confirmation bound to the exact request
-plus a local approval click on the Mac. A second MCP call by itself is not human approval and
-does not protect against prompt injection. Existing conversation sends must resolve an exact
-allowed conversation. A new iMessage destination must be staged for review rather than sent
-through a guessed route.
+Every remote MCP request must authenticate with the long install bearer plus the six-character
+code derived for the Mac's current local day. The code alone is insufficient, previous-day
+credentials fail, and online code guesses must be rate limited. Every remote write must also
+require a short-lived one-use confirmation bound to the exact request. That confirmation
+protects payload integrity but is not a second human approval: entering today's code grants the
+configured profile for that day. Existing conversation sends must resolve an exact allowed
+conversation. A new iMessage destination or group must be staged for review rather than sent
+through a guessed route. WhatsApp group creation must accept only exact unique phone numbers or
+user JIDs and must remain behind the loopback-only bridge.
 
-Treat the remote MCP bearer token as a private message and contact read credential. Never put
-it in `.env`, launchd plists, commits, URLs, screenshots, or logs. Rotate it immediately if it
+Treat the remote MCP bearer and daily-code derivation secret as private message and contact read
+credentials. Never put either in `.env`, launchd plists, commits, URLs, screenshots, or logs.
+The six-character display code may be shown locally, but never log a complete connection bundle.
+Rotate the bearer immediately if it
 may have been copied into an untrusted system. Keep Quick Tunnels temporary. The consumer setup
 defaults to a stable Tailscale Funnel on dedicated HTTPS port `10000`; the bearer is still
 required because Funnel intentionally accepts public Internet traffic.

@@ -30,9 +30,25 @@ class PenguinConnectMcpConfigTests(unittest.TestCase):
                 "contacts.read",
                 "messages.send",
                 "contacts.write",
+                "groups.create",
             ),
         )
-        self.assertTrue(policy.local_approval_required)
+        self.assertTrue(policy.daily_code_required)
+
+    def test_legacy_local_approval_policy_upgrades_to_daily_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "remote-mcp.json"
+            path.write_text(
+                '{"profile":"slashy","scopes":["messages.read","contacts.read",'
+                '"messages.send","contacts.write","groups.create"],"providers":["imessage","whatsapp"],'
+                '"local_approval_required":true}',
+                encoding="utf-8",
+            )
+
+            policy = penguin_connect_mcp_config.load_remote_policy(path)
+
+        self.assertEqual(policy.profile, "slashy")
+        self.assertTrue(policy.daily_code_required)
 
     def test_missing_config_preserves_legacy_whatsapp_only_policy(self):
         with tempfile.TemporaryDirectory() as tmp:

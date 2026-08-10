@@ -45,10 +45,11 @@ class PenguinConnectRemoteSetupTests(unittest.TestCase):
             "https://synthetic.trycloudflare.com",
             "synthetic-secret-token",
             policy,
+            daily_code="AB7K9Z",
         )
 
         self.assertEqual(bundle["server_url"], "https://synthetic.trycloudflare.com/mcp")
-        self.assertEqual(bundle["token"], "synthetic-secret-token")
+        self.assertEqual(bundle["token"], "synthetic-secret-token.AB7K9Z")
         self.assertEqual(bundle["transport"], "streamable_http")
         self.assertEqual(bundle["profile"], "slashy")
         self.assertNotIn("local_path", json.dumps(bundle))

@@ -152,13 +152,17 @@ brew install cloudflared
 
 The command installs persistent launch agents and copies a JSON connection bundle for Slashy's
 MCP Settings. Use `--profile read-only` to omit write tools. Full `slashy` access includes
-scoped message reads, contact search, exact-route sends, and contact upsert. Files, attachment
-paths, attachment sends, and index controls remain unavailable remotely. Every write requires
-an exact one-use confirmation plus a local approval click; denial or no response within 30
-seconds fails closed.
+scoped message reads, contact search, exact-route sends, contact upsert, and group creation.
+Files, attachment paths, attachment sends, and index controls remain unavailable remotely.
+Every MCP action requires the long Keychain bearer plus today's six-character access code.
+Writes also require an exact one-use confirmation bound to the unchanged payload. WhatsApp
+groups are created from exact phone numbers or user JIDs; iMessage groups open as addressed
+drafts and require the user to press Send in Messages.
 
-The bearer remains in Keychain. `--copy` copies the bundle without printing the bearer;
-`penguin_connect_mcp_auth.py --rotate` revokes existing clients. Quick Tunnel hostnames change
+The bearer and daily-code derivation secret remain in Keychain. `--copy` copies a bundle using
+today's rotating code without printing either underlying secret; `--copy-daily-code` copies only
+the six-character code for clients that request it separately. `penguin_connect_mcp_auth.py
+--rotate` revokes existing clients. Quick Tunnel hostnames change
 after a restart. Configure the named-tunnel environment described in the README for a stable
 hostname. Never publish ports `8080`, `8765`, or the Penguin API port directly.
 

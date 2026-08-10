@@ -132,6 +132,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             keyEquivalent: ""
         )
         remoteMCPItem.target = self
+        let dailyCodeItem = appMenu.addItem(
+            withTitle: "Copy Today’s Access Code",
+            action: #selector(copyDailyAccessCode),
+            keyEquivalent: ""
+        )
+        dailyCodeItem.target = self
         let setupItem = appMenu.addItem(
             withTitle: "Penguin Setup…",
             action: #selector(openPenguinSetup),
@@ -317,6 +323,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
     @objc private func setupRemoteMCP() {
         showOnboarding(step: 3)
+    }
+
+    @objc private func copyDailyAccessCode() {
+        runPythonScript("penguin_connect_mcp_auth.py", arguments: ["--copy-daily-code"]) { [weak self] ok, output in
+            self?.showAlert(
+                title: ok ? "Access code copied" : "Could not copy access code",
+                detail: ok ? "Today's six-character code is on the clipboard." : output
+            )
+        }
     }
 
     @objc private func openPenguinSetup() {
@@ -569,6 +584,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         }
     }
 
+    private func reportDailyAccessCode() {
+        runPythonScript("penguin_connect_mcp_auth.py", arguments: ["--daily-code"]) { [weak self] ok, output in
+            let code = ok ? output.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+            self?.callOnboarding("dailyCode", arguments: [code])
+        }
+    }
+
     private func rotateRemoteToken() {
         runPythonScript("penguin_connect_mcp_auth.py", arguments: ["--rotate"]) { [weak self] ok, output in
             guard let self else { return }
@@ -745,6 +767,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             reportRemoteStatus()
         case "copyConnection":
             copyRemoteConnection()
+        case "dailyCode":
+            reportDailyAccessCode()
+        case "copyDailyCode":
+            copyDailyAccessCode()
         case "rotateToken":
             rotateRemoteToken()
         case "stopRemote":

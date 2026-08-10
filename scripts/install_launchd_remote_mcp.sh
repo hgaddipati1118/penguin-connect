@@ -19,7 +19,7 @@ fi
 
 "$PYTHON_BIN" "$ROOT_DIR/scripts/penguin_connect_mcp_auth.py" --ensure
 
-PORT="$($PYTHON_BIN - "$ROOT_DIR/.env" <<'PY'
+PORT="$("$PYTHON_BIN" - "$ROOT_DIR/.env" <<'PY'
 import os
 import sys
 from dotenv import dotenv_values

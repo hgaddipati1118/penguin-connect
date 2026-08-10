@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import hmac
 import ipaddress
@@ -30,7 +31,7 @@ if str(ROOT_DIR / "scripts") not in sys.path:
 
 import browse_sources
 from channels import get_channel_adapter
-from penguin_connect_mcp_auth import load_token
+from penguin_connect_mcp_auth import daily_access_code, load_daily_code_secret, load_token
 from penguin_connect_mcp_config import (
     RemoteAccessPolicy,
     load_remote_policy,
@@ -47,26 +48,86 @@ REMOTE_CONFIRMATION_TTL_SECONDS = 5 * 60
 MAX_REMOTE_PENDING_CONFIRMATIONS = 256
 MAX_REMOTE_MESSAGE_CHARS = 16_000
 MAX_REMOTE_SEARCH_QUERY_CHARS = 500
-LOCAL_SEND_APPROVAL_TIMEOUT_SECONDS = 30
-_LOCAL_SEND_APPROVAL_LOCK = threading.Lock()
+MAX_REMOTE_GROUP_PARTICIPANTS = 32
+MAX_DAILY_CODE_FAILURES = 6
+DAILY_CODE_FAILURE_WINDOW_SECONDS = 15 * 60
+DAILY_CODE_LOCKOUT_SECONDS = 15 * 60
 
+
+class DailyCodeAttemptLimiter:
+    """Bound online guesses when a caller already knows the long install bearer."""
+
+    def __init__(
+        self,
+        *,
+        max_failures: int = MAX_DAILY_CODE_FAILURES,
+        window_seconds: int = DAILY_CODE_FAILURE_WINDOW_SECONDS,
+        lockout_seconds: int = DAILY_CODE_LOCKOUT_SECONDS,
+    ):
+        self._max_failures = max(1, max_failures)
+        self._window_seconds = max(1, window_seconds)
+        self._lockout_seconds = max(1, lockout_seconds)
+        self._failures: list[float] = []
+        self._locked_until = 0.0
+        self._lock = threading.Lock()
+
+    def is_allowed(self) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            return now >= self._locked_until
+
+    def record_failure(self) -> None:
+        now = time.monotonic()
+        with self._lock:
+            self._failures = [
+                failure
+                for failure in self._failures
+                if failure > now - self._window_seconds
+            ]
+            self._failures.append(now)
+            if len(self._failures) >= self._max_failures:
+                self._locked_until = now + self._lockout_seconds
+                self._failures.clear()
 
 class StaticBearerTokenVerifier:
-    """Verify one locally managed bearer token without logging either value."""
+    """Verify the long install bearer plus today's six-character access code."""
 
-    def __init__(self, expected_token: str):
+    def __init__(
+        self,
+        expected_token: str,
+        daily_code_secret: str,
+        *,
+        attempt_limiter: DailyCodeAttemptLimiter | None = None,
+    ):
         self._expected_token = expected_token
+        self._daily_code_secret = daily_code_secret
+        self._attempt_limiter = attempt_limiter or DailyCodeAttemptLimiter()
 
     async def verify_token(self, token: str):
-        if not hmac.compare_digest(token, self._expected_token):
+        supplied_token, separator, supplied_code = (token or "").rpartition(".")
+        if not separator or not hmac.compare_digest(supplied_token, self._expected_token):
             return None
-        from mcp.server.auth.provider import AccessToken
+        today = dt.datetime.now().astimezone().date()
+        expected_code = daily_access_code(self._daily_code_secret, day=today)
+        if hmac.compare_digest(supplied_code.upper(), expected_code):
+            # A correct daily code always works; invalid callers cannot lock out the owner.
+            from mcp.server.auth.provider import AccessToken
 
-        return AccessToken(
-            token=token,
-            client_id="penguin-connect-remote-client",
-            scopes=[REMOTE_MCP_SCOPE],
+            return AccessToken(
+                token=token,
+                client_id="penguin-connect-remote-client",
+                scopes=[REMOTE_MCP_SCOPE],
+            )
+        yesterday_code = daily_access_code(
+            self._daily_code_secret,
+            day=today - dt.timedelta(days=1),
         )
+        if hmac.compare_digest(supplied_code.upper(), yesterday_code):
+            # A client left open across midnight must not consume the online-guess budget.
+            return None
+        if self._attempt_limiter.is_allowed():
+            self._attempt_limiter.record_failure()
+        return None
 
 
 class RemoteConfirmationStore:
@@ -84,7 +145,7 @@ class RemoteConfirmationStore:
         self._lock = threading.Lock()
 
     @staticmethod
-    def _digest(payload: dict[str, str]) -> bytes:
+    def _digest(payload: dict[str, Any]) -> bytes:
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(encoded).digest()
 
@@ -93,7 +154,7 @@ class RemoteConfirmationStore:
         for token in expired:
             self._pending.pop(token, None)
 
-    def issue(self, payload: dict[str, str]) -> str:
+    def issue(self, payload: dict[str, Any]) -> str:
         token = secrets.token_urlsafe(32)
         now = time.monotonic()
         with self._lock:
@@ -103,7 +164,7 @@ class RemoteConfirmationStore:
             self._pending[token] = (now + self._ttl_seconds, self._digest(payload))
         return token
 
-    def consume(self, token: str, payload: dict[str, str]) -> bool:
+    def consume(self, token: str, payload: dict[str, Any]) -> bool:
         if not token:
             return False
         now = time.monotonic()
@@ -762,72 +823,6 @@ def _remote_whatsapp_send_payload(
     }, None
 
 
-def request_local_mcp_approval(
-    action: str,
-    destination: str,
-    detail: str,
-    *,
-    approve_button: str,
-) -> bool:
-    """Require an explicit click on this Mac before any remote write executes."""
-    if not _LOCAL_SEND_APPROVAL_LOCK.acquire(blocking=False):
-        return False
-    safe_action = (action or "Remote MCP request")[:100]
-    safe_destination = (destination or "Unknown destination")[:300]
-    safe_detail = (detail or "")[:500]
-    safe_button = (approve_button or "Approve")[:40]
-    script = f"""
-on run argv
-    set actionText to item 1 of argv
-    set destinationText to item 2 of argv
-    set detailText to item 3 of argv
-    set approveText to item 4 of argv
-    try
-        set answer to display dialog actionText & return & return & destinationText & return & return & detailText buttons {{"Deny", approveText}} default button "Deny" cancel button "Deny" with title "PenguinConnect approval" giving up after {LOCAL_SEND_APPROVAL_TIMEOUT_SECONDS}
-        if gave up of answer then return "DENIED"
-        if button returned of answer is approveText then return "APPROVED"
-    on error
-        return "DENIED"
-    end try
-    return "DENIED"
-end run
-"""
-    try:
-        try:
-            completed = subprocess.run(
-                [
-                    "/usr/bin/osascript",
-                    "-e",
-                    script,
-                    safe_action,
-                    safe_destination,
-                    safe_detail,
-                    safe_button,
-                ],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                timeout=LOCAL_SEND_APPROVAL_TIMEOUT_SECONDS + 5,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return False
-        return completed.returncode == 0 and completed.stdout.strip() == "APPROVED"
-    finally:
-        _LOCAL_SEND_APPROVAL_LOCK.release()
-
-
-def request_local_whatsapp_send_approval(payload: dict[str, str]) -> bool:
-    """Compatibility wrapper for the original WhatsApp-only remote profile."""
-    return request_local_mcp_approval(
-        "Remote MCP wants to send this WhatsApp message:",
-        payload["conversation_id"] or payload["recipient"],
-        payload["message"],
-        approve_button="Send",
-    )
-
-
 def remote_send_whatsapp_data(
     confirmations: RemoteConfirmationStore,
     recipient: str,
@@ -844,11 +839,6 @@ def remote_send_whatsapp_data(
     if confirmation_token:
         if not confirmations.consume(confirmation_token, payload):
             return {"success": False, "error": "invalid_or_expired_confirmation"}
-        if not request_local_whatsapp_send_approval(payload):
-            return {
-                "success": False,
-                "error": "local_approval_denied_or_timed_out",
-            }
         return send_message_data(
             payload["recipient"],
             payload["message"],
@@ -945,7 +935,7 @@ def remote_send_message_data(
     confirmation_token: str = "",
     providers: tuple[str, ...],
 ) -> dict[str, Any]:
-    """Preview or execute one exact scoped message send with local approval."""
+    """Preview or execute one exact scoped message send after one-use confirmation."""
     payload, error = _remote_message_send_payload(
         recipient, message, provider, conversation_id, providers
     )
@@ -955,14 +945,6 @@ def remote_send_message_data(
     if confirmation_token:
         if not confirmations.consume(confirmation_token, payload):
             return {"success": False, "error": "invalid_or_expired_confirmation"}
-        destination = payload["conversation_id"] or payload["recipient"]
-        if not request_local_mcp_approval(
-            f"Remote MCP wants to send this {payload['provider']} message:",
-            destination,
-            payload["message"],
-            approve_button="Send",
-        ):
-            return {"success": False, "error": "local_approval_denied_or_timed_out"}
         return send_message_data(
             payload["recipient"],
             payload["message"],
@@ -1000,7 +982,7 @@ def remote_upsert_contact_data(
     email: str = "",
     confirmation_token: str = "",
 ) -> dict[str, Any]:
-    """Create or update one contact after exact confirmation and a local click."""
+    """Create or update one contact after exact one-use confirmation."""
     payload = {
         "action": "contact.upsert",
         "match_handle": (match_handle or "").strip()[:320],
@@ -1035,13 +1017,6 @@ def remote_upsert_contact_data(
         }
     if not confirmations.consume(confirmation_token, payload):
         return {"success": False, "error": "invalid_or_expired_confirmation"}
-    if not request_local_mcp_approval(
-        "Remote MCP wants to save this Mac contact:",
-        display_name,
-        "\n".join(value for value in (payload["phone"], payload["email"]) if value),
-        approve_button="Save",
-    ):
-        return {"success": False, "error": "local_approval_denied_or_timed_out"}
     result = _api_json(
         "POST",
         "/penguin-connect/contacts",
@@ -1060,11 +1035,219 @@ def remote_upsert_contact_data(
     return {"success": bool(result.get("success", True)), "result": result}
 
 
+def _whatsapp_bridge_json(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    configured = os.environ.get(
+        "PENGUIN_CONNECT_WHATSAPP_API_URL",
+        "http://127.0.0.1:8080/api",
+    ).strip()
+    parsed = urllib.parse.urlsplit(configured)
+    if (
+        parsed.scheme != "http"
+        or not parsed.hostname
+        or not _is_loopback_host(parsed.hostname)
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path.rstrip("/") != "/api"
+    ):
+        raise RuntimeError("WhatsApp bridge URL must remain on the loopback /api endpoint")
+    request = urllib.request.Request(
+        f"{configured.rstrip('/')}/{path.lstrip('/')}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            result = json.loads(response.read().decode("utf-8") or "{}")
+    except (urllib.error.HTTPError, urllib.error.URLError) as exc:
+        raise RuntimeError("The local WhatsApp bridge could not create the group") from exc
+    if not isinstance(result, dict):
+        raise RuntimeError("The local WhatsApp bridge returned an unexpected response")
+    return result
+
+
+def _normalized_group_participants(
+    provider: str,
+    participants: list[str],
+) -> tuple[list[str] | None, dict[str, Any] | None]:
+    if not isinstance(participants, list):
+        return None, {"success": False, "error": "participants_must_be_a_list"}
+    if not 2 <= len(participants) <= MAX_REMOTE_GROUP_PARTICIPANTS:
+        return None, {
+            "success": False,
+            "error": "group_requires_2_to_32_participants",
+        }
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in participants:
+        value = str(raw or "").strip()
+        if provider == "whatsapp":
+            jid_match = re.fullmatch(r"([0-9]+)@(s\.whatsapp\.net|lid)", value.lower())
+            if jid_match:
+                clean = f"{jid_match.group(1)}@{jid_match.group(2)}"
+                key = clean
+            else:
+                if not re.fullmatch(r"\+?[0-9().\-\s]+", value):
+                    return None, {
+                        "success": False,
+                        "error": "whatsapp_participants_must_be_phone_or_user_jid",
+                    }
+                digits = re.sub(r"\D+", "", value)
+                if not 7 <= len(digits) <= 15:
+                    return None, {
+                        "success": False,
+                        "error": "whatsapp_participants_must_be_phone_or_user_jid",
+                    }
+                clean = digits
+                key = f"{digits}@s.whatsapp.net"
+        else:
+            is_email = bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", value))
+            is_phone = bool(re.fullmatch(r"\+?[0-9().\-\s]+", value))
+            digits = re.sub(r"\D+", "", value)
+            if not is_email and (not is_phone or not 7 <= len(digits) <= 15):
+                return None, {
+                    "success": False,
+                    "error": "imessage_participants_must_be_phone_or_email",
+                }
+            clean = value if is_email else digits
+            key = clean.lower()
+        if key in seen:
+            return None, {"success": False, "error": "group_participants_must_be_unique"}
+        seen.add(key)
+        normalized.append(clean)
+    return normalized, None
+
+
+def _remote_group_create_payload(
+    provider: str,
+    participants: list[str],
+    name: str,
+    first_message: str,
+    providers: tuple[str, ...],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    selected = (provider or "").strip().lower()
+    if selected not in frozenset(providers) or selected not in {"imessage", "whatsapp"}:
+        return None, {
+            "success": False,
+            "error": "provider_required_or_not_allowed",
+            "allowed_providers": sorted(providers),
+        }
+    clean_name = (name or "").strip()
+    clean_message = (first_message or "").strip()
+    if len(clean_message) > MAX_REMOTE_MESSAGE_CHARS:
+        return None, {"success": False, "error": "message_too_long"}
+    if selected == "whatsapp" and not clean_name:
+        return None, {"success": False, "error": "whatsapp_group_name_required"}
+    if len(clean_name) > (25 if selected == "whatsapp" else 100):
+        return None, {"success": False, "error": "group_name_too_long"}
+    clean_participants, error = _normalized_group_participants(selected, participants)
+    if error is not None or clean_participants is None:
+        return None, error or {"success": False, "error": "invalid_participants"}
+    return {
+        "action": "group.create",
+        "provider": selected,
+        "participants": clean_participants,
+        "name": clean_name,
+        "first_message": clean_message,
+    }, None
+
+
+def remote_create_group_chat_data(
+    confirmations: RemoteConfirmationStore,
+    *,
+    provider: str,
+    participants: list[str],
+    name: str = "",
+    first_message: str = "",
+    confirmation_token: str = "",
+    providers: tuple[str, ...],
+) -> dict[str, Any]:
+    """Preview, then create a WhatsApp group or stage an exact iMessage group draft."""
+    payload, error = _remote_group_create_payload(
+        provider,
+        participants,
+        name,
+        first_message,
+        providers,
+    )
+    if error is not None or payload is None:
+        return error or {"success": False, "error": "invalid_request"}
+    preview = {
+        "action": "create_group" if payload["provider"] == "whatsapp" else "stage_group_draft",
+        "provider": payload["provider"],
+        "name": payload["name"],
+        "participant_count": len(payload["participants"]),
+        "first_message_chars": len(payload["first_message"]),
+        "imessage_requires_manual_send": payload["provider"] == "imessage",
+    }
+    if not confirmation_token:
+        return {
+            "success": False,
+            "confirmation_required": True,
+            "preview": preview,
+            "confirmation_token": confirmations.issue(payload),
+            "confirmation_expires_in_seconds": REMOTE_CONFIRMATION_TTL_SECONDS,
+        }
+    if not confirmations.consume(confirmation_token, payload):
+        return {"success": False, "error": "invalid_or_expired_confirmation"}
+
+    if payload["provider"] == "imessage":
+        _api_json(
+            "POST",
+            "/penguin-connect/messages/draft",
+            payload={
+                "participants": payload["participants"],
+                "message": payload["first_message"],
+                "attachment_paths": [],
+                "copy_to_clipboard": False,
+                "open_messages": True,
+                "open_addressed": True,
+                "open_attachments": False,
+            },
+        )
+        return {
+            "success": True,
+            "staged_not_created": True,
+            "provider": "imessage",
+            "participant_count": len(payload["participants"]),
+            "manual_send_required": True,
+            "name_applied": False,
+        }
+
+    result = _whatsapp_bridge_json(
+        "/groups/create",
+        {"name": payload["name"], "participants": payload["participants"]},
+    )
+    if result.get("success") is not True or not str(result.get("group_jid") or "").endswith("@g.us"):
+        return {"success": False, "error": "whatsapp_group_create_failed"}
+    group_jid = str(result["group_jid"])
+    message_sent = False
+    message_error = ""
+    if payload["first_message"]:
+        message_sent, message_error = get_channel_adapter("whatsapp").send_message(
+            group_jid,
+            payload["first_message"],
+            attachment_paths=None,
+        )
+    return {
+        "success": True,
+        "provider": "whatsapp",
+        "group_id": group_jid,
+        "name": payload["name"],
+        "participant_count": len(payload["participants"]),
+        "first_message_sent": message_sent,
+        "first_message_error": message_error if payload["first_message"] and not message_sent else "",
+    }
+
+
 def create_mcp_server(
     *,
     host: str = "127.0.0.1",
     port: int = DEFAULT_REMOTE_MCP_PORT,
     bearer_token: str = "",
+    daily_code_secret: str = "",
     remote_policy: RemoteAccessPolicy | None = None,
 ):
     try:
@@ -1086,24 +1269,31 @@ def create_mcp_server(
     auth_settings = None
     token_verifier = None
     if bearer_token:
+        effective_daily_secret = daily_code_secret or load_daily_code_secret()
+        if len(effective_daily_secret) < 32:
+            raise ValueError("Remote MCP daily access-code secret must be at least 32 characters")
         auth_settings = AuthSettings(
             issuer_url="https://penguin-connect.invalid",
             resource_server_url=None,
             required_scopes=[REMOTE_MCP_SCOPE],
         )
-        token_verifier = StaticBearerTokenVerifier(bearer_token)
+        token_verifier = StaticBearerTokenVerifier(
+            bearer_token,
+            effective_daily_secret,
+        )
 
     is_remote = bool(bearer_token)
     policy = remote_policy or load_remote_policy()
     if not is_remote and remote_policy is not None:
         raise ValueError("A remote MCP policy requires an authenticated HTTP server")
-    if policy.local_approval_required is not True:
-        raise ValueError("Remote MCP writes must require local approval")
+    if policy.daily_code_required is not True:
+        raise ValueError("Remote MCP access must require the rotating daily code")
     remote_instructions = (
         f"Remote PenguinConnect profile '{policy.profile}' allows scopes "
         f"{', '.join(policy.scopes)} for providers {', '.join(policy.providers)}. "
         "Local file paths, attachments, file search, and index administration are unavailable. "
-        "Every write requires an exact one-use confirmation token and an approval click on the Mac. "
+        "Every request requires today's six-character access code. Writes also require an exact "
+        "one-use confirmation token. "
         "A brand-new iMessage destination is staged in Messages for human review."
     )
     mcp = FastMCP(
@@ -1144,9 +1334,13 @@ def create_mcp_server(
                     "profile": policy.profile,
                     "scopes": list(policy.scopes),
                     "providers": list(policy.providers),
-                    "writes_require_local_approval": True,
+                    "all_requests_require_daily_code": True,
                     "remote_attachments": False,
                     "new_imessage_destination": "staged_for_human_review",
+                    "group_creation": {
+                        "whatsapp": "native" if policy.allows("groups.create") else "unavailable",
+                        "imessage": "addressed_draft" if policy.allows("groups.create") else "unavailable",
+                    },
                 }
 
             if policy.allows("messages.read"):
@@ -1197,9 +1391,9 @@ def create_mcp_server(
                     """Preview or send a text message using an exact authorized route.
 
                     Repeat the same arguments with the short-lived confirmation_token. The token
-                    is one-use, and the Mac owner must approve the local dialog. Attachments and
-                    contact-name routing are unavailable remotely. A new iMessage destination is
-                    staged in Messages for human review rather than silently sent.
+                    is one-use. Today's six-character access code is already enforced by MCP
+                    authentication. Attachments and contact-name routing are unavailable remotely.
+                    A new iMessage destination is staged in Messages for human review.
                     """
                     return remote_send_message_data(
                         confirmations,
@@ -1223,10 +1417,11 @@ def create_mcp_server(
                     email: str = "",
                     confirmation_token: str = "",
                 ) -> dict[str, Any]:
-                    """Preview, then create or update one contact after local Mac approval.
+                    """Preview, then create or update one contact.
 
                     To update, set match_handle to an exact existing phone or email. Repeat the
-                    unchanged request with the returned one-use confirmation_token.
+                    unchanged request with the returned one-use confirmation_token. Today's
+                    six-character access code is enforced by MCP authentication.
                     """
                     return remote_upsert_contact_data(
                         confirmations,
@@ -1237,6 +1432,35 @@ def create_mcp_server(
                         phone=phone,
                         email=email,
                         confirmation_token=confirmation_token,
+                    )
+
+            if policy.allows("groups.create"):
+
+                @mcp.tool()
+                def create_group_chat(
+                    provider: Literal["imessage", "whatsapp"],
+                    participants: list[str],
+                    name: str = "",
+                    first_message: str = "",
+                    confirmation_token: str = "",
+                ) -> dict[str, Any]:
+                    """Preview, then create a group using exact participant identifiers.
+
+                    WhatsApp creates the group after the unchanged one-use confirmation is
+                    returned. iMessage opens an addressed multi-recipient draft; the user sends
+                    it in Messages because Apple does not expose a safe unattended group-create
+                    route. Phone numbers, emails, or WhatsApp user JIDs are accepted; contact-name
+                    guessing is deliberately unavailable. Every request is protected by today's
+                    six-character MCP access code.
+                    """
+                    return remote_create_group_chat_data(
+                        confirmations,
+                        provider=provider,
+                        participants=participants,
+                        name=name,
+                        first_message=first_message,
+                        confirmation_token=confirmation_token,
+                        providers=policy.providers,
                     )
 
             return mcp
@@ -1258,7 +1482,7 @@ def create_mcp_server(
             The first call omits confirmation_token and returns the exact route plus a
             short-lived token. Repeat the same arguments with that token to send. Tokens
             are one-use and become invalid if any recipient, conversation, or text changes.
-            The Mac owner must also approve the local dialog within 30 seconds.
+            Today's six-character access code is enforced by MCP authentication.
             New destinations must be a phone number or WhatsApp JID; contact-name lookup and
             local attachment paths are deliberately unavailable remotely.
             """
