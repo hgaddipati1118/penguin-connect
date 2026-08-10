@@ -6397,6 +6397,15 @@ class BrowserSafeAttachmentTests(unittest.TestCase):
             )
             if convert.returncode != 0 or not heic.exists():
                 self.skipTest("sips could not produce a HEIC fixture")
+            probe = Path(tmp) / "sips-round-trip.jpg"
+            round_trip = subprocess.run(
+                ["sips", "-s", "format", "jpeg", str(heic), "--out", str(probe)],
+                capture_output=True,
+                text=True,
+            )
+            if round_trip.returncode != 0 or not probe.exists() or probe.stat().st_size == 0:
+                self.skipTest("sips could not transcode its HEIC fixture back to JPEG")
+            probe.unlink()
             path, name, media_type = app_module._browser_safe_image_attachment(
                 heic, "IMG_0001.HEIC", "image/heic"
             )
