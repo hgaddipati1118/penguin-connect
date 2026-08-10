@@ -11,6 +11,14 @@ from unittest import mock
 import search_index
 
 
+def sqlite_vec_is_loadable() -> bool:
+    conn = sqlite3.connect(":memory:")
+    try:
+        return search_index._load_sqlite_vec(conn)
+    finally:
+        conn.close()
+
+
 class SearchIndexTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -196,6 +204,7 @@ class SearchIndexTests(unittest.TestCase):
         )
         self.assertTrue(text.startswith("search_document: Synthetic title"))
 
+    @unittest.skipUnless(sqlite_vec_is_loadable(), "sqlite-vec extension is unavailable")
     def test_semantic_index_can_be_rebuilt_when_vector_table_exists(self):
         fake_vector = [0.0] * search_index.DEFAULT_EMBEDDING_DIMENSIONS
         with mock.patch.object(
@@ -219,6 +228,7 @@ class SearchIndexTests(unittest.TestCase):
         self.assertTrue(second["semantic_enabled"])
         self.assertEqual(second["vectors_indexed"], 1)
 
+    @unittest.skipUnless(sqlite_vec_is_loadable(), "sqlite-vec extension is unavailable")
     def test_message_refresh_commits_lexical_text_before_bounded_vectors(self):
         fake_vector = [0.0] * search_index.DEFAULT_EMBEDDING_DIMENSIONS
         with mock.patch.object(
