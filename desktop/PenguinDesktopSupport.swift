@@ -164,3 +164,19 @@ func penguinHTMLPage(title: String, detail: String, retry: Bool = false) -> Stri
 func isPenguinRetryURL(_ url: URL) -> Bool {
     url.scheme?.lowercased() == "penguin" && url.host?.lowercased() == "retry"
 }
+
+func isAllowedPenguinNavigationURL(_ url: URL, resourceURL: URL?) -> Bool {
+    let scheme = url.scheme?.lowercased()
+    if scheme == "about" {
+        return true
+    }
+    if scheme == "http", url.host == "127.0.0.1" || url.host?.lowercased() == "localhost" {
+        return true
+    }
+    guard url.isFileURL, let resourceURL else {
+        return false
+    }
+    let resources = resourceURL.resolvingSymlinksInPath().standardizedFileURL.path
+    let candidate = url.resolvingSymlinksInPath().standardizedFileURL.path
+    return candidate == resources || candidate.hasPrefix(resources + "/")
+}

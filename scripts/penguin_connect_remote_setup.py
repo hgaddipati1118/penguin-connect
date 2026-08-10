@@ -8,6 +8,7 @@ import ipaddress
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -32,6 +33,11 @@ QUICK_TUNNEL_PATTERN = re.compile(
     r"https://[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.trycloudflare\.com"
     r"(?![a-z0-9.-])",
     re.IGNORECASE,
+)
+TAILSCALE_FUNNEL_PORT = 10000
+TAILSCALE_APP_PATHS = (
+    Path("/Applications/Tailscale.app/Contents/MacOS/Tailscale"),
+    Path.home() / "Applications/Tailscale.app/Contents/MacOS/Tailscale",
 )
 
 
@@ -112,6 +118,7 @@ def save_endpoint_state(
     origin: str,
     policy: RemoteAccessPolicy,
     *,
+    tunnel: str = "cloudflare-quick",
     path: Path | None = None,
 ) -> Path:
     """Save non-secret endpoint metadata atomically; the bearer stays in Keychain."""
@@ -122,6 +129,7 @@ def save_endpoint_state(
         "profile": policy.profile,
         "scopes": list(policy.scopes),
         "providers": list(policy.providers),
+        "tunnel": tunnel,
     }
     temporary_path: Path | None = None
     try:
@@ -156,6 +164,16 @@ def load_endpoint_state(path: Path | None = None) -> tuple[str, RemoteAccessPoli
         raise RuntimeError("No valid remote endpoint is saved; run setup first") from exc
 
 
+def endpoint_tunnel_kind(path: Path | None = None) -> str:
+    state_path = path or default_endpoint_state_path()
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+        tunnel = str(payload.get("tunnel") or "cloudflare-quick")
+    except (OSError, TypeError, json.JSONDecodeError):
+        return "cloudflare-quick"
+    return tunnel if tunnel in {"tailscale", "cloudflare-quick"} else "cloudflare-quick"
+
+
 def copy_connection_bundle(origin: str, token: str, policy: RemoteAccessPolicy) -> None:
     bundle = build_connection_bundle(origin, token, policy)
     completed = subprocess.run(
@@ -186,6 +204,85 @@ def wait_for_tunnel_origin(timeout_seconds: int = 45) -> str:
     raise RuntimeError(f"The HTTPS tunnel did not publish an address; inspect {log_path}")
 
 
+def find_tailscale_binary() -> Path:
+    configured = os.environ.get("PENGUIN_CONNECT_TAILSCALE_BIN", "").strip()
+    candidates = [Path(configured).expanduser()] if configured else []
+    discovered = shutil.which("tailscale")
+    if discovered:
+        candidates.append(Path(discovered))
+    candidates.extend(TAILSCALE_APP_PATHS)
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    raise RuntimeError(
+        "Tailscale is not installed. Install and sign in to Tailscale, then try again: "
+        "https://tailscale.com/download/mac"
+    )
+
+
+def tailscale_public_origin(binary: Path) -> str:
+    completed = subprocess.run(
+        [str(binary), "status", "--json"],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError("Tailscale is installed but not signed in or running")
+    try:
+        payload = json.loads(completed.stdout)
+        hostname = str(payload["Self"]["DNSName"]).strip().rstrip(".").lower()
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("Tailscale did not report a stable device hostname") from exc
+    if not hostname.endswith(".ts.net"):
+        raise RuntimeError("Tailscale returned an unexpected device hostname")
+    return normalize_public_origin(f"https://{hostname}:{TAILSCALE_FUNNEL_PORT}")
+
+
+def start_tailscale_funnel() -> str:
+    binary = find_tailscale_binary()
+    origin = tailscale_public_origin(binary)
+    completed = subprocess.run(
+        [
+            str(binary),
+            "funnel",
+            "--bg",
+            "--yes",
+            f"--https={TAILSCALE_FUNNEL_PORT}",
+            "8765",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise RuntimeError(f"Tailscale Funnel could not start: {detail or 'unknown error'}")
+    return origin
+
+
+def stop_tailscale_funnel() -> None:
+    try:
+        binary = find_tailscale_binary()
+    except RuntimeError:
+        return
+    subprocess.run(
+        [
+            str(binary),
+            "funnel",
+            f"--https={TAILSCALE_FUNNEL_PORT}",
+            "8765",
+            "off",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=30,
+        check=False,
+    )
+
+
 def _run_installer(name: str) -> None:
     path = SCRIPTS_DIR / name
     completed = subprocess.run(
@@ -198,7 +295,25 @@ def _run_installer(name: str) -> None:
         raise RuntimeError(f"{name} failed")
 
 
-def setup_remote(profile_name: str) -> str:
+def _stop_and_disable_launch_agent(label: str) -> None:
+    domain = f"gui/{os.getuid()}"
+    subprocess.run(
+        ["/bin/launchctl", "bootout", f"{domain}/{label}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=15,
+        check=False,
+    )
+    subprocess.run(
+        ["/bin/launchctl", "disable", f"{domain}/{label}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=15,
+        check=False,
+    )
+
+
+def setup_remote(profile_name: str, tunnel: str) -> str:
     if sys.platform != "darwin":
         raise RuntimeError("PenguinConnect remote setup currently requires macOS")
     policy = policy_for_profile(profile_name)
@@ -206,23 +321,26 @@ def setup_remote(profile_name: str) -> str:
     token, _created = ensure_token()
     _run_installer("install_launchd_whatsapp_bridge.sh")
     _run_installer("install_launchd_remote_mcp.sh")
-    _run_installer("install_launchd_remote_tunnel.sh")
-    origin = wait_for_tunnel_origin()
-    save_endpoint_state(origin, policy)
+    if tunnel == "tailscale":
+        _stop_and_disable_launch_agent("com.penguinconnect.remote-tunnel")
+        origin = start_tailscale_funnel()
+    elif tunnel == "cloudflare-quick":
+        if endpoint_tunnel_kind() == "tailscale":
+            stop_tailscale_funnel()
+        _run_installer("install_launchd_remote_tunnel.sh")
+        origin = wait_for_tunnel_origin()
+    else:
+        raise ValueError("Unknown tunnel provider")
+    save_endpoint_state(origin, policy, tunnel=tunnel)
     copy_connection_bundle(origin, token, policy)
     return origin
 
 
 def stop_remote() -> None:
-    domain = f"gui/{os.getuid()}"
+    if endpoint_tunnel_kind() == "tailscale":
+        stop_tailscale_funnel()
     for label in ("com.penguinconnect.remote-tunnel", "com.penguinconnect.remote-mcp"):
-        subprocess.run(
-            ["/bin/launchctl", "bootout", f"{domain}/{label}"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=15,
-            check=False,
-        )
+        _stop_and_disable_launch_agent(label)
 
 
 def main() -> int:
@@ -232,6 +350,12 @@ def main() -> int:
         choices=("slashy", "read-only", "whatsapp"),
         default="slashy",
         help="Remote capability profile (default: slashy)",
+    )
+    parser.add_argument(
+        "--tunnel",
+        choices=("tailscale", "cloudflare-quick"),
+        default="tailscale",
+        help="Public HTTPS provider (default: stable Tailscale Funnel)",
     )
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument(
@@ -262,7 +386,7 @@ def main() -> int:
             print(f"Profile: {policy.profile} ({', '.join(policy.scopes)})")
             return 0
 
-        origin = setup_remote(args.profile)
+        origin = setup_remote(args.profile, args.tunnel)
         policy = policy_for_profile(args.profile)
         print("[ok] PenguinConnect remote MCP is running.")
         print(f"Endpoint: {origin}/mcp")

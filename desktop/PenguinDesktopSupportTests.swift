@@ -34,5 +34,42 @@ struct PenguinDesktopSupportTests {
             !isPenguinRetryURL(URL(string: "https://example.com/retry")!),
             "web URLs cannot trigger native retry"
         )
+
+        let resources = URL(fileURLWithPath: "/Applications/Penguin.app/Contents/Resources", isDirectory: true)
+        expect(
+            isAllowedPenguinNavigationURL(
+                URL(fileURLWithPath: "/Applications/Penguin.app/Contents/Resources/Onboarding.html"),
+                resourceURL: resources
+            ),
+            "signed bundled setup files may load"
+        )
+        expect(
+            !isAllowedPenguinNavigationURL(
+                URL(fileURLWithPath: "/Users/example/private.html"),
+                resourceURL: resources
+            ),
+            "arbitrary local files cannot load"
+        )
+        expect(
+            isAllowedPenguinNavigationURL(URL(string: "http://127.0.0.1:9000/penguin-connect/ui")!, resourceURL: resources),
+            "loopback app pages may load"
+        )
+        expect(
+            !isAllowedPenguinNavigationURL(URL(string: "https://example.com")!, resourceURL: resources),
+            "external pages cannot replace the app web view"
+        )
+
+        let onboarding = penguinOnboardingHTMLPage(initialStep: 2)
+        expect(onboarding.contains("let step = 2;"), "onboarding opens at the requested safe step")
+        expect(onboarding.contains("http://127.0.0.1:8081/pairing/qr.png"), "pairing QR is loaded only from loopback")
+        expect(!onboarding.contains("http://0.0.0.0"), "onboarding does not reference a public local listener")
+        expect(onboarding.contains("default-src 'none'"), "onboarding blocks undeclared web content")
+        expect(onboarding.contains("name=\"profile\" value=\"read-only\" checked"), "remote access defaults to read only")
+        expect(onboarding.contains("name=\"tunnel\" value=\"tailscale\" checked"), "stable Tailscale URLs are the default")
+        expect(onboarding.contains("id=\"contacts-button\""), "Contacts permission can adapt after macOS denial")
+        expect(onboarding.contains("every remote write needs your click"), "write approval is disclosed before setup")
+
+        let bounded = penguinOnboardingHTMLPage(initialStep: 999)
+        expect(bounded.contains("let step = 4;"), "onboarding bounds untrusted initial step values")
     }
 }

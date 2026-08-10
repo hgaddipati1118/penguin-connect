@@ -37,6 +37,15 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$REPO_DIR/desktop/Info.plist" "$CONTENTS_DIR/Info.plist"
 cp "$ICON_SOURCE" "$RESOURCES_DIR/PenguinIcon.png"
 
+APP_VERSION="${PENGUIN_CONNECT_VERSION:-}"
+BUILD_NUMBER="${PENGUIN_CONNECT_BUILD_NUMBER:-}"
+if [ -n "$APP_VERSION" ]; then
+  /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$CONTENTS_DIR/Info.plist"
+fi
+if [ -n "$BUILD_NUMBER" ]; then
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$CONTENTS_DIR/Info.plist"
+fi
+
 if [ "$RELEASE_BUILD" -eq 1 ]; then
   PACKAGED_ROOT="$RESOURCES_DIR/PenguinConnect"
   UV_SOURCE="${PENGUIN_CONNECT_UV_BIN:-$(command -v uv || true)}"
@@ -87,17 +96,65 @@ for size in 16 32 128 256 512; do
 done
 iconutil -c icns "$ICONSET_DIR" -o "$RESOURCES_DIR/PenguinIcon.icns"
 
-swiftc \
-  -O \
-  -parse-as-library \
-  -framework Cocoa \
-  -framework WebKit \
-  "$REPO_DIR/desktop/PenguinDesktopSupport.swift" \
-  "$REPO_DIR/desktop/PenguinApp.swift" \
-  -o "$MACOS_DIR/Penguin"
+SWIFT_SOURCES=(
+  "$REPO_DIR/desktop/PenguinDesktopSupport.swift"
+  "$REPO_DIR/desktop/PenguinOnboarding.swift"
+  "$REPO_DIR/desktop/PenguinApp.swift"
+)
+BUILD_ARCHS="${PENGUIN_CONNECT_BUILD_ARCHS:-}"
+if [ -n "$BUILD_ARCHS" ]; then
+  ARCH_BINARIES=()
+  for arch in $BUILD_ARCHS; do
+    arch_binary="$DIST_DIR/Penguin-$arch"
+    swiftc \
+      -O \
+      -parse-as-library \
+      -target "$arch-apple-macos13.0" \
+      -framework Cocoa \
+      -framework Contacts \
+      -framework WebKit \
+      "${SWIFT_SOURCES[@]}" \
+      -o "$arch_binary"
+    ARCH_BINARIES+=("$arch_binary")
+  done
+  lipo -create "${ARCH_BINARIES[@]}" -output "$MACOS_DIR/Penguin"
+  rm -f "${ARCH_BINARIES[@]}"
+  if [ "$RELEASE_BUILD" -eq 1 ]; then
+    for helper in "$PACKAGED_ROOT/bin/uv" "$PACKAGED_ROOT/bin/cloudflared" "$PACKAGED_ROOT/bin/whatsapp-bridge"; do
+      helper_archs="$(lipo -archs "$helper")"
+      for arch in $BUILD_ARCHS; do
+        if [[ " $helper_archs " != *" $arch "* ]]; then
+          echo "Release helper $helper is missing required architecture: $arch" >&2
+          exit 1
+        fi
+      done
+    done
+  fi
+else
+  swiftc \
+    -O \
+    -parse-as-library \
+    -framework Cocoa \
+    -framework Contacts \
+    -framework WebKit \
+    "${SWIFT_SOURCES[@]}" \
+    -o "$MACOS_DIR/Penguin"
+fi
 
 SIGNING_IDENTITY="${PENGUIN_CONNECT_CODESIGN_IDENTITY:--}"
-codesign --force --deep --options runtime --sign "$SIGNING_IDENTITY" "$APP_BUNDLE"
+CODESIGN_ARGS=(--force --options runtime --sign "$SIGNING_IDENTITY")
+if [ "$SIGNING_IDENTITY" != "-" ]; then
+  CODESIGN_ARGS+=(--timestamp)
+fi
+if [ "$RELEASE_BUILD" -eq 1 ]; then
+  for helper in "$PACKAGED_ROOT/bin/uv" "$PACKAGED_ROOT/bin/cloudflared" "$PACKAGED_ROOT/bin/whatsapp-bridge"; do
+    codesign "${CODESIGN_ARGS[@]}" "$helper"
+  done
+fi
+codesign \
+  "${CODESIGN_ARGS[@]}" \
+  --entitlements "$REPO_DIR/desktop/Penguin.entitlements" \
+  "$APP_BUNDLE"
 echo "[Penguin] Built $APP_BUNDLE"
 if [ "$RELEASE_BUILD" -eq 1 ]; then
   if [ "$SIGNING_IDENTITY" = "-" ]; then

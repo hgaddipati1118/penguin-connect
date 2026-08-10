@@ -79,6 +79,7 @@ if [ "$(uname -s)" = "Darwin" ] && command -v swiftc >/dev/null 2>&1; then
   trap 'rm -rf "$DESKTOP_CHECK_DIR"' EXIT
   swiftc \
     "$ROOT_DIR/desktop/PenguinDesktopSupport.swift" \
+    "$ROOT_DIR/desktop/PenguinOnboarding.swift" \
     "$ROOT_DIR/desktop/PenguinDesktopSupportTests.swift" \
     -o "$DESKTOP_CHECK_DIR/PenguinDesktopSupportTests"
   "$DESKTOP_CHECK_DIR/PenguinDesktopSupportTests"
@@ -86,8 +87,10 @@ if [ "$(uname -s)" = "Darwin" ] && command -v swiftc >/dev/null 2>&1; then
     -typecheck \
     -parse-as-library \
     -framework Cocoa \
+    -framework Contacts \
     -framework WebKit \
     "$ROOT_DIR/desktop/PenguinDesktopSupport.swift" \
+    "$ROOT_DIR/desktop/PenguinOnboarding.swift" \
     "$ROOT_DIR/desktop/PenguinApp.swift"
 fi
 

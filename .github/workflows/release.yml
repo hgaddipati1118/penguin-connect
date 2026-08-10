@@ -1,0 +1,202 @@
+name: Release Penguin
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without the v prefix
+        required: true
+        default: 0.1.0
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: penguin-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  UV_VERSION: "0.12.3"
+  UV_ARM64_SHA256: "546f7f8a6c70ff13a3a9d2bc958db3427298cebf3e0cb756f9177133b7068843"
+  UV_X86_64_SHA256: "4c9f52262a14da336e4a42ed24992d12d0c956acde87619e4611d321dffa602b"
+  CLOUDFLARED_VERSION: "2026.7.3"
+  CLOUDFLARED_ARM64_SHA256: "90c5a4f9149d705fd70c135dba6d80b1791d254b08d6d4136301941f88330dd09"
+  CLOUDFLARED_X86_64_SHA256: "70d1c8684fa6d14b5843787ec8d1ea8e18b23650e424f4ea43d849a506487c3b"
+  WHATSAPP_BRIDGE_COMMIT: "c271bdf4f038bb9e57c01df4cb091fbc078712ec"
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      APPLE_DEVELOPER_ID_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
+      APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Run tests
+        run: ./scripts/check.sh
+
+      - name: Build verified universal helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          helper_dir="$(mktemp -d)"
+          mkdir -p build/helpers
+
+          curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-aarch64-apple-darwin.tar.gz" -o "$helper_dir/uv-arm64.tar.gz"
+          curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-apple-darwin.tar.gz" -o "$helper_dir/uv-x86_64.tar.gz"
+          echo "${UV_ARM64_SHA256}  $helper_dir/uv-arm64.tar.gz" | shasum -a 256 -c -
+          echo "${UV_X86_64_SHA256}  $helper_dir/uv-x86_64.tar.gz" | shasum -a 256 -c -
+          mkdir "$helper_dir/uv-arm64" "$helper_dir/uv-x86_64"
+          tar -xzf "$helper_dir/uv-arm64.tar.gz" -C "$helper_dir/uv-arm64"
+          tar -xzf "$helper_dir/uv-x86_64.tar.gz" -C "$helper_dir/uv-x86_64"
+          uv_arm64="$(find "$helper_dir/uv-arm64" -type f -name uv -perm +111 -print -quit)"
+          uv_x86_64="$(find "$helper_dir/uv-x86_64" -type f -name uv -perm +111 -print -quit)"
+          lipo -create "$uv_arm64" "$uv_x86_64" -output build/helpers/uv
+
+          curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-darwin-arm64.tgz" -o "$helper_dir/cloudflared-arm64.tgz"
+          curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-darwin-amd64.tgz" -o "$helper_dir/cloudflared-x86_64.tgz"
+          echo "${CLOUDFLARED_ARM64_SHA256}  $helper_dir/cloudflared-arm64.tgz" | shasum -a 256 -c -
+          echo "${CLOUDFLARED_X86_64_SHA256}  $helper_dir/cloudflared-x86_64.tgz" | shasum -a 256 -c -
+          mkdir "$helper_dir/cloudflared-arm64" "$helper_dir/cloudflared-x86_64"
+          tar -xzf "$helper_dir/cloudflared-arm64.tgz" -C "$helper_dir/cloudflared-arm64"
+          tar -xzf "$helper_dir/cloudflared-x86_64.tgz" -C "$helper_dir/cloudflared-x86_64"
+          lipo -create "$helper_dir/cloudflared-arm64/cloudflared" "$helper_dir/cloudflared-x86_64/cloudflared" -output build/helpers/cloudflared
+
+          git clone --filter=blob:none https://github.com/hgaddipati1118/whatsapp-mcp.git "$helper_dir/whatsapp-mcp"
+          git -C "$helper_dir/whatsapp-mcp" checkout --detach "$WHATSAPP_BRIDGE_COMMIT"
+          pushd "$helper_dir/whatsapp-mcp/whatsapp-bridge"
+          CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 CC='clang -arch arm64' go build -trimpath -o "$helper_dir/whatsapp-arm64" .
+          CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 CC='clang -arch x86_64' go build -trimpath -o "$helper_dir/whatsapp-x86_64" .
+          popd
+          lipo -create "$helper_dir/whatsapp-arm64" "$helper_dir/whatsapp-x86_64" -output build/helpers/whatsapp-bridge
+          chmod 755 build/helpers/*
+          test "$(lipo -archs build/helpers/uv)" = "x86_64 arm64"
+          test "$(lipo -archs build/helpers/cloudflared)" = "x86_64 arm64"
+          test "$(lipo -archs build/helpers/whatsapp-bridge)" = "x86_64 arm64"
+
+      - name: Require Apple credentials for public tags
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          test -n "$APPLE_DEVELOPER_ID_P12_BASE64"
+          test -n "$APPLE_DEVELOPER_ID_P12_PASSWORD"
+          test -n "$APPLE_ID"
+          test -n "$APPLE_TEAM_ID"
+          test -n "$APPLE_APP_SPECIFIC_PASSWORD"
+
+      - name: Import Developer ID certificate
+        if: env.APPLE_DEVELOPER_ID_P12_BASE64 != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          keychain_password="$(openssl rand -hex 24)"
+          keychain_path="$RUNNER_TEMP/penguin-signing.keychain-db"
+          certificate_path="$RUNNER_TEMP/developer-id.p12"
+          printf '%s' "$APPLE_DEVELOPER_ID_P12_BASE64" | base64 --decode > "$certificate_path"
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" -P "$APPLE_DEVELOPER_ID_P12_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+          signing_identity="$(security find-identity -v -p codesigning "$keychain_path" | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -1)"
+          test -n "$signing_identity"
+          printf 'PENGUIN_CONNECT_CODESIGN_IDENTITY=%s\n' "$signing_identity" >> "$GITHUB_ENV"
+
+      - name: Build universal app
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="${{ inputs.version }}"
+          fi
+          PENGUIN_CONNECT_VERSION="$version" \
+          PENGUIN_CONNECT_BUILD_NUMBER="$GITHUB_RUN_NUMBER" \
+          PENGUIN_CONNECT_BUILD_ARCHS="arm64 x86_64" \
+          PENGUIN_CONNECT_UV_BIN="$GITHUB_WORKSPACE/build/helpers/uv" \
+          PENGUIN_CONNECT_CLOUDFLARED_BIN="$GITHUB_WORKSPACE/build/helpers/cloudflared" \
+          PENGUIN_CONNECT_WHATSAPP_BRIDGE_BIN="$GITHUB_WORKSPACE/build/helpers/whatsapp-bridge" \
+            ./scripts/build_desktop_app.sh --release
+          printf 'PENGUIN_RELEASE_VERSION=%s\n' "$version" >> "$GITHUB_ENV"
+
+      - name: Verify app before packaging
+        run: |
+          test "$(lipo -archs dist/Penguin.app/Contents/MacOS/Penguin)" = "x86_64 arm64"
+          codesign --verify --deep --strict --verbose=2 dist/Penguin.app
+          codesign -d --entitlements :- dist/Penguin.app | grep -q com.apple.security.automation.apple-events
+          test -z "$(find dist/Penguin.app -type f \( -name '.env' -o -name '*.db' -o -name '*.sqlite' -o -name '*credentials*.json' \) -print -quit)"
+
+      - name: Notarize signed app
+        if: env.APPLE_DEVELOPER_ID_P12_BASE64 != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          ditto -c -k --sequesterRsrc --keepParent dist/Penguin.app "$RUNNER_TEMP/Penguin.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/Penguin.zip" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --wait
+          xcrun stapler staple dist/Penguin.app
+          xcrun stapler validate dist/Penguin.app
+
+      - name: Create release archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive_base="Penguin-${PENGUIN_RELEASE_VERSION}-universal"
+          ditto -c -k --sequesterRsrc --keepParent dist/Penguin.app "dist/${archive_base}.zip"
+          dmg_root="$(mktemp -d)"
+          ditto dist/Penguin.app "$dmg_root/Penguin.app"
+          ln -s /Applications "$dmg_root/Applications"
+          hdiutil create -volname Penguin -srcfolder "$dmg_root" -ov -format UDZO "dist/${archive_base}.dmg"
+          if [ -n "${PENGUIN_CONNECT_CODESIGN_IDENTITY:-}" ]; then
+            codesign --force --timestamp --sign "$PENGUIN_CONNECT_CODESIGN_IDENTITY" "dist/${archive_base}.dmg"
+          fi
+          printf 'PENGUIN_DMG=%s\n' "dist/${archive_base}.dmg" >> "$GITHUB_ENV"
+          printf 'PENGUIN_ZIP=%s\n' "dist/${archive_base}.zip" >> "$GITHUB_ENV"
+
+      - name: Notarize disk image
+        if: env.APPLE_DEVELOPER_ID_P12_BASE64 != ''
+        run: |
+          xcrun notarytool submit "$PENGUIN_DMG" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --wait
+          xcrun stapler staple "$PENGUIN_DMG"
+          xcrun stapler validate "$PENGUIN_DMG"
+          spctl --assess --type execute --verbose=4 dist/Penguin.app
+          spctl --assess --type open --context context:primary-signature --verbose=4 "$PENGUIN_DMG"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Penguin-${{ env.PENGUIN_RELEASE_VERSION }}-universal
+          path: |
+            ${{ env.PENGUIN_DMG }}
+            ${{ env.PENGUIN_ZIP }}
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            ${{ env.PENGUIN_DMG }}
+            ${{ env.PENGUIN_ZIP }}

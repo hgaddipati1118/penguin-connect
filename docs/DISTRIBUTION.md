@@ -2,7 +2,7 @@
 
 Penguin's release build is a macOS app bundle containing the local FastAPI source, `uv`,
 `cloudflared`, and the loopback-only WhatsApp Go bridge. It does not contain a bearer token,
-Cloudflare account credential, message database, contact data, or WhatsApp session.
+tunnel account credential, message database, contact data, pairing QR, or WhatsApp session.
 
 ## Build a release candidate
 
@@ -26,9 +26,24 @@ PENGUIN_CONNECT_WHATSAPP_BRIDGE_BIN=/absolute/path/to/whatsapp-bridge \
   ./scripts/build_desktop_app.sh --release
 ```
 
-The bundled helpers in the current build are architecture-specific. Produce and merge both
-arm64 and x86_64 helpers before calling a release universal. Do not distribute a developer's
-WhatsApp store or `.env` alongside the app.
+Set `PENGUIN_CONNECT_BUILD_ARCHS="arm64 x86_64"` only when all three supplied helpers are
+universal. The builder rejects a helper that is missing a requested architecture. Do not
+distribute a developer's WhatsApp store or `.env` alongside the app.
+
+The `Release Penguin` GitHub workflow is the canonical public build. It pins and verifies the
+SHA-256 digests for `uv` and `cloudflared`, checks out an exact commit from the maintained
+WhatsApp bridge fork, cross-builds both architectures, and produces universal helpers and app
+code. Public `v*` tags fail closed unless all Apple signing and notarization secrets exist:
+
+- `APPLE_DEVELOPER_ID_P12_BASE64`
+- `APPLE_DEVELOPER_ID_P12_PASSWORD`
+- `APPLE_ID`
+- `APPLE_TEAM_ID`
+- `APPLE_APP_SPECIFIC_PASSWORD`
+
+The workflow notarizes and staples both the app and DMG, runs Gatekeeper assessment, and then
+publishes the DMG and ZIP to GitHub Releases. A manual workflow run may produce an unsigned
+test artifact, but that artifact is not a consumer release.
 
 ## First run
 
@@ -37,25 +52,33 @@ On first launch, the app uses bundled `uv` to create a private runtime under
 an Internet connection. The signed application itself remains read-only; runtime state,
 WhatsApp session data, endpoint metadata, and logs live outside the app bundle.
 
-The user must:
+The setup assistant guides the user through:
 
 1. Grant Penguin Full Disk Access so it can read the local Apple Messages database.
-2. Choose **Pair WhatsApp…**, scan the QR code from WhatsApp's Linked Devices screen, wait for
-   the connected message, and close the Terminal window.
-3. Choose **Connect Slashy MCP…** and select Full Access or Read Only.
-4. In Slashy MCP Settings, choose **Add MCP server** and paste the copied JSON into the custom
-   server field.
+2. Optionally grant Contacts access.
+3. Scan an in-app, loopback-only WhatsApp QR from WhatsApp's Linked Devices screen. Pairing
+   material is not returned by the status API, cached by the web view, or written to logs.
+4. Select Read Only (the default) or Full Access.
+5. Select a stable Tailscale Funnel or a temporary Cloudflare Quick Tunnel.
+6. Paste the copied connection JSON into Slashy's MCP Settings.
 
-The app installs separate launch agents for the WhatsApp bridge, authenticated MCP origin, and
-Cloudflare tunnel. All origin services bind to loopback. The bearer is generated on the Mac,
-stored in Keychain, omitted from logs and launchd plists, and placed on the clipboard only when
-the user requests a connection bundle.
+The app installs separate launch agents for the WhatsApp bridge and authenticated MCP origin.
+Cloudflare's temporary option has its own launch agent; stable Tailscale Funnel state is managed
+by the signed-in Tailscale app. All origin services bind to loopback. The bearer is generated on
+the Mac, stored in Keychain, omitted from logs and launchd plists, and placed on the clipboard
+only when the user requests a connection bundle.
 
 ## Endpoint durability
 
-One-click setup uses a Cloudflare Quick Tunnel. It is appropriate for onboarding and testing,
-but its public hostname changes after the tunnel or Mac restarts. A durable consumer release
-needs one of these explicit models:
+One-click setup defaults to Tailscale Funnel on dedicated HTTPS port `10000`. It produces a
+predictable URL under the Mac's `ts.net` device name, uses valid TLS, and persists in Tailscale's
+background configuration. The user must install and sign in to the free Tailscale Mac app.
+
+Cloudflare Quick Tunnel is the no-account fallback, but its public hostname changes after the
+tunnel or Mac restarts. A future first-party managed relay could remove the Tailscale
+prerequisite, but must still provision one unique revocable credential per installation.
+
+Other supported durable models are:
 
 - a named Cloudflare Tunnel and hostname owned by the user;
 - a Slashy control-plane endpoint that provisions one unique, revocable tunnel credential per
@@ -65,6 +88,27 @@ needs one of these explicit models:
 Never ship one shared Cloudflare tunnel credential inside the app. For a named tunnel, set
 `PENGUIN_CONNECT_CLOUDFLARE_TUNNEL`, optional `PENGUIN_CONNECT_CLOUDFLARE_CONFIG`, and
 `PENGUIN_CONNECT_PUBLIC_MCP_URL` while running remote setup.
+
+## Disable and uninstall
+
+The setup assistant's **Stop remote access** action stops and disables the public tunnel and
+remote MCP launch agent. The app's **Rotate key** action immediately invalidates the old bearer
+and copies a replacement bundle.
+
+For removal, run the packaged uninstaller before moving the app to Trash:
+
+```bash
+/Applications/Penguin.app/Contents/Resources/PenguinConnect/scripts/uninstall_penguin_connect.py
+```
+
+The default removes launch agents, endpoint metadata, and the Keychain bearer while preserving
+local indexes and the WhatsApp session for a reinstall. Permanent deletion is deliberately
+explicit:
+
+```bash
+/Applications/Penguin.app/Contents/Resources/PenguinConnect/scripts/uninstall_penguin_connect.py \
+  --delete-data --yes
+```
 
 ## Release verification
 
@@ -79,4 +123,6 @@ Before publishing, verify on a clean user account and both supported CPU archite
 - Full Access requires exact confirmation and a local click for every write;
 - unknown providers, local attachment paths, and local-only MCP tools cannot be retrieved;
 - rotating the Keychain bearer revokes the old Slashy connection;
-- named-tunnel restart preserves the public URL.
+- Tailscale Funnel restart preserves the public URL;
+- stopping remote access survives logout/login until setup explicitly re-enables it;
+- the default uninstaller revokes the bearer without deleting local session data.

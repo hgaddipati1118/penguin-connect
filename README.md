@@ -147,20 +147,25 @@ Then run `codex mcp list` or use `/mcp` in Codex to verify the tools. Send tools
 two-call preview/confirm flow. A new Apple Messages recipient is opened as an addressed draft
 instead of being auto-sent because PenguinConnect does not guess an unverified Apple route.
 
-### Authenticated remote MCP over Cloudflare Tunnel
+### Authenticated remote MCP over HTTPS
 
 Penguin can create a bearer-protected Streamable HTTP endpoint that Slashy and other MCP
-clients can use while the Mac is online. The origin services stay on `127.0.0.1`; Cloudflare
-Tunnel supplies public HTTPS. Never port-forward Penguin, MCP port `8765`, or WhatsApp port
-`8080`.
+clients can use while the Mac is online. The origin services stay on `127.0.0.1`; Tailscale
+Funnel supplies a stable public HTTPS address by default. Never port-forward Penguin, MCP port
+`8765`, WhatsApp API port `8080`, or pairing port `8081`.
 
 The one-command setup installs launch-at-login services, saves the bearer only in macOS
 Keychain, and copies a Slashy-compatible connection bundle to the clipboard:
 
 ```bash
-brew install cloudflared
+open https://tailscale.com/download/mac
 ./scripts/penguin_connect_remote_setup.py --profile slashy
 ```
+
+Install and sign in to the Tailscale Mac app before running the command. Penguin uses a
+dedicated public HTTPS port (`10000`) and does not expose any other local service. For a
+no-account temporary URL, use `--tunnel cloudflare-quick`; the release app bundles
+`cloudflared` for that fallback.
 
 In Slashy MCP Settings, choose **Add MCP server**, then paste the copied JSON into the custom
 server field. Slashy fills the HTTPS URL and masked API-key field from `server_url` and `token`.
@@ -187,17 +192,26 @@ five-minute one-use confirmation bound to the exact payload and an approval clic
 The dialog denies by default after 30 seconds. Exact existing iMessage conversations can send;
 a brand-new destination is staged in Messages for human review.
 
-The macOS app exposes **Pair WhatsApp…** and **Connect Slashy MCP…** in its application menu.
-The release build bundles `cloudflared`, the WhatsApp bridge, and its Python runtime installer.
+The macOS app exposes a native **Penguin Setup…** assistant that handles permissions,
+loopback-only WhatsApp QR pairing, access-profile selection, endpoint creation, key rotation,
+and Slashy handoff. The release build bundles `cloudflared`, the WhatsApp bridge, and its
+Python runtime installer.
 See [Packaging and distribution](docs/DISTRIBUTION.md) for release signing and first-run details.
 
-#### Stable hostname
+#### Stable and temporary hostnames
 
-The automatic setup uses a Cloudflare Quick Tunnel. It is convenient for testing, but its
-hostname changes if the tunnel process or Mac restarts. When that happens, run setup again and
-replace the connection in Slashy. Do not present a Quick Tunnel as a durable production URL.
+The default Tailscale Funnel URL is derived from the Mac's stable `ts.net` device name and
+survives Penguin and Mac restarts. Funnel terminates TLS before proxying only to Penguin's
+loopback MCP origin; Penguin's bearer authentication and capability policy still apply.
+Tailscale documents Funnel's public-internet behavior and macOS requirements in its
+[official Funnel guide](https://tailscale.com/kb/1223/funnel).
 
-For a stable hostname, create a named Cloudflare Tunnel and DNS route:
+Cloudflare Quick Tunnel remains convenient for testing, but its hostname changes if the tunnel
+or Mac restarts. When that happens, rerun setup with `--tunnel cloudflare-quick` and replace the
+connection in Slashy. Do not present a Quick Tunnel as a durable production URL.
+
+Advanced users who own a Cloudflare-managed domain can instead create a named Cloudflare
+Tunnel and DNS route:
 
 ```bash
 cloudflared tunnel login
@@ -225,7 +239,7 @@ these non-secret settings, while credentials remain in Cloudflare's config direc
 ```bash
 PENGUIN_CONNECT_CLOUDFLARE_TUNNEL=penguin-connect-mcp \
 PENGUIN_CONNECT_PUBLIC_MCP_URL=https://mcp.example.com \
-  ./scripts/penguin_connect_remote_setup.py --profile slashy
+  ./scripts/penguin_connect_remote_setup.py --profile slashy --tunnel cloudflare-quick
 ```
 
 To connect a client manually, copy only the token through a password manager:

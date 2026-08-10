@@ -16,6 +16,7 @@ Treat the following as security-relevant:
 - ambiguous route resolution that could send to the wrong Apple Messages thread
 - anything that exposes an origin service beyond the loopback-only runtime boundary
 - remote MCP endpoints that bypass bearer authentication, TLS ingress, or loopback-only origin binding
+- WhatsApp pairing codes or session material exposed through status responses, logs, or non-loopback listeners
 - unsafe handling of contact exports, aliases, or local SQLite data
 
 ## Remote MCP Boundary
@@ -41,8 +42,13 @@ through a guessed route.
 
 Treat the remote MCP bearer token as a private message and contact read credential. Never put
 it in `.env`, launchd plists, commits, URLs, screenshots, or logs. Rotate it immediately if it
-may have been copied into an untrusted system. Keep Quick Tunnels temporary; use a named tunnel
-plus a compatible ingress access policy for an endpoint intended to stay online.
+may have been copied into an untrusted system. Keep Quick Tunnels temporary. The consumer setup
+defaults to a stable Tailscale Funnel on dedicated HTTPS port `10000`; the bearer is still
+required because Funnel intentionally accepts public Internet traffic.
+
+The WhatsApp pairing status endpoint may report only coarse state and whether a QR is available.
+It must never return the raw pairing code. The QR image endpoint must bind to `127.0.0.1`, send
+`Cache-Control: no-store`, and pairing codes must not be printed to logs by default.
 
 ## Reporting A Vulnerability
 

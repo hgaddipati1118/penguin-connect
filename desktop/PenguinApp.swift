@@ -1,4 +1,5 @@
 import Cocoa
+import Contacts
 import WebKit
 
 private let defaultPort = 9000
@@ -48,14 +49,17 @@ private func makeDockIcon() -> NSImage {
     return image
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScriptMessageHandler {
     private var window: NSWindow!
     private var webView: WKWebView!
     private var bridgeProcess: Process?
+    private var whatsappPairingProcess: Process?
     private var launchAttempted = false
     private var healthAttempts = 0
     private var healthGeneration = 0
     private var remoteSetupProcess: Process?
+    private var pairingPollGeneration = 0
+    private var showingOnboarding = false
 
     private lazy var repoURL: URL = {
         let configured = Bundle.main.object(forInfoDictionaryKey: "PenguinRepoPath") as? String ?? ""
@@ -70,6 +74,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     private lazy var isPackagedRuntime = FileManager.default.isExecutableFile(
         atPath: repoURL.appendingPathComponent("scripts/bootstrap_packaged_runtime.sh").path
     )
+    private lazy var appSupportURL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/PenguinConnect", isDirectory: true)
+    private lazy var onboardingMarkerURL = appSupportURL.appendingPathComponent("onboarding-v1.complete")
     private var uiURL: URL {
         URL(string: "http://127.0.0.1:\(port)/penguin-connect/ui")!
     }
@@ -81,12 +88,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         NSApp.applicationIconImage = makeDockIcon()
         configureMainMenu()
         configureWindow()
-        beginBridgeCheck()
+        if isPackagedRuntime && !FileManager.default.fileExists(atPath: onboardingMarkerURL.path) {
+            showOnboarding(step: 0)
+        } else {
+            beginBridgeCheck()
+        }
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        pairingPollGeneration += 1
+        if whatsappPairingProcess?.isRunning == true {
+            whatsappPairingProcess?.terminate()
+        }
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        if showingOnboarding {
+            reportPermissions()
+        }
     }
 
     private func configureMainMenu() {
@@ -108,6 +132,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
             keyEquivalent: ""
         )
         remoteMCPItem.target = self
+        let setupItem = appMenu.addItem(
+            withTitle: "Penguin Setup…",
+            action: #selector(openPenguinSetup),
+            keyEquivalent: ","
+        )
+        setupItem.target = self
+        let updatesItem = appMenu.addItem(
+            withTitle: "Download Latest Release…",
+            action: #selector(openLatestRelease),
+            keyEquivalent: ""
+        )
+        updatesItem.target = self
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit Penguin", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appMenuItem.submenu = appMenu
@@ -129,6 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     private func configureWindow() {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
+        configuration.userContentController.add(self, name: "penguin")
         webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = self
         webView.allowsMagnification = true
@@ -167,6 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     }
 
     private func beginBridgeCheck() {
+        showingOnboarding = false
         healthGeneration += 1
         launchAttempted = false
         healthAttempts = 0
@@ -273,85 +311,375 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         alert.runModal()
     }
 
-    private func shellQuote(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
-    }
-
     @objc private func pairWhatsApp() {
-        let bundled = repoURL.appendingPathComponent("bin/whatsapp-bridge")
-        let source = FileManager.default.isExecutableFile(atPath: bundled.path)
-            ? bundled
-            : FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("whatsapp-mcp/whatsapp-bridge/whatsapp-bridge")
-        guard FileManager.default.isExecutableFile(atPath: source.path) else {
-            showAlert(
-                title: "Could not start WhatsApp pairing",
-                detail: "The WhatsApp bridge is missing. Install a release build that includes the bridge."
-            )
-            return
-        }
-        let destination = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/PenguinConnect/whatsapp-bridge", isDirectory: true)
-        let binary = destination.appendingPathComponent("whatsapp-bridge")
-        let command = [
-            "mkdir -p \(shellQuote(destination.path))",
-            "cp \(shellQuote(source.path)) \(shellQuote(binary.path))",
-            "chmod 755 \(shellQuote(binary.path))",
-            "cd \(shellQuote(destination.path))",
-            shellQuote(binary.path),
-        ].joined(separator: " && ")
-        let script = """
-        on run argv
-            tell application "Terminal"
-                activate
-                do script (item 1 of argv)
-            end tell
-        end run
-        """
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", script, command]
-        do {
-            try process.run()
-            showAlert(
-                title: "Pair WhatsApp in Terminal",
-                detail: "In WhatsApp on your phone, open Linked Devices and scan the QR code. Wait for the Connected message, then you can close Terminal and choose Connect Slashy MCP."
-            )
-        } catch {
-            showAlert(title: "Could not start WhatsApp pairing", detail: error.localizedDescription)
-        }
+        showOnboarding(step: 2)
     }
 
     @objc private func setupRemoteMCP() {
+        showOnboarding(step: 3)
+    }
+
+    @objc private func openPenguinSetup() {
+        showOnboarding(step: 0)
+    }
+
+    @objc private func openLatestRelease() {
+        if let url = URL(string: "https://github.com/hgaddipati1118/penguin-connect/releases/latest") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func showOnboarding(step: Int) {
+        healthGeneration += 1
+        showingOnboarding = true
+        webView.loadHTMLString(
+            penguinOnboardingHTMLPage(initialStep: step),
+            baseURL: Bundle.main.resourceURL
+        )
+        if isPackagedRuntime && !FileManager.default.isExecutableFile(atPath: runtimePythonURL.path) {
+            _ = launchBridge()
+        }
+    }
+
+    private func callOnboarding(_ method: String, arguments: [Any]) {
+        guard showingOnboarding,
+              let data = try? JSONSerialization.data(withJSONObject: arguments),
+              let json = String(data: data, encoding: .utf8) else { return }
+        webView.evaluateJavaScript("window.penguinNative?.\(method).apply(null, \(json))")
+    }
+
+    private func hasFullDiskAccess() -> Bool {
+        let database = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Messages/chat.db")
+        do {
+            let handle = try FileHandle(forReadingFrom: database)
+            try handle.close()
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func reportPermissions() {
+        let status = CNContactStore.authorizationStatus(for: .contacts)
+        let state: String
+        switch status {
+        case .authorized:
+            state = "authorized"
+        case .denied:
+            state = "denied"
+        case .restricted:
+            state = "restricted"
+        case .notDetermined:
+            state = "not-determined"
+        @unknown default:
+            state = "restricted"
+        }
+        callOnboarding("permissions", arguments: [hasFullDiskAccess(), status == .authorized, state])
+    }
+
+    private func requestContactsAccess() {
+        let status = CNContactStore.authorizationStatus(for: .contacts)
+        if status == .denied || status == .restricted {
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts") {
+                NSWorkspace.shared.open(url)
+            }
+            return
+        }
+        guard status == .notDetermined else {
+            reportPermissions()
+            return
+        }
+        CNContactStore().requestAccess(for: .contacts) { [weak self] _, _ in
+            DispatchQueue.main.async { self?.reportPermissions() }
+        }
+    }
+
+    private func whatsAppSourceURL() -> URL {
+        let bundled = repoURL.appendingPathComponent("bin/whatsapp-bridge")
+        if FileManager.default.isExecutableFile(atPath: bundled.path) {
+            return bundled
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("whatsapp-mcp/whatsapp-bridge/whatsapp-bridge")
+    }
+
+    private func startWhatsAppPairing() {
+        let source = whatsAppSourceURL()
+        guard FileManager.default.isExecutableFile(atPath: source.path) else {
+            callOnboarding("whatsapp", arguments: ["bridge_missing", "0"])
+            return
+        }
+        let directory = appSupportURL.appendingPathComponent("whatsapp-bridge", isDirectory: true)
+        let binary = directory.appendingPathComponent("whatsapp-bridge")
+        let logs = appSupportURL.appendingPathComponent("logs", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+            if source.standardizedFileURL != binary.standardizedFileURL {
+                if FileManager.default.fileExists(atPath: binary.path) {
+                    try FileManager.default.removeItem(at: binary)
+                }
+                try FileManager.default.copyItem(at: source, to: binary)
+                try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path)
+            }
+            if whatsappPairingProcess?.isRunning != true {
+                let outputURL = logs.appendingPathComponent("whatsapp-pairing.log")
+                FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+                let output = try FileHandle(forWritingTo: outputURL)
+                let process = Process()
+                process.executableURL = binary
+                process.currentDirectoryURL = directory
+                process.standardOutput = output
+                process.standardError = output
+                try process.run()
+                whatsappPairingProcess = process
+            }
+            beginWhatsAppPolling()
+        } catch {
+            callOnboarding("whatsapp", arguments: ["error", "0"])
+        }
+    }
+
+    private func beginWhatsAppPolling() {
+        pairingPollGeneration += 1
+        pollWhatsApp(generation: pairingPollGeneration, attempt: 0)
+    }
+
+    private func pollWhatsApp(generation: Int, attempt: Int) {
+        guard generation == pairingPollGeneration, attempt < 190 else { return }
+        var healthRequest = URLRequest(url: URL(string: "http://127.0.0.1:8080/health")!)
+        healthRequest.timeoutInterval = 1
+        URLSession.shared.dataTask(with: healthRequest) { [weak self] _, response, _ in
+            guard let self else { return }
+            if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
+                DispatchQueue.main.async {
+                    guard generation == self.pairingPollGeneration else { return }
+                    self.callOnboarding("whatsapp", arguments: ["connected", "\(attempt)"])
+                }
+                return
+            }
+            var statusRequest = URLRequest(url: URL(string: "http://127.0.0.1:8081/pairing/status")!)
+            statusRequest.timeoutInterval = 1
+            URLSession.shared.dataTask(with: statusRequest) { [weak self] data, _, _ in
+                guard let self else { return }
+                let payload = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+                let status = payload?["status"] as? String ?? "starting"
+                DispatchQueue.main.async {
+                    guard generation == self.pairingPollGeneration else { return }
+                    self.callOnboarding("whatsapp", arguments: [status, "\(attempt)"])
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                        self.pollWhatsApp(generation: generation, attempt: attempt + 1)
+                    }
+                }
+            }.resume()
+        }.resume()
+    }
+
+    private func endpointFromOutput(_ output: String) -> String {
+        output.split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .first(where: { $0.hasPrefix("Endpoint: ") })?
+            .replacingOccurrences(of: "Endpoint: ", with: "") ?? ""
+    }
+
+    private func runProcess(
+        executable: URL,
+        arguments: [String],
+        environment: [String: String]? = nil,
+        completion: @escaping (Bool, String) -> Void
+    ) {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = executable
+        process.arguments = arguments
+        process.currentDirectoryURL = repoURL
+        process.environment = environment
+        process.standardOutput = output
+        process.standardError = output
+        process.terminationHandler = { finished in
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            let detail = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            DispatchQueue.main.async {
+                completion(finished.terminationStatus == 0, detail)
+            }
+        }
+        do {
+            try process.run()
+        } catch {
+            DispatchQueue.main.async { completion(false, error.localizedDescription) }
+        }
+    }
+
+    private func runPythonScript(
+        _ name: String,
+        arguments: [String],
+        completion: @escaping (Bool, String) -> Void
+    ) {
+        let script = repoURL.appendingPathComponent("scripts/\(name)")
+        guard FileManager.default.isExecutableFile(atPath: runtimePythonURL.path),
+              FileManager.default.fileExists(atPath: script.path) else {
+            completion(false, "Penguin's private runtime is not ready yet.")
+            return
+        }
+        runProcess(
+            executable: runtimePythonURL,
+            arguments: [script.path] + arguments,
+            environment: remoteEnvironment(),
+            completion: completion
+        )
+    }
+
+    private func isLaunchAgentLoaded(_ label: String) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = ["print", "gui/\(getuid())/\(label)"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
+    private func reportRemoteStatus() {
+        let mcpActive = isLaunchAgentLoaded("com.penguinconnect.remote-mcp")
+        let cloudflareActive = isLaunchAgentLoaded("com.penguinconnect.remote-tunnel")
+        runPythonScript("penguin_connect_remote_setup.py", arguments: ["--status"]) { [weak self] ok, output in
+            guard let self else { return }
+            let endpoint = ok ? self.endpointFromOutput(output) : ""
+            let stableFunnel = endpoint.contains(".ts.net:10000/")
+            self.callOnboarding(
+                "remoteStatus",
+                arguments: [mcpActive && (cloudflareActive || stableFunnel) && ok, endpoint]
+            )
+        }
+    }
+
+    private func copyRemoteConnection() {
+        runPythonScript("penguin_connect_remote_setup.py", arguments: ["--copy"]) { [weak self] ok, output in
+            self?.showAlert(
+                title: ok ? "Connection copied" : "Could not copy connection",
+                detail: ok ? "Paste the JSON bundle into Slashy's MCP Settings." : output
+            )
+        }
+    }
+
+    private func rotateRemoteToken() {
+        runPythonScript("penguin_connect_mcp_auth.py", arguments: ["--rotate"]) { [weak self] ok, output in
+            guard let self else { return }
+            guard ok else {
+                self.showAlert(title: "Could not rotate key", detail: output)
+                return
+            }
+            self.runPythonScript("penguin_connect_remote_setup.py", arguments: ["--copy"]) { [weak self] copied, copyOutput in
+                self?.showAlert(
+                    title: copied ? "Key rotated and connection copied" : "Key rotated",
+                    detail: copied
+                        ? "The old key is invalid. Replace the Penguin connection in Slashy with the newly copied bundle."
+                        : copyOutput
+                )
+            }
+        }
+    }
+
+    private func stopRemoteAccess() {
+        runPythonScript("penguin_connect_remote_setup.py", arguments: ["--stop"]) { [weak self] ok, output in
+            self?.showAlert(
+                title: ok ? "Remote access stopped" : "Could not stop remote access",
+                detail: ok ? "The public tunnel and remote MCP service are no longer running." : output
+            )
+        }
+    }
+
+    private func markOnboardingCompleteAndOpenPenguin() {
+        do {
+            try FileManager.default.createDirectory(at: appSupportURL, withIntermediateDirectories: true)
+            try Data("complete\n".utf8).write(to: onboardingMarkerURL, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: onboardingMarkerURL.path)
+        } catch {
+            showAlert(title: "Could not finish setup", detail: error.localizedDescription)
+            return
+        }
+        beginBridgeCheck()
+    }
+
+    private func finishOnboarding() {
+        pairingPollGeneration += 1
+        guard let pairingProcess = whatsappPairingProcess, pairingProcess.isRunning else {
+            markOnboardingCompleteAndOpenPenguin()
+            return
+        }
+        whatsappPairingProcess = nil
+        pairingProcess.terminationHandler = { [weak self] _ in
+            guard let self else { return }
+            let installer = self.repoURL.appendingPathComponent("scripts/install_launchd_whatsapp_bridge.sh")
+            self.runProcess(
+                executable: URL(fileURLWithPath: "/bin/bash"),
+                arguments: [installer.path],
+                environment: self.remoteEnvironment()
+            ) { [weak self] ok, output in
+                guard let self else { return }
+                if ok {
+                    self.markOnboardingCompleteAndOpenPenguin()
+                } else {
+                    self.showAlert(title: "Could not keep WhatsApp connected", detail: output)
+                }
+            }
+        }
+        pairingProcess.terminate()
+    }
+
+    private func runRemoteSetup(profile: String, tunnel: String) {
         guard remoteSetupProcess?.isRunning != true else {
-            showAlert(title: "Setup is already running", detail: "Finish the current setup before starting another one.")
+            callOnboarding("remoteResult", arguments: [false, "", "Setup is already running."])
             return
         }
         let python = runtimePythonURL
         let setupScript = repoURL.appendingPathComponent("scripts/penguin_connect_remote_setup.py")
         guard FileManager.default.isExecutableFile(atPath: python.path),
               FileManager.default.fileExists(atPath: setupScript.path) else {
-            showAlert(
-                title: "Could not start remote MCP setup",
-                detail: "Penguin is still preparing its runtime. Wait until the main window opens, then try again."
-            )
+            callOnboarding("remoteResult", arguments: [false, "", "Penguin is still preparing its private runtime. Try again in a moment."])
             return
         }
+        if bridgeProcess?.isRunning != true { _ = launchBridge() }
+        if let pairingProcess = whatsappPairingProcess, pairingProcess.isRunning {
+            whatsappPairingProcess = nil
+            pairingProcess.terminationHandler = { [weak self] _ in
+                DispatchQueue.main.async {
+                    self?.startRemoteSetupProcess(
+                        python: python,
+                        setupScript: setupScript,
+                        profile: profile,
+                        tunnel: tunnel
+                    )
+                }
+            }
+            pairingProcess.terminate()
+            return
+        }
+        startRemoteSetupProcess(
+            python: python,
+            setupScript: setupScript,
+            profile: profile,
+            tunnel: tunnel
+        )
+    }
 
-        let choice = NSAlert()
-        choice.messageText = "Connect Penguin to Slashy?"
-        choice.informativeText = "Full access lets Slashy read iMessage and WhatsApp, search Contacts, and request sends or contact changes. Every write still needs a second exact confirmation and your approval on this Mac. Read Only disables all writes."
-        choice.addButton(withTitle: "Full Access")
-        choice.addButton(withTitle: "Read Only")
-        choice.addButton(withTitle: "Cancel")
-        let response = choice.runModal()
-        guard response != .alertThirdButtonReturn else { return }
-        let profile = response == .alertSecondButtonReturn ? "read-only" : "slashy"
-
+    private func startRemoteSetupProcess(
+        python: URL,
+        setupScript: URL,
+        profile: String,
+        tunnel: String
+    ) {
         let process = Process()
         let output = Pipe()
         process.executableURL = python
-        process.arguments = [setupScript.path, "--profile", profile]
+        process.arguments = [setupScript.path, "--profile", profile, "--tunnel", tunnel]
         process.currentDirectoryURL = repoURL
         process.environment = remoteEnvironment()
         process.standardOutput = output
@@ -364,12 +692,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
                 guard let self else { return }
                 self.remoteSetupProcess = nil
                 if finished.terminationStatus == 0 {
-                    self.showAlert(
-                        title: "Slashy connection copied",
-                        detail: detail + "\n\nPaste the copied JSON into Slashy's MCP Settings."
-                    )
+                    self.callOnboarding("remoteResult", arguments: [true, self.endpointFromOutput(detail), ""])
                 } else {
-                    self.showAlert(title: "Could not set up remote MCP", detail: detail)
+                    self.callOnboarding("remoteResult", arguments: [false, "", detail])
                 }
             }
         }
@@ -377,7 +702,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
             try process.run()
             remoteSetupProcess = process
         } catch {
-            showAlert(title: "Could not start remote MCP setup", detail: error.localizedDescription)
+            callOnboarding("remoteResult", arguments: [false, "", error.localizedDescription])
+        }
+    }
+
+    func userContentController(
+        _ userContentController: WKUserContentController,
+        didReceive message: WKScriptMessage
+    ) {
+        guard showingOnboarding,
+              message.frameInfo.isMainFrame,
+              message.name == "penguin",
+              let body = message.body as? [String: Any],
+              let action = body["action"] as? String else { return }
+
+        switch action {
+        case "openFullDiskAccess":
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+                NSWorkspace.shared.open(url)
+            }
+        case "checkPermissions":
+            reportPermissions()
+        case "requestContacts":
+            requestContactsAccess()
+        case "checkWhatsApp":
+            beginWhatsAppPolling()
+        case "startWhatsApp":
+            startWhatsAppPairing()
+        case "setupRemote":
+            let profile = body["profile"] as? String ?? "read-only"
+            let tunnel = body["tunnel"] as? String ?? "tailscale"
+            guard profile == "read-only" || profile == "slashy" else {
+                callOnboarding("remoteResult", arguments: [false, "", "Unknown access profile."])
+                return
+            }
+            guard tunnel == "tailscale" || tunnel == "cloudflare-quick" else {
+                callOnboarding("remoteResult", arguments: [false, "", "Unknown public connection provider."])
+                return
+            }
+            runRemoteSetup(profile: profile, tunnel: tunnel)
+        case "remoteStatus":
+            reportRemoteStatus()
+        case "copyConnection":
+            copyRemoteConnection()
+        case "rotateToken":
+            rotateRemoteToken()
+        case "stopRemote":
+            stopRemoteAccess()
+        case "openSlashy":
+            if let url = URL(string: "https://app.slashy.com") {
+                NSWorkspace.shared.open(url)
+            }
+        case "openTailscale":
+            if let url = URL(string: "https://tailscale.com/download/mac") {
+                NSWorkspace.shared.open(url)
+            }
+        case "finish":
+            finishOnboarding()
+        default:
+            return
         }
     }
 
@@ -395,9 +778,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
             decisionHandler(.cancel)
             return
         }
-        let isLocal = url.host == "127.0.0.1" || url.host == "localhost" || url.scheme == "about"
-        if navigationAction.navigationType == .linkActivated && !isLocal {
-            NSWorkspace.shared.open(url)
+        if !isAllowedPenguinNavigationURL(url, resourceURL: Bundle.main.resourceURL) {
+            if navigationAction.navigationType == .linkActivated {
+                NSWorkspace.shared.open(url)
+            }
             decisionHandler(.cancel)
             return
         }
