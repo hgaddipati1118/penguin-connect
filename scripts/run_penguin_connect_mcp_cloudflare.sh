@@ -60,5 +60,6 @@ fi
 echo "Starting a temporary TryCloudflare endpoint for development." >&2
 echo "Use a named tunnel for a stable production hostname." >&2
 exec "$CLOUDFLARED_BIN" tunnel \
+  --protocol http2 \
   --url "http://127.0.0.1:$PORT" \
   --http-host-header "127.0.0.1:$PORT"
