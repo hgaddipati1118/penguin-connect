@@ -64,12 +64,15 @@ The setup assistant guides the user through:
 5. Select a stable Tailscale Funnel or a temporary Cloudflare Quick Tunnel.
 6. Paste the copied connection JSON into Slashy's MCP Settings.
 
-The app installs separate launch agents for the WhatsApp bridge and authenticated MCP origin.
-Cloudflare's temporary option has its own launch agent; stable Tailscale Funnel state is managed
-by the signed-in Tailscale app. All origin services bind to loopback. Independent bearer and
-daily-code secrets are generated on the Mac, stored in Keychain, and omitted from logs and
-launchd plists. A requested connection bundle combines the bearer with today's six-character
-code; the resulting wire credential expires at the next local midnight.
+The app installs separate launch agents for Penguin's local bridge, the WhatsApp bridge, and the
+authenticated MCP origin. The local agent starts Penguin's native executable in background mode,
+which directly owns the bridge process and keeps the one-time Full Disk Access grant associated
+with Penguin rather than a shell interpreter. Cloudflare's temporary option has its own launch
+agent; stable Tailscale Funnel state is managed by the signed-in Tailscale app. All origin
+services bind to loopback. Independent bearer and daily-code secrets are generated on the Mac,
+stored in Keychain, and omitted from logs and launchd plists. A requested connection bundle
+combines the bearer with today's six-character code; the resulting wire credential expires at
+the next local midnight.
 
 If a source-based installation already has a paired session under
 `~/whatsapp-mcp/whatsapp-bridge/store`, the packaged installer migrates only its session and
@@ -126,6 +129,8 @@ Before publishing, verify on a clean user account and both supported CPU archite
 - Gatekeeper accepts the downloaded, notarized app;
 - first-run runtime installation completes;
 - the local UI and MCP health endpoints listen only on `127.0.0.1`;
+- closing Penguin and logging out/in leave the local bridge available through its app-owned background agent;
+- exercising packaged Python entry points creates no `__pycache__` inside the signed app and leaves `codesign --deep --strict` valid;
 - WhatsApp pairing survives an app and Mac restart;
 - a missing bearer, missing daily code, wrong bearer, wrong daily code, or previous-day bundle receives HTTP 401;
 - Read Only lists no write tools;

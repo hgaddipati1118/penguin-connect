@@ -139,6 +139,12 @@ class StartupChecksTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.failures[0]["reason"], "imessage_db_unreadable")
 
+    def test_messages_permission_fix_names_packaged_and_source_identities(self):
+        fix = startup_checks._suggested_fix({"reason": "imessage_db_unreadable"})
+
+        self.assertIn("Penguin.app", fix)
+        self.assertIn("Terminal.app", fix)
+
 
 if __name__ == "__main__":
     unittest.main()

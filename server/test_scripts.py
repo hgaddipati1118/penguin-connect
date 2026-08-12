@@ -22,6 +22,60 @@ import penguin_connect_verify_contact_resolution
 
 
 class ScriptTests(unittest.TestCase):
+    def test_packaged_python_entrypoints_disable_bytecode_writes(self):
+        protected_entrypoints = (
+            ROOT_DIR / "scripts" / "bootstrap_packaged_runtime.sh",
+            ROOT_DIR / "scripts" / "run_penguin_connect_bridge.sh",
+            ROOT_DIR / "scripts" / "run_penguin_connect_persistent_bridge.sh",
+            ROOT_DIR / "scripts" / "install_launchd_penguin_connect_bridge.sh",
+            ROOT_DIR / "scripts" / "run_penguin_connect_remote_mcp.sh",
+            ROOT_DIR / "scripts" / "run_penguin_connect_mcp_cloudflare.sh",
+            ROOT_DIR / "scripts" / "install_launchd_remote_mcp.sh",
+            ROOT_DIR / "scripts" / "install_launchd_remote_tunnel.sh",
+            ROOT_DIR / "scripts" / "install_launchd_whatsapp_bridge.sh",
+        )
+        for entrypoint in protected_entrypoints:
+            with self.subTest(entrypoint=entrypoint.name):
+                self.assertIn(
+                    "PYTHONDONTWRITEBYTECODE",
+                    entrypoint.read_text(encoding="utf-8"),
+                )
+
+        app_source = (ROOT_DIR / "desktop" / "PenguinApp.swift").read_text(encoding="utf-8")
+        self.assertIn('environment["PYTHONDONTWRITEBYTECODE"] = "1"', app_source)
+
+    def test_persistent_bridge_launch_agent_uses_penguin_without_terminal(self):
+        installer = (
+            ROOT_DIR / "scripts" / "install_launchd_penguin_connect_bridge.sh"
+        ).read_text(encoding="utf-8")
+        runner = (
+            ROOT_DIR / "scripts" / "run_penguin_connect_persistent_bridge.sh"
+        ).read_text(encoding="utf-8")
+        app_source = (ROOT_DIR / "desktop" / "PenguinApp.swift").read_text(encoding="utf-8")
+
+        self.assertIn('"KeepAlive": True', installer)
+        self.assertIn('"AssociatedBundleIdentifiers"', installer)
+        self.assertIn('"--bridge-agent"', installer)
+        self.assertNotIn("/usr/bin/python3", installer)
+        self.assertNotIn("osascript", installer)
+        self.assertNotIn('application "Terminal"', installer)
+        self.assertIn("127.0.0.1", runner)
+        self.assertIn("--bridge-agent", app_source)
+
+    def test_packaged_app_reopens_permissions_when_full_disk_access_is_missing(self):
+        app_source = (ROOT_DIR / "desktop" / "PenguinApp.swift").read_text(encoding="utf-8")
+
+        self.assertIn("isPackagedRuntime && !hasFullDiskAccess()", app_source)
+        self.assertIn("showOnboarding(step: 1)", app_source)
+
+    def test_remote_mcp_launch_agent_forwards_local_api_configuration(self):
+        installer = (ROOT_DIR / "scripts" / "install_launchd_remote_mcp.sh").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('"PENGUIN_CONNECT_PORT"', installer)
+        self.assertIn('"PENGUIN_CONNECT_LOCAL_API_BASE"', installer)
+
     def test_resolve_local_api_base_prefers_explicit_base(self):
         base = penguin_connect_local_api.resolve_local_api_base(
             {

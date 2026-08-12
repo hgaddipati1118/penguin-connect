@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 
 LABEL="com.penguinconnect.remote-tunnel"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
@@ -63,6 +64,7 @@ payload = {
     "StandardOutPath": out_log,
     "StandardErrorPath": err_log,
     "EnvironmentVariables": {
+        "PYTHONDONTWRITEBYTECODE": "1",
         "PENGUIN_CONNECT_PYTHON_BIN": python_bin,
         "PENGUIN_CONNECT_CLOUDFLARED_BIN": cloudflared_bin,
     },

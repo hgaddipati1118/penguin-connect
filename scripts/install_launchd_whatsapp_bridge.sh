@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 
 LABEL="com.penguinconnect.whatsapp-bridge"
 LAUNCHD_DOMAIN="gui/$(id -u)"

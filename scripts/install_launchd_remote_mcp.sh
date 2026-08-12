@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 
 LABEL="com.penguinconnect.remote-mcp"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
@@ -48,14 +49,17 @@ payload = {
     "StandardOutPath": str(Path(log_dir) / "remote-mcp.out.log"),
     "StandardErrorPath": str(Path(log_dir) / "remote-mcp.err.log"),
     "EnvironmentVariables": {
+        "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONUNBUFFERED": "1",
         "PENGUIN_CONNECT_PYTHON_BIN": python_bin,
     },
 }
 for key in (
     "PENGUIN_CONNECT_DATA_DIR",
+    "PENGUIN_CONNECT_LOCAL_API_BASE",
     "PENGUIN_CONNECT_MCP_CONFIG_PATH",
     "PENGUIN_CONNECT_MCP_PORT",
+    "PENGUIN_CONNECT_PORT",
     "PENGUIN_CONNECT_WHATSAPP_API_URL",
     "PENGUIN_CONNECT_WHATSAPP_DB_PATH",
 ):

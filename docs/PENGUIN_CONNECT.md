@@ -165,6 +165,12 @@ contact creates and updates reuse that macOS grant without a dialog for each act
 requiring the MCP daily code and one-use confirmation. Contact payloads are sent to the helper
 over stdin so names and handles do not appear in process arguments.
 
+Remote setup installs the persistent local bridge agent before starting the MCP origin. This
+closes the app-window lifecycle gap: message and contact tools remain backed by the loopback API
+after Penguin's window closes and after the next login. The agent runs Penguin's native
+executable, not Terminal or a bare Python daemon, so the one-time Penguin Full Disk Access grant
+remains the responsible macOS identity.
+
 BlueBubbles integration is optional and is not installed by Penguin. It accepts only a loopback
 server URL and keeps the server password in Keychain. BlueBubbles documents that its Private API
 requires disabling System Integrity Protection; use it only if actual new iMessage group creation
@@ -426,11 +432,12 @@ Install login auto-start:
 ./scripts/install_launchd_penguin_connect_bridge.sh
 ```
 
-That command installs a launchd watchdog that runs at login and every 5 minutes. It only starts the bridge when nothing is listening on the configured local port.
+That command registers Penguin's native executable as a persistent background launch agent. It
+starts the loopback bridge without opening Terminal and keeps Penguin as the macOS privacy
+identity responsible for the child process. If another process already owns the configured
+port, the agent waits and never kills or replaces it.
 
-The watchdog is intentionally start-only. It never kills a running bridge, so Gmail rate-limit cooldowns or temporary health warnings do not trigger forced restarts.
-
-If you later change `PENGUIN_CONNECT_PORT`, rerun the installer so the watchdog uses the updated port.
+If you later change `PENGUIN_CONNECT_PORT`, rerun the installer so the background agent uses the updated port.
 
 ## Operational Commands
 

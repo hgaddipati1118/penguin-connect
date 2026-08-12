@@ -115,6 +115,38 @@ class PenguinConnectRemoteSetupTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     remote_setup.normalize_public_origin(value)
 
+    @patch.object(remote_setup, "copy_connection_bundle")
+    @patch.object(remote_setup, "save_endpoint_state")
+    @patch.object(remote_setup, "wait_for_tunnel_origin", return_value="https://synthetic.trycloudflare.com")
+    @patch.object(remote_setup, "endpoint_tunnel_kind", return_value="cloudflare-quick")
+    @patch.object(remote_setup, "_run_installer")
+    @patch.object(remote_setup, "ensure_daily_code_secret")
+    @patch.object(remote_setup, "ensure_token", return_value=("synthetic-token", True))
+    @patch.object(remote_setup, "save_remote_policy")
+    def test_setup_remote_starts_local_bridge_before_remote_services(
+        self,
+        _save_policy,
+        _token,
+        _daily_code,
+        run_installer,
+        _tunnel_kind,
+        _wait,
+        _save_endpoint,
+        _copy_bundle,
+    ):
+        with patch.object(remote_setup.sys, "platform", "darwin"):
+            remote_setup.setup_remote("slashy", "cloudflare-quick")
+
+        self.assertEqual(
+            [call.args[0] for call in run_installer.call_args_list],
+            [
+                "install_launchd_penguin_connect_bridge.sh",
+                "install_launchd_whatsapp_bridge.sh",
+                "install_launchd_remote_mcp.sh",
+                "install_launchd_remote_tunnel.sh",
+            ],
+        )
+
     @patch.object(remote_setup.subprocess, "run")
     @patch.object(remote_setup.os, "getuid", return_value=501)
     @patch.object(remote_setup, "endpoint_tunnel_kind", return_value="cloudflare-quick")

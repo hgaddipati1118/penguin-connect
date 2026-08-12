@@ -153,6 +153,11 @@ jobs:
           codesign --verify --deep --strict --verbose=2 dist/Penguin.app
           codesign -d --entitlements :- dist/Penguin.app | grep -q com.apple.security.automation.apple-events
           test -z "$(find dist/Penguin.app -type f \( -name '.env' -o -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' -o -name '*credentials*.json' -o -name '*token*.json' \) -print -quit)"
+          PYTHONDONTWRITEBYTECODE=1 python dist/Penguin.app/Contents/Resources/PenguinConnect/scripts/penguin_connect_mcp.py --help >/dev/null
+          PYTHONDONTWRITEBYTECODE=1 python dist/Penguin.app/Contents/Resources/PenguinConnect/scripts/penguin_connect_remote_setup.py --help >/dev/null
+          PYTHONDONTWRITEBYTECODE=1 python dist/Penguin.app/Contents/Resources/PenguinConnect/scripts/penguin_connect_bluebubbles.py --help >/dev/null
+          test -z "$(find dist/Penguin.app -type d -name '__pycache__' -print -quit)"
+          codesign --verify --deep --strict --verbose=2 dist/Penguin.app
 
       - name: Notarize signed app
         if: env.APPLE_DEVELOPER_ID_P12_BASE64 != ''

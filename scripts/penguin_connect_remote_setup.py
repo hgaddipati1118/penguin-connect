@@ -301,7 +301,7 @@ def _run_installer(name: str) -> None:
     completed = subprocess.run(
         ["/bin/bash", str(path)],
         cwd=ROOT_DIR,
-        timeout=90,
+        timeout=240,
         check=False,
     )
     if completed.returncode != 0:
@@ -333,6 +333,7 @@ def setup_remote(profile_name: str, tunnel: str) -> str:
     save_remote_policy(policy)
     token, _created = ensure_token()
     ensure_daily_code_secret()
+    _run_installer("install_launchd_penguin_connect_bridge.sh")
     _run_installer("install_launchd_whatsapp_bridge.sh")
     _run_installer("install_launchd_remote_mcp.sh")
     if tunnel == "tailscale":

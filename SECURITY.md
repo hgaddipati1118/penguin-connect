@@ -26,6 +26,12 @@ an HTTPS tunnel and require both the bearer and rotating-code secrets stored in 
 Penguin FastAPI port, Apple Messages data, SQLite files, or the WhatsApp bridge API directly to
 the Internet.
 
+The persistent local bridge launch agent must execute Penguin's native app binary, associate
+the job with `com.penguinconnect.desktop`, and let that process directly own its child bridge.
+Do not replace it with a bare shell/Python daemon that asks users to grant an interpreter Full
+Disk Access. The agent must bind the bridge to loopback, must not evict an existing listener,
+and must not contain MCP, BlueBubbles, or pairing secrets in its plist.
+
 The remote MCP endpoint must expose only the scopes and providers in its validated built-in
 policy. An invalid or missing policy fails closed to the legacy WhatsApp-only profile. The
 expanded `read-only` and `slashy` profiles may expose iMessage, WhatsApp, and Contacts tools,

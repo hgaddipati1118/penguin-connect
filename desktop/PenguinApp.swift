@@ -1,8 +1,85 @@
 import Cocoa
 import Contacts
+import Darwin
 import WebKit
 
 private let defaultPort = 9000
+
+private func resolvedRepoURL() -> URL {
+    let configured = Bundle.main.object(forInfoDictionaryKey: "PenguinRepoPath") as? String ?? ""
+    if configured == "__BUNDLED__", let resources = Bundle.main.resourceURL {
+        return resources.appendingPathComponent("PenguinConnect", isDirectory: true)
+    }
+    return URL(fileURLWithPath: configured, isDirectory: true)
+}
+
+private func penguinProcessEnvironment(repoURL: URL) -> [String: String] {
+    var environment = ProcessInfo.processInfo.environment
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["PENGUIN_CONNECT_APP_EXECUTABLE"] = Bundle.main.executableURL?.path
+    let runtimeDirectory = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/PenguinConnect/runtime", isDirectory: true)
+    let packagedPython = runtimeDirectory.appendingPathComponent("venv/bin/python")
+    let sourcePython = repoURL.appendingPathComponent("server/venv/bin/python")
+    environment["PENGUIN_CONNECT_PYTHON_BIN"] = FileManager.default.isExecutableFile(atPath: packagedPython.path)
+        ? packagedPython.path
+        : sourcePython.path
+    let binURL = repoURL.appendingPathComponent("bin", isDirectory: true)
+    let cloudflared = binURL.appendingPathComponent("cloudflared")
+    let whatsapp = binURL.appendingPathComponent("whatsapp-bridge")
+    if FileManager.default.isExecutableFile(atPath: cloudflared.path) {
+        environment["PENGUIN_CONNECT_CLOUDFLARED_BIN"] = cloudflared.path
+    }
+    if FileManager.default.isExecutableFile(atPath: whatsapp.path) {
+        let bridgeDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/PenguinConnect/whatsapp-bridge")
+        environment["PENGUIN_CONNECT_WHATSAPP_BRIDGE_BIN"] = whatsapp.path
+        environment["PENGUIN_CONNECT_WHATSAPP_BRIDGE_DIR"] = bridgeDirectory.path
+        environment["PENGUIN_CONNECT_WHATSAPP_DB_PATH"] = bridgeDirectory
+            .appendingPathComponent("store/messages.db").path
+    }
+    let contactsHelper = Bundle.main.bundleURL
+        .appendingPathComponent("Contents/Helpers/PenguinContactsHelper")
+    if FileManager.default.isExecutableFile(atPath: contactsHelper.path) {
+        environment["PENGUIN_CONNECT_CONTACTS_HELPER_BIN"] = contactsHelper.path
+    }
+    return environment
+}
+
+private func runBackgroundBridgeAgent() -> Never {
+    let repoURL = resolvedRepoURL()
+    let runner = repoURL.appendingPathComponent("scripts/run_penguin_connect_persistent_bridge.sh")
+    guard FileManager.default.isExecutableFile(atPath: runner.path) else {
+        fputs("Penguin's persistent bridge runner is missing.\n", stderr)
+        exit(1)
+    }
+
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/bash")
+    process.arguments = [runner.path]
+    process.currentDirectoryURL = repoURL
+    process.environment = penguinProcessEnvironment(repoURL: repoURL)
+
+    signal(SIGTERM, SIG_IGN)
+    signal(SIGINT, SIG_IGN)
+    let terminationSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
+    let interruptSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
+    terminationSource.setEventHandler { if process.isRunning { process.terminate() } }
+    interruptSource.setEventHandler { if process.isRunning { process.interrupt() } }
+    terminationSource.resume()
+    interruptSource.resume()
+
+    do {
+        try process.run()
+        process.waitUntilExit()
+        terminationSource.cancel()
+        interruptSource.cancel()
+        exit(process.terminationStatus)
+    } catch {
+        fputs("Penguin could not start its background bridge: \(error.localizedDescription)\n", stderr)
+        exit(1)
+    }
+}
 
 private func repoPort(at repoURL: URL) -> Int {
     if let value = ProcessInfo.processInfo.environment["PENGUIN_CONNECT_PORT"],
@@ -61,18 +138,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     private var pairingPollGeneration = 0
     private var showingOnboarding = false
 
-    private lazy var repoURL: URL = {
-        let configured = Bundle.main.object(forInfoDictionaryKey: "PenguinRepoPath") as? String ?? ""
-        if configured == "__BUNDLED__",
-           let resources = Bundle.main.resourceURL {
-            return resources.appendingPathComponent("PenguinConnect", isDirectory: true)
-        }
-        return URL(fileURLWithPath: configured, isDirectory: true)
-    }()
+    private lazy var repoURL = resolvedRepoURL()
 
     private lazy var port = repoPort(at: repoURL)
     private lazy var isPackagedRuntime = FileManager.default.isExecutableFile(
-        atPath: repoURL.appendingPathComponent("scripts/bootstrap_packaged_runtime.sh").path
+        atPath: repoURL.appendingPathComponent("bin/uv").path
     )
     private lazy var appSupportURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/PenguinConnect", isDirectory: true)
@@ -90,6 +160,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         configureWindow()
         if isPackagedRuntime && !FileManager.default.fileExists(atPath: onboardingMarkerURL.path) {
             showOnboarding(step: 0)
+        } else if isPackagedRuntime && !hasFullDiskAccess() {
+            showOnboarding(step: 1)
         } else {
             beginBridgeCheck()
         }
@@ -295,26 +367,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     }
 
     private func remoteEnvironment() -> [String: String] {
-        var environment = ProcessInfo.processInfo.environment
-        environment["PENGUIN_CONNECT_PYTHON_BIN"] = runtimePythonURL.path
-        let binURL = repoURL.appendingPathComponent("bin", isDirectory: true)
-        let cloudflared = binURL.appendingPathComponent("cloudflared")
-        let whatsapp = binURL.appendingPathComponent("whatsapp-bridge")
-        if FileManager.default.isExecutableFile(atPath: cloudflared.path) {
-            environment["PENGUIN_CONNECT_CLOUDFLARED_BIN"] = cloudflared.path
-        }
-        if FileManager.default.isExecutableFile(atPath: whatsapp.path) {
-            environment["PENGUIN_CONNECT_WHATSAPP_BRIDGE_BIN"] = whatsapp.path
-            let bridgeDirectory = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Application Support/PenguinConnect/whatsapp-bridge")
-            environment["PENGUIN_CONNECT_WHATSAPP_BRIDGE_DIR"] = bridgeDirectory.path
-            environment["PENGUIN_CONNECT_WHATSAPP_DB_PATH"] = bridgeDirectory
-                .appendingPathComponent("store/messages.db").path
-        }
-        if FileManager.default.isExecutableFile(atPath: contactsHelperURL.path) {
-            environment["PENGUIN_CONNECT_CONTACTS_HELPER_BIN"] = contactsHelperURL.path
-        }
-        return environment
+        penguinProcessEnvironment(repoURL: repoURL)
     }
 
     private func showAlert(title: String, detail: String) {
@@ -927,6 +980,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 @main
 struct PenguinApplication {
     static func main() {
+        if CommandLine.arguments.dropFirst().contains("--bridge-agent") {
+            runBackgroundBridgeAgent()
+        }
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate

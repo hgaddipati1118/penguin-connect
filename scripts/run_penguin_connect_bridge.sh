@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 

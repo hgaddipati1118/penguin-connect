@@ -147,7 +147,8 @@ def _suggested_fix(failure: dict[str, Any]) -> str:
     reason = failure.get("reason")
     if reason in {"imessage_db_missing", "imessage_db_unreadable"}:
         return (
-            "Grant Full Disk Access to Terminal.app and confirm "
+            "Grant Full Disk Access to Penguin.app for a packaged install, or Terminal.app "
+            "for source development, and confirm "
             f"{APPLE_MESSAGES_DB} is present and readable."
         )
     if reason == "gmail_not_connected":

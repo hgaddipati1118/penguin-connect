@@ -41,7 +41,8 @@ flowchart LR
 - Primary operator surfaces: **local messaging workspace**, **power console**, **local CLI**, and **MCP server**
 - Optional legacy bridge surface: **Gmail aliases**
 - Additional adapter available: **Telegram**
-- Runtime: macOS 13+, Python 3.11+, `Terminal.app` with Full Disk Access
+- Runtime: macOS 13+; the packaged app installs its private Python runtime. Source-only
+  development requires Python 3.11+ and `Terminal.app` with Full Disk Access.
 
 Want to help add a new messaging adapter or improve the bridge? Reach out at [harsha@slashy.com](mailto:harsha@slashy.com) or open an issue.
 
@@ -125,7 +126,10 @@ moving the checkout. Grant Full Disk Access to Penguin when the app starts the b
 itself, or to Terminal when you run the bridge script there. The packaged app asks for
 Contacts access once during setup through the same native helper used for later writes; it does
 not request approval for every contact action. An ad-hoc rebuild may look like a new app identity
-to macOS and require that one-time grant again.
+to macOS and require that one-time grant again. Enabling remote MCP also registers Penguin's
+native executable as a background item. It keeps the loopback bridge available after the window
+closes and across login without opening Terminal; macOS may show the normal one-time Background
+Items notification.
 
 ## Codex / MCP
 
@@ -377,13 +381,17 @@ Production-style preflight:
 ./scripts/penguin_connect_doctor.py
 ```
 
-Install login auto-start plus a start-only watchdog:
+Install login auto-start for the loopback bridge:
 
 ```bash
 ./scripts/install_launchd_penguin_connect_bridge.sh
 ```
 
-That installer now sets up a launchd watchdog that runs at login and every 5 minutes, starting the local server in `Terminal.app` only when nothing is listening on the configured local port. It never kills a running bridge, so temporary health warnings do not trigger restarts. If you later change `PENGUIN_CONNECT_PORT`, rerun the installer so the watchdog follows the new port.
+That installer registers Penguin's native app executable as a persistent background launch
+agent. The app directly owns the bridge process so its one-time Full Disk Access grant remains
+the relevant macOS privacy identity. It binds only to `127.0.0.1`, never opens Terminal, and
+waits rather than killing anything already listening on the configured port. If you later
+change `PENGUIN_CONNECT_PORT`, rerun the installer so the launch agent follows the new port.
 
 Quote-parsing audit:
 
