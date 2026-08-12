@@ -1099,7 +1099,13 @@ def _as_applescript_text(value: str) -> str:
 
 def _run_osascript(script: str, *, timeout: float = 30.0) -> str:
     try:
-        result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(
+            ["osascript", "-"],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=501, detail="osascript_unavailable") from exc
     except subprocess.TimeoutExpired as exc:
@@ -1221,6 +1227,48 @@ def _build_contact_update_script(
     return "\n".join(lines)
 
 
+def _contacts_helper_path() -> Path | None:
+    configured = (os.environ.get("PENGUIN_CONNECT_CONTACTS_HELPER_BIN") or "").strip()
+    candidates = [Path(configured).expanduser()] if configured else []
+    candidates.append(Path(__file__).resolve().parent.parent / "bin" / "PenguinContactsHelper")
+    for candidate in candidates:
+        try:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def _run_contacts_helper(helper: Path, payload: dict[str, object], *, timeout: float = 30.0) -> str:
+    try:
+        result = subprocess.run(
+            [str(helper), "--upsert"],
+            input=json.dumps(payload, ensure_ascii=False),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=501, detail="contacts_helper_unavailable") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="contacts_helper_timeout") from exc
+    try:
+        response = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=502, detail="contacts_helper_invalid_response") from exc
+    if not isinstance(response, dict):
+        raise HTTPException(status_code=502, detail="contacts_helper_invalid_response")
+    if result.returncode != 0 or not response.get("success"):
+        error = str(response.get("error") or "contacts_write_failed")
+        status = 403 if error == "contacts_permission_required" else 404 if error == "contact_to_update_not_found" else 409 if error == "ambiguous_contact_match" else 400
+        raise HTTPException(status_code=status, detail=error)
+    contact_id = str(response.get("contact_id") or "").strip()
+    if not contact_id:
+        raise HTTPException(status_code=502, detail="contacts_helper_invalid_response")
+    return contact_id
+
+
 def _create_contact(req: PenguinConnectContactCreateRequest) -> str:
     first_name = _clean_text(req.first_name, max_chars=160)
     last_name = _clean_text(req.last_name, max_chars=160)
@@ -1234,6 +1282,22 @@ def _create_contact(req: PenguinConnectContactCreateRequest) -> str:
         raise HTTPException(status_code=400, detail="contact_requires_identity")
 
     match_handle = _clean_text(req.match_handle, max_chars=240)
+    helper = _contacts_helper_path()
+    if helper is not None:
+        return _run_contacts_helper(
+            helper,
+            {
+                "match_handle": match_handle,
+                "first_name": first_name,
+                "last_name": last_name,
+                "organization": organization,
+                "phones": phones,
+                "emails": emails,
+                "phone_label": phone_label,
+                "email_label": email_label,
+            },
+            timeout=30.0,
+        )
     if match_handle:
         script = _build_contact_update_script(
             match_handle=match_handle,

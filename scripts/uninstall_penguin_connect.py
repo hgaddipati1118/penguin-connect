@@ -23,9 +23,14 @@ KEYCHAIN_ITEMS = (
         "penguin-connect-remote-mcp-daily-code",
         "com.penguinconnect.remote-mcp.daily-code-secret",
     ),
+    (
+        "penguin-connect-bluebubbles",
+        "com.penguinconnect.bluebubbles.server-password",
+    ),
 )
 APP_SUPPORT = Path.home() / "Library" / "Application Support" / "PenguinConnect"
 ENDPOINT_STATE = APP_SUPPORT / "remote-endpoint.json"
+IMESSAGE_BACKEND_CONFIG = APP_SUPPORT / "imessage-backend.json"
 LOCAL_DATA = Path.home() / "penguinconnect-local-bridge-data"
 TAILSCALE_PORT = 10000
 
@@ -66,6 +71,13 @@ def find_tailscale() -> Path | None:
     )
 
 
+def remove_imessage_backend_config() -> None:
+    try:
+        IMESSAGE_BACKEND_CONFIG.unlink()
+    except FileNotFoundError:
+        pass
+
+
 def stop_background_access() -> None:
     if endpoint_uses_tailscale() and (tailscale := find_tailscale()) is not None:
         run_quiet(
@@ -99,6 +111,7 @@ def stop_background_access() -> None:
         )
     if ENDPOINT_STATE.is_file():
         ENDPOINT_STATE.unlink()
+    remove_imessage_backend_config()
 
 
 def delete_local_data() -> None:

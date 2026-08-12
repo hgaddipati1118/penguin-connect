@@ -344,6 +344,20 @@ class ScriptTests(unittest.TestCase):
         self.assertIn('make new email at end of emails of newPerson', script)
         self.assertIn('value:"ava@example.com"', script)
 
+    def test_tool_contact_applescript_uses_stdin_to_keep_contact_data_out_of_argv(self):
+        completed = mock.Mock(returncode=0, stdout="synthetic-person\n", stderr="")
+        script = 'tell application "Contacts" to return "synthetic-person"'
+        with mock.patch.object(
+            penguin_connect_tool.subprocess,
+            "run",
+            return_value=completed,
+        ) as run:
+            result = penguin_connect_tool._run_osascript(script)
+
+        self.assertEqual(result, "synthetic-person")
+        self.assertEqual(run.call_args.args[0], ["osascript", "-"])
+        self.assertEqual(run.call_args.kwargs["input"], script)
+
     def test_tool_group_draft_lists_participants_and_message(self):
         draft = penguin_connect_tool._build_group_draft(
             ["+14155550101", "ava@example.com"],

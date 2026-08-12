@@ -84,6 +84,13 @@ if [ "$(uname -s)" = "Darwin" ] && command -v swiftc >/dev/null 2>&1; then
     -o "$DESKTOP_CHECK_DIR/PenguinDesktopSupportTests"
   "$DESKTOP_CHECK_DIR/PenguinDesktopSupportTests"
   swiftc \
+    -D PENGUIN_CONTACTS_HELPER_TESTING \
+    -framework Contacts \
+    "$ROOT_DIR/desktop/PenguinContactsHelper.swift" \
+    "$ROOT_DIR/desktop/PenguinContactsHelperTests.swift" \
+    -o "$DESKTOP_CHECK_DIR/PenguinContactsHelperTests"
+  "$DESKTOP_CHECK_DIR/PenguinContactsHelperTests"
+  swiftc \
     -typecheck \
     -parse-as-library \
     -framework Cocoa \

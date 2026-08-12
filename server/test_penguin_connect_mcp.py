@@ -688,7 +688,7 @@ class PenguinConnectRemoteMcpTests(unittest.IsolatedAsyncioTestCase):
             attachment_paths=None,
         )
 
-    def test_imessage_group_create_stages_multi_recipient_draft(self):
+    def test_imessage_group_create_stages_multi_recipient_draft_without_enhanced_backend(self):
         confirmations = penguin_connect_mcp.RemoteConfirmationStore()
         policy = penguin_connect_mcp.policy_for_profile("slashy")
         arguments = {
@@ -699,6 +699,10 @@ class PenguinConnectRemoteMcpTests(unittest.IsolatedAsyncioTestCase):
             "providers": policy.providers,
         }
         with mock.patch.object(
+            penguin_connect_mcp,
+            "load_bluebubbles_client",
+            return_value=None,
+        ), mock.patch.object(
             penguin_connect_mcp,
             "_api_json",
             return_value={"success": True},
@@ -719,6 +723,87 @@ class PenguinConnectRemoteMcpTests(unittest.IsolatedAsyncioTestCase):
         request = api.call_args.kwargs["payload"]
         self.assertEqual(request["participants"], ["15555550123", "synthetic@example.com"])
         self.assertEqual(request["message"], "Synthetic message")
+
+    def test_imessage_group_create_uses_configured_loopback_bluebubbles_backend(self):
+        confirmations = penguin_connect_mcp.RemoteConfirmationStore()
+        policy = penguin_connect_mcp.policy_for_profile("slashy")
+        client = mock.Mock()
+        client.create_group.return_value = {
+            "group_id": "iMessage;+;synthetic-group",
+            "name_applied": True,
+            "first_message_sent": True,
+        }
+        arguments = {
+            "provider": "imessage",
+            "participants": ["+15555550123", "synthetic@example.com"],
+            "name": "Synthetic group",
+            "first_message": "Synthetic message",
+            "providers": policy.providers,
+        }
+        with mock.patch.object(
+            penguin_connect_mcp,
+            "load_bluebubbles_client",
+            return_value=client,
+        ), mock.patch.object(penguin_connect_mcp, "_api_json") as draft_api:
+            preview = penguin_connect_mcp.remote_create_group_chat_data(
+                confirmations,
+                **arguments,
+            )
+            created = penguin_connect_mcp.remote_create_group_chat_data(
+                confirmations,
+                confirmation_token=preview["confirmation_token"],
+                **arguments,
+            )
+
+        self.assertEqual(preview["preview"]["action"], "create_group")
+        self.assertEqual(preview["preview"]["imessage_backend"], "bluebubbles_private_api")
+        self.assertFalse(preview["preview"]["imessage_requires_manual_send"])
+        self.assertTrue(created["success"])
+        self.assertTrue(created["created"])
+        self.assertEqual(created["group_id"], "iMessage;+;synthetic-group")
+        self.assertEqual(created["backend"], "bluebubbles_private_api")
+        self.assertTrue(created["first_message_sent"])
+        self.assertTrue(created["name_applied"])
+        client.create_group.assert_called_once_with(
+            ["15555550123", "synthetic@example.com"],
+            first_message="Synthetic message",
+            name="Synthetic group",
+        )
+        draft_api.assert_not_called()
+
+    def test_imessage_group_create_fails_closed_when_configured_backend_is_unavailable(self):
+        confirmations = penguin_connect_mcp.RemoteConfirmationStore()
+        policy = penguin_connect_mcp.policy_for_profile("slashy")
+        client = mock.Mock()
+        client.create_group.side_effect = penguin_connect_mcp.BlueBubblesError(
+            "BlueBubbles is unavailable"
+        )
+        arguments = {
+            "provider": "imessage",
+            "participants": ["+15555550123", "synthetic@example.com"],
+            "name": "Synthetic group",
+            "first_message": "Synthetic message",
+            "providers": policy.providers,
+        }
+        with mock.patch.object(
+            penguin_connect_mcp,
+            "load_bluebubbles_client",
+            return_value=client,
+        ), mock.patch.object(penguin_connect_mcp, "_api_json") as draft_api:
+            preview = penguin_connect_mcp.remote_create_group_chat_data(
+                confirmations,
+                **arguments,
+            )
+            failed = penguin_connect_mcp.remote_create_group_chat_data(
+                confirmations,
+                confirmation_token=preview["confirmation_token"],
+                **arguments,
+            )
+
+        self.assertFalse(failed["success"])
+        self.assertEqual(failed["error"], "imessage_group_create_failed")
+        self.assertEqual(failed["backend"], "bluebubbles_private_api")
+        draft_api.assert_not_called()
 
     def test_remote_server_rejects_non_loopback_bind(self):
         with self.assertRaisesRegex(ValueError, "loopback"):

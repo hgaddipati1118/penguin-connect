@@ -40,9 +40,25 @@ credentials fail, and online code guesses must be rate limited. Every remote wri
 require a short-lived one-use confirmation bound to the exact request. That confirmation
 protects payload integrity but is not a second human approval: entering today's code grants the
 configured profile for that day. Existing conversation sends must resolve an exact allowed
-conversation. A new iMessage destination or group must be staged for review rather than sent
-through a guessed route. WhatsApp group creation must accept only exact unique phone numbers or
+conversation. A new one-person iMessage destination must be staged for review rather than sent
+through a guessed route. An iMessage group is staged by default; actual creation is permitted
+only through an explicitly configured loopback BlueBubbles Private API backend, with exact
+participants, a non-empty first message, and the backend identity included in the one-use
+confirmation. If that backend is unavailable at confirmation time, fail closed rather than
+falling back to a draft. WhatsApp group creation must accept only exact unique phone numbers or
 user JIDs and must remain behind the loopback-only bridge.
+
+The optional BlueBubbles origin must resolve directly to loopback and must never contain URL
+credentials, query parameters, or fragments. Store its password in macOS Keychain and pass it to
+helpers over stdin, never argv or environment variables. Never expose BlueBubbles through
+Penguin's tunnel. BlueBubbles Private API requires disabling SIP and injecting into Messages;
+Penguin must disclose that reduced Mac protection and must never disable those protections or
+install BlueBubbles automatically.
+
+Packaged contact writes must use Penguin's native Contacts helper. Authorize that exact helper
+once during local setup, send contact payloads over stdin, and never put names, phone numbers, or
+email addresses in process arguments. Remote contact writes still require the daily code and an
+exact one-use confirmation; the macOS permission is not a per-action approval gate.
 
 Treat the remote MCP bearer and daily-code derivation secret as private message and contact read
 credentials. Never put either in `.env`, launchd plists, commits, URLs, screenshots, or logs.

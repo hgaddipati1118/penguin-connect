@@ -614,7 +614,13 @@ def _build_contact_create_script(
 
 
 def _run_osascript(script: str, *, timeout: float = 30.0) -> str:
-    result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=timeout)
+    result = subprocess.run(
+        ["osascript", "-"],
+        input=script,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
     if result.returncode != 0:
         raise ToolError((result.stderr or "osascript failed").strip())
     return (result.stdout or "").strip()

@@ -3527,9 +3527,17 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(response.json()["contacts_count"], 2)
         mock_refresh.assert_called_once_with()
 
-    def test_contacts_create_endpoint_runs_osascript_and_refreshes_cache(self):
-        completed = subprocess.CompletedProcess(["osascript"], 0, stdout="person-123\n", stderr="")
-        with mock.patch("app.subprocess.run", return_value=completed) as mock_run, mock.patch(
+    def test_contacts_create_endpoint_uses_native_helper_without_putting_pii_in_argv(self):
+        helper_path = Path("/synthetic/PenguinContactsHelper")
+        completed = subprocess.CompletedProcess(
+            [str(helper_path), "--upsert"],
+            0,
+            stdout='{"success":true,"contact_id":"person-123"}\n',
+            stderr="",
+        )
+        with mock.patch("app._contacts_helper_path", return_value=helper_path), mock.patch(
+            "app.subprocess.run", return_value=completed
+        ) as mock_run, mock.patch(
             "app.refresh_contacts_now",
             return_value={"success": True, "contacts_count": 3, "display_names_updated": 0},
         ) as mock_refresh, TestClient(app_module.app) as client:
@@ -3551,10 +3559,14 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(body["contact_id"], "person-123")
         self.assertEqual(body["refresh"]["contacts_count"], 3)
         mock_refresh.assert_called_once_with()
-        script = mock_run.call_args.args[0][2]
-        self.assertIn('first name:"Jordan"', script)
-        self.assertIn('value:"+1 (415) 555-0100"', script)
-        self.assertIn('value:"jordan@example.test"', script)
+        self.assertEqual(mock_run.call_args.args[0], [str(helper_path), "--upsert"])
+        command_text = " ".join(mock_run.call_args.args[0])
+        self.assertNotIn("Jordan", command_text)
+        self.assertNotIn("415", command_text)
+        helper_payload = json.loads(mock_run.call_args.kwargs["input"])
+        self.assertEqual(helper_payload["first_name"], "Jordan")
+        self.assertEqual(helper_payload["phones"], ["+1 (415) 555-0100"])
+        self.assertEqual(helper_payload["emails"], ["jordan@example.test"])
 
     def test_messages_draft_endpoint_copies_and_opens_messages(self):
         with mock.patch("app._copy_to_clipboard") as mock_copy, mock.patch("app._open_messages_app") as mock_open, TestClient(

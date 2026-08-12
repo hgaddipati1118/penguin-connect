@@ -1,7 +1,7 @@
 # Packaging and distribution
 
-Penguin's release build is a macOS app bundle containing the local FastAPI source, `uv`,
-`cloudflared`, and the loopback-only WhatsApp Go bridge. It does not contain a bearer token,
+Penguin's release build is a macOS app bundle containing the local FastAPI source, its native
+Contacts helper, `uv`, `cloudflared`, and the loopback-only WhatsApp Go bridge. It does not contain a bearer token,
 tunnel account credential, message database, contact data, pairing QR, or WhatsApp session.
 
 ## Build a release candidate
@@ -13,7 +13,8 @@ PENGUIN_CONNECT_WHATSAPP_BRIDGE_BIN=/absolute/path/to/whatsapp-bridge \
   ./scripts/build_desktop_app.sh --release
 ```
 
-The output is `dist/Penguin.app`. The builder verifies that all three helper executables exist,
+The output is `dist/Penguin.app`. The builder verifies that the three supplied runtime
+executables exist, compiles the native Contacts helper,
 copies source without the developer virtualenv or tests, and ad-hoc signs by default. An ad-hoc
 build is only for local verification.
 
@@ -26,8 +27,9 @@ PENGUIN_CONNECT_WHATSAPP_BRIDGE_BIN=/absolute/path/to/whatsapp-bridge \
   ./scripts/build_desktop_app.sh --release
 ```
 
-Set `PENGUIN_CONNECT_BUILD_ARCHS="arm64 x86_64"` only when all three supplied helpers are
-universal. The builder rejects a helper that is missing a requested architecture. Do not
+Set `PENGUIN_CONNECT_BUILD_ARCHS="arm64 x86_64"` only when all three supplied runtime helpers are
+universal. The builder also compiles the Contacts helper for both targets and rejects a helper
+that is missing a requested architecture. Do not
 distribute a developer's WhatsApp store or `.env` alongside the app.
 
 The `Release Penguin` GitHub workflow is the canonical public build. It pins and verifies the
@@ -55,7 +57,7 @@ WhatsApp session data, endpoint metadata, and logs live outside the app bundle.
 The setup assistant guides the user through:
 
 1. Grant Penguin Full Disk Access so it can read the local Apple Messages database.
-2. Optionally grant Contacts access.
+2. Grant the packaged native helper Contacts access once if contact search or updates are wanted.
 3. Scan an in-app, loopback-only WhatsApp QR from WhatsApp's Linked Devices screen. Pairing
    material is not returned by the status API, cached by the web view, or written to logs.
 4. Select Read Only (the default) or Full Access.
@@ -129,10 +131,13 @@ Before publishing, verify on a clean user account and both supported CPU archite
 - Read Only lists no write tools;
 - every MCP action requires today's six-character code in addition to the install bearer;
 - Full Access requires exact one-use confirmation for every write, without opening a Mac dialog;
+- the packaged native Contacts helper asks once during setup and later creates/updates contacts without per-action Mac dialogs;
 - WhatsApp group creation accepts only exact unique phone numbers or user JIDs;
-- iMessage group creation stages an addressed draft and does not silently send;
+- iMessage group creation stages an addressed draft when no enhanced backend is configured;
+- optional BlueBubbles setup accepts only loopback, keeps its password out of argv/config/logs, and creates a group only after confirmation with a non-empty first message;
+- a configured BlueBubbles backend that disappears between preview and confirmation fails closed;
 - unknown providers, local attachment paths, and local-only MCP tools cannot be retrieved;
 - rotating the Keychain bearer revokes the old Slashy connection;
 - Tailscale Funnel restart preserves the public URL;
 - stopping remote access survives logout/login until setup explicitly re-enables it;
-- the default uninstaller revokes both Keychain secrets without deleting local session data.
+- the default uninstaller revokes the MCP and optional BlueBubbles Keychain secrets without deleting local session data.

@@ -262,6 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
         process.arguments = [runner.path]
         process.currentDirectoryURL = repoURL
+        process.environment = remoteEnvironment()
         let nullHandle = FileHandle.nullDevice
         process.standardOutput = nullHandle
         process.standardError = nullHandle
@@ -288,6 +289,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         return repoURL.appendingPathComponent("server/venv/bin/python")
     }
 
+    private var contactsHelperURL: URL {
+        Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Helpers/PenguinContactsHelper")
+    }
+
     private func remoteEnvironment() -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
         environment["PENGUIN_CONNECT_PYTHON_BIN"] = runtimePythonURL.path
@@ -304,6 +310,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             environment["PENGUIN_CONNECT_WHATSAPP_BRIDGE_DIR"] = bridgeDirectory.path
             environment["PENGUIN_CONNECT_WHATSAPP_DB_PATH"] = bridgeDirectory
                 .appendingPathComponent("store/messages.db").path
+        }
+        if FileManager.default.isExecutableFile(atPath: contactsHelperURL.path) {
+            environment["PENGUIN_CONNECT_CONTACTS_HELPER_BIN"] = contactsHelperURL.path
         }
         return environment
     }
@@ -376,6 +385,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     }
 
     private func reportPermissions() {
+        let diskGranted = hasFullDiskAccess()
+        guard FileManager.default.isExecutableFile(atPath: contactsHelperURL.path) else {
+            reportAppContactsPermission(diskGranted: diskGranted)
+            return
+        }
+        runProcess(executable: contactsHelperURL, arguments: ["--status"]) { [weak self] ok, output in
+            guard let self else { return }
+            let state = self.contactsPermissionState(from: output)
+            self.callOnboarding("permissions", arguments: [diskGranted, ok, state])
+        }
+    }
+
+    private func contactsPermissionState(from output: String) -> String {
+        guard let data = output.data(using: .utf8),
+              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return "restricted"
+        }
+        return payload["status"] as? String ?? ((payload["authorized"] as? Bool) == true ? "authorized" : "restricted")
+    }
+
+    private func reportAppContactsPermission(diskGranted: Bool) {
         let status = CNContactStore.authorizationStatus(for: .contacts)
         let state: String
         switch status {
@@ -390,10 +420,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         @unknown default:
             state = "restricted"
         }
-        callOnboarding("permissions", arguments: [hasFullDiskAccess(), status == .authorized, state])
+        callOnboarding("permissions", arguments: [diskGranted, status == .authorized, state])
     }
 
     private func requestContactsAccess() {
+        if FileManager.default.isExecutableFile(atPath: contactsHelperURL.path) {
+            runProcess(executable: contactsHelperURL, arguments: ["--status"]) { [weak self] ok, output in
+                guard let self else { return }
+                let state = self.contactsPermissionState(from: output)
+                if !ok && (state == "denied" || state == "restricted" || state == "limited") {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts") {
+                        NSWorkspace.shared.open(url)
+                    }
+                    return
+                }
+                self.runProcess(executable: self.contactsHelperURL, arguments: ["--authorize"]) { [weak self] _, _ in
+                    self?.reportPermissions()
+                }
+            }
+            return
+        }
         let status = CNContactStore.authorizationStatus(for: .contacts)
         if status == .denied || status == .restricted {
             if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts") {
@@ -502,16 +548,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         executable: URL,
         arguments: [String],
         environment: [String: String]? = nil,
+        standardInput: Data? = nil,
         completion: @escaping (Bool, String) -> Void
     ) {
         let process = Process()
         let output = Pipe()
+        let input = standardInput == nil ? nil : Pipe()
         process.executableURL = executable
         process.arguments = arguments
         process.currentDirectoryURL = repoURL
         process.environment = environment
         process.standardOutput = output
         process.standardError = output
+        process.standardInput = input
         process.terminationHandler = { finished in
             let data = output.fileHandleForReading.readDataToEndOfFile()
             let detail = String(data: data, encoding: .utf8)?
@@ -522,7 +571,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         }
         do {
             try process.run()
+            if let standardInput, let input {
+                input.fileHandleForWriting.write(standardInput)
+                try? input.fileHandleForWriting.close()
+            }
         } catch {
+            try? input?.fileHandleForWriting.close()
             DispatchQueue.main.async { completion(false, error.localizedDescription) }
         }
     }
@@ -530,6 +584,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     private func runPythonScript(
         _ name: String,
         arguments: [String],
+        standardInput: Data? = nil,
         completion: @escaping (Bool, String) -> Void
     ) {
         let script = repoURL.appendingPathComponent("scripts/\(name)")
@@ -542,6 +597,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             executable: runtimePythonURL,
             arguments: [script.path] + arguments,
             environment: remoteEnvironment(),
+            standardInput: standardInput,
             completion: completion
         )
     }
@@ -614,6 +670,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             self?.showAlert(
                 title: ok ? "Remote access stopped" : "Could not stop remote access",
                 detail: ok ? "The public tunnel and remote MCP service are no longer running." : output
+            )
+        }
+    }
+
+    private func reportBlueBubblesStatus() {
+        runPythonScript("penguin_connect_bluebubbles.py", arguments: ["--status"]) { [weak self] ok, output in
+            guard let self else { return }
+            if ok {
+                self.callOnboarding("blueBubblesResult", arguments: [true, true, "Enhanced iMessage group creation is connected."])
+            } else if output.contains("[not configured]") {
+                self.callOnboarding("blueBubblesResult", arguments: [true, false, "Optional enhanced group creation is off."])
+            } else {
+                self.callOnboarding("blueBubblesResult", arguments: [false, false, output])
+            }
+        }
+    }
+
+    private func configureBlueBubbles(apiURL: String, password: String) {
+        let cleanURL = apiURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanPassword = password.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanURL.isEmpty, cleanURL.utf8.count <= 512 else {
+            callOnboarding("blueBubblesResult", arguments: [false, false, "Enter a valid loopback BlueBubbles URL."])
+            return
+        }
+        guard !cleanPassword.isEmpty, cleanPassword.utf8.count <= 4096 else {
+            callOnboarding("blueBubblesResult", arguments: [false, false, "Enter a valid BlueBubbles server password."])
+            return
+        }
+        runPythonScript(
+            "penguin_connect_bluebubbles.py",
+            arguments: ["--configure-stdin", cleanURL],
+            standardInput: Data((cleanPassword + "\n").utf8)
+        ) { [weak self] ok, output in
+            self?.callOnboarding(
+                "blueBubblesResult",
+                arguments: [ok, ok, ok ? "Enhanced iMessage group creation is connected." : output]
+            )
+        }
+    }
+
+    private func disconnectBlueBubbles() {
+        runPythonScript("penguin_connect_bluebubbles.py", arguments: ["--disconnect"]) { [weak self] ok, output in
+            self?.callOnboarding(
+                "blueBubblesResult",
+                arguments: [ok, false, ok ? "Enhanced iMessage group creation is off." : output]
             )
         }
     }
@@ -765,6 +866,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             runRemoteSetup(profile: profile, tunnel: tunnel)
         case "remoteStatus":
             reportRemoteStatus()
+        case "blueBubblesStatus":
+            reportBlueBubblesStatus()
+        case "configureBlueBubbles":
+            let apiURL = body["apiURL"] as? String ?? ""
+            let password = body["password"] as? String ?? ""
+            configureBlueBubbles(apiURL: apiURL, password: password)
+        case "disconnectBlueBubbles":
+            disconnectBlueBubbles()
         case "copyConnection":
             copyRemoteConnection()
         case "dailyCode":

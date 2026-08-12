@@ -156,8 +156,20 @@ scoped message reads, contact search, exact-route sends, contact upsert, and gro
 Files, attachment paths, attachment sends, and index controls remain unavailable remotely.
 Every MCP action requires the long Keychain bearer plus today's six-character access code.
 Writes also require an exact one-use confirmation bound to the unchanged payload. WhatsApp
-groups are created from exact phone numbers or user JIDs; iMessage groups open as addressed
-drafts and require the user to press Send in Messages.
+groups are created from exact phone numbers or user JIDs. iMessage groups open as addressed
+drafts by default; when the owner explicitly configures a loopback BlueBubbles Private API
+backend, Penguin can create the group and send its required first message after confirmation.
+
+The packaged setup assistant authorizes Penguin's native Contacts helper once. Subsequent remote
+contact creates and updates reuse that macOS grant without a dialog for each action, while still
+requiring the MCP daily code and one-use confirmation. Contact payloads are sent to the helper
+over stdin so names and handles do not appear in process arguments.
+
+BlueBubbles integration is optional and is not installed by Penguin. It accepts only a loopback
+server URL and keeps the server password in Keychain. BlueBubbles documents that its Private API
+requires disabling System Integrity Protection; use it only if actual new iMessage group creation
+is worth that reduced Mac protection. Reads, existing-chat sends, and addressed drafts do not
+need it.
 
 The bearer and daily-code derivation secret remain in Keychain. `--copy` copies a bundle using
 today's rotating code without printing either underlying secret; `--copy-daily-code` copies only

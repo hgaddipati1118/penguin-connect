@@ -55,6 +55,18 @@ class UninstallPenguinConnectTests(unittest.TestCase):
                 uninstaller.main()
         self.assertEqual(raised.exception.code, 2)
 
+    def test_default_uninstall_revokes_optional_bluebubbles_backend(self):
+        self.assertIn(
+            ("penguin-connect-bluebubbles", "com.penguinconnect.bluebubbles.server-password"),
+            uninstaller.KEYCHAIN_ITEMS,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            config = Path(temporary) / "imessage-backend.json"
+            config.write_text('{"backend":"bluebubbles"}', encoding="utf-8")
+            with patch.object(uninstaller, "IMESSAGE_BACKEND_CONFIG", config):
+                uninstaller.remove_imessage_backend_config()
+            self.assertFalse(config.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

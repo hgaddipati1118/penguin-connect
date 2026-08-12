@@ -49,7 +49,7 @@ func penguinOnboardingHTMLPage(initialStep: Int = 0) -> String {
             box-shadow: 0 20px 56px rgba(23, 36, 31, .09);
           }
           aside { border-radius: 24px; padding: 22px 17px; }
-          main { border-radius: 28px; display: grid; place-items: center; padding: 34px; }
+          main { border-radius: 28px; display: grid; place-items: center; padding: 34px; overflow: auto; }
           .brand { display: flex; align-items: center; gap: 11px; margin: 0 5px 28px; }
           .brand img { width: 42px; height: 42px; border-radius: 13px; box-shadow: 0 8px 20px rgba(23, 36, 31, .14); }
           .brand strong { font: 600 20px Georgia, serif; letter-spacing: -.02em; }
@@ -104,6 +104,14 @@ func penguinOnboardingHTMLPage(initialStep: Int = 0) -> String {
           .access-code small { display: block; color: var(--muted); }
           .access-code output { color: var(--green); font: 750 24px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .14em; }
           .notice { margin-top: 13px; padding: 12px 14px; border-radius: 12px; background: #fff3d8; color: #775b22; font-size: 12px; }
+          .advanced { margin-top: 18px; border: 1px solid var(--line); border-radius: 16px; background: rgba(255,255,255,.42); }
+          .advanced summary { padding: 14px 16px; cursor: pointer; font-weight: 720; }
+          .advanced-content { padding: 0 16px 16px; }
+          .advanced-content p { margin: 0 0 12px; color: var(--muted); font-size: 12px; }
+          .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+          .field label { display: block; margin-bottom: 5px; color: var(--muted); font-size: 11px; }
+          .field input { width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 9px 10px; background: var(--paper); color: var(--ink); }
+          .advanced .actions { margin-top: 12px; }
           .spinner { width: 14px; height: 14px; border: 2px solid rgba(23,36,31,.16); border-top-color: var(--green); border-radius: 50%; animation: spin .8s linear infinite; }
           @keyframes spin { to { transform: rotate(360deg); } }
           @media (prefers-reduced-motion: reduce) { .panel.active, .spinner { animation: none; } }
@@ -132,7 +140,7 @@ func penguinOnboardingHTMLPage(initialStep: Int = 0) -> String {
             </section>
             <section class="panel" data-step="1">
               <div class="eyebrow">Step 2</div><h1>Let Penguin read your Mac.</h1>
-              <p class="lede">macOS protects Messages and Contacts separately. Penguin cannot work around these controls.</p>
+              <p class="lede">macOS protects Messages and Contacts separately. Contacts needs a one-time Mac approval during setup, not approval for each remote action.</p>
               <div class="card"><div class="row"><div><strong>Full Disk Access</strong><small>Needed only for your local Messages database.</small></div><span id="disk-status" class="status"><span class="dot"></span>Not checked</span></div></div>
               <div class="card"><div class="row"><div><strong>Contacts</strong><small>Used to match handles and save approved changes.</small></div><span id="contacts-status" class="status"><span class="dot"></span>Not checked</span></div></div>
               <div class="actions"><button class="button" onclick="post('openFullDiskAccess')">Open System Settings</button><button class="button secondary" onclick="post('checkPermissions')">Check again</button><button id="contacts-button" class="button secondary" onclick="post('requestContacts')">Allow Contacts</button></div>
@@ -156,6 +164,18 @@ func penguinOnboardingHTMLPage(initialStep: Int = 0) -> String {
                 <label class="choice"><input type="radio" name="tunnel" value="tailscale" checked><strong>Stable Tailscale URL</strong><span>Recommended. Keeps the same ts.net address across app and Mac restarts. Requires the free Tailscale Mac app.</span></label>
                 <label class="choice"><input type="radio" name="tunnel" value="cloudflare-quick"><strong>Temporary Cloudflare URL</strong><span>No account required, but the address changes whenever the tunnel restarts.</span></label>
               </div>
+              <details class="advanced">
+                <summary>Optional: create brand-new iMessage groups</summary>
+                <div class="advanced-content">
+                  <div class="notice"><strong>Advanced security tradeoff:</strong> BlueBubbles Private API requires disabling System Integrity Protection and library validation. That reduces protection on this Mac. It is not required for reading or sending in existing chats.</div>
+                  <p style="margin-top: 12px">Penguin only accepts a BlueBubbles server on this Mac's loopback address and stores its password in Keychain. BlueBubbles must already be installed and configured.</p>
+                  <div class="field-row">
+                    <div class="field"><label for="bluebubbles-url">Local server URL</label><input id="bluebubbles-url" value="http://127.0.0.1:1234" autocomplete="off" spellcheck="false"></div>
+                    <div class="field"><label for="bluebubbles-password">Server password</label><input id="bluebubbles-password" type="password" autocomplete="off"></div>
+                  </div>
+                  <div class="actions"><button id="bluebubbles-connect" class="button secondary" onclick="configureBlueBubbles()">Connect BlueBubbles</button><button class="button secondary" onclick="post('disconnectBlueBubbles')">Disconnect</button><span id="bluebubbles-status" class="status"><span class="dot"></span>Not checked</span></div>
+                </div>
+              </details>
               <div id="setup-progress" class="actions" hidden><span class="spinner"></span><span>Installing private background services…</span></div>
               <div class="actions"><button id="setup-button" class="button" onclick="setupRemote()">Create secure endpoint</button><button class="button secondary" onclick="post('openTailscale')">Get Tailscale</button><button class="button secondary" onclick="post('stopRemote')">Stop remote access</button></div>
             </section>
@@ -185,7 +205,7 @@ func penguinOnboardingHTMLPage(initialStep: Int = 0) -> String {
             });
             if (step === 1) post('checkPermissions');
             if (step === 2) post('checkWhatsApp');
-            if (step === 3) post('remoteStatus');
+            if (step === 3) { post('remoteStatus'); post('blueBubblesStatus'); }
             if (step === 4) post('dailyCode');
           }
           function setupRemote() {
@@ -195,6 +215,14 @@ func penguinOnboardingHTMLPage(initialStep: Int = 0) -> String {
             document.getElementById('setup-progress').hidden = false;
             post('setupRemote', { profile, tunnel });
           }
+          function configureBlueBubbles() {
+            const url = document.getElementById('bluebubbles-url').value;
+            const passwordNode = document.getElementById('bluebubbles-password');
+            const password = passwordNode.value;
+            passwordNode.value = '';
+            document.getElementById('bluebubbles-connect').disabled = true;
+            post('configureBlueBubbles', { apiURL: url, password });
+          }
           window.penguinNative = {
             permissions(disk, contacts, contactsState) {
               diskGranted = disk; contactsGranted = contacts;
@@ -202,7 +230,7 @@ func penguinOnboardingHTMLPage(initialStep: Int = 0) -> String {
               diskNode.classList.toggle('ok', disk); diskNode.lastChild.textContent = disk ? ' Allowed' : ' Not allowed';
               const contactsNode = document.getElementById('contacts-status');
               contactsNode.classList.toggle('ok', contacts); contactsNode.lastChild.textContent = contacts ? ' Allowed' : ' Not allowed';
-              document.getElementById('contacts-button').textContent = contactsState === 'denied' || contactsState === 'restricted' ? 'Open Contacts Settings' : contacts ? 'Contacts allowed' : 'Allow Contacts';
+              document.getElementById('contacts-button').textContent = contactsState === 'denied' || contactsState === 'restricted' || contactsState === 'limited' ? 'Open Contacts Settings' : contacts ? 'Contacts allowed' : 'Allow Contacts';
               document.getElementById('permissions-next').disabled = !disk;
             },
             whatsapp(status, qrVersion) {
@@ -226,6 +254,14 @@ func penguinOnboardingHTMLPage(initialStep: Int = 0) -> String {
             },
             remoteStatus(active, endpoint) {
               if (active && endpoint) document.getElementById('endpoint').textContent = endpoint;
+            },
+            blueBubblesResult(ok, configured, message) {
+              document.getElementById('bluebubbles-connect').disabled = false;
+              document.getElementById('bluebubbles-password').value = '';
+              const node = document.getElementById('bluebubbles-status');
+              node.classList.toggle('ok', ok && configured);
+              node.lastChild.textContent = configured ? ' Connected' : ok ? ' Off' : ' Unavailable';
+              if (!ok && message) alert(message);
             },
             dailyCode(code) {
               document.getElementById('daily-code').textContent = code || '••••••';

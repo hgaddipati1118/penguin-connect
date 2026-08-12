@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDisplayName</key>
+  <string>Penguin</string>
+  <key>CFBundleExecutable</key>
+  <string>PenguinContactsHelper</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.penguinconnect.contacts-helper</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>Penguin Contacts Helper</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>NSContactsUsageDescription</key>
+  <string>Penguin uses Contacts to match conversations with people and apply contact updates you request.</string>
+</dict>
+</plist>

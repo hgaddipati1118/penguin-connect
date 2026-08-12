@@ -122,8 +122,10 @@ open -a Penguin
 The app uses the same local-only workspace and starts the bridge when it is not already
 running. Its embedded repository path is recorded at build time, so rebuild the app after
 moving the checkout. Grant Full Disk Access to Penguin when the app starts the bridge
-itself, or to Terminal when you run the bridge script there. macOS may also ask for
-Contacts or Apple Events access the first time you use those actions.
+itself, or to Terminal when you run the bridge script there. The packaged app asks for
+Contacts access once during setup through the same native helper used for later writes; it does
+not request approval for every contact action. An ad-hoc rebuild may look like a new app identity
+to macOS and require that one-time grant again.
 
 ## Codex / MCP
 
@@ -194,14 +196,42 @@ The app shows and copies the code locally; copying the connection bundle include
 and yesterday's bundle fails authentication after local midnight. The code alone is never
 accepted. Wrong daily-code guesses are rate limited. Writes additionally need a five-minute,
 one-use confirmation bound to the exact payload. Exact existing iMessage conversations can
-send; a brand-new destination or iMessage group is staged in Messages for human review.
-WhatsApp groups can be created from exact phone numbers or user JIDs after that confirmation.
+send; a brand-new one-person destination is staged in Messages for human review. WhatsApp
+groups can be created from exact phone numbers or user JIDs after that confirmation. New
+iMessage groups are also staged by default, or can be created with a first message when the Mac
+owner explicitly connects the optional loopback-only BlueBubbles Private API backend.
 
 The macOS app exposes a native **Penguin Setup…** assistant that handles permissions,
 loopback-only WhatsApp QR pairing, access-profile selection, endpoint creation, key rotation,
 and Slashy handoff. The release build bundles `cloudflared`, the WhatsApp bridge, and its
 Python runtime installer.
 See [Packaging and distribution](docs/DISTRIBUTION.md) for release signing and first-run details.
+
+#### Optional native iMessage group creation
+
+Penguin does not bundle or silently install BlueBubbles. If the Mac owner already runs
+[BlueBubbles Server](https://github.com/BlueBubblesApp/bluebubbles-server) with its
+[Private API](https://docs.bluebubbles.app/private-api/installation), **Penguin Setup…** can
+connect to its local server. This is an advanced opt-in: BlueBubbles documents that its Private
+API requires disabling System Integrity Protection so it can inject a helper into Messages.
+That weakens protection on the Mac and is unnecessary for reads, existing-chat sends, or
+addressed drafts.
+
+Penguin accepts only a loopback BlueBubbles URL such as `http://127.0.0.1:1234`, stores the
+server password in macOS Keychain, and never publishes the BlueBubbles port through Tailscale or
+Cloudflare. The password travels to the setup helper over stdin, not in command-line arguments,
+environment variables, config files, or logs. CLI setup is also available by copying the
+BlueBubbles server password and running:
+
+```bash
+./scripts/penguin_connect_bluebubbles.py --configure http://127.0.0.1:1234
+./scripts/penguin_connect_bluebubbles.py --status
+```
+
+Native creation requires at least two exact participant identifiers and a non-empty first
+message. The one-use MCP confirmation is bound to those participants, the group name, the first
+message, and the selected backend. If the backend changes or becomes unavailable between preview
+and confirmation, Penguin fails closed instead of silently switching behavior.
 
 #### Stable and temporary hostnames
 

@@ -31,6 +31,7 @@ if str(ROOT_DIR / "scripts") not in sys.path:
 
 import browse_sources
 from channels import get_channel_adapter
+from penguin_connect_bluebubbles import BlueBubblesError, load_client as load_bluebubbles_client
 from penguin_connect_mcp_auth import daily_access_code, load_daily_code_secret, load_token
 from penguin_connect_mcp_config import (
     RemoteAccessPolicy,
@@ -1164,7 +1165,7 @@ def remote_create_group_chat_data(
     confirmation_token: str = "",
     providers: tuple[str, ...],
 ) -> dict[str, Any]:
-    """Preview, then create a WhatsApp group or stage an exact iMessage group draft."""
+    """Preview, then create a group or safely stage an unsupported iMessage group."""
     payload, error = _remote_group_create_payload(
         provider,
         participants,
@@ -1174,26 +1175,74 @@ def remote_create_group_chat_data(
     )
     if error is not None or payload is None:
         return error or {"success": False, "error": "invalid_request"}
+    bluebubbles_client = load_bluebubbles_client() if payload["provider"] == "imessage" else None
+    imessage_backend = (
+        "bluebubbles_private_api"
+        if bluebubbles_client is not None
+        else "addressed_draft"
+    )
+    if (
+        payload["provider"] == "imessage"
+        and bluebubbles_client is not None
+        and not payload["first_message"]
+    ):
+        return {
+            "success": False,
+            "error": "imessage_group_first_message_required",
+            "backend": imessage_backend,
+        }
+    confirmation_payload = {**payload, "imessage_backend": imessage_backend}
     preview = {
-        "action": "create_group" if payload["provider"] == "whatsapp" else "stage_group_draft",
+        "action": (
+            "create_group"
+            if payload["provider"] == "whatsapp" or bluebubbles_client is not None
+            else "stage_group_draft"
+        ),
         "provider": payload["provider"],
         "name": payload["name"],
         "participant_count": len(payload["participants"]),
         "first_message_chars": len(payload["first_message"]),
-        "imessage_requires_manual_send": payload["provider"] == "imessage",
+        "imessage_backend": imessage_backend if payload["provider"] == "imessage" else "",
+        "imessage_requires_manual_send": (
+            payload["provider"] == "imessage" and bluebubbles_client is None
+        ),
     }
     if not confirmation_token:
         return {
             "success": False,
             "confirmation_required": True,
             "preview": preview,
-            "confirmation_token": confirmations.issue(payload),
+            "confirmation_token": confirmations.issue(confirmation_payload),
             "confirmation_expires_in_seconds": REMOTE_CONFIRMATION_TTL_SECONDS,
         }
-    if not confirmations.consume(confirmation_token, payload):
+    if not confirmations.consume(confirmation_token, confirmation_payload):
         return {"success": False, "error": "invalid_or_expired_confirmation"}
 
     if payload["provider"] == "imessage":
+        if bluebubbles_client is not None:
+            try:
+                result = bluebubbles_client.create_group(
+                    payload["participants"],
+                    first_message=payload["first_message"],
+                    name=payload["name"],
+                )
+            except (BlueBubblesError, ValueError):
+                return {
+                    "success": False,
+                    "error": "imessage_group_create_failed",
+                    "backend": "bluebubbles_private_api",
+                }
+            return {
+                "success": True,
+                "created": True,
+                "provider": "imessage",
+                "backend": "bluebubbles_private_api",
+                "group_id": result["group_id"],
+                "participant_count": len(payload["participants"]),
+                "first_message_sent": result.get("first_message_sent") is True,
+                "name_applied": result.get("name_applied") is True,
+                "name_error": str(result.get("name_error") or ""),
+            }
         _api_json(
             "POST",
             "/penguin-connect/messages/draft",
@@ -1294,7 +1343,9 @@ def create_mcp_server(
         "Local file paths, attachments, file search, and index administration are unavailable. "
         "Every request requires today's six-character access code. Writes also require an exact "
         "one-use confirmation token. "
-        "A brand-new iMessage destination is staged in Messages for human review."
+        "A brand-new iMessage destination is staged in Messages for human review. "
+        "New iMessage groups use a configured loopback BlueBubbles Private API backend, "
+        "or fall back to an addressed draft when that optional backend is unavailable."
     )
     mcp = FastMCP(
         "PenguinConnect",
@@ -1330,6 +1381,11 @@ def create_mcp_server(
             @mcp.tool()
             def get_capabilities() -> dict[str, Any]:
                 """Return the exact scopes and providers enabled by this Mac owner."""
+                imessage_group_backend = (
+                    "bluebubbles_private_api"
+                    if load_bluebubbles_client() is not None
+                    else "addressed_draft"
+                )
                 return {
                     "profile": policy.profile,
                     "scopes": list(policy.scopes),
@@ -1339,7 +1395,11 @@ def create_mcp_server(
                     "new_imessage_destination": "staged_for_human_review",
                     "group_creation": {
                         "whatsapp": "native" if policy.allows("groups.create") else "unavailable",
-                        "imessage": "addressed_draft" if policy.allows("groups.create") else "unavailable",
+                        "imessage": (
+                            imessage_group_backend
+                            if policy.allows("groups.create")
+                            else "unavailable"
+                        ),
                     },
                 }
 
@@ -1447,9 +1507,10 @@ def create_mcp_server(
                     """Preview, then create a group using exact participant identifiers.
 
                     WhatsApp creates the group after the unchanged one-use confirmation is
-                    returned. iMessage opens an addressed multi-recipient draft; the user sends
-                    it in Messages because Apple does not expose a safe unattended group-create
-                    route. Phone numbers, emails, or WhatsApp user JIDs are accepted; contact-name
+                    returned. iMessage creates the group when this Mac has an explicitly configured
+                    loopback BlueBubbles Private API backend; otherwise Penguin opens an addressed
+                    multi-recipient draft for manual send. Native iMessage creation requires a first
+                    message. Phone numbers, emails, or WhatsApp user JIDs are accepted; contact-name
                     guessing is deliberately unavailable. Every request is protected by today's
                     six-character MCP access code.
                     """

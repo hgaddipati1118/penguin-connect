@@ -6,6 +6,7 @@ DIST_DIR="$REPO_DIR/dist"
 APP_BUNDLE="$DIST_DIR/Penguin.app"
 CONTENTS_DIR="$APP_BUNDLE/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
+HELPERS_DIR="$CONTENTS_DIR/Helpers"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 ICON_SOURCE="$REPO_DIR/desktop/Assets/PenguinIcon.png"
 INSTALL_TARGET="/Applications/Penguin.app"
@@ -32,7 +33,7 @@ mkdir -p "$DIST_DIR"
 if [ -d "$APP_BUNDLE" ]; then
   rm -rf "$APP_BUNDLE"
 fi
-mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
+mkdir -p "$MACOS_DIR" "$HELPERS_DIR" "$RESOURCES_DIR"
 
 cp "$REPO_DIR/desktop/Info.plist" "$CONTENTS_DIR/Info.plist"
 cp "$ICON_SOURCE" "$RESOURCES_DIR/PenguinIcon.png"
@@ -102,6 +103,39 @@ SWIFT_SOURCES=(
   "$REPO_DIR/desktop/PenguinApp.swift"
 )
 BUILD_ARCHS="${PENGUIN_CONNECT_BUILD_ARCHS:-}"
+CONTACTS_HELPER="$HELPERS_DIR/PenguinContactsHelper"
+CONTACTS_HELPER_LINKER_ARGS=(
+  -Xlinker -sectcreate
+  -Xlinker __TEXT
+  -Xlinker __info_plist
+  -Xlinker "$REPO_DIR/desktop/PenguinContactsHelper-Info.plist"
+)
+if [ -n "$BUILD_ARCHS" ]; then
+  CONTACTS_HELPER_ARCH_BINARIES=()
+  for arch in $BUILD_ARCHS; do
+    helper_binary="$DIST_DIR/PenguinContactsHelper-$arch"
+    swiftc \
+      -O \
+      -parse-as-library \
+      -target "$arch-apple-macos13.0" \
+      -framework Contacts \
+      "${CONTACTS_HELPER_LINKER_ARGS[@]}" \
+      "$REPO_DIR/desktop/PenguinContactsHelper.swift" \
+      -o "$helper_binary"
+    CONTACTS_HELPER_ARCH_BINARIES+=("$helper_binary")
+  done
+  lipo -create "${CONTACTS_HELPER_ARCH_BINARIES[@]}" -output "$CONTACTS_HELPER"
+  rm -f "${CONTACTS_HELPER_ARCH_BINARIES[@]}"
+else
+  swiftc \
+    -O \
+    -parse-as-library \
+    -framework Contacts \
+    "${CONTACTS_HELPER_LINKER_ARGS[@]}" \
+    "$REPO_DIR/desktop/PenguinContactsHelper.swift" \
+    -o "$CONTACTS_HELPER"
+fi
+
 if [ -n "$BUILD_ARCHS" ]; then
   ARCH_BINARIES=()
   for arch in $BUILD_ARCHS; do
@@ -120,7 +154,7 @@ if [ -n "$BUILD_ARCHS" ]; then
   lipo -create "${ARCH_BINARIES[@]}" -output "$MACOS_DIR/Penguin"
   rm -f "${ARCH_BINARIES[@]}"
   if [ "$RELEASE_BUILD" -eq 1 ]; then
-    for helper in "$PACKAGED_ROOT/bin/uv" "$PACKAGED_ROOT/bin/cloudflared" "$PACKAGED_ROOT/bin/whatsapp-bridge"; do
+    for helper in "$PACKAGED_ROOT/bin/uv" "$PACKAGED_ROOT/bin/cloudflared" "$PACKAGED_ROOT/bin/whatsapp-bridge" "$CONTACTS_HELPER"; do
       helper_archs="$(lipo -archs "$helper")"
       for arch in $BUILD_ARCHS; do
         if [[ " $helper_archs " != *" $arch "* ]]; then
@@ -151,6 +185,7 @@ if [ "$RELEASE_BUILD" -eq 1 ]; then
     codesign "${CODESIGN_ARGS[@]}" "$helper"
   done
 fi
+codesign "${CODESIGN_ARGS[@]}" "$CONTACTS_HELPER"
 codesign \
   "${CODESIGN_ARGS[@]}" \
   --entitlements "$REPO_DIR/desktop/Penguin.entitlements" \
