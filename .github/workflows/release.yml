@@ -64,6 +64,7 @@ jobs:
         run: |
           set -euo pipefail
           helper_dir="$(mktemp -d)"
+          trap 'rm -rf "$helper_dir"' EXIT
           mkdir -p build/helpers
 
           curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-aarch64-apple-darwin.tar.gz" -o "$helper_dir/uv-arm64.tar.gz"
@@ -179,6 +180,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf build/helpers
+          go clean -cache -modcache
+          python -m pip cache purge || true
+          brew cleanup --prune=all || true
           archive_base="Penguin-${PENGUIN_RELEASE_VERSION}-universal"
           ditto -c -k --sequesterRsrc --keepParent dist/Penguin.app "dist/${archive_base}.zip"
           dmg_root="$(mktemp -d)"
