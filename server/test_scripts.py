@@ -101,6 +101,17 @@ class ScriptTests(unittest.TestCase):
         self.assertIn('"PENGUIN_CONNECT_PORT"', installer)
         self.assertIn('"PENGUIN_CONNECT_LOCAL_API_BASE"', installer)
 
+    def test_whatsapp_launch_agent_does_not_persist_private_protocol_logs(self):
+        installer = (
+            ROOT_DIR / "scripts" / "install_launchd_whatsapp_bridge.sh"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('"StandardOutPath": "/dev/null"', installer)
+        self.assertIn('"StandardErrorPath": "/dev/null"', installer)
+        self.assertNotIn('"StandardOutPath": str(', installer)
+        self.assertNotIn('"StandardErrorPath": str(', installer)
+        self.assertIn('rm -f -- "$legacy_log"', installer)
+
     def test_resolve_local_api_base_prefers_explicit_base(self):
         base = penguin_connect_local_api.resolve_local_api_base(
             {

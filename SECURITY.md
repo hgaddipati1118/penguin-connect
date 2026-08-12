@@ -77,7 +77,12 @@ required because Funnel intentionally accepts public Internet traffic.
 
 The WhatsApp pairing status endpoint may report only coarse state and whether a QR is available.
 It must never return the raw pairing code. The QR image endpoint must bind to `127.0.0.1`, send
-`Cache-Control: no-store`, and pairing codes must not be printed to logs by default.
+`Cache-Control: no-store`, and pairing codes must not be printed to logs by default. The
+packaged WhatsApp launch agent discards the bridge's stdout and stderr because its underlying
+protocol logger can include contact identifiers, group names, message metadata, and first-run
+QR material. Diagnose availability through the loopback capabilities endpoint and `launchctl`
+state instead of retaining that private stream. Upgrading the launch agent removes the two
+legacy protocol log files after the loopback service becomes healthy.
 
 ## Reporting A Vulnerability
 

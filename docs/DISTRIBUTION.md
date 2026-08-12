@@ -52,7 +52,11 @@ test artifact, but that artifact is not a consumer release.
 On first launch, the app uses bundled `uv` to create a private runtime under
 `~/Library/Application Support/PenguinConnect/runtime`. Installing Python dependencies requires
 an Internet connection. The signed application itself remains read-only; runtime state,
-WhatsApp session data, endpoint metadata, and logs live outside the app bundle.
+WhatsApp session data, endpoint metadata, and Penguin diagnostic logs live outside the app
+bundle. The packaged WhatsApp service deliberately does not retain its protocol stdout or
+stderr because that stream may contain contact identifiers, group names, message metadata, or
+first-run QR material. The launch-agent installer removes its two legacy protocol log files
+after a healthy upgrade.
 
 The setup assistant guides the user through:
 

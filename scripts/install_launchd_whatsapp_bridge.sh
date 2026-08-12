@@ -48,15 +48,13 @@ if [ ! -x "$BRIDGE_BIN" ]; then
   exit 1
 fi
 
-mkdir -p "$LAUNCH_AGENTS_DIR" "$LOG_DIR"
-chmod 700 "$LOG_DIR"
+mkdir -p "$LAUNCH_AGENTS_DIR"
 
-/usr/bin/python3 - "$PLIST_PATH" "$LABEL" "$BRIDGE_BIN" "$BRIDGE_DIR" "$LOG_DIR" <<'PY'
+/usr/bin/python3 - "$PLIST_PATH" "$LABEL" "$BRIDGE_BIN" "$BRIDGE_DIR" <<'PY'
 import plistlib
 import sys
-from pathlib import Path
 
-plist_path, label, bridge_bin, bridge_dir, log_dir = sys.argv[1:]
+plist_path, label, bridge_bin, bridge_dir = sys.argv[1:]
 payload = {
     "Label": label,
     "ProgramArguments": [bridge_bin],
@@ -65,8 +63,11 @@ payload = {
     "KeepAlive": True,
     "ThrottleInterval": 10,
     "ProcessType": "Background",
-    "StandardOutPath": str(Path(log_dir) / "whatsapp-bridge.out.log"),
-    "StandardErrorPath": str(Path(log_dir) / "whatsapp-bridge.err.log"),
+    # whatsmeow's protocol logger may include contact identifiers, group names,
+    # message metadata, and first-run QR material. Readiness and diagnostics use
+    # the loopback API and launchctl instead of persisting that private stream.
+    "StandardOutPath": "/dev/null",
+    "StandardErrorPath": "/dev/null",
 }
 with open(plist_path, "wb") as handle:
     plistlib.dump(payload, handle)
@@ -77,14 +78,26 @@ launchctl bootstrap "$LAUNCHD_DOMAIN" "$PLIST_PATH"
 
 for _attempt in $(seq 1 40); do
   if curl -fsS "http://127.0.0.1:8080/api/capabilities" >/dev/null 2>&1; then
+    legacy_logs_removed=false
+    for legacy_log in \
+      "$LOG_DIR/whatsapp-bridge.out.log" \
+      "$LOG_DIR/whatsapp-bridge.err.log"; do
+      if [ -f "$legacy_log" ]; then
+        rm -f -- "$legacy_log"
+        legacy_logs_removed=true
+      fi
+    done
     echo "Installed loopback-only WhatsApp bridge launch agent: $LABEL"
     echo "Local API: http://127.0.0.1:8080/api"
-    echo "Logs: $LOG_DIR/whatsapp-bridge.{out,err}.log"
+    echo "Private WhatsApp protocol output is not persisted."
+    if [ "$legacy_logs_removed" = true ]; then
+      echo "Removed legacy WhatsApp protocol logs."
+    fi
     exit 0
   fi
   sleep 0.5
 done
 
 echo "Installed $LABEL, but its loopback health check did not become ready." >&2
-echo "Inspect: $LOG_DIR/whatsapp-bridge.err.log" >&2
+echo "Inspect with: launchctl print $LAUNCHD_DOMAIN/$LABEL" >&2
 exit 1

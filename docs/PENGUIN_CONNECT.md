@@ -107,7 +107,9 @@ On first run, the bridge displays a QR code. Open WhatsApp on your phone → Set
 The bridge stores messages in `~/whatsapp-mcp/whatsapp-bridge/store/messages.db` and exposes an HTTP API on `http://localhost:8080/api`.
 
 After the first interactive login succeeds, install Penguin's launch agent so the bridge
-restarts at login and remains bound to loopback:
+restarts at login and remains bound to loopback. The packaged service discards WhatsApp's
+protocol stdout/stderr because it may contain private identifiers or pairing material;
+availability is checked through the loopback API and `launchctl` state instead:
 
 ```bash
 ./scripts/install_launchd_whatsapp_bridge.sh
