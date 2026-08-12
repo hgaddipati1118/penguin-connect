@@ -57,7 +57,8 @@ WhatsApp session data, endpoint metadata, and logs live outside the app bundle.
 The setup assistant guides the user through:
 
 1. Grant Penguin Full Disk Access so it can read the local Apple Messages database.
-2. Grant the packaged native helper Contacts access once if contact search or updates are wanted.
+2. Grant Penguin Contacts access once if contact search or updates are wanted. Penguin's native
+   write helper runs as its descendant and does not request approval for each action.
 3. Scan an in-app, loopback-only WhatsApp QR from WhatsApp's Linked Devices screen. Pairing
    material is not returned by the status API, cached by the web view, or written to logs.
 4. Select Read Only (the default) or Full Access.
@@ -136,7 +137,7 @@ Before publishing, verify on a clean user account and both supported CPU archite
 - Read Only lists no write tools;
 - every MCP action requires today's six-character code in addition to the install bearer;
 - Full Access requires exact one-use confirmation for every write, without opening a Mac dialog;
-- the packaged native Contacts helper asks once during setup and later creates/updates contacts without per-action Mac dialogs;
+- Penguin asks for Contacts once during setup and its packaged native helper later creates/updates contacts without per-action Mac dialogs;
 - WhatsApp group creation accepts only exact unique phone numbers or user JIDs;
 - iMessage group creation stages an addressed draft when no enhanced backend is configured;
 - optional BlueBubbles setup accepts only loopback, keeps its password out of argv/config/logs, and creates a group only after confirmation with a non-empty first message;

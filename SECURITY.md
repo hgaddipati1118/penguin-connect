@@ -61,9 +61,10 @@ Penguin's tunnel. BlueBubbles Private API requires disabling SIP and injecting i
 Penguin must disclose that reduced Mac protection and must never disable those protections or
 install BlueBubbles automatically.
 
-Packaged contact writes must use Penguin's native Contacts helper. Authorize that exact helper
-once during local setup, send contact payloads over stdin, and never put names, phone numbers, or
-email addresses in process arguments. Remote contact writes still require the daily code and an
+Packaged contact writes must use Penguin's native Contacts helper. Authorize Penguin's native app
+identity once during local setup and keep the helper in its responsible process tree. Send contact
+payloads over stdin, and never put names, phone numbers, or email addresses in process arguments.
+Remote contact writes still require the daily code and an
 exact one-use confirmation; the macOS permission is not a per-action approval gate.
 
 Treat the remote MCP bearer and daily-code derivation secret as private message and contact read

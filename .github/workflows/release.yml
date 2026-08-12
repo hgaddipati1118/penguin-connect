@@ -152,6 +152,8 @@ jobs:
           otool -s __TEXT __info_plist dist/Penguin.app/Contents/Helpers/PenguinContactsHelper >/dev/null
           codesign --verify --deep --strict --verbose=2 dist/Penguin.app
           codesign -d --entitlements :- dist/Penguin.app | grep -q com.apple.security.automation.apple-events
+          codesign -d --entitlements :- dist/Penguin.app | grep -q com.apple.security.personal-information.addressbook
+          codesign -d --entitlements :- dist/Penguin.app/Contents/Helpers/PenguinContactsHelper | grep -q com.apple.security.personal-information.addressbook
           test -z "$(find dist/Penguin.app -type f \( -name '.env' -o -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' -o -name '*credentials*.json' -o -name '*token*.json' \) -print -quit)"
           PYTHONDONTWRITEBYTECODE=1 python dist/Penguin.app/Contents/Resources/PenguinConnect/scripts/penguin_connect_mcp.py --help >/dev/null
           PYTHONDONTWRITEBYTECODE=1 python dist/Penguin.app/Contents/Resources/PenguinConnect/scripts/penguin_connect_remote_setup.py --help >/dev/null

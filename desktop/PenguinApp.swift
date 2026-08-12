@@ -439,23 +439,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
     private func reportPermissions() {
         let diskGranted = hasFullDiskAccess()
-        guard FileManager.default.isExecutableFile(atPath: contactsHelperURL.path) else {
-            reportAppContactsPermission(diskGranted: diskGranted)
-            return
-        }
-        runProcess(executable: contactsHelperURL, arguments: ["--status"]) { [weak self] ok, output in
-            guard let self else { return }
-            let state = self.contactsPermissionState(from: output)
-            self.callOnboarding("permissions", arguments: [diskGranted, ok, state])
-        }
-    }
-
-    private func contactsPermissionState(from output: String) -> String {
-        guard let data = output.data(using: .utf8),
-              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return "restricted"
-        }
-        return payload["status"] as? String ?? ((payload["authorized"] as? Bool) == true ? "authorized" : "restricted")
+        reportAppContactsPermission(diskGranted: diskGranted)
     }
 
     private func reportAppContactsPermission(diskGranted: Bool) {
@@ -477,22 +461,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     }
 
     private func requestContactsAccess() {
-        if FileManager.default.isExecutableFile(atPath: contactsHelperURL.path) {
-            runProcess(executable: contactsHelperURL, arguments: ["--status"]) { [weak self] ok, output in
-                guard let self else { return }
-                let state = self.contactsPermissionState(from: output)
-                if !ok && (state == "denied" || state == "restricted" || state == "limited") {
-                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts") {
-                        NSWorkspace.shared.open(url)
-                    }
-                    return
-                }
-                self.runProcess(executable: self.contactsHelperURL, arguments: ["--authorize"]) { [weak self] _, _ in
-                    self?.reportPermissions()
-                }
-            }
-            return
-        }
         let status = CNContactStore.authorizationStatus(for: .contacts)
         if status == .denied || status == .restricted {
             if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts") {

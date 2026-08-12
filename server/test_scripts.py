@@ -68,6 +68,31 @@ class ScriptTests(unittest.TestCase):
         self.assertIn("isPackagedRuntime && !hasFullDiskAccess()", app_source)
         self.assertIn("showOnboarding(step: 1)", app_source)
 
+    def test_packaged_app_requests_contacts_from_its_responsible_identity(self):
+        app_source = (ROOT_DIR / "desktop" / "PenguinApp.swift").read_text(encoding="utf-8")
+
+        permission_section = app_source.split("private func reportPermissions()", 1)[1].split(
+            "private func whatsAppSourceURL()", 1
+        )[0]
+        self.assertIn("CNContactStore().requestAccess(for: .contacts)", permission_section)
+        self.assertNotIn('arguments: ["--authorize"]', permission_section)
+        self.assertNotIn('arguments: ["--status"]', permission_section)
+
+        for entitlement_file in (
+            ROOT_DIR / "desktop" / "Penguin.entitlements",
+            ROOT_DIR / "desktop" / "PenguinContactsHelper.entitlements",
+        ):
+            with self.subTest(entitlement_file=entitlement_file.name):
+                self.assertIn(
+                    "com.apple.security.personal-information.addressbook",
+                    entitlement_file.read_text(encoding="utf-8"),
+                )
+
+        build_script = (ROOT_DIR / "scripts" / "build_desktop_app.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("PenguinContactsHelper.entitlements", build_script)
+
     def test_remote_mcp_launch_agent_forwards_local_api_configuration(self):
         installer = (ROOT_DIR / "scripts" / "install_launchd_remote_mcp.sh").read_text(
             encoding="utf-8"

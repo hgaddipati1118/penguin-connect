@@ -160,8 +160,9 @@ groups are created from exact phone numbers or user JIDs. iMessage groups open a
 drafts by default; when the owner explicitly configures a loopback BlueBubbles Private API
 backend, Penguin can create the group and send its required first message after confirmation.
 
-The packaged setup assistant authorizes Penguin's native Contacts helper once. Subsequent remote
-contact creates and updates reuse that macOS grant without a dialog for each action, while still
+The packaged setup assistant authorizes Penguin's native app identity once for Contacts. Its
+native write helper runs as a Penguin descendant, so subsequent remote contact creates and
+updates reuse that macOS grant without a dialog for each action, while still
 requiring the MCP daily code and one-use confirmation. Contact payloads are sent to the helper
 over stdin so names and handles do not appear in process arguments.
 

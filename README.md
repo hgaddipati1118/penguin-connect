@@ -124,8 +124,8 @@ The app uses the same local-only workspace and starts the bridge when it is not 
 running. Its embedded repository path is recorded at build time, so rebuild the app after
 moving the checkout. Grant Full Disk Access to Penguin when the app starts the bridge
 itself, or to Terminal when you run the bridge script there. The packaged app asks for
-Contacts access once during setup through the same native helper used for later writes; it does
-not request approval for every contact action. An ad-hoc rebuild may look like a new app identity
+Contacts access once during setup under Penguin's native identity; its write helper runs as a
+Penguin descendant and does not request approval for every contact action. An ad-hoc rebuild may look like a new app identity
 to macOS and require that one-time grant again. Enabling remote MCP also registers Penguin's
 native executable as a background item. It keeps the loopback bridge available after the window
 closes and across login without opening Terminal; macOS may show the normal one-time Background

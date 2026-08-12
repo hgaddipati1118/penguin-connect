@@ -185,7 +185,10 @@ if [ "$RELEASE_BUILD" -eq 1 ]; then
     codesign "${CODESIGN_ARGS[@]}" "$helper"
   done
 fi
-codesign "${CODESIGN_ARGS[@]}" "$CONTACTS_HELPER"
+codesign \
+  "${CODESIGN_ARGS[@]}" \
+  --entitlements "$REPO_DIR/desktop/PenguinContactsHelper.entitlements" \
+  "$CONTACTS_HELPER"
 codesign \
   "${CODESIGN_ARGS[@]}" \
   --entitlements "$REPO_DIR/desktop/Penguin.entitlements" \
