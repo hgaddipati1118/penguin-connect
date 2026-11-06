@@ -1,6 +1,7 @@
 import Cocoa
 import Contacts
 import Darwin
+import UserNotifications
 import WebKit
 
 private let defaultPort = 9000
@@ -126,7 +127,7 @@ private func makeDockIcon() -> NSImage {
     return image
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, UNUserNotificationCenterDelegate {
     private var window: NSWindow!
     private var webView: WKWebView!
     private var bridgeProcess: Process?
@@ -257,6 +258,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
         configuration.userContentController.add(self, name: "penguin")
+        configuration.userContentController.add(self, name: "penguinNotify")
+        UNUserNotificationCenter.current().delegate = self
         // Lets the web UI leave room for the traffic lights, which sit over the content.
         configuration.userContentController.addUserScript(WKUserScript(
             source: "document.documentElement.classList.add('penguin-desktop-app');",
@@ -896,6 +899,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         _ userContentController: WKUserContentController,
         didReceive message: WKScriptMessage
     ) {
+        if message.name == "penguinNotify", message.frameInfo.isMainFrame,
+           let body = message.body as? [String: Any] {
+            postMessageNotification(body)
+            return
+        }
         guard showingOnboarding,
               message.frameInfo.isMainFrame,
               message.name == "penguin",
@@ -988,6 +996,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 }
 
 extension AppDelegate {
+    func postMessageNotification(_ body: [String: Any]) {
+        let title = (body["title"] as? String) ?? "New message"
+        let text = (body["body"] as? String) ?? ""
+        let conversationId = (body["conversationId"] as? String) ?? ""
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
+            guard granted else { return }
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = text
+            content.sound = .default
+            content.threadIdentifier = conversationId
+            content.userInfo = ["conversationId": conversationId]
+            let request = UNNotificationRequest(
+                identifier: "\(conversationId)-\(Date().timeIntervalSince1970)",
+                content: content,
+                trigger: nil
+            )
+            center.add(request)
+        }
+    }
+
+    // Show banners even while Penguin is frontmost but the chat isn't the one open.
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound])
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let conversationId = response.notification.request.content.userInfo["conversationId"] as? String ?? ""
+        DispatchQueue.main.async {
+            NSApp.activate(ignoringOtherApps: true)
+            self.window?.makeKeyAndOrderFront(nil)
+            if let data = try? JSONSerialization.data(withJSONObject: [conversationId]),
+               let json = String(data: data, encoding: .utf8) {
+                self.webView?.evaluateJavaScript("window.penguinOpenConversation && window.penguinOpenConversation(\(json)[0])")
+            }
+        }
+        completionHandler()
+    }
+
     /// Links with target="_blank" (message links, image previews) ask for a new window;
     /// open them in the user's browser instead of silently doing nothing.
     func webView(

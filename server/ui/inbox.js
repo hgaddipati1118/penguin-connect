@@ -4565,6 +4565,56 @@ function applyMessageGrouping(children) {
   }
 }
 
+// New-message notifications: native in the desktop app, browser Notification elsewhere.
+function notifyNewMessages(previousUnread) {
+  if (!previousUnread.size) return; // first load: don't notify about the backlog
+  for (const conversation of state.conversations) {
+    const before = previousUnread.get(conversation.conversation_id);
+    const now = Number(conversation.unread_count || 0);
+    if (before === undefined || now <= before) continue;
+    if (conversation.is_muted || conversation.is_archived) continue;
+    const viewing = state.selected?.conversation_id === conversation.conversation_id
+      && document.visibilityState === "visible"
+      && document.hasFocus();
+    if (viewing) continue;
+    showMessageNotification(conversation);
+  }
+}
+
+function showMessageNotification(conversation) {
+  const title = conversationName(conversation);
+  const body = String(conversation.last_message_preview || "New message").slice(0, 180);
+  const native = window.webkit?.messageHandlers?.penguinNotify;
+  if (native) {
+    native.postMessage({ title, body, conversationId: conversation.conversation_id });
+    return;
+  }
+  if (typeof Notification !== "function") return;
+  const show = () => {
+    const notification = new Notification(title, { body, tag: conversation.conversation_id, silent: false });
+    notification.onclick = () => {
+      window.focus();
+      window.penguinOpenConversation(conversation.conversation_id);
+      notification.close();
+    };
+  };
+  if (Notification.permission === "granted") show();
+  else if (Notification.permission === "default") Notification.requestPermission().then((result) => {
+    if (result === "granted") show();
+  });
+}
+
+// Called from notification clicks (browser) and from the desktop app.
+window.penguinOpenConversation = (conversationId) => {
+  const conversation = state.conversations.find((candidate) => candidate.conversation_id === conversationId);
+  if (!conversation) return;
+  if (state.view !== "inbox") {
+    state.view = "inbox";
+    renderView();
+  }
+  selectConversation(conversation);
+};
+
 let inboxWarmupStarted = false;
 
 // After the first list load, quietly cache the top conversations so opening them is instant.
@@ -6781,7 +6831,11 @@ async function loadConversations({
     const payload = await api(
       `/penguin-connect/conversations${queryString ? `?${queryString}` : ""}`,
     );
+    const previousUnread = new Map(
+      state.conversations.map((conversation) => [conversation.conversation_id, Number(conversation.unread_count || 0)]),
+    );
     state.conversations = applyLocalConversationEdits(payload.conversations || [], requestedAt);
+    notifyNewMessages(previousUnread);
     if (state.conversations.length) window.setTimeout(() => warmTopConversations(), 1500);
     persistConversationSnapshot().catch(() => {});
     const changed = previousFingerprint !== conversationsFingerprint(state.conversations);
