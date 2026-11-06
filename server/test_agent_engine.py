@@ -26,6 +26,7 @@ class AgentEngineTest(unittest.TestCase):
         self.assertIn("mcp_servers.penguin_messages.command=", joined)
         self.assertIn("penguin_agent_tools_mcp.py", joined)
         self.assertIn("PENGUIN_AGENT_API_BASE", joined)
+        self.assertIn('mcp_servers.penguin_messages.default_tools_approval_mode="approve"', overrides)
 
     def test_claude_read_mode_only_allows_read_tools(self):
         command = app_module._claude_agent_command("/bin/claude", "read")

@@ -1816,6 +1816,9 @@ def _codex_agent_tools_overrides() -> list[str]:
         "-c", f"{prefix}.command={json.dumps(server['command'])}",
         "-c", f"{prefix}.args={json.dumps(server['args'])}",
         "-c", f"{prefix}.env={{PENGUIN_AGENT_API_BASE={json.dumps(env['PENGUIN_AGENT_API_BASE'])}}}",
+        # approval_policy="never" makes Codex reject MCP calls that need approval. This
+        # server only exposes read tools, so pre-approve it (and only it).
+        "-c", f'{prefix}.default_tools_approval_mode="approve"',
     ]
 
 
