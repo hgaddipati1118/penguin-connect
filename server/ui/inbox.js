@@ -2133,13 +2133,17 @@ function conversationAvatarFor(conversation, { large = false } = {}) {
   const avatar = document.createElement("span");
   avatar.className = `person-avatar group-avatar ${provider}${large ? " large" : ""}`;
   avatar.setAttribute("aria-label", `${name} group`);
-  const participants = conversationParticipants(conversation).slice(0, 3);
-  for (const [index, participant] of participants.entries()) {
+  // Named people first; a bare phone number has no useful initials ("+"), so show a glyph.
+  const isUnnamed = (participantName) => !/[a-z]/i.test(participantName) || participantName.includes("@");
+  const participants = conversationParticipants(conversation)
+    .map((participant) => [participant, participantDisplayName(participant, conversation)])
+    .sort(([, left], [, right]) => Number(isUnnamed(left)) - Number(isUnnamed(right)))
+    .slice(0, 3);
+  for (const [index, [, participantName]] of participants.entries()) {
     const member = document.createElement("span");
-    const participantName = participantDisplayName(participant, conversation);
     member.className = "group-avatar-member";
     member.style.setProperty("--member-index", String(index));
-    member.textContent = initials(participantName);
+    member.textContent = isUnnamed(participantName) ? "👤" : initials(participantName);
     member.title = participantName;
     avatar.append(member);
   }
