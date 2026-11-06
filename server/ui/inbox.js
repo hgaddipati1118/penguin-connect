@@ -6746,10 +6746,11 @@ async function loadConversations({
     if (discoverIMessages) query.set("include_imessage", "true");
     if (discoverSlack) query.set("include_slack", "true");
     const queryString = query.toString();
+    const requestedAt = Date.now();
     const payload = await api(
       `/penguin-connect/conversations${queryString ? `?${queryString}` : ""}`,
     );
-    state.conversations = payload.conversations || [];
+    state.conversations = applyLocalConversationEdits(payload.conversations || [], requestedAt);
     persistConversationSnapshot().catch(() => {});
     const changed = previousFingerprint !== conversationsFingerprint(state.conversations);
     if (keepSelection && state.selected) {
@@ -8550,6 +8551,32 @@ function updateSelectedConversationManagement(management) {
   renderConversationList();
 }
 
+// Archive/pin edits made after a list request started must survive that response,
+// otherwise a reload already in flight puts the conversation straight back.
+const localConversationEdits = new Map();
+const LOCAL_EDIT_TTL_MS = 15000;
+
+function rememberLocalConversationEdit(conversationId, fields) {
+  const existing = localConversationEdits.get(conversationId);
+  localConversationEdits.set(conversationId, {
+    fields: { ...(existing?.fields || {}), ...fields },
+    at: Date.now(),
+  });
+}
+
+function applyLocalConversationEdits(conversations, requestedAt) {
+  const now = Date.now();
+  for (const [conversationId, edit] of localConversationEdits) {
+    if (now - edit.at > LOCAL_EDIT_TTL_MS) localConversationEdits.delete(conversationId);
+  }
+  if (!localConversationEdits.size) return conversations;
+  return conversations.map((conversation) => {
+    const edit = localConversationEdits.get(conversation.conversation_id);
+    // Only override responses that may predate the edit.
+    return edit && edit.at >= requestedAt - 1000 ? { ...conversation, ...edit.fields } : conversation;
+  });
+}
+
 async function setConversationArchived(
   conversation,
   archived,
@@ -8557,6 +8584,7 @@ async function setConversationArchived(
 ) {
   const previous = previousValue;
   conversation.is_archived = archived;
+  rememberLocalConversationEdit(conversation.conversation_id, { is_archived: archived });
   invalidateConversationProjection();
   renderConversationList();
   if (select) selectConversation(conversation);
@@ -8572,6 +8600,7 @@ async function setConversationArchived(
     invalidateConversationProjection();
   } catch (error) {
     conversation.is_archived = previous;
+    localConversationEdits.delete(conversation.conversation_id);
     invalidateConversationProjection();
     renderConversationList();
     toast(`Could not ${archived ? "archive" : "restore"}: ${error.message}`, "error");
@@ -8582,6 +8611,7 @@ async function setConversationPinned(conversation, pinned = !conversation.is_pin
   if (!conversation) return;
   const previous = Boolean(conversation.is_pinned);
   conversation.is_pinned = pinned;
+  rememberLocalConversationEdit(conversation.conversation_id, { is_pinned: pinned });
   invalidateConversationProjection();
   renderConversationList();
   try {

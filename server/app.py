@@ -4560,6 +4560,37 @@ def _native_imessage_unread_counts(conversations: list[dict]) -> dict[str, int]:
             native.close()
 
 
+def _ensure_read_overrides_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS penguin_connect_read_overrides (
+               conversation_id TEXT PRIMARY KEY,
+               unread INTEGER NOT NULL,
+               set_at TEXT NOT NULL
+           )"""
+    )
+
+
+def _active_read_overrides(conn: sqlite3.Connection) -> dict[str, bool]:
+    """Read/unread marks made in Penguin that are newer than the latest incoming message.
+
+    For iMessage the unread count comes from Messages itself, which Penguin can't write to.
+    An explicit mark in Penguin wins until someone sends something newer.
+    """
+    _ensure_read_overrides_table(conn)
+    rows = conn.execute(
+        """SELECT o.conversation_id, o.unread
+           FROM penguin_connect_read_overrides o
+           WHERE o.set_at >= COALESCE((
+               SELECT MAX(m.message_timestamp)
+               FROM penguin_connect_messages m
+               WHERE m.conversation_id = o.conversation_id
+                 AND m.direction NOT IN ('manual_to_imessage', 'email_to_imessage')
+                 AND COALESCE(json_extract(m.metadata, '$.is_from_me'), 0) = 0
+           ), '')"""
+    ).fetchall()
+    return {str(row["conversation_id"]): bool(row["unread"]) for row in rows}
+
+
 def _attach_conversation_unread_counts(conn: sqlite3.Connection, result: dict) -> dict:
     counts = _conversation_unread_counts(conn)
     conversations = [
@@ -4568,12 +4599,19 @@ def _attach_conversation_unread_counts(conn: sqlite3.Connection, result: dict) -
         if isinstance(conversation, dict)
     ]
     native_counts = _native_imessage_unread_counts(conversations)
+    try:
+        overrides = _active_read_overrides(conn)
+    except sqlite3.Error:
+        overrides = {}
     for conversation in conversations:
         if isinstance(conversation, dict):
             unread_count = counts.get(conversation.get("conversation_id"), 0)
             route = str(conversation.get("source_chat_id") or "").strip()
             if route in native_counts:
                 unread_count = native_counts[route]
+            override = overrides.get(str(conversation.get("conversation_id") or ""))
+            if override is not None:
+                unread_count = max(1, unread_count) if override else 0
             conversation["unread_count"] = unread_count
             conversation["has_unread"] = unread_count > 0
     return result
@@ -5069,6 +5107,13 @@ def _set_conversation_read_state(conn: sqlite3.Connection, conversation_id: str,
         "UPDATE penguin_connect_messages SET is_read = ? WHERE conversation_id = ?",
         (0 if unread else 1, conversation_id),
     ).rowcount
+    _ensure_read_overrides_table(conn)
+    conn.execute(
+        """INSERT INTO penguin_connect_read_overrides (conversation_id, unread, set_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT(conversation_id) DO UPDATE SET unread = excluded.unread, set_at = excluded.set_at""",
+        (conversation_id, 1 if unread else 0, _utc_now_iso()),
+    )
     unread_count = conn.execute(
         "SELECT COUNT(*) FROM penguin_connect_messages WHERE conversation_id = ? AND COALESCE(is_read, 0) = 0",
         (conversation_id,),
