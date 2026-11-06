@@ -9235,6 +9235,52 @@ el.cancelScheduleButton.addEventListener("click", () => el.scheduleDialog.close(
 el.scheduleDialog.addEventListener("click", (event) => {
   if (event.target === el.scheduleDialog) el.scheduleDialog.close();
 });
+function attachComposerFiles(files) {
+  const added = [...(files || [])].filter((file) => file && file.size > 0);
+  if (!added.length) return false;
+  state.attachments.push(...added);
+  renderAttachmentPreview();
+  updateSendButton();
+  scheduleDraftPersistence();
+  return true;
+}
+
+// Pasting a screenshot or copied file attaches it instead of inserting its file path.
+document.querySelector("#messageComposer")?.addEventListener("paste", (event) => {
+  const clipboard = event.clipboardData;
+  if (!clipboard) return;
+  const files = [...(clipboard.files || [])];
+  if (!files.length) {
+    for (const item of clipboard.items || []) {
+      if (item.kind === "file") {
+        const file = item.getAsFile();
+        if (file) files.push(file);
+      }
+    }
+  }
+  if (!files.length) return;
+  event.preventDefault();
+  if (attachComposerFiles(files)) {
+    toast(files.length === 1 ? "Attached pasted file" : `Attached ${files.length} pasted files`);
+  }
+});
+
+el.messageComposerShell?.addEventListener("dragover", (event) => {
+  if ([...(event.dataTransfer?.types || [])].includes("Files")) {
+    event.preventDefault();
+    el.messageComposerShell.classList.add("is-drop-target");
+  }
+});
+el.messageComposerShell?.addEventListener("dragleave", () => {
+  el.messageComposerShell.classList.remove("is-drop-target");
+});
+el.messageComposerShell?.addEventListener("drop", (event) => {
+  el.messageComposerShell.classList.remove("is-drop-target");
+  if (!event.dataTransfer?.files?.length) return;
+  event.preventDefault();
+  attachComposerFiles(event.dataTransfer.files);
+});
+
 el.attachmentInput.addEventListener("change", () => {
   state.attachments.push(...el.attachmentInput.files);
   el.attachmentInput.value = "";

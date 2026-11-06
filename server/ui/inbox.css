@@ -5242,3 +5242,8 @@ mark {
   font-size: 12px;
   line-height: 1;
 }
+
+.is-drop-target {
+  outline: 2px dashed color-mix(in srgb, var(--accent, #4457c4) 55%, transparent);
+  outline-offset: 2px;
+}
