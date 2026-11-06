@@ -87,7 +87,18 @@ def _ollama_url() -> str:
     return (os.environ.get("PENGUIN_CONNECT_OLLAMA_URL") or "http://127.0.0.1:11434").rstrip("/")
 
 
+def _ensure_search_volume_mounted() -> None:
+    # An index configured on an external drive must not silently fall back to creating
+    # /Volumes/<name>/... on the boot disk when that drive is unmounted.
+    parts = SEARCH_DB_PATH.parts
+    if len(parts) > 2 and parts[1] == "Volumes":
+        volume = Path("/", "Volumes", parts[2])
+        if not os.path.ismount(volume):
+            raise sqlite3.OperationalError(f"search index volume not mounted: {volume}")
+
+
 def _search_connection() -> sqlite3.Connection:
+    _ensure_search_volume_mounted()
     SEARCH_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(SEARCH_DB_PATH))
     conn.row_factory = sqlite3.Row
@@ -642,7 +653,8 @@ def refresh_message_search_index(
         existing = {
             row["document_key"]: row
             for row in conn.execute(
-                "SELECT id, document_key, content_hash FROM search_documents WHERE kind = 'message'"
+                "SELECT id, document_key, content_hash FROM search_documents "
+                "WHERE kind = 'message' AND document_key LIKE 'message:%'"
             ).fetchall()
         }
         seen = set()
@@ -768,6 +780,123 @@ def refresh_message_search_index(
         conn.close()
 
 
+IMESSAGE_HISTORY_CURSOR_KEY = "imessage_history_last_rowid"
+
+
+def _conversation_ids_by_chat_identifier() -> dict[str, str]:
+    if not DB_PATH.exists():
+        return {}
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    try:
+        rows = conn.execute(
+            """SELECT conversation_id, source_chat_identifier
+               FROM penguin_connect_conversations
+               WHERE source_provider IN ('imessage', 'sms', 'rcs')
+                 AND COALESCE(source_chat_identifier, '') <> ''
+               ORDER BY updated_at DESC"""
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+    mapping: dict[str, str] = {}
+    for conversation_id, identifier in rows:
+        mapping.setdefault(str(identifier), str(conversation_id))
+    return mapping
+
+
+def refresh_imessage_history_index(
+    *,
+    batch_size: int = 5_000,
+    max_batches: int = 400,
+) -> dict[str, Any]:
+    """Index Apple Messages history from chat.db into the lexical index, incrementally.
+
+    Penguin's message cache only holds recently viewed threads, so this is what makes
+    years-old messages searchable. Progress is stored as the last scanned chat.db ROWID,
+    so an interrupted build resumes where it stopped and later calls only add new rows.
+    """
+    from browse_sources import list_imessage_history_for_index
+
+    conn = _search_connection()
+    try:
+        _create_lexical_schema(conn)
+        row = conn.execute(
+            "SELECT value FROM search_index_meta WHERE key = ?",
+            (IMESSAGE_HISTORY_CURSOR_KEY,),
+        ).fetchone()
+        cursor_rowid = int(row["value"]) if row else 0
+        conversation_ids = _conversation_ids_by_chat_identifier()
+        indexed = 0
+        batches = 0
+        while batches < max_batches:
+            result = list_imessage_history_for_index(cursor_rowid, batch_size)
+            if not result.get("available"):
+                return {
+                    "success": False,
+                    "reason": result.get("reason") or "not_available",
+                    "indexed": indexed,
+                    "last_rowid": cursor_rowid,
+                }
+            next_rowid = int(result.get("max_rowid") or cursor_rowid)
+            for message in result.get("messages") or []:
+                key = f"imessage:{message['rowid']}"
+                sender = "Me" if message.get("is_from_me") else (message.get("handle") or "")
+                title = _clean_text(message.get("chat_name") or "Conversation", 1_000)
+                body = _clean_text(" | ".join(part for part in (sender, message.get("text") or "") if part))
+                metadata = json.dumps(
+                    {
+                        "conversation_id": conversation_ids.get(message.get("chat_identifier") or "", ""),
+                        "provider_message_id": key,
+                        "chat_id": message.get("chat_id") or "",
+                        "chat_identifier": message.get("chat_identifier") or "",
+                        "is_from_me": bool(message.get("is_from_me")),
+                        "source": "chat.db",
+                    },
+                    sort_keys=True,
+                )
+                existing = conn.execute(
+                    "SELECT id FROM search_documents WHERE document_key = ?",
+                    (key,),
+                ).fetchone()
+                if existing:
+                    # A message can belong to several chats; keep the first indexed copy.
+                    continue
+                inserted = conn.execute(
+                    """INSERT INTO search_documents
+                       (document_key, kind, source_id, title, body, path, provider, timestamp, content_hash, metadata)
+                       VALUES (?, 'message', ?, ?, ?, '', ?, ?, ?, ?)""",
+                    (
+                        key,
+                        key,
+                        title,
+                        body,
+                        message.get("source_provider") or "imessage",
+                        message.get("timestamp") or "",
+                        _content_hash(title, body, metadata),
+                        metadata,
+                    ),
+                )
+                conn.execute(
+                    "INSERT INTO search_documents_fts(rowid, document_key, title, body) VALUES (?, ?, ?, ?)",
+                    (int(inserted.lastrowid), key, title, body),
+                )
+                indexed += 1
+            batches += 1
+            advanced = next_rowid > cursor_rowid
+            cursor_rowid = next_rowid
+            conn.execute(
+                "INSERT OR REPLACE INTO search_index_meta(key, value) VALUES (?, ?)",
+                (IMESSAGE_HISTORY_CURSOR_KEY, str(cursor_rowid)),
+            )
+            conn.commit()
+            if not advanced:
+                break
+        return {"success": True, "indexed": indexed, "batches": batches, "last_rowid": cursor_rowid}
+    finally:
+        conn.close()
+
+
 def _fts_query(query: str) -> str:
     terms = re.findall(r"[\w@.+-]+", query.lower(), flags=re.UNICODE)
     return " OR ".join(f'"{term.replace(chr(34), chr(34) * 2)}"' for term in terms[:16])
@@ -846,6 +975,21 @@ def hybrid_search(
                 except Exception:
                     semantic_used = False
 
+        history_keys = {
+            item["row"]["document_key"]
+            for item in ranked.values()
+            if str(item["row"]["document_key"]).startswith("imessage:")
+        }
+        for document_id, item in list(ranked.items()):
+            row_key = str(item["row"]["document_key"])
+            if not row_key.startswith("message:"):
+                continue
+            try:
+                cached_id = json.loads(item["row"]["metadata"] or "{}").get("provider_message_id")
+            except Exception:
+                cached_id = None
+            if cached_id and cached_id in history_keys:
+                del ranked[document_id]
         ordered = sorted(ranked.values(), key=lambda item: item["score"], reverse=True)[:safe_limit]
         results = []
         for item in ordered:

@@ -499,6 +499,100 @@ def search_imessage_messages(query, limit=50):
         conn.close()
 
 
+def list_imessage_history_for_index(after_rowid=0, limit=5000):
+    """Return up to `limit` text-bearing messages with ROWID > after_rowid, oldest first.
+
+    Feeds the full-history search index. Reads chat.db read-only and decodes
+    attributedBody for messages whose plain `text` column is empty.
+    """
+    if not os.path.exists(IMESSAGE_DB):
+        return {"available": False, "reason": "chat.db not found", "messages": []}
+    conn = sqlite3.connect(f"file:{IMESSAGE_DB}?mode=ro", uri=True)
+    try:
+        cur = conn.cursor()
+        room_name_expr = _chat_room_name_expr(conn)
+        safe_limit = max(1, min(int(limit or 5000), 50_000))
+        cur.execute(
+            f"""
+            SELECT
+                m.ROWID,
+                m.text,
+                m.attributedBody,
+                m.date,
+                m.is_from_me,
+                h.id,
+                c.guid,
+                c.chat_identifier,
+                c.display_name,
+                {room_name_expr},
+                c.service_name
+            FROM message m
+            JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+            JOIN chat c ON c.ROWID = cmj.chat_id
+            LEFT JOIN handle h ON m.handle_id = h.ROWID
+            WHERE m.ROWID > ?
+              AND c.service_name IN ('iMessage', 'SMS', 'RCS')
+              AND (m.text IS NOT NULL OR m.attributedBody IS NOT NULL)
+              AND COALESCE(m.associated_message_type, 0) = 0
+            ORDER BY m.ROWID ASC
+            LIMIT ?
+            """,
+            (int(after_rowid or 0), safe_limit),
+        )
+        messages = []
+        max_rowid = int(after_rowid or 0)
+        for (
+            rowid,
+            text,
+            attributed_body,
+            date,
+            is_from_me,
+            handle_id,
+            chat_guid,
+            chat_identifier,
+            display_name,
+            room_name,
+            chat_service,
+        ) in cur.fetchall():
+            max_rowid = max(max_rowid, int(rowid))
+            if not text and attributed_body:
+                text = _extract_text_from_attributed_body(attributed_body)
+            text = (text or "").replace("\ufffc", "").strip()
+            if not text:
+                continue
+            messages.append(
+                {
+                    "native_message_id": str(rowid),
+                    "rowid": int(rowid),
+                    "text": text,
+                    "timestamp": _apple_ts_to_iso(date),
+                    "is_from_me": bool(is_from_me),
+                    "handle": handle_id or "",
+                    "chat_id": chat_guid or "",
+                    "chat_identifier": chat_identifier or "",
+                    "chat_name": _preferred_source_chat_title(
+                        display_name, room_name, chat_identifier, chat_guid
+                    ),
+                    "source_provider": _service_to_provider(chat_service),
+                }
+            )
+        # Report the last scanned ROWID even when every row in the batch was empty or a
+        # tapback, so the caller's cursor always advances.
+        scanned_rowid = cur.execute(
+            "SELECT MAX(ROWID) FROM (SELECT ROWID FROM message WHERE ROWID > ? ORDER BY ROWID LIMIT ?)",
+            (int(after_rowid or 0), safe_limit),
+        ).fetchone()[0]
+        return {
+            "available": True,
+            "messages": messages,
+            "max_rowid": max(max_rowid, int(scanned_rowid or 0)),
+        }
+    except Exception as exc:
+        return {"available": False, "reason": str(exc), "messages": []}
+    finally:
+        conn.close()
+
+
 def list_imessage_attachment_messages(limit=1000, offset=0):
     """Return recent iMessage/SMS/RCS messages with attachment metadata."""
     if not os.path.exists(IMESSAGE_DB):

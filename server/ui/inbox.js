@@ -246,6 +246,7 @@ const el = {
   agentQuestion: document.querySelector("#agentQuestion"),
   agentContextLabel: document.querySelector("#agentContextLabel"),
   agentModeSelect: document.querySelector("#agentModeSelect"),
+  agentEngineSelect: document.querySelector("#agentEngineSelect"),
   agentModeHelp: document.querySelector("#agentModeHelp"),
   askAgentButton: document.querySelector("#askAgentButton"),
   agentQuickActions: document.querySelector("#agentQuickActions"),
@@ -7723,12 +7724,12 @@ function agentActivityCopy(event) {
     return {
       id: "codex-started",
       kind: "workspace",
-      text: `Opened Slashy workspace in ${event.mode || "read"} mode`,
+      text: `Opened Slashy workspace in ${event.mode || "read"} mode${event.engine === "claude" ? " · Claude" : ""}`,
       status: "completed",
     };
   }
   if (event.type === "error") {
-    return { id, kind: "error", text: event.message || "Codex failed", status: "failed" };
+    return { id, kind: "error", text: event.message || "Agent failed", status: "failed" };
   }
   if (event.type === "penguin.integration_warning") {
     return {
@@ -7790,7 +7791,7 @@ function agentActivityCopy(event) {
     return {
       id: "codex-turn",
       kind: "reasoning",
-      text: "Codex is reasoning",
+      text: el.agentEngineSelect?.value === "claude" ? "Claude is reasoning" : "Codex is reasoning",
       status: "in_progress",
     };
   }
@@ -7873,7 +7874,7 @@ async function streamAgentPrompt(prompt, mode, confirmed, onAnswer = () => {}) {
   const response = await fetch("/penguin-connect/codex/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, mode, confirmed }),
+    body: JSON.stringify({ prompt, mode, confirmed, engine: el.agentEngineSelect?.value || "codex" }),
   });
   if (!response.ok) {
     let payload = {};
@@ -9126,6 +9127,19 @@ el.gifDialog.addEventListener("keydown", (event) => {
 });
 
 el.agentQuestion.addEventListener("input", updateAgentButton);
+try {
+  const savedEngine = localStorage.getItem("penguin-agent-engine");
+  if (savedEngine && el.agentEngineSelect) el.agentEngineSelect.value = savedEngine;
+} catch (_error) {
+  // localStorage unavailable; keep the default engine.
+}
+el.agentEngineSelect?.addEventListener("change", () => {
+  try {
+    localStorage.setItem("penguin-agent-engine", el.agentEngineSelect.value);
+  } catch (_error) {
+    // Non-fatal: the choice still applies to this session.
+  }
+});
 el.agentModeSelect.addEventListener("change", () => {
   if (el.agentModeSelect.value === "yolo" && !state.agent.yoloArmed) {
     const armed = window.confirm(
