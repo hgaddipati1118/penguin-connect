@@ -273,7 +273,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         window.center()
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
-        window.contentView = webView
+        // The web view fills the transparent title bar and swallows its mouse events, so
+        // give the top edge back to the window for dragging and double-click zoom.
+        let container = NSView(frame: rect)
+        webView.frame = container.bounds
+        webView.autoresizingMask = [.width, .height]
+        container.addSubview(webView)
+        let dragStrip = WindowDragStripView(
+            frame: NSRect(x: 0, y: rect.height - 28, width: rect.width, height: 28)
+        )
+        dragStrip.autoresizingMask = [.width, .minYMargin]
+        container.addSubview(dragStrip)
+        window.contentView = container
         window.makeKeyAndOrderFront(nil)
     }
 
@@ -980,5 +991,20 @@ struct PenguinApplication {
         app.delegate = delegate
         app.setActivationPolicy(.regular)
         app.run()
+    }
+}
+
+
+/// Transparent strip over the top edge of the window that drags the window and zooms on
+/// double-click, matching a normal macOS title bar.
+final class WindowDragStripView: NSView {
+    override var mouseDownCanMoveWindow: Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 {
+            window?.performZoom(nil)
+        } else {
+            window?.performDrag(with: event)
+        }
     }
 }
