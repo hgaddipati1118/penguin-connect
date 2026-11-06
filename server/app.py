@@ -25,6 +25,7 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
@@ -4837,6 +4838,27 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="PenguinConnect", version="1.0.0", lifespan=lifespan)
 
+# Paths whose bodies are already-compressed media, need byte-range seeking, or must stream
+# incrementally. Everything else (JSON lists, UI assets) is gzip'd: the conversation list alone is
+# ~1.7 MB of JSON, which dominates load time when the UI reaches the bridge over a network tunnel.
+_GZIP_EXCLUDED_PATH_PARTS = ("/attachments/", "/gifs/download", "/codex/stream")
+
+
+class _SelectiveGZipMiddleware:
+    def __init__(self, app, minimum_size: int = 1024, compresslevel: int = 5) -> None:
+        self.app = app
+        self.gzip_app = GZipMiddleware(app, minimum_size=minimum_size, compresslevel=compresslevel)
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and not any(
+            part in scope.get("path", "") for part in _GZIP_EXCLUDED_PATH_PARTS
+        ):
+            await self.gzip_app(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(_SelectiveGZipMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
