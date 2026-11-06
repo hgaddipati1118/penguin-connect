@@ -1854,6 +1854,24 @@ function conversationRowFingerprint(conversation) {
   ].join("\u001f");
 }
 
+const TAPBACK_PREVIEW_EMOJI = [
+  [/^Loved\s+[“"]/, "❤️"],
+  [/^Liked\s+[“"]/, "👍"],
+  [/^Disliked\s+[“"]/, "👎"],
+  [/^Laughed at\s+[“"]/, "😂"],
+  [/^Emphasized\s+[“"]/, "‼️"],
+  [/^Questioned\s+[“"]/, "❓"],
+];
+
+function conversationReactionEmoji(preview) {
+  const text = String(preview || "").trim();
+  for (const [pattern, emoji] of TAPBACK_PREVIEW_EMOJI) {
+    if (pattern.test(text)) return emoji;
+  }
+  const custom = text.match(/^Reacted\s+(\S+)\s+to\s+[“"]/);
+  return custom ? custom[1] : "";
+}
+
 function reusableConversationRow(conversation, existingRow = null) {
   const row = existingRow || document.createElement("button");
   if (!existingRow) {
@@ -1876,7 +1894,20 @@ function reusableConversationRow(conversation, existingRow = null) {
 
   const name = conversationName(conversation);
   const fragment = document.createDocumentFragment();
-  fragment.append(conversationAvatarFor(conversation));
+  const reaction = conversationReactionEmoji(conversation.last_message_preview);
+  if (reaction) {
+    // Like Messages: when the latest activity is a tapback, badge the avatar with it.
+    const avatarWrap = document.createElement("span");
+    avatarWrap.className = "conversation-avatar-wrap";
+    const badge = document.createElement("span");
+    badge.className = "conversation-reaction-badge";
+    badge.textContent = reaction;
+    badge.setAttribute("aria-hidden", "true");
+    avatarWrap.append(conversationAvatarFor(conversation), badge);
+    fragment.append(avatarWrap);
+  } else {
+    fragment.append(conversationAvatarFor(conversation));
+  }
 
   const copy = document.createElement("span");
   copy.className = "conversation-copy";
@@ -6651,7 +6682,12 @@ function rememberWorkspaceRevision(payload) {
 }
 
 async function refreshWorkspaceIfChanged() {
-  if (document.visibilityState !== "visible" || state.workspaceRefreshBusy) return;
+  if (document.visibilityState !== "visible") return;
+  if (state.workspaceRefreshBusy) {
+    // A push arrived mid-refresh; run once more afterwards so nothing is missed.
+    state.workspaceRefreshQueued = true;
+    return;
+  }
   state.workspaceRefreshBusy = true;
   try {
     const revision = await loadWorkspaceRevision();
@@ -6674,8 +6710,10 @@ async function refreshWorkspaceIfChanged() {
     await Promise.all([
       loadConversations({
         keepSelection: true,
-        discoverWhatsApp: whatsappChanged,
-        discoverIMessages: imessageChanged,
+        // With server live sync, new iMessage/WhatsApp rows are already in the cache;
+        // source discovery would only add a slow full rescan.
+        discoverWhatsApp: whatsappChanged && !revision.live_sync,
+        discoverIMessages: imessageChanged && !revision.live_sync,
         discoverSlack: slackChanged,
       }),
       selectedChanged
@@ -6698,7 +6736,20 @@ async function refreshWorkspaceIfChanged() {
     // Keep the last good local view and retry on the next revision probe.
   } finally {
     state.workspaceRefreshBusy = false;
+    if (state.workspaceRefreshQueued) {
+      state.workspaceRefreshQueued = false;
+      window.setTimeout(() => refreshWorkspaceIfChanged(), 0);
+    }
   }
+}
+
+function connectWorkspaceEvents() {
+  if (typeof EventSource !== "function") return;
+  const source = new EventSource("/penguin-connect/events");
+  source.addEventListener("workspace", () => {
+    refreshWorkspaceIfChanged();
+  });
+  // EventSource reconnects by itself; the 5s revision poll covers any gap.
 }
 
 async function loadContacts(query = "", {
@@ -9588,6 +9639,10 @@ async function start() {
 }
 
 start();
+connectWorkspaceEvents();
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") refreshWorkspaceIfChanged();
+});
 
 window.setInterval(async () => {
   await refreshWorkspaceIfChanged();

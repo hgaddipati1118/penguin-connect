@@ -31,10 +31,10 @@ def live_sync_enabled() -> bool:
 def live_sync_interval_seconds() -> float:
     raw = (os.environ.get("PENGUIN_CONNECT_LIVE_SYNC_INTERVAL_SECONDS") or "").strip()
     try:
-        value = float(raw) if raw else 2.0
+        value = float(raw) if raw else 0.5
     except ValueError:
-        value = 2.0
-    return max(0.5, min(value, 60.0))
+        value = 0.5
+    return max(0.25, min(value, 60.0))
 
 
 def file_token(paths: Iterable[str | Path]) -> tuple:
@@ -95,6 +95,27 @@ def whatsapp_changes(db_path: str | Path, after_rowid: int) -> tuple[int, list[s
         return max_rowid, [str(row[0]) for row in rows if row[0]]
     finally:
         conn.close()
+
+
+class ChangeSignal:
+    """Monotonic counter that push listeners (SSE) can wait on without busy work."""
+
+    def __init__(self) -> None:
+        self._condition = threading.Condition()
+        self.version = 0
+
+    def bump(self) -> None:
+        with self._condition:
+            self.version += 1
+            self._condition.notify_all()
+
+    def wait_for_change(self, seen: int, timeout: float) -> int:
+        with self._condition:
+            self._condition.wait_for(lambda: self.version != seen, timeout=timeout)
+            return self.version
+
+
+workspace_changed = ChangeSignal()
 
 
 class SourceWatcher:
@@ -163,6 +184,7 @@ class LiveSyncWorker:
             started = time.monotonic()
             refreshed = self.tick()
             if refreshed:
+                workspace_changed.bump()
                 self._log(
                     "live_sync_refreshed",
                     sources=refreshed,

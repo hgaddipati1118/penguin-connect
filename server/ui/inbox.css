@@ -5218,3 +5218,27 @@ mark {
 .message-link:hover {
   text-decoration-color: currentColor;
 }
+
+.conversation-avatar-wrap {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+
+.conversation-reaction-badge {
+  position: absolute;
+  top: -5px;
+  right: -7px;
+  display: inline-flex;
+  min-width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+  border: 2px solid var(--paper, #fff);
+  border-radius: 999px;
+  background: var(--paper-strong, #fff);
+  box-shadow: 0 1px 3px rgba(31, 41, 36, 0.18);
+  font-size: 12px;
+  line-height: 1;
+}

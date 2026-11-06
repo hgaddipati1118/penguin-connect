@@ -11,6 +11,7 @@ import os
 import re
 import shlex
 import shutil
+import asyncio
 import sqlite3
 import subprocess
 import sys
@@ -24,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
@@ -70,7 +71,7 @@ from search_index import (
     spotlight_file_search,
 )
 from watcher import get_sync_status, refresh_contacts_now, start_watchers, stop_watchers
-from live_sync import LiveSyncWorker, SourceWatcher, imessage_changes, live_sync_enabled, whatsapp_changes
+from live_sync import LiveSyncWorker, SourceWatcher, imessage_changes, live_sync_enabled, whatsapp_changes, workspace_changed
 
 
 def _startup_catchup_batch_pause_seconds() -> float:
@@ -5200,7 +5201,7 @@ app = FastAPI(title="PenguinConnect", version="1.0.0", lifespan=lifespan)
 # Paths whose bodies are already-compressed media, need byte-range seeking, or must stream
 # incrementally. Everything else (JSON lists, UI assets) is gzip'd: the conversation list alone is
 # ~1.7 MB of JSON, which dominates load time when the UI reaches the bridge over a network tunnel.
-_GZIP_EXCLUDED_PATH_PARTS = ("/attachments/", "/gifs/download", "/codex/stream")
+_GZIP_EXCLUDED_PATH_PARTS = ("/attachments/", "/gifs/download", "/codex/stream", "/penguin-connect/events")
 
 
 class _SelectiveGZipMiddleware:
@@ -6367,9 +6368,38 @@ def _workspace_revisions(conn: sqlite3.Connection) -> dict[str, str]:
 def get_penguinconnect_workspace_revision():
     conn = get_connection()
     try:
-        return {**_workspace_revisions(conn), "poll_after_ms": 5000}
+        return {
+            **_workspace_revisions(conn),
+            "poll_after_ms": 5000,
+            # The server copies new source messages into the cache itself, so clients can
+            # skip slow source discovery when only iMessage/WhatsApp changed.
+            "live_sync": bool(_live_sync_worker is not None and live_sync_enabled()),
+        }
     finally:
         conn.close()
+
+
+@app.get("/api/penguin-connect/events")
+@app.get("/penguin-connect/events")
+async def stream_penguinconnect_events(request: Request):
+    """Server-sent events: one `workspace` event each time new messages land in the cache."""
+
+    async def events():
+        seen = workspace_changed.version
+        yield "retry: 2000\n\n"
+        while not await request.is_disconnected():
+            current = await asyncio.to_thread(workspace_changed.wait_for_change, seen, 15.0)
+            if current != seen:
+                seen = current
+                yield f"event: workspace\ndata: {current}\n\n"
+            else:
+                yield ": keepalive\n\n"
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/penguin-connect/conversations/{conversation_id}/messages")
