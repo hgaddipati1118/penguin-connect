@@ -71,6 +71,7 @@ from search_index import (
     spotlight_file_search,
 )
 from watcher import get_sync_status, refresh_contacts_now, start_watchers, stop_watchers
+from link_preview import get_link_preview
 from live_sync import LiveSyncWorker, SourceWatcher, imessage_changes, live_sync_enabled, whatsapp_changes, workspace_changed
 
 
@@ -6377,6 +6378,17 @@ def get_penguinconnect_workspace_revision():
         }
     finally:
         conn.close()
+
+
+@app.get("/api/penguin-connect/link-preview")
+@app.get("/penguin-connect/link-preview")
+def get_penguinconnect_link_preview(url: str = Query(..., min_length=4, max_length=2048)):
+    preview = get_link_preview(url)
+    return Response(
+        content=json.dumps(preview),
+        media_type="application/json",
+        headers={"Cache-Control": "private, max-age=21600"},
+    )
 
 
 @app.get("/api/penguin-connect/events")

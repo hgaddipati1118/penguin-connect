@@ -2911,6 +2911,62 @@ function withoutEchoedManualSends(messages) {
   });
 }
 
+const linkPreviewCache = new Map();
+
+function fetchLinkPreview(url) {
+  if (!linkPreviewCache.has(url)) {
+    linkPreviewCache.set(
+      url,
+      api(`/penguin-connect/link-preview?url=${encodeURIComponent(url)}`).catch(() => ({ available: false })),
+    );
+  }
+  return linkPreviewCache.get(url);
+}
+
+function renderLinkPreview(url) {
+  const card = document.createElement("a");
+  card.className = "link-preview";
+  card.href = url;
+  card.target = "_blank";
+  card.rel = "noopener noreferrer";
+  card.hidden = true;
+  fetchLinkPreview(url).then((preview) => {
+    if (!preview?.available) {
+      card.remove();
+      return;
+    }
+    if (preview.image) {
+      const image = document.createElement("img");
+      image.className = "link-preview-image";
+      image.loading = "lazy";
+      image.alt = "";
+      image.referrerPolicy = "no-referrer";
+      image.src = preview.image;
+      image.addEventListener("error", () => image.remove());
+      card.append(image);
+    }
+    const copy = document.createElement("span");
+    copy.className = "link-preview-copy";
+    if (preview.title) {
+      const title = document.createElement("strong");
+      title.textContent = preview.title;
+      copy.append(title);
+    }
+    if (preview.description) {
+      const description = document.createElement("span");
+      description.className = "link-preview-description";
+      description.textContent = preview.description;
+      copy.append(description);
+    }
+    const site = document.createElement("small");
+    site.textContent = preview.site_name || new URL(url).hostname;
+    copy.append(site);
+    card.append(copy);
+    card.hidden = false;
+  });
+  return card;
+}
+
 function appendLinkifiedText(container, text) {
   const value = String(text || "");
   let last = 0;
@@ -4724,6 +4780,10 @@ function renderMessages({
     appendLinkifiedText(body, message.body_text || (messageAttachments(message).length ? "" : "Empty message"));
     renderMessageTranslation(body, message);
     bubble.append(body);
+    const firstLink = body.querySelector("a.message-link");
+    if (firstLink && !message.metadata?.pending_send) {
+      bubble.append(renderLinkPreview(firstLink.href));
+    }
     const attachments = messageAttachments(message);
     if (attachments.length) {
       const list = document.createElement("div");
