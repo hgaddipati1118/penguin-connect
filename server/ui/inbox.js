@@ -4565,11 +4565,28 @@ function applyMessageGrouping(children) {
   }
 }
 
+let inboxWarmupStarted = false;
+
+// After the first list load, quietly cache the top conversations so opening them is instant.
+function warmTopConversations(limit = 15) {
+  if (inboxWarmupStarted) return;
+  inboxWarmupStarted = true;
+  const queue = visibleConversations().slice(0, limit);
+  const schedule = window.requestIdleCallback || ((callback) => window.setTimeout(callback, 120));
+  const next = () => {
+    const conversation = queue.shift();
+    if (!conversation) return;
+    preloadConversationMessages(conversation).finally(() => schedule(next, { timeout: 800 }));
+  };
+  schedule(next, { timeout: 800 });
+}
+
 function renderMessages({
   focusMessageId = "",
   preserveScroll = false,
   preserveTopAnchor = false,
 } = {}) {
+  el.messageList.classList.remove("is-switching");
   const previousScrollTop = el.messageList.scrollTop;
   const previousScrollHeight = el.messageList.scrollHeight;
   const previousBottomDistance = el.messageList.scrollHeight - el.messageList.clientHeight - el.messageList.scrollTop;
@@ -5433,7 +5450,10 @@ async function selectConversation(
     renderActionLog();
   }
   loadMentionParticipants(conversation, selectionToken);
+  // Start fetching neighbours now so the next j/k lands on a cached thread.
+  preloadAdjacentConversations(conversation);
   if (cachedMessages.length) {
+    el.messageList.classList.remove("is-switching");
     renderCachedConversationSelection(
       conversation,
       selectionToken,
@@ -5441,8 +5461,18 @@ async function selectConversation(
     );
     return;
   }
-  disposeMessageListMedia();
-  el.messageList.innerHTML = `<div class="message-loading"><span></span><span></span><span></span><span></span></div>`;
+  // Keep the previous thread (dimmed) for a beat instead of flashing a blank skeleton;
+  // most fetches finish before the skeleton would even appear.
+  el.messageList.classList.add("is-switching");
+  window.setTimeout(() => {
+    if (
+      selectionToken === state.selectionToken
+      && el.messageList.classList.contains("is-switching")
+    ) {
+      disposeMessageListMedia();
+      el.messageList.innerHTML = `<div class="message-loading"><span></span><span></span><span></span><span></span></div>`;
+    }
+  }, 220);
   selectionRenderFrame = window.requestAnimationFrame(async () => {
     if (
       selectionToken !== state.selectionToken
@@ -5470,6 +5500,7 @@ async function selectConversation(
         || state.selected?.conversation_id !== conversation.conversation_id
       ) return;
       disposeMessageListMedia();
+      el.messageList.classList.remove("is-switching");
       el.messageList.innerHTML = `<div class="pane-empty"></div>`;
       el.messageList.firstElementChild.textContent = error.message;
     }
@@ -6751,6 +6782,7 @@ async function loadConversations({
       `/penguin-connect/conversations${queryString ? `?${queryString}` : ""}`,
     );
     state.conversations = applyLocalConversationEdits(payload.conversations || [], requestedAt);
+    if (state.conversations.length) window.setTimeout(() => warmTopConversations(), 1500);
     persistConversationSnapshot().catch(() => {});
     const changed = previousFingerprint !== conversationsFingerprint(state.conversations);
     if (keepSelection && state.selected) {

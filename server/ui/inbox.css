@@ -5377,3 +5377,8 @@ mark {
     transition: none;
   }
 }
+
+#messageList.is-switching {
+  opacity: 0.55;
+  transition: opacity 90ms ease;
+}
