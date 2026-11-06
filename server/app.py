@@ -1948,6 +1948,9 @@ def _codex_stream_events(prompt: str, mode: str, confirmed: bool, engine: str = 
             "exec",
             "--ephemeral",
             "--json",
+            # The workspace may not be a trusted git dir on headless hosts; the sandbox
+            # flag below still bounds what Codex can do.
+            "--skip-git-repo-check",
             "--sandbox",
             sandbox,
             "--cd",
