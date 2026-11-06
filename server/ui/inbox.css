@@ -5299,3 +5299,8 @@ mark {
   color: var(--ink-soft, #5b625e);
   font-size: 11px;
 }
+
+/* Desktop app: the window's traffic lights overlay the top-left of the content. */
+.penguin-desktop-app .app-nav {
+  padding-top: 44px;
+}

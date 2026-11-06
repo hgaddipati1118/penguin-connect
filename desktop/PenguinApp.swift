@@ -257,6 +257,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
         configuration.userContentController.add(self, name: "penguin")
+        // Lets the web UI leave room for the traffic lights, which sit over the content.
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: "document.documentElement.classList.add('penguin-desktop-app');",
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        ))
         webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = self
         webView.uiDelegate = self
