@@ -2139,12 +2139,21 @@ function conversationAvatarFor(conversation, { large = false } = {}) {
     .map((participant) => [participant, participantDisplayName(participant, conversation)])
     .sort(([, left], [, right]) => Number(isUnnamed(left)) - Number(isUnnamed(right)))
     .slice(0, 3);
+  // Chats named like "Purav Patel, Janani Prasad" carry the names even when the
+  // participant handles don't resolve to contacts.
+  const nameParts = String(name || "")
+    .split(/\s*(?:,|&|<>|\band\b)\s*/i)
+    .map((part) => part.trim())
+    .filter((part) => /[a-z]/i.test(part) && part.length <= 40);
+  let namePartIndex = 0;
   for (const [index, [, participantName]] of participants.entries()) {
     const member = document.createElement("span");
     member.className = "group-avatar-member";
     member.style.setProperty("--member-index", String(index));
-    member.textContent = isUnnamed(participantName) ? "👤" : initials(participantName);
-    member.title = participantName;
+    let label = participantName;
+    if (isUnnamed(label) && namePartIndex < nameParts.length) label = nameParts[namePartIndex++];
+    member.textContent = isUnnamed(label) ? "👤" : initials(label);
+    member.title = label;
     avatar.append(member);
   }
   if (!participants.length) avatar.textContent = initials(name);
