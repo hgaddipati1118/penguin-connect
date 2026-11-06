@@ -70,6 +70,7 @@ from search_index import (
     spotlight_file_search,
 )
 from watcher import get_sync_status, refresh_contacts_now, start_watchers, stop_watchers
+from live_sync import LiveSyncWorker, SourceWatcher, imessage_changes, live_sync_enabled, whatsapp_changes
 
 
 def _startup_catchup_batch_pause_seconds() -> float:
@@ -870,6 +871,90 @@ def start_history_index_worker() -> None:
         name="penguinconnect-history-index",
     )
     _history_index_worker_thread.start()
+
+
+_LIVE_SYNC_PROVIDERS = {
+    "imessage": ("apple_messages", "imessage", "sms", "rcs"),
+    "whatsapp": ("whatsapp",),
+}
+_live_sync_last_discovery: dict[str, float] = {}
+_live_sync_worker: LiveSyncWorker | None = None
+
+
+def _live_sync_conversation_ids(conn: sqlite3.Connection, source: str, chat_ids: list[str]) -> list[str]:
+    providers = _LIVE_SYNC_PROVIDERS[source]
+    rows = conn.execute(
+        f"""SELECT conversation_id, source_chat_id
+            FROM penguin_connect_conversations
+            WHERE source_provider IN ({",".join("?" * len(providers))})
+              AND source_chat_id IN ({",".join("?" * len(chat_ids))})""",
+        (*providers, *chat_ids),
+    ).fetchall()
+    return [str(row["conversation_id"]) for row in rows]
+
+
+def _live_sync_refresh(source: str, chat_ids: list[str]) -> int:
+    """Pull new source messages for the given chats into the cache. Returns chats refreshed."""
+    conn = get_connection()
+    try:
+        conversation_ids = _live_sync_conversation_ids(conn, source, chat_ids)
+        known = {
+            str(row["source_chat_id"])
+            for row in conn.execute(
+                f"""SELECT source_chat_id FROM penguin_connect_conversations
+                    WHERE source_chat_id IN ({",".join("?" * len(chat_ids))})""",
+                chat_ids,
+            ).fetchall()
+        }
+        now = time.monotonic()
+        if set(chat_ids) - known and now - _live_sync_last_discovery.get(source, 0.0) >= 30.0:
+            # A brand-new chat: discover it so it appears in the inbox.
+            _live_sync_last_discovery[source] = now
+            discover = (
+                penguinconnect_ensure_conversations_discovered
+                if source == "imessage"
+                else penguinconnect_ensure_whatsapp_conversations_discovered
+            )
+            discover(conn, LOCAL_MESSAGES_ACCOUNT_EMAIL, provision_aliases=False)
+            conn.commit()
+            conversation_ids = _live_sync_conversation_ids(conn, source, chat_ids)
+        for conversation_id in conversation_ids:
+            penguinconnect_get_conversation_messages(
+                conn,
+                conversation_id,
+                limit=40,
+                refresh_source=True,
+                incremental_refresh=True,
+            )
+            conn.commit()
+        return len(conversation_ids)
+    finally:
+        conn.close()
+
+
+def _whatsapp_messages_db() -> Path:
+    return whatsapp_source_paths()[0]
+
+
+def start_live_sync_worker() -> None:
+    global _live_sync_worker
+    if not live_sync_enabled():
+        return
+    if _live_sync_worker is None:
+        _live_sync_worker = LiveSyncWorker(
+            [
+                SourceWatcher("imessage", lambda: IMESSAGE_DB, imessage_changes),
+                SourceWatcher("whatsapp", _whatsapp_messages_db, whatsapp_changes),
+            ],
+            refresh=_live_sync_refresh,
+            log=log_action,
+        )
+    _live_sync_worker.start()
+
+
+def stop_live_sync_worker() -> None:
+    if _live_sync_worker is not None:
+        _live_sync_worker.stop()
 
 
 def start_scheduled_send_worker() -> None:
@@ -4964,6 +5049,7 @@ async def lifespan(_app: FastAPI):
     start_watchers()
     start_scheduled_send_worker()
     start_history_index_worker()
+    start_live_sync_worker()
     log_action(
         "server_start",
         db_path=str(DB_PATH),
@@ -5023,6 +5109,7 @@ async def lifespan(_app: FastAPI):
 
     try:
         stop_watchers()
+        stop_live_sync_worker()
     except Exception:
         pass
 
