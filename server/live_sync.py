@@ -132,14 +132,19 @@ class SourceWatcher:
         self._changes = changes
         self._token: tuple | None = None
         self._cursor: int | None = None
+        # True when the source file changed on the last poll, even without new rows
+        # (e.g. a chat was read on the phone, which flips is_read in chat.db).
+        self.changed = False
 
     def poll(self) -> list[str]:
         path = Path(self._db_path())
         if not path.exists():
             return []
         token = file_token([path, f"{path}-wal", f"{path}-journal"])
+        self.changed = False
         if token == self._token:
             return []
+        first_poll = self._token is None
         if self._cursor is None:
             max_rowid, _ = self._changes(path, 1 << 62)
             self._cursor = max(0, max_rowid - STARTUP_LOOKBACK_ROWS)
@@ -147,6 +152,7 @@ class SourceWatcher:
         # Only advance once the read succeeded, so a locked database is retried next tick.
         self._token = token
         self._cursor = max(self._cursor, max_rowid)
+        self.changed = not first_poll
         return chats
 
 
@@ -183,8 +189,9 @@ class LiveSyncWorker:
         while not self._stop.is_set():
             started = time.monotonic()
             refreshed = self.tick()
-            if refreshed:
+            if refreshed or any(getattr(watcher, "changed", False) for watcher in self._watchers):
                 workspace_changed.bump()
+            if refreshed:
                 self._log(
                     "live_sync_refreshed",
                     sources=refreshed,
