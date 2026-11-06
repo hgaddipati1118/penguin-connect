@@ -5304,3 +5304,76 @@ mark {
 .penguin-desktop-app .app-nav {
   padding-top: 44px;
 }
+
+/* ---- Polish pass ---- */
+
+/* Quieter header: the title no longer eats a quarter of the list column. */
+.pane-header {
+  padding: 16px 18px 10px;
+  align-items: center;
+}
+.pane-header .overline {
+  display: none;
+}
+.pane-header h1 {
+  font-size: 24px;
+}
+
+/* Folder chips: readable, single scrolling row with a fade instead of a hard cut-off. */
+.label-bar {
+  gap: 6px;
+  padding: 6px 14px 8px;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+}
+.label-filter {
+  min-height: 26px;
+  padding: 0 11px;
+  font-size: 11.5px;
+  font-weight: 550;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+/* Message runs: one name label and one timestamp per run of back-to-back messages. */
+.message-row.msg-continued {
+  margin-top: -3px;
+}
+.message-row.msg-continued .message-sender {
+  display: none;
+}
+.message-row.msg-followed .message-meta {
+  display: none;
+}
+
+/* Reply arrow only on hover, like the other message actions. */
+.message-row.replyable-message .message-reply-button {
+  opacity: 0;
+}
+
+/* Group avatars: two clean overlapping circles; the third member only on large avatars. */
+.conversation-row .group-avatar-member:nth-child(3) {
+  display: none;
+}
+.conversation-row .group-avatar-member:nth-child(1) {
+  top: 3px;
+  left: 3px;
+}
+.conversation-row .group-avatar-member:nth-child(2) {
+  right: 3px;
+  bottom: 3px;
+}
+
+/* Smoother state changes across the list and thread. */
+.conversation-row {
+  transition: background-color 120ms ease;
+}
+.message-bubble {
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .conversation-row,
+  .message-bubble,
+  .label-filter {
+    transition: none;
+  }
+}

@@ -1769,10 +1769,6 @@ function renderLabelBar() {
   el.labelBar.replaceChildren();
   if (state.view !== "inbox" || state.search.query) return;
   const labels = allConversationLabels();
-  const folderMark = document.createElement("span");
-  folderMark.className = "label-bar-title";
-  folderMark.innerHTML = '<svg><use href="#i-folder"></use></svg><span>Folders</span>';
-  el.labelBar.append(folderMark);
 
   const smartOptions = [
     { value: "all", name: "All" },
@@ -2912,12 +2908,18 @@ function withoutEchoedManualSends(messages) {
 }
 
 const linkPreviewCache = new Map();
+const linkPreviewResults = new Map();
 
 function fetchLinkPreview(url) {
   if (!linkPreviewCache.has(url)) {
     linkPreviewCache.set(
       url,
-      api(`/penguin-connect/link-preview?url=${encodeURIComponent(url)}`).catch(() => ({ available: false })),
+      api(`/penguin-connect/link-preview?url=${encodeURIComponent(url)}`)
+        .catch(() => ({ available: false }))
+        .then((preview) => {
+          linkPreviewResults.set(url, preview);
+          return preview;
+        }),
     );
   }
   return linkPreviewCache.get(url);
@@ -2930,7 +2932,7 @@ function renderLinkPreview(url) {
   card.target = "_blank";
   card.rel = "noopener noreferrer";
   card.hidden = true;
-  fetchLinkPreview(url).then((preview) => {
+  const fill = (preview) => {
     if (!preview?.available) {
       card.remove();
       return;
@@ -2963,7 +2965,10 @@ function renderLinkPreview(url) {
     copy.append(site);
     card.append(copy);
     card.hidden = false;
-  });
+  };
+  // Re-renders reuse the already-fetched preview synchronously, so cards don't pop in.
+  if (linkPreviewResults.has(url)) fill(linkPreviewResults.get(url));
+  else fetchLinkPreview(url).then(fill);
   return card;
 }
 
@@ -4517,6 +4522,36 @@ function reconcileMessageList(desiredChildren) {
   }
 }
 
+const MESSAGE_GROUP_GAP_MS = 5 * 60 * 1000;
+
+// Messages-style runs: back-to-back messages from one sender within a few minutes share a
+// single name label and a single timestamp (on the last message of the run).
+function applyMessageGrouping(children) {
+  let previous = null;
+  for (const node of children) {
+    const isRow = node?.classList?.contains("message-row")
+      && !node.classList.contains("message-thread-reply")
+      && !node.classList.contains("message-native-reply");
+    if (!isRow) {
+      if (previous) previous.classList.remove("msg-followed");
+      previous = null;
+      continue;
+    }
+    const continues = Boolean(
+      previous
+      && node.dataset.groupSender
+      && previous.dataset.groupSender === node.dataset.groupSender
+      && Math.abs(Number(node.dataset.groupTs) - Number(previous.dataset.groupTs)) <= MESSAGE_GROUP_GAP_MS
+    );
+    node.classList.toggle("msg-continued", continues);
+    node.classList.remove("msg-followed");
+    if (continues && !previous.querySelector(".message-receipt, .message-delivery-status")) {
+      previous.classList.add("msg-followed");
+    }
+    previous = node;
+  }
+}
+
 function renderMessages({
   focusMessageId = "",
   preserveScroll = false,
@@ -4703,6 +4738,10 @@ function renderMessages({
       nativeReplyCount ? "message-has-native-replies" : "",
     ].filter(Boolean).join(" ");
     row.dataset.messageId = message.provider_message_id || "";
+    row.dataset.groupSender = mine
+      ? "me"
+      : String(message.sender_email || message.sender_name || "them");
+    row.dataset.groupTs = String(Date.parse(message.message_timestamp || "") || 0);
     row.dataset.nativeMessageId = messageNativeId(message);
     row.dataset.threadRoot = isThreadReply
       ? slackThreadRootId(message)
@@ -5011,6 +5050,7 @@ function renderMessages({
   bottomAnchor.className = "thread-bottom-anchor";
   bottomAnchor.setAttribute("aria-hidden", "true");
   messageChildren.push(bottomAnchor);
+  applyMessageGrouping(messageChildren);
   reconcileMessageList(messageChildren);
   applyThreadSearch();
   const focused = focusMessageId
