@@ -5407,3 +5407,32 @@ mark {
   flex: none;
   border-radius: 4px;
 }
+
+.conversation-pin-toggle {
+  display: none;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  place-items: center;
+  margin-left: auto;
+  border-radius: 6px;
+  color: var(--ink-faint);
+  cursor: pointer;
+}
+.conversation-pin-toggle svg {
+  width: 13px;
+  height: 13px;
+}
+.conversation-row:hover .conversation-pin-toggle {
+  display: grid;
+}
+.conversation-row:hover .conversation-pin-toggle + .conversation-time {
+  margin-left: 4px;
+}
+.conversation-pin-toggle:hover {
+  background: rgba(32, 40, 36, 0.08);
+  color: var(--ink);
+}
+.conversation-pin-toggle.pinned {
+  color: var(--accent, #4457c4);
+}

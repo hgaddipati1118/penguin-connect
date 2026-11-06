@@ -1926,7 +1926,24 @@ function reusableConversationRow(conversation, existingRow = null) {
   time.className = "conversation-time";
   time.dateTime = conversation.last_message_ts || "";
   time.textContent = timeLabel(conversation.last_message_ts);
-  top.append(time);
+  // Hover pin toggle (the row itself is a button, so this is a span with button semantics).
+  const pinToggle = document.createElement("span");
+  pinToggle.className = "conversation-pin-toggle";
+  pinToggle.setAttribute("role", "button");
+  pinToggle.tabIndex = -1;
+  pinToggle.title = conversation.is_pinned ? "Unpin (S)" : "Pin to top (S)";
+  pinToggle.setAttribute("aria-label", pinToggle.title);
+  pinToggle.classList.toggle("pinned", Boolean(conversation.is_pinned));
+  pinToggle.append(createIcon("i-pin"));
+  pinToggle.addEventListener("click", (event) => {
+    event.stopPropagation();
+    event.preventDefault();
+    const current = state.conversations.find(
+      (candidate) => candidate.conversation_id === row.dataset.conversationId,
+    );
+    if (current) setConversationPinned(current);
+  });
+  top.append(pinToggle, time);
 
   const preview = document.createElement("span");
   preview.className = "conversation-preview";
@@ -8778,7 +8795,7 @@ async function setConversationUnread(conversation, unread) {
     conversation.has_unread = previousCount > 0;
     invalidateConversationProjection();
     renderConversationList();
-    toast(`Could not update read state: ${error.message}`, "error");
+    toast(`Could not ${pinned ? "pin" : "unpin"}: ${error.message}`, "error");
   }
 }
 
