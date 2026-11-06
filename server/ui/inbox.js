@@ -2466,7 +2466,7 @@ function renderQueueList() {
         await cancelScheduledMessage(item.scheduled_id);
         await loadQueue();
       });
-      row.append(cancel);
+      row.append(scheduledSendNowButton(item.scheduled_id, loadQueue), cancel);
     } else if (item.status === "failed") {
       const retry = document.createElement("button");
       retry.type = "button";
@@ -2852,6 +2852,56 @@ function observeDownloadableImage(wrapper, task) {
   downloadableImageObserver.observe(wrapper);
 }
 
+const MESSAGE_LINK_PATTERN = /\b((?:https?:\/\/|www\.)[^\s<>"]+|(?:[a-z0-9-]+\.)+(?:com|org|net|io|ai|co|app|dev|me|so|gg|xyz|us)\/[^\s<>"]*)/gi;
+
+// Penguin records each send as a "manual:" row, and the provider then reports the same
+// message natively. Once the native copy exists, hide the manual record so it shows once.
+function withoutEchoedManualSends(messages) {
+  const rows = [...(messages || [])];
+  const nativeOwn = rows.filter((message) => (
+    isOwnMessage(message)
+    && !String(message.provider_message_id || "").startsWith("manual:")
+    && !message.metadata?.pending_send
+  ));
+  if (!nativeOwn.length) return rows;
+  const used = new Set();
+  return rows.filter((message) => {
+    if (!String(message.provider_message_id || "").startsWith("manual:")) return true;
+    const body = String(message.body_text || "").trim();
+    const sentAt = Date.parse(message.message_timestamp || "");
+    const echo = nativeOwn.find((native) => (
+      !used.has(native)
+      && String(native.body_text || "").trim() === body
+      && Math.abs(Date.parse(native.message_timestamp || "") - sentAt) <= 5 * 60 * 1000
+    ));
+    if (!echo) return true;
+    used.add(echo);
+    return false;
+  });
+}
+
+function appendLinkifiedText(container, text) {
+  const value = String(text || "");
+  let last = 0;
+  for (const match of value.matchAll(MESSAGE_LINK_PATTERN)) {
+    let raw = match[0];
+    // Leave trailing punctuation outside the link: "see slashy.com/pro." -> "slashy.com/pro" + "."
+    const trailing = raw.match(/[).,!?:;'"\]]+$/);
+    if (trailing && !(trailing[0].startsWith(")") && raw.includes("("))) raw = raw.slice(0, -trailing[0].length);
+    if (!raw) continue;
+    if (match.index > last) container.append(value.slice(last, match.index));
+    const link = document.createElement("a");
+    link.className = "message-link";
+    link.href = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = raw;
+    container.append(link);
+    last = match.index + raw.length;
+  }
+  if (last < value.length) container.append(value.slice(last));
+}
+
 function renderImageAttachment(message, attachment, index, { downloadable = false } = {}) {
   const label = attachmentLabel(attachment);
   const url = attachmentUrl(message, index);
@@ -2883,7 +2933,7 @@ function renderImageAttachment(message, attachment, index, { downloadable = fals
     });
     return wrapper;
   }
-  image.src = url;
+  image.src = `${url}&thumb=true`;
   image.addEventListener("load", () => {
     if (state.followLatest && !NATIVE_SCROLL_ANCHORING) queueThreadBottomAnchor();
   });
@@ -3195,18 +3245,27 @@ function reactionsByTarget(messages) {
     const reaction = message.metadata?.reaction;
     if (!reaction?.target_guid) continue;
     const target = normalizeReactionTargetGuid(reaction.target_guid);
-    const actor = message.sender_name || message.sender_email || "Someone";
+    const actor = message.is_from_me || message.direction === "outbound"
+      ? "You"
+      : (message.sender_name || message.sender_email || "Someone");
     const key = `${target}:${actor}:${reaction.type || reaction.emoji}`;
     if (reaction.removed) latest.delete(key);
     else latest.set(key, { ...reaction, actor });
   }
+  // One chip per emoji per message, like Messages: "❤️ 2" rather than two hearts.
   const grouped = new Map();
   for (const reaction of latest.values()) {
     const target = normalizeReactionTargetGuid(reaction.target_guid);
-    if (!grouped.has(target)) grouped.set(target, []);
-    grouped.get(target).push(reaction);
+    if (!grouped.has(target)) grouped.set(target, new Map());
+    const emoji = reaction.emoji || "Reacted";
+    const byEmoji = grouped.get(target);
+    if (!byEmoji.has(emoji)) byEmoji.set(emoji, { ...reaction, emoji, actors: [], count: 0 });
+    const chip = byEmoji.get(emoji);
+    chip.actors.push(reaction.actor);
+    chip.count += 1;
+    chip.reacted_by_me = chip.reacted_by_me || reaction.actor === "You";
   }
-  return grouped;
+  return new Map([...grouped].map(([target, byEmoji]) => [target, [...byEmoji.values()]]));
 }
 
 function providerReactions(message) {
@@ -4395,7 +4454,7 @@ function renderMessages({
   }
   const messageChildren = [];
 
-  const sortedRows = [...state.messages].sort((a, b) => (
+  const sortedRows = withoutEchoedManualSends(state.messages).sort((a, b) => (
     Date.parse(a.message_timestamp || "") - Date.parse(b.message_timestamp || "")
   ));
   const latestReceiptMessageId = latestOwnMessageId(sortedRows);
@@ -4631,7 +4690,7 @@ function renderMessages({
     }
     const body = document.createElement("span");
     body.className = "message-body";
-    body.textContent = message.body_text || (messageAttachments(message).length ? "" : "Empty message");
+    appendLinkifiedText(body, message.body_text || (messageAttachments(message).length ? "" : "Empty message"));
     renderMessageTranslation(body, message);
     bubble.append(body);
     const attachments = messageAttachments(message);
@@ -4725,12 +4784,14 @@ function renderMessages({
             : `Add ${reaction.emoji} reaction`;
           badge.setAttribute("aria-pressed", reaction.reacted_by_me ? "true" : "false");
         } else {
-          badge.title = `${reaction.actor} reacted`;
+          const actors = reaction.actors?.length ? reaction.actors : [reaction.actor];
+          badge.title = `${actors.join(", ")} reacted ${reaction.emoji || ""}`.trim();
+          badge.classList.toggle("reacted-by-me", Boolean(reaction.reacted_by_me));
         }
         const glyph = document.createElement("span");
         glyph.textContent = reaction.emoji || "Reacted";
         badge.append(glyph);
-        if (isProviderReaction) {
+        if (isProviderReaction || (reaction.count || 1) > 1) {
           const count = document.createElement("span");
           count.className = "message-reaction-count";
           count.textContent = String(reaction.count);
@@ -5746,7 +5807,7 @@ function renderScheduledQueue() {
       cancel.className = "scheduled-cancel";
       cancel.textContent = "Cancel";
       cancel.addEventListener("click", () => cancelScheduledMessage(item.scheduled_id));
-      row.append(cancel);
+      row.append(scheduledSendNowButton(item.scheduled_id), cancel);
     } else if (item.status === "failed") {
       const retry = document.createElement("button");
       retry.type = "button";
@@ -5774,6 +5835,32 @@ async function loadScheduledMessages(conversationId = state.selected?.conversati
     renderScheduledQueue();
   }
   return scheduledMessages;
+}
+
+function scheduledSendNowButton(scheduledId, afterSend) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "scheduled-cancel scheduled-send-now";
+  button.textContent = "Send now";
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    await sendScheduledMessageNow(scheduledId);
+    if (afterSend) await afterSend();
+  });
+  return button;
+}
+
+async function sendScheduledMessageNow(scheduledId) {
+  try {
+    await api(`/penguin-connect/scheduled-messages/${encodeURIComponent(scheduledId)}/send-now`, {
+      method: "POST",
+      body: "{}",
+    });
+    await loadScheduledMessages();
+    toast("Sending now");
+  } catch (error) {
+    toast(error.message, "error");
+  }
 }
 
 async function cancelScheduledMessage(scheduledId) {

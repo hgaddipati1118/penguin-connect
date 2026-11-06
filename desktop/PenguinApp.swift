@@ -126,7 +126,7 @@ private func makeDockIcon() -> NSImage {
     return image
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScriptMessageHandler {
+final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     private var window: NSWindow!
     private var webView: WKWebView!
     private var bridgeProcess: Process?
@@ -259,6 +259,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         configuration.userContentController.add(self, name: "penguin")
         webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = self
+        webView.uiDelegate = self
         webView.allowsMagnification = true
 
         let rect = NSRect(x: 0, y: 0, width: 1280, height: 820)
@@ -977,6 +978,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             return
         }
         decisionHandler(.allow)
+    }
+}
+
+extension AppDelegate {
+    /// Links with target="_blank" (message links, image previews) ask for a new window;
+    /// open them in the user's browser instead of silently doing nothing.
+    func webView(
+        _ webView: WKWebView,
+        createWebViewWith configuration: WKWebViewConfiguration,
+        for navigationAction: WKNavigationAction,
+        windowFeatures: WKWindowFeatures
+    ) -> WKWebView? {
+        if let url = navigationAction.request.url,
+           ["http", "https", "mailto", "tel"].contains(url.scheme?.lowercased() ?? "") {
+            NSWorkspace.shared.open(url)
+        }
+        return nil
     }
 }
 

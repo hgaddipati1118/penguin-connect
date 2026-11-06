@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import time
 from unittest import mock
 
 from fastapi.testclient import TestClient
@@ -100,6 +101,38 @@ class ScheduledSendTests(unittest.TestCase):
             cancel_response = client.post(f"/penguin-connect/scheduled-messages/{scheduled_id}/cancel", json={})
             self.assertEqual(cancel_response.status_code, 200)
             self.assertEqual(cancel_response.json()["scheduled_message"]["status"], "cancelled")
+
+    def test_send_now_moves_a_scheduled_message_to_now(self):
+        scheduled_at = (datetime.now(timezone.utc) + timedelta(hours=3)).isoformat()
+
+        with TestClient(app_module.app) as client, mock.patch.object(
+            app_module, "run_due_scheduled_messages", return_value={"results": []}
+        ) as run_due:
+            created = client.post(
+                "/penguin-connect/conversations/amc_test/scheduled-messages",
+                json={"message": "Right away", "scheduled_at": scheduled_at},
+            ).json()["scheduled_message"]
+            response = client.post(
+                f"/penguin-connect/scheduled-messages/{created['scheduled_id']}/send-now", json={}
+            )
+            self.assertEqual(response.status_code, 200)
+            moved = response.json()["scheduled_message"]
+            self.assertEqual(moved["status"], "scheduled")
+            self.assertLess(
+                datetime.fromisoformat(moved["scheduled_at"]),
+                datetime.fromisoformat(scheduled_at) - timedelta(hours=2),
+            )
+            for _ in range(50):
+                if run_due.called:
+                    break
+                time.sleep(0.02)
+            self.assertTrue(run_due.called)
+
+            client.post(f"/penguin-connect/scheduled-messages/{created['scheduled_id']}/cancel", json={})
+            again = client.post(
+                f"/penguin-connect/scheduled-messages/{created['scheduled_id']}/send-now", json={}
+            )
+            self.assertEqual(again.status_code, 400)
 
     def test_local_penguin_ui_links_cannot_be_scheduled_to_external_channels(self):
         scheduled_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()

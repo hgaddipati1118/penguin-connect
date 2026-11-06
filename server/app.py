@@ -633,6 +633,32 @@ def _cancel_scheduled_message(conn: sqlite3.Connection, scheduled_id: str) -> di
     return {"success": True, "scheduled_message": _scheduled_message_dict(updated)}
 
 
+def _send_scheduled_message_now(conn: sqlite3.Connection, scheduled_id: str) -> dict:
+    row = _get_scheduled_message(conn, scheduled_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="scheduled_message_not_found")
+    if row["status"] != "scheduled":
+        raise HTTPException(status_code=400, detail="scheduled_message_not_sendable")
+    _require_schedulable_conversation(conn, row["conversation_id"])
+    now_iso = _utc_now_iso()
+    conn.execute(
+        """UPDATE penguin_connect_scheduled_messages
+           SET scheduled_at = ?, updated_at = ?
+           WHERE scheduled_id = ? AND status = 'scheduled'""",
+        (now_iso, now_iso, scheduled_id),
+    )
+    conn.commit()
+    log_action("api_scheduled_send_now", scheduled_id=scheduled_id, conversation_id=row["conversation_id"])
+    # Deliver right away instead of waiting for the next scheduled-send poll.
+    threading.Thread(
+        target=lambda: run_due_scheduled_messages(limit=5),
+        daemon=True,
+        name="penguinconnect-send-now",
+    ).start()
+    updated = _get_scheduled_message(conn, scheduled_id)
+    return {"success": True, "scheduled_message": _scheduled_message_dict(updated)}
+
+
 def _retry_scheduled_message(conn: sqlite3.Connection, scheduled_id: str) -> dict:
     row = _get_scheduled_message(conn, scheduled_id)
     if row is None:
@@ -4102,6 +4128,59 @@ def _browser_attachment_cache_dir() -> Path:
     return cache_dir
 
 
+_THUMBNAIL_MAX_PIXELS = 720
+_THUMBNAIL_SUFFIXES = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".tif", ".tiff", ".webp", ".bmp"}
+
+
+def _image_thumbnail(path: Path, display_name: str, media_type: str) -> tuple[Path, str, str] | None:
+    """Return a cached JPEG preview no larger than _THUMBNAIL_MAX_PIXELS, or None.
+
+    Inline previews were full originals (multi-MB photos), which is slow over a tunnel.
+    GIFs are skipped so they keep animating.
+    """
+    suffix = Path(display_name or path.name).suffix.lower() or path.suffix.lower()
+    if suffix not in _THUMBNAIL_SUFFIXES or not str(media_type or "image/").startswith("image/"):
+        return None
+    sips = shutil.which("sips")
+    if not sips:
+        return None
+    try:
+        stat = path.stat()
+        if stat.st_size < 150_000 and suffix not in {".heic", ".heif"}:
+            return None  # already small; skip the conversion
+        key = hashlib.sha1(
+            f"thumb{_THUMBNAIL_MAX_PIXELS}::{path.resolve()}::{stat.st_mtime_ns}::{stat.st_size}".encode("utf-8")
+        ).hexdigest()
+    except OSError:
+        return None
+    name = f"{Path(display_name).stem or 'image'}.jpg"
+    cached = _browser_attachment_cache_dir() / f"{key}.thumb.jpg"
+    try:
+        if cached.exists() and cached.stat().st_size > 0:
+            return cached, name, "image/jpeg"
+    except OSError:
+        return None
+    tmp = cached.with_name(f"{key}.{uuid.uuid4().hex}.tmp.jpg")
+    try:
+        result = subprocess.run(
+            [
+                sips, "-s", "format", "jpeg", "-s", "formatOptions", "78",
+                "-Z", str(_THUMBNAIL_MAX_PIXELS), str(path), "--out", str(tmp),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20.0,
+        )
+        if result.returncode != 0 or not tmp.exists() or tmp.stat().st_size == 0:
+            return None
+        os.replace(tmp, cached)
+        return cached, name, "image/jpeg"
+    except (OSError, subprocess.SubprocessError):
+        return None
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def _browser_safe_image_attachment(
     path: Path, display_name: str, media_type: str
 ) -> tuple[Path, str, str]:
@@ -6415,6 +6494,7 @@ def get_penguinconnect_conversation_attachment(
     provider_message_id: str = Query(...),
     original: bool = Query(False),
     inline: bool = Query(False),
+    thumb: bool = Query(False),
 ):
     conn = get_connection()
     try:
@@ -6424,15 +6504,22 @@ def get_penguinconnect_conversation_attachment(
             provider_message_id,
             attachment_index,
         )
-        if not original:
+        thumbnail = _image_thumbnail(path, display_name, media_type) if thumb and not original else None
+        if thumbnail:
+            path, display_name, media_type = thumbnail
+        elif not original:
             path, display_name, media_type = _browser_safe_image_attachment(
                 path, display_name, media_type
             )
         if inline:
+            # A message attachment never changes, so let the browser keep it.
             return FileResponse(
                 path,
                 media_type=media_type,
-                headers={"Content-Disposition": "inline"},
+                headers={
+                    "Content-Disposition": "inline",
+                    "Cache-Control": "private, max-age=604800",
+                },
             )
         return FileResponse(path, media_type=media_type, filename=display_name)
     finally:
@@ -6770,6 +6857,16 @@ def cancel_penguinconnect_scheduled_message(scheduled_id: str):
     conn = get_connection()
     try:
         return _cancel_scheduled_message(conn, scheduled_id)
+    finally:
+        conn.close()
+
+
+@app.post("/api/penguin-connect/scheduled-messages/{scheduled_id}/send-now")
+@app.post("/penguin-connect/scheduled-messages/{scheduled_id}/send-now")
+def send_penguinconnect_scheduled_message_now(scheduled_id: str):
+    conn = get_connection()
+    try:
+        return _send_scheduled_message_now(conn, scheduled_id)
     finally:
         conn.close()
 
