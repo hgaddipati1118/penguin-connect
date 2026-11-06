@@ -5191,3 +5191,13 @@ mark {
   width: 100%;
   margin-top: 8px;
 }
+
+.mention-suggestions button.emoji-suggestion {
+  min-height: 34px;
+}
+
+.mention-suggestions button.emoji-suggestion > span:first-child {
+  background: transparent;
+  font-size: 18px;
+  font-weight: 400;
+}

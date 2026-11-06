@@ -4914,6 +4914,11 @@ def get_penguinconnect_conversation_navigation_js():
         "application/javascript; charset=utf-8",
     )
 
+@app.get("/api/penguin-connect/ui/emoji-shortcodes.js")
+@app.get("/penguin-connect/ui/emoji-shortcodes.js")
+def get_penguinconnect_emoji_shortcodes_js():
+    return _ui_file_response("emoji-shortcodes.js", "application/javascript; charset=utf-8")
+
 @app.get("/api/penguin-connect/ui/schedule-time.js")
 @app.get("/penguin-connect/ui/schedule-time.js")
 def get_penguinconnect_schedule_time_js():

@@ -3944,6 +3944,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
             schedule_time_js_response = client.get(
                 "/penguin-connect/ui/schedule-time.js",
             )
+            emoji_shortcodes_js_response = client.get(
+                "/penguin-connect/ui/emoji-shortcodes.js",
+            )
             media_preview_queue_js_response = client.get(
                 "/penguin-connect/ui/media-preview-queue.js",
             )
@@ -4110,6 +4113,12 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(
             list_windowing_js_response.headers["cache-control"],
             "no-store",
+        )
+        self.assertEqual(emoji_shortcodes_js_response.status_code, 200)
+        self.assertIn("searchEmoji", emoji_shortcodes_js_response.text)
+        self.assertIn(
+            'src="/penguin-connect/ui/emoji-shortcodes.js"',
+            inbox_response.text,
         )
         self.assertEqual(schedule_time_js_response.status_code, 200)
         self.assertIn("parseScheduleText", schedule_time_js_response.text)

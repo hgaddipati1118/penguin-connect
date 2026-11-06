@@ -68,6 +68,7 @@ node --check "$ROOT_DIR/server/ui/composer-mentions.js"
 node --check "$ROOT_DIR/server/ui/conversation-navigation.js"
 node --check "$ROOT_DIR/server/ui/list-windowing.js"
 node --check "$ROOT_DIR/server/ui/schedule-time.js"
+node --check "$ROOT_DIR/server/ui/emoji-shortcodes.js"
 node --check "$ROOT_DIR/server/ui/media-preview-queue.js"
 node --test "$ROOT_DIR/server/ui/"*.test.cjs
 

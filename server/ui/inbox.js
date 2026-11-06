@@ -5565,7 +5565,68 @@ function insertMention(candidate) {
   el.messageComposer.focus({ preventScroll: true });
 }
 
+function replaceComposerRange(start, end, text) {
+  el.messageComposer.setRangeText(text, start, end, "end");
+  resizeComposer();
+  updateSendButton();
+  scheduleDraftPersistence();
+  el.messageComposer.focus({ preventScroll: true });
+}
+
+function composerEmojiMatch() {
+  const cursor = el.messageComposer.selectionStart ?? el.messageComposer.value.length;
+  return window.PenguinEmojiShortcodes?.emojiQueryAt(el.messageComposer.value, cursor) || null;
+}
+
+// ":fi" in the composer opens an emoji list in the same popover the @mention picker uses,
+// so arrow keys, Enter, Tab, and Escape behave identically.
+function renderEmojiSuggestions(match) {
+  const results = window.PenguinEmojiShortcodes.searchEmoji(match.query, 8);
+  el.mentionSuggestions.replaceChildren();
+  if (!results.length) {
+    el.mentionSuggestions.hidden = true;
+    return;
+  }
+  mentionSelectionIndex = Math.min(mentionSelectionIndex, results.length - 1);
+  results.forEach((result, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.setAttribute("role", "option");
+    button.className = "emoji-suggestion";
+    button.classList.toggle("active", index === mentionSelectionIndex);
+    const glyph = document.createElement("span");
+    glyph.textContent = result.emoji;
+    const copy = document.createElement("span");
+    const name = document.createElement("strong");
+    name.textContent = `:${result.name}:`;
+    copy.append(name);
+    button.append(glyph, copy);
+    button.addEventListener("mousedown", (event) => event.preventDefault());
+    button.addEventListener("click", () => {
+      const current = composerEmojiMatch();
+      if (!current) return;
+      el.mentionSuggestions.hidden = true;
+      replaceComposerRange(current.start, current.end, result.emoji);
+    });
+    el.mentionSuggestions.append(button);
+  });
+  el.mentionSuggestions.hidden = false;
+}
+
+function expandCompletedEmojiShortcode() {
+  const cursor = el.messageComposer.selectionStart ?? el.messageComposer.value.length;
+  const completed = window.PenguinEmojiShortcodes?.completedShortcodeAt(el.messageComposer.value, cursor);
+  if (!completed) return false;
+  replaceComposerRange(completed.start, completed.end, completed.emoji);
+  return true;
+}
+
 function renderMentionSuggestions() {
+  const emojiMatch = composerEmojiMatch();
+  if (emojiMatch) {
+    renderEmojiSuggestions(emojiMatch);
+    return;
+  }
   const match = composerMentionMatch();
   const candidates = mentionCandidates().filter((candidate) => (
     !match?.query
@@ -8808,7 +8869,8 @@ el.labelPickerDialog.addEventListener("keydown", (event) => {
   }
 });
 
-el.messageComposer.addEventListener("input", () => {
+el.messageComposer.addEventListener("input", (event) => {
+  if (event.data === ":") expandCompletedEmojiShortcode();
   resizeComposer();
   updateSendButton();
   mentionSelectionIndex = 0;
@@ -8954,7 +9016,10 @@ el.messageComposer.addEventListener("keydown", (event) => {
       el.mentionSuggestions.hidden = true;
       return;
     }
-    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+    if (
+      (event.key === "Enter" && !event.shiftKey && !event.isComposing)
+      || (event.key === "Tab" && !event.shiftKey)
+    ) {
       event.preventDefault();
       options[mentionSelectionIndex]?.click();
       return;
