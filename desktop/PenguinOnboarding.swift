@@ -178,6 +178,7 @@ func penguinOnboardingHTMLPage(initialStep: Int = 0) -> String {
               </details>
               <div id="setup-progress" class="actions" hidden><span class="spinner"></span><span>Installing private background services…</span></div>
               <div class="actions"><button id="setup-button" class="button" onclick="setupRemote()">Create secure endpoint</button><button class="button secondary" onclick="post('openTailscale')">Get Tailscale</button><button class="button secondary" onclick="post('stopRemote')">Stop remote access</button></div>
+              <div class="actions"><button class="button secondary" onclick="post('finish')">Skip, use Penguin on this Mac only</button><span class="status">Remote access only lets Slashy's agent reach Penguin. You can set it up later.</span></div>
             </section>
             <section class="panel" data-step="4">
               <div class="eyebrow">Ready</div><h1>Connect Penguin to Slashy.</h1>
