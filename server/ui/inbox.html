@@ -742,13 +742,19 @@
         </header>
         <div class="schedule-dialog-body">
           <label>
-            <span>Send at</span>
-            <input id="scheduleAt" type="datetime-local" required />
+            <span>When</span>
+            <input id="scheduleWhen" type="text" autocomplete="off" spellcheck="false" placeholder="tom 9am · 2h · fri 3pm · nov 20 · tonight" aria-describedby="scheduleWhenHint" />
           </label>
+          <div class="schedule-options" id="scheduleOptions" role="listbox" aria-label="Send time"></div>
+          <details class="schedule-exact">
+            <summary>Exact date &amp; time</summary>
+            <input id="scheduleAt" type="datetime-local" aria-label="Exact send time" />
+          </details>
           <div class="schedule-preview" id="schedulePreview"></div>
           <p>Penguin stores this locally and retries automatically if the provider is offline.</p>
         </div>
         <div class="conversation-meta-actions">
+          <span class="label-picker-hint" id="scheduleWhenHint"><kbd>1–9</kbd> pick · <kbd>↑↓</kbd> move · <kbd>↵</kbd> schedule</span>
           <button class="secondary-button" type="button" id="cancelScheduleButton">Cancel</button>
           <button class="agent-send-button" type="submit" id="confirmScheduleButton">Add to queue</button>
         </div>
@@ -865,6 +871,7 @@
     <script src="/penguin-connect/ui/list-windowing.js"></script>
     <script src="/penguin-connect/ui/media-preview-queue.js"></script>
     <script src="/penguin-connect/ui/workspace-cache-policy.js"></script>
+    <script src="/penguin-connect/ui/schedule-time.js"></script>
     <script src="/penguin-connect/ui/agent-history.js"></script>
     <script src="/penguin-connect/ui/inbox.js"></script>
   </body>

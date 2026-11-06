@@ -293,6 +293,8 @@ const el = {
   scheduleDialog: document.querySelector("#scheduleDialog"),
   scheduleForm: document.querySelector("#scheduleForm"),
   scheduleAt: document.querySelector("#scheduleAt"),
+  scheduleWhen: document.querySelector("#scheduleWhen"),
+  scheduleOptions: document.querySelector("#scheduleOptions"),
   schedulePreview: document.querySelector("#schedulePreview"),
   closeScheduleButton: document.querySelector("#closeScheduleButton"),
   cancelScheduleButton: document.querySelector("#cancelScheduleButton"),
@@ -6114,23 +6116,131 @@ function removePendingOptimisticMessage(pending) {
   if (state.selected?.conversation_id === conversationId) renderMessages();
 }
 
-function defaultScheduleValue() {
-  const date = new Date(Date.now() + 60 * 60 * 1000);
-  date.setMinutes(Math.ceil(date.getMinutes() / 5) * 5, 0, 0);
+const SCHEDULE_OPTION_DAY_FORMATTER = new Intl.DateTimeFormat(undefined, { weekday: "short" });
+const SCHEDULE_OPTION_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
+  hour: "numeric",
+  minute: "2-digit",
+});
+const scheduleOptionState = { options: [], active: 0 };
+
+function localDateTimeInputValue(date) {
   const offset = date.getTimezoneOffset() * 60000;
   return new Date(date.getTime() - offset).toISOString().slice(0, 16);
 }
 
+function scheduleOptionWhen(date) {
+  const now = new Date();
+  const startOfDay = (value) => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+  const dayDiff = Math.round((startOfDay(date) - startOfDay(now)) / 86400000);
+  const time = SCHEDULE_OPTION_TIME_FORMATTER.format(date);
+  if (dayDiff === 0) return `Today ${time}`;
+  if (dayDiff === 1) return `Tomorrow ${time}`;
+  if (dayDiff < 7) return `${SCHEDULE_OPTION_DAY_FORMATTER.format(date)} ${time}`;
+  return SCHEDULE_FORMATTER.format(date);
+}
+
+function setActiveScheduleOption(index) {
+  const { options } = scheduleOptionState;
+  if (!options.length) return;
+  scheduleOptionState.active = (index + options.length) % options.length;
+  el.scheduleAt.value = localDateTimeInputValue(options[scheduleOptionState.active].date);
+  for (const [optionIndex, button] of [...el.scheduleOptions.children].entries()) {
+    const active = optionIndex === scheduleOptionState.active;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+    if (active) button.scrollIntoView({ block: "nearest" });
+  }
+  updateScheduleConfirmLabel();
+}
+
+function updateScheduleConfirmLabel() {
+  const date = new Date(el.scheduleAt.value);
+  const valid = el.scheduleAt.value && !Number.isNaN(date.getTime()) && date.getTime() > Date.now();
+  el.confirmScheduleButton.disabled = !valid;
+  el.confirmScheduleButton.textContent = valid ? `Send ${scheduleOptionWhen(date)}` : "Add to queue";
+}
+
+function renderScheduleOptions() {
+  const scheduleTime = window.PenguinScheduleTime;
+  const query = el.scheduleWhen.value.trim();
+  el.scheduleOptions.replaceChildren();
+  let options = [];
+  if (query) {
+    const date = scheduleTime?.parseScheduleText(query);
+    if (date) options = [{ label: `“${query}”`, date }];
+  } else {
+    options = scheduleTime?.schedulePresets() || [];
+  }
+  scheduleOptionState.options = options;
+  if (!options.length) {
+    const empty = document.createElement("div");
+    empty.className = "schedule-options-empty";
+    empty.textContent = query
+      ? "Can't read that time. Try “tom 9am”, “2h”, “fri 3pm”, or “nov 20 4pm”."
+      : "Type a time like “tom 9am”.";
+    el.scheduleOptions.append(empty);
+    el.scheduleAt.value = "";
+    updateScheduleConfirmLabel();
+    return;
+  }
+  options.forEach((option, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "schedule-option";
+    button.setAttribute("role", "option");
+    const key = document.createElement("kbd");
+    key.textContent = query ? "↵" : String(index + 1);
+    const label = document.createElement("span");
+    label.className = "schedule-option-label";
+    label.textContent = option.label;
+    const when = document.createElement("span");
+    when.className = "schedule-option-when";
+    when.textContent = scheduleOptionWhen(option.date);
+    button.append(key, label, when);
+    button.addEventListener("click", () => {
+      setActiveScheduleOption(index);
+      el.scheduleForm.requestSubmit();
+    });
+    el.scheduleOptions.append(button);
+  });
+  setActiveScheduleOption(0);
+}
+
+function handleScheduleWhenKeydown(event) {
+  if (event.isComposing) return;
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    setActiveScheduleOption(scheduleOptionState.active + (event.key === "ArrowDown" ? 1 : -1));
+    return;
+  }
+  // Number keys pick a preset instantly, but only before the user starts typing a time.
+  if (!el.scheduleWhen.value && /^[1-9]$/.test(event.key) && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    const index = Number(event.key) - 1;
+    if (index < scheduleOptionState.options.length) {
+      event.preventDefault();
+      setActiveScheduleOption(index);
+      el.scheduleForm.requestSubmit();
+    }
+    return;
+  }
+  if (event.key === "Enter") {
+    event.preventDefault();
+    if (!el.confirmScheduleButton.disabled) el.scheduleForm.requestSubmit();
+  }
+}
+
 function openScheduleDialog() {
-  if (!state.selected || el.scheduleSendButton.disabled) return;
-  el.scheduleAt.value = defaultScheduleValue();
+  if (el.scheduleDialog.open || !state.selected || el.scheduleSendButton.disabled) return;
+  el.scheduleWhen.value = "";
+  el.scheduleAt.min = localDateTimeInputValue(new Date());
+  renderScheduleOptions();
   el.schedulePreview.textContent = truncate(
     el.messageComposer.value.trim()
       || `${state.attachments.length} attachment${state.attachments.length === 1 ? "" : "s"}`,
     180,
   );
   el.scheduleDialog.showModal();
-  window.setTimeout(() => el.scheduleAt.focus(), 0);
+  window.setTimeout(() => el.scheduleWhen.focus(), 0);
 }
 
 async function scheduleCurrentMessage(event) {
@@ -6189,7 +6299,7 @@ async function scheduleCurrentMessage(event) {
     toast(error.message, "error");
   } finally {
     el.confirmScheduleButton.disabled = false;
-    el.confirmScheduleButton.textContent = "Add to queue";
+    updateScheduleConfirmLabel();
   }
 }
 
@@ -8909,6 +9019,13 @@ el.replaceDraftButton.addEventListener("click", () => {
 el.sendButton.addEventListener("click", () => sendMessage());
 el.scheduleSendButton.addEventListener("click", openScheduleDialog);
 el.scheduleForm.addEventListener("submit", scheduleCurrentMessage);
+el.scheduleWhen.addEventListener("input", renderScheduleOptions);
+el.scheduleWhen.addEventListener("keydown", handleScheduleWhenKeydown);
+el.scheduleAt.addEventListener("input", () => {
+  // A hand-picked exact time overrides the highlighted preset.
+  for (const button of el.scheduleOptions.children) button.classList.remove("active");
+  updateScheduleConfirmLabel();
+});
 el.closeScheduleButton.addEventListener("click", () => el.scheduleDialog.close());
 el.cancelScheduleButton.addEventListener("click", () => el.scheduleDialog.close());
 el.scheduleDialog.addEventListener("click", (event) => {

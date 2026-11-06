@@ -3941,6 +3941,9 @@ class AppHttpIntegrationTests(unittest.TestCase):
             list_windowing_js_response = client.get(
                 "/penguin-connect/ui/list-windowing.js",
             )
+            schedule_time_js_response = client.get(
+                "/penguin-connect/ui/schedule-time.js",
+            )
             media_preview_queue_js_response = client.get(
                 "/penguin-connect/ui/media-preview-queue.js",
             )
@@ -4107,6 +4110,13 @@ class AppHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(
             list_windowing_js_response.headers["cache-control"],
             "no-store",
+        )
+        self.assertEqual(schedule_time_js_response.status_code, 200)
+        self.assertIn("parseScheduleText", schedule_time_js_response.text)
+        self.assertIn("schedulePresets", schedule_time_js_response.text)
+        self.assertIn(
+            'src="/penguin-connect/ui/schedule-time.js"',
+            inbox_response.text,
         )
         self.assertIn("nextVisibleCount", list_windowing_js_response.text)
         self.assertIn("windowStartForIndex", list_windowing_js_response.text)

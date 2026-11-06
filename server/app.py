@@ -4914,6 +4914,11 @@ def get_penguinconnect_conversation_navigation_js():
         "application/javascript; charset=utf-8",
     )
 
+@app.get("/api/penguin-connect/ui/schedule-time.js")
+@app.get("/penguin-connect/ui/schedule-time.js")
+def get_penguinconnect_schedule_time_js():
+    return _ui_file_response("schedule-time.js", "application/javascript; charset=utf-8")
+
 @app.get("/api/penguin-connect/ui/list-windowing.js")
 @app.get("/penguin-connect/ui/list-windowing.js")
 def get_penguinconnect_list_windowing_js():
