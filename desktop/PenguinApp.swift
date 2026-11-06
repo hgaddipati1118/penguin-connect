@@ -147,20 +147,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     private lazy var appSupportURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/PenguinConnect", isDirectory: true)
     private lazy var onboardingMarkerURL = appSupportURL.appendingPathComponent("onboarding-v1.complete")
+    /// Optional server set with `defaults write com.penguinconnect.desktop PenguinServerURL <url>`,
+    /// e.g. an SSH tunnel to an always-on Mac. When set, the app only shows that server and never
+    /// starts the bridge on this Mac.
+    private lazy var remoteServerBase: String? = {
+        guard let raw = UserDefaults.standard.string(forKey: "PenguinServerURL")?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !raw.isEmpty,
+            let url = URL(string: raw),
+            url.scheme == "http" || url.scheme == "https"
+        else { return nil }
+        return raw.hasSuffix("/") ? String(raw.dropLast()) : raw
+    }()
+    private var serverBase: String { remoteServerBase ?? "http://127.0.0.1:\(port)" }
     private var uiURL: URL {
-        URL(string: "http://127.0.0.1:\(port)/penguin-connect/ui")!
+        URL(string: "\(serverBase)/penguin-connect/ui")!
     }
     private var healthURL: URL {
-        URL(string: "http://127.0.0.1:\(port)/penguin-connect/health")!
+        URL(string: "\(serverBase)/penguin-connect/health")!
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.applicationIconImage = makeDockIcon()
         configureMainMenu()
         configureWindow()
-        if isPackagedRuntime && !FileManager.default.fileExists(atPath: onboardingMarkerURL.path) {
+        if remoteServerBase == nil && isPackagedRuntime && !FileManager.default.fileExists(atPath: onboardingMarkerURL.path) {
             showOnboarding(step: 0)
-        } else if isPackagedRuntime && !hasFullDiskAccess() {
+        } else if remoteServerBase == nil && isPackagedRuntime && !hasFullDiskAccess() {
             showOnboarding(step: 1)
         } else {
             beginBridgeCheck()
@@ -298,6 +311,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                 guard let self, generation == self.healthGeneration else { return }
                 if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
                     self.webView.load(URLRequest(url: self.uiURL))
+                    return
+                }
+                if let remote = self.remoteServerBase {
+                    self.healthAttempts += 1
+                    if self.healthAttempts < 75 {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                            self.checkBridge(generation: generation)
+                        }
+                    } else {
+                        self.showError("Penguin could not reach its server at \(remote). Check that the tunnel and the server Mac are running, then try again.")
+                    }
                     return
                 }
                 if !self.launchAttempted {
