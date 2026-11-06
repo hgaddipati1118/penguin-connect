@@ -5382,3 +5382,28 @@ mark {
   opacity: 0.55;
   transition: opacity 90ms ease;
 }
+
+.link-preview.link-preview-compact {
+  flex-direction: row;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+}
+.link-preview-compact .link-preview-copy {
+  padding: 0;
+  min-width: 0;
+}
+.link-preview-compact .link-preview-copy strong {
+  font-size: 12px;
+}
+.link-preview-compact .link-preview-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.link-preview-favicon {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  border-radius: 4px;
+}

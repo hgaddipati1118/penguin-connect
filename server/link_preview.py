@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import html
 import ipaddress
+import json
+import sqlite3
 import re
 import socket
 import threading
@@ -20,13 +22,66 @@ from typing import Any
 import httpx
 
 MAX_BYTES = 512 * 1024
-TIMEOUT_SECONDS = 6.0
+TIMEOUT_SECONDS = 5.0
 CACHE_SECONDS = 6 * 3600
 CACHE_LIMIT = 2000
-USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) PenguinLinkPreview/1.0"
+# The same identity Messages uses for link previews; most sites only serve Open Graph
+# tags to known link-unfurling bots (plain browser UAs get consent walls or 403s).
+USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_1) AppleWebKit/601.2.4 "
+    "(KHTML, like Gecko) Version/9.0.1 Safari/601.2.4 facebookexternalhit/1.1 Facebot Twitterbot/1.0"
+)
+FAILURE_CACHE_SECONDS = 30 * 60
 
 _cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _cache_lock = threading.Lock()
+_disk_path: str | None = None
+
+
+def configure(disk_cache_path: str | None) -> None:
+    """Persist previews in a small SQLite file so restarts don't refetch everything."""
+    global _disk_path
+    _disk_path = disk_cache_path
+    if not disk_cache_path:
+        return
+    try:
+        with sqlite3.connect(disk_cache_path, timeout=2) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS link_previews (url TEXT PRIMARY KEY, fetched_at REAL, payload TEXT)"
+            )
+    except sqlite3.Error:
+        _disk_path = None
+
+
+def _disk_get(url: str) -> tuple[float, dict[str, Any]] | None:
+    if not _disk_path:
+        return None
+    try:
+        with sqlite3.connect(_disk_path, timeout=2) as conn:
+            row = conn.execute("SELECT fetched_at, payload FROM link_previews WHERE url = ?", (url,)).fetchone()
+        return (float(row[0]), json.loads(row[1])) if row else None
+    except (sqlite3.Error, ValueError):
+        return None
+
+
+def _disk_put(url: str, fetched_at: float, preview: dict[str, Any]) -> None:
+    if not _disk_path:
+        return
+    try:
+        with sqlite3.connect(_disk_path, timeout=2) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO link_previews (url, fetched_at, payload) VALUES (?, ?, ?)",
+                (url, fetched_at, json.dumps(preview)),
+            )
+    except sqlite3.Error:
+        pass
+
+
+def _fresh(entry: tuple[float, dict[str, Any]] | None, now: float) -> bool:
+    if not entry:
+        return False
+    ttl = CACHE_SECONDS if entry[1].get("available") else FAILURE_CACHE_SECONDS
+    return now - entry[0] < ttl
 
 _META_PATTERN = re.compile(r"<meta\b[^>]*>", re.IGNORECASE)
 _ATTR_PATTERN = re.compile(r'([a-zA-Z_:-]+)\s*=\s*("([^"]*)"|\'([^\']*)\'|([^\s>]+))')
@@ -139,8 +194,13 @@ def get_link_preview(raw_url: str) -> dict[str, Any]:
     now = time.time()
     with _cache_lock:
         cached = _cache.get(url)
-        if cached and now - cached[0] < CACHE_SECONDS:
-            return cached[1]
+    if _fresh(cached, now):
+        return cached[1]
+    stored = _disk_get(url)
+    if _fresh(stored, now):
+        with _cache_lock:
+            _cache[url] = stored
+        return stored[1]
     try:
         preview = _fetch(url)
     except PreviewRefused as exc:
@@ -152,4 +212,20 @@ def get_link_preview(raw_url: str) -> dict[str, Any]:
             for key in sorted(_cache, key=lambda item: _cache[item][0])[: CACHE_LIMIT // 4]:
                 _cache.pop(key, None)
         _cache[url] = (now, preview)
+    _disk_put(url, now, preview)
     return preview
+
+
+_URL_IN_TEXT = re.compile(r"https?://[^\s<>\"]+", re.IGNORECASE)
+
+
+def prefetch_previews_for_text(texts: list[str], limit: int = 8) -> None:
+    """Warm the cache for links in newly arrived messages (runs in a background thread)."""
+    urls: list[str] = []
+    for text in texts:
+        for match in _URL_IN_TEXT.findall(text or ""):
+            url = match.rstrip(").,!?:;'\"]")
+            if url not in urls:
+                urls.append(url)
+    for url in urls[:limit]:
+        get_link_preview(url)

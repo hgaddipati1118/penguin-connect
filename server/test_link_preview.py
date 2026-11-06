@@ -56,6 +56,24 @@ class LinkPreviewSafetyTests(unittest.TestCase):
             get_link_preview("https://a.com")
         self.assertEqual(fetch.call_count, 1)
 
+    def test_disk_cache_survives_restart(self):
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as tmp:
+            link_preview.configure(os.path.join(tmp, "previews.db"))
+            self.addCleanup(link_preview.configure, None)
+            link_preview._cache.clear()
+            result = {"url": "https://b.com", "available": True, "title": "B"}
+            with mock.patch.object(link_preview, "_fetch", return_value=result) as fetch:
+                get_link_preview("https://b.com")
+                link_preview._cache.clear()  # simulate a server restart
+                self.assertEqual(get_link_preview("https://b.com")["title"], "B")
+            self.assertEqual(fetch.call_count, 1)
+
+    def test_prefetch_extracts_links(self):
+        with mock.patch.object(link_preview, "get_link_preview") as get:
+            link_preview.prefetch_previews_for_text(["see https://a.com/x.", "and https://a.com/x again", "none"])
+        get.assert_called_once_with("https://a.com/x")
+
 
 if __name__ == "__main__":
     unittest.main()

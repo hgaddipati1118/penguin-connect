@@ -2947,7 +2947,30 @@ function renderLinkPreview(url) {
   card.hidden = true;
   const fill = (preview) => {
     if (!preview?.available) {
-      card.remove();
+      // Sites that block previews (or have no metadata) still get a compact, clickable card.
+      const blocked = ["private_host", "unsupported_url"].includes(preview?.reason);
+      let host = "";
+      try { host = new URL(url).hostname.replace(/^www\./, ""); } catch (_error) { /* ignore */ }
+      if (blocked || !host) {
+        card.remove();
+        return;
+      }
+      card.classList.add("link-preview-compact");
+      const icon = document.createElement("img");
+      icon.className = "link-preview-favicon";
+      icon.alt = "";
+      icon.referrerPolicy = "no-referrer";
+      icon.src = `https://${host}/favicon.ico`;
+      icon.addEventListener("error", () => icon.remove());
+      const label = document.createElement("span");
+      label.className = "link-preview-copy";
+      const site = document.createElement("strong");
+      site.textContent = host;
+      const path = document.createElement("small");
+      try { path.textContent = decodeURIComponent(new URL(url).pathname).slice(0, 60); } catch (_error) { path.textContent = ""; }
+      label.append(site, path);
+      card.append(icon, label);
+      card.hidden = false;
       return;
     }
     if (preview.image) {

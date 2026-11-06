@@ -71,7 +71,8 @@ from search_index import (
     spotlight_file_search,
 )
 from watcher import get_sync_status, refresh_contacts_now, start_watchers, stop_watchers
-from link_preview import get_link_preview
+import link_preview as link_preview_module
+from link_preview import get_link_preview, prefetch_previews_for_text
 from live_sync import LiveSyncWorker, SourceWatcher, imessage_changes, live_sync_enabled, whatsapp_changes, workspace_changed
 
 
@@ -955,6 +956,22 @@ def _live_sync_refresh(source: str, chat_ids: list[str]) -> int:
                 incremental_refresh=True,
             )
             conn.commit()
+        if conversation_ids:
+            # Fetch link previews for the newest messages now, so they're ready when opened.
+            texts = [
+                str(row["body_text"] or "")
+                for row in conn.execute(
+                    f"""SELECT body_text FROM penguin_connect_messages
+                        WHERE conversation_id IN ({",".join("?" * len(conversation_ids))})
+                          AND body_text LIKE '%http%'
+                        ORDER BY message_timestamp DESC LIMIT 12""",
+                    conversation_ids,
+                ).fetchall()
+            ]
+            if texts:
+                threading.Thread(
+                    target=prefetch_previews_for_text, args=(texts,), daemon=True, name="penguin-link-prefetch"
+                ).start()
         return len(conversation_ids)
     finally:
         conn.close()
@@ -5175,6 +5192,7 @@ async def lifespan(_app: FastAPI):
     start_watchers()
     start_scheduled_send_worker()
     start_history_index_worker()
+    link_preview_module.configure(str(Path(DB_PATH).with_name("link-previews.db")))
     start_live_sync_worker()
     log_action(
         "server_start",
