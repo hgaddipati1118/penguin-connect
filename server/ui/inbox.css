@@ -5436,3 +5436,119 @@ mark {
 .conversation-pin-toggle.pinned {
   color: var(--accent, #4457c4);
 }
+
+/* ---- Folder strip (v2): every folder visible inline, underline tabs, unread counts ---- */
+.pane-header {
+  padding: 14px 18px 8px;
+}
+.pane-header h1 {
+  overflow: hidden;
+  font-size: 22px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.global-search {
+  min-height: 36px;
+  margin-bottom: 8px;
+}
+.source-tabs {
+  margin-bottom: 2px;
+  padding: 2px;
+  border-radius: 8px;
+}
+.source-tabs button {
+  min-height: 24px;
+  border-radius: 6px;
+  font-size: 11px;
+}
+.label-bar {
+  gap: 2px;
+  min-height: 38px;
+  padding: 0 12px;
+  align-items: stretch;
+  scroll-padding-inline: 12px;
+}
+.label-filter.folder-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 0;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink-faint);
+  font-size: 12px;
+  font-weight: 560;
+  white-space: nowrap;
+}
+.label-filter.folder-tab:hover {
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+}
+.label-filter.folder-tab.active {
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-weight: 650;
+}
+.label-filter.folder-tab::after {
+  position: absolute;
+  right: 8px;
+  bottom: -1px;
+  left: 8px;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: transparent;
+  content: "";
+  transition: background-color 120ms ease;
+}
+.label-filter.folder-tab.active::after {
+  background: var(--ink);
+}
+.folder-tab-count {
+  display: inline-grid;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  place-items: center;
+  border-radius: 999px;
+  background: #e6e4dd;
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+.folder-tab.active .folder-tab-count {
+  background: var(--ink);
+  color: var(--paper);
+}
+.folder-divider {
+  flex: none;
+  width: 1px;
+  margin: 11px 4px;
+  background: var(--line);
+}
+.folder-add {
+  flex: none;
+  align-self: center;
+  width: 22px;
+  height: 22px;
+  margin-left: 2px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-faint);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+.folder-add:hover {
+  border-style: solid;
+  color: var(--ink);
+}
+.list-summary {
+  min-height: 28px;
+}

@@ -1587,7 +1587,9 @@ function appendInfiniteSentinel(target, label, onLoad) {
 function renderView() {
   const searching = Boolean(state.search.query);
   const titles = { inbox: "Inbox", people: "People", files: "Files", links: "Links", queue: "Queue" };
-  el.paneTitle.textContent = titles[state.view] || "Inbox";
+  el.paneTitle.textContent = state.view === "inbox" && !searching
+    ? activeFolderName()
+    : (titles[state.view] || "Inbox");
   el.globalSearch.placeholder = state.view === "links"
     ? "Search shared links"
     : (state.view === "files" ? "Search messages and files" : "Search messages and people");
@@ -1765,69 +1767,123 @@ async function applyLabelDraft() {
   }
 }
 
+const SMART_FOLDERS = [
+  { value: "all", name: "Inbox" },
+  { value: "unread", name: "Unread", countUnread: true },
+  { value: "starred", name: "Pinned" },
+  { value: "reminders", name: "Reminders" },
+];
+
+function folderUnreadCounts() {
+  const counts = new Map();
+  let unreadChats = 0;
+  for (const conversation of state.conversations) {
+    if (conversation.is_archived || conversation.excluded || conversation.status === "disconnected") continue;
+    if (!sourceMatches(conversation)) continue;
+    if (!(Number(conversation.unread_count || 0) > 0)) continue;
+    unreadChats += 1;
+    for (const label of conversation.labels || []) counts.set(label, (counts.get(label) || 0) + 1);
+  }
+  return { counts, unreadChats };
+}
+
+// Ordered folder list shared by the strip and the 1-9 shortcuts.
+function folderEntries() {
+  const entries = SMART_FOLDERS.map((folder) => ({ kind: "smart", ...folder }));
+  for (const label of allConversationLabels()) entries.push({ kind: "label", value: label, name: label });
+  entries.push({ kind: "smart", value: "archived", name: "Done" });
+  return entries;
+}
+
+function folderIsActive(entry) {
+  return entry.kind === "label"
+    ? state.activeLabel === entry.value
+    : !state.activeLabel && state.smartView === entry.value;
+}
+
+function activeFolderName() {
+  return folderEntries().find(folderIsActive)?.name || "Inbox";
+}
+
+function openFolder(entry) {
+  if (!entry) return;
+  if (entry.kind === "label") {
+    cancelSearchRequest();
+    state.view = "inbox";
+    state.search.query = "";
+    el.globalSearch.value = "";
+    state.smartView = "all";
+    state.activeLabel = entry.value;
+    state.conversationsVisible = CONVERSATION_RENDER_BATCH;
+    state.conversationWindowStart = 0;
+    el.conversationList.scrollTop = 0;
+    renderView();
+    reconcileConversationSelection();
+  } else {
+    setInboxSmartView(entry.value);
+  }
+}
+
+function openFolderByIndex(index) {
+  const entries = folderEntries();
+  if (index >= entries.length) return false;
+  openFolder(entries[index]);
+  return true;
+}
+
+function cycleFolder(direction = 1) {
+  const entries = folderEntries();
+  const current = Math.max(0, entries.findIndex(folderIsActive));
+  openFolder(entries[(current + direction + entries.length) % entries.length]);
+}
+
 function renderLabelBar() {
+  const previousScroll = el.labelBar.scrollLeft;
   el.labelBar.replaceChildren();
   if (state.view !== "inbox" || state.search.query) return;
-  const labels = allConversationLabels();
-
-  const smartOptions = [
-    { value: "all", name: "All" },
-    { value: "unread", name: "Unread" },
-    { value: "starred", name: "Pinned" },
-    { value: "reminders", name: "Reminders" },
-    { value: "archived", name: "Done" },
-  ];
-  for (const option of smartOptions) {
+  const { counts, unreadChats } = folderUnreadCounts();
+  const entries = folderEntries();
+  let activeButton = null;
+  for (const [index, entry] of entries.entries()) {
+    if (entry.kind === "label" && index === SMART_FOLDERS.length) {
+      const divider = document.createElement("span");
+      divider.className = "folder-divider";
+      divider.setAttribute("aria-hidden", "true");
+      el.labelBar.append(divider);
+    }
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "label-filter";
-    button.classList.toggle(
-      "active",
-      !state.activeLabel && state.smartView === option.value,
-    );
-    button.textContent = option.name;
-    button.addEventListener("click", () => {
-      state.smartView = option.value;
-      state.activeLabel = "";
-      state.conversationsVisible = CONVERSATION_RENDER_BATCH;
-      state.conversationWindowStart = 0;
-      el.conversationList.scrollTop = 0;
-      renderView();
-      reconcileConversationSelection();
-    });
+    button.className = `label-filter folder-tab${entry.kind === "label" ? " folder-tab-custom" : ""}`;
+    const active = folderIsActive(entry);
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+    if (index < 9) button.title = `${entry.name} · press ${index + 1}`;
+    const name = document.createElement("span");
+    name.className = "folder-tab-name";
+    name.textContent = entry.name;
+    button.append(name);
+    const count = entry.kind === "label" ? counts.get(entry.value) || 0 : (entry.countUnread ? unreadChats : 0);
+    if (count) {
+      const badge = document.createElement("span");
+      badge.className = "folder-tab-count";
+      badge.textContent = count > 99 ? "99+" : String(count);
+      button.append(badge);
+    }
+    button.addEventListener("click", () => openFolder(entry));
+    if (active) activeButton = button;
     el.labelBar.append(button);
   }
-  if (labels.length) {
-    const select = document.createElement("select");
-    select.className = "label-filter-select";
-    select.setAttribute("aria-label", "Filter conversations by label");
-    const placeholder = document.createElement("option");
-    placeholder.value = "";
-    placeholder.textContent = "Choose label…";
-    select.append(placeholder);
-    for (const label of labels) {
-      const option = document.createElement("option");
-      option.value = label;
-      option.textContent = label;
-      select.append(option);
-    }
-    select.value = state.activeLabel;
-    select.addEventListener("change", () => {
-      state.smartView = "all";
-      state.activeLabel = select.value;
-      state.conversationsVisible = CONVERSATION_RENDER_BATCH;
-      state.conversationWindowStart = 0;
-      el.conversationList.scrollTop = 0;
-      renderView();
-      reconcileConversationSelection();
-    });
-    el.labelBar.append(select);
-  }
-  if (!labels.length) {
-    const hint = document.createElement("span");
-    hint.className = "label-bar-hint";
-    hint.textContent = "Label a chat to create one";
-    el.labelBar.append(hint);
+  const add = document.createElement("button");
+  add.type = "button";
+  add.className = "folder-add";
+  add.title = state.selected ? "Add this chat to a folder (L)" : "Open a chat, then press L to file it";
+  add.setAttribute("aria-label", "New folder");
+  add.textContent = "+";
+  add.addEventListener("click", () => openLabelPicker());
+  el.labelBar.append(add);
+  el.labelBar.scrollLeft = previousScroll;
+  if (activeButton) {
+    requestAnimationFrame(() => activeButton.scrollIntoView({ block: "nearest", inline: "nearest" }));
   }
 }
 
@@ -2138,6 +2194,21 @@ function participantDisplayName(handle, conversation = null) {
   return matchingEntry?.[1] || handle;
 }
 
+let groupMemberFrequencyCache = { conversations: null, map: new Map() };
+
+function groupMemberFrequency() {
+  if (groupMemberFrequencyCache.conversations === state.conversations) return groupMemberFrequencyCache.map;
+  const map = new Map();
+  for (const conversation of state.conversations || []) {
+    if (conversation.chat_type !== "group") continue;
+    for (const participant of new Set(conversationParticipants(conversation))) {
+      map.set(participant, (map.get(participant) || 0) + 1);
+    }
+  }
+  groupMemberFrequencyCache = { conversations: state.conversations, map };
+  return map;
+}
+
 function conversationAvatarFor(conversation, { large = false } = {}) {
   const name = conversationName(conversation);
   const provider = providerKey(conversation.source_provider);
@@ -2152,9 +2223,15 @@ function conversationAvatarFor(conversation, { large = false } = {}) {
   avatar.setAttribute("aria-label", `${name} group`);
   // Named people first; a bare phone number has no useful initials ("+"), so show a glyph.
   const isUnnamed = (participantName) => !/[a-z]/i.test(participantName) || participantName.includes("@");
+  // Prefer the people who are distinctive to this chat: someone in most of your
+  // groups (a co-founder) would otherwise be the face of every group.
+  const frequency = groupMemberFrequency();
   const participants = conversationParticipants(conversation)
     .map((participant) => [participant, participantDisplayName(participant, conversation)])
-    .sort(([, left], [, right]) => Number(isUnnamed(left)) - Number(isUnnamed(right)))
+    .sort(([leftId, left], [rightId, right]) => (
+      Number(isUnnamed(left)) - Number(isUnnamed(right))
+      || (frequency.get(leftId) || 0) - (frequency.get(rightId) || 0)
+    ))
     .slice(0, 3);
   // Chats named like "Purav Patel, Janani Prasad" carry the names even when the
   // participant handles don't resolve to contacts.
@@ -9818,6 +9895,12 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     cycleSource(event.shiftKey ? -1 : 1);
     return;
+  }
+  if (/^[1-9]$/.test(event.key) && !event.shiftKey && state.view === "inbox") {
+    if (openFolderByIndex(Number(event.key) - 1)) {
+      event.preventDefault();
+      return;
+    }
   }
   if (key === "g") {
     event.preventDefault();
