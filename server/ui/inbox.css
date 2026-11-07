@@ -5552,3 +5552,14 @@ mark {
 .list-summary {
   min-height: 28px;
 }
+
+.typing-indicator {
+  position: absolute;
+  left: clamp(14px, 5cqw, 42px);
+  bottom: 100%;
+  padding: 2px 8px 3px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  pointer-events: none;
+}
+.typing-indicator[hidden] { display: none; }

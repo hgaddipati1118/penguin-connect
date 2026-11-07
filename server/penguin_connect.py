@@ -5139,7 +5139,9 @@ def get_conversation_messages(
                 "apple_messages",
                 "sms",
                 "rcs",
+                "whatsapp",
             }:
+                # (WhatsApp reactions/edits are UPDATEs on existing rows too.)
                 # Delivery/read state mutates existing Apple message rows without
                 # advancing the per-conversation source cursor. Re-read only a
                 # small recent window so receipts stay live without rescanning

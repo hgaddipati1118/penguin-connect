@@ -95,7 +95,27 @@ def _reply_preview(media_type: str, filename: str) -> str:
     return "Message"
 
 
-def _whatsapp_provider_reactions(value: Any) -> list[dict[str, Any]]:
+def _whatsapp_reaction_actor_jids(value: Any) -> list[str]:
+    """Raw reactor JIDs in a reactions_json value (excluding our own "me" actor)."""
+    try:
+        raw = json.loads(value or "[]") if isinstance(value, str) else value
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(raw, list):
+        return []
+    return [
+        str(item.get("actor") or "").strip()
+        for item in raw[:500]
+        if isinstance(item, dict)
+        and item.get("is_from_me") is not True
+        and "@" in str(item.get("actor") or "")
+    ]
+
+
+def _whatsapp_provider_reactions(
+    value: Any,
+    identities: Optional[dict[str, dict[str, str]]] = None,
+) -> list[dict[str, Any]]:
     try:
         raw_reactions = json.loads(value or "[]") if isinstance(value, str) else value
     except (TypeError, ValueError, json.JSONDecodeError):
@@ -111,9 +131,27 @@ def _whatsapp_provider_reactions(value: Any) -> list[dict[str, Any]]:
             continue
         reaction = aggregated.setdefault(
             emoji,
-            {"name": emoji, "emoji": emoji, "count": 0, "reacted_by_me": False},
+            {
+                "name": emoji,
+                "emoji": emoji,
+                "count": 0,
+                "reacted_by_me": False,
+                "actors": [],
+            },
         )
         reaction["count"] += 1
+        if item.get("is_from_me") is True:
+            actor_label = "You"
+        else:
+            actor_jid = str(item.get("actor") or "").strip()
+            identity = (identities or {}).get(actor_jid) or {}
+            actor_label = (
+                str(identity.get("name") or "").strip()
+                or str(identity.get("phone") or "").strip()
+                or _jid_to_phone(actor_jid)
+            )
+        if actor_label and actor_label not in reaction["actors"]:
+            reaction["actors"].append(actor_label)
         reaction["reacted_by_me"] = (
             reaction["reacted_by_me"] or item.get("is_from_me") is True
         )
@@ -625,6 +663,8 @@ class WhatsAppChannelAdapter:
                     for row in rows
                     if str(row["reply_to_sender"] or "").strip()
                 )
+            for row in rows:
+                sender_jids.extend(_whatsapp_reaction_actor_jids(row["reactions_json"]))
             identities = _whatsapp_identity_cache(metadata_conn, sender_jids)
             chat_names: dict[str, str] = {}
             unique_sender_jids = list(dict.fromkeys(sender_jids))
@@ -687,6 +727,7 @@ class WhatsAppChannelAdapter:
                         "native_message_id": row["id"],
                         "provider_reactions": _whatsapp_provider_reactions(
                             row["reactions_json"],
+                            identities,
                         ),
                         "provider_edited": bool(row["edited_at"]),
                         "provider_edited_at": row["edited_at"] or "",
@@ -774,6 +815,50 @@ class WhatsAppChannelAdapter:
             message_id,
             {"emoji": normalized_emoji, "remove": bool(remove)},
         )
+
+    def get_typing(self, chat_identifier: str) -> dict[str, Any]:
+        """Ask the bridge whether someone is currently typing in this chat."""
+        chat_jid = str(chat_identifier or "").strip()
+        idle: dict[str, Any] = {"typing": False, "sender_name": ""}
+        if "@" not in chat_jid:
+            return idle
+        try:
+            response = httpx.get(
+                f"{_whatsapp_api_url()}/typing",
+                params={"chat_jid": chat_jid},
+                timeout=2,
+            )
+            data = response.json()
+        except Exception:
+            return idle
+        if response.status_code != 200 or data.get("typing") is not True:
+            return idle
+        sender_jid = str(data.get("sender") or "").strip()
+        sender_name = ""
+        if sender_jid and chat_jid.endswith("@g.us"):
+            try:
+                identity = self.resolve_identities([sender_jid]).get(sender_jid) or {}
+                sender_name = str(identity.get("name") or identity.get("phone") or "").strip()
+            except Exception:
+                sender_name = ""
+        return {"typing": True, "sender_name": sender_name}
+
+    def send_typing(self, chat_identifier: str, composing: bool) -> tuple[bool, Optional[str]]:
+        """Send our own composing/paused chat presence through the bridge."""
+        chat_jid = str(chat_identifier or "").strip()
+        if "@" not in chat_jid:
+            return False, "whatsapp_typing_target_required"
+        try:
+            response = httpx.post(
+                f"{_whatsapp_api_url()}/typing",
+                json={"chat_jid": chat_jid, "state": "composing" if composing else "paused"},
+                timeout=5,
+            )
+            if response.status_code == 200 and response.json().get("success") is True:
+                return True, None
+        except Exception:
+            pass
+        return False, "whatsapp_typing_failed"
 
     def edit_message(
         self,

@@ -335,8 +335,14 @@ class WhatsAppAdapterTests(unittest.TestCase):
         self.assertEqual(
             edited["provider_reactions"],
             [
-                {"name": "😂", "emoji": "😂", "count": 2, "reacted_by_me": False},
-                {"name": "❤️", "emoji": "❤️", "count": 1, "reacted_by_me": True},
+                {
+                    "name": "😂", "emoji": "😂", "count": 2, "reacted_by_me": False,
+                    "actors": ["participant-a", "participant-b"],
+                },
+                {
+                    "name": "❤️", "emoji": "❤️", "count": 1, "reacted_by_me": True,
+                    "actors": ["You"],
+                },
             ],
         )
         self.assertTrue(edited["provider_edited"])
@@ -506,6 +512,54 @@ class WhatsAppAdapterTests(unittest.TestCase):
             ok, err = self.adapter.send_message("14155551234@s.whatsapp.net", "Hello!")
         self.assertFalse(ok)
         self.assertIn("Connection refused", err)
+
+    def test_reaction_actors_resolve_names_and_ignore_blank_emoji(self):
+        raw = json.dumps([
+            {"actor": "111@s.whatsapp.net", "emoji": "👍", "is_from_me": False},
+            {"actor": "222@s.whatsapp.net", "emoji": "👍", "is_from_me": False},
+            {"actor": "me", "emoji": "👍", "is_from_me": True},
+            {"actor": "333@s.whatsapp.net", "emoji": "", "is_from_me": False},
+        ])
+        self.assertEqual(
+            whatsapp._whatsapp_reaction_actor_jids(raw),
+            ["111@s.whatsapp.net", "222@s.whatsapp.net", "333@s.whatsapp.net"],
+        )
+        result = whatsapp._whatsapp_provider_reactions(
+            raw, {"111@s.whatsapp.net": {"name": "Alice", "phone": "111"}}
+        )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["count"], 3)
+        self.assertTrue(result[0]["reacted_by_me"])
+        self.assertEqual(result[0]["actors"], ["Alice", "222", "You"])
+        self.assertEqual(whatsapp._whatsapp_provider_reactions("not json"), [])
+
+    def test_get_typing_reads_bridge_and_fails_closed(self):
+        jid = "14155551234@s.whatsapp.net"
+        live = mock.Mock(status_code=200)
+        live.json.return_value = {"success": True, "typing": True, "sender": jid}
+        with mock.patch("channels.whatsapp.httpx.get", return_value=live) as mock_get:
+            self.assertEqual(self.adapter.get_typing(jid), {"typing": True, "sender_name": ""})
+        self.assertEqual(mock_get.call_args.kwargs["params"], {"chat_jid": jid})
+        self.assertTrue(mock_get.call_args.args[0].endswith("/typing"))
+        idle = mock.Mock(status_code=200)
+        idle.json.return_value = {"success": True, "typing": False}
+        with mock.patch("channels.whatsapp.httpx.get", return_value=idle):
+            self.assertFalse(self.adapter.get_typing(jid)["typing"])
+        with mock.patch("channels.whatsapp.httpx.get", side_effect=Exception("down")):
+            self.assertFalse(self.adapter.get_typing(jid)["typing"])
+        self.assertFalse(self.adapter.get_typing("not-a-jid")["typing"])
+
+    def test_send_typing_posts_state_to_bridge(self):
+        jid = "14155551234@s.whatsapp.net"
+        ok = mock.Mock(status_code=200)
+        ok.json.return_value = {"success": True}
+        with mock.patch("channels.whatsapp.httpx.post", return_value=ok) as mock_post:
+            self.assertEqual(self.adapter.send_typing(jid, True), (True, None))
+            self.adapter.send_typing(jid, False)
+        self.assertEqual(mock_post.call_args_list[0].kwargs["json"], {"chat_jid": jid, "state": "composing"})
+        self.assertEqual(mock_post.call_args_list[1].kwargs["json"]["state"], "paused")
+        with mock.patch("channels.whatsapp.httpx.post", side_effect=Exception("down")):
+            self.assertEqual(self.adapter.send_typing(jid, True), (False, "whatsapp_typing_failed"))
 
     def test_native_mutations_post_exact_targets_to_bridge(self):
         capability_response = mock.Mock(status_code=200)

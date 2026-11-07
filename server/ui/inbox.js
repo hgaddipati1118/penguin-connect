@@ -10081,3 +10081,85 @@ window.setInterval(() => {
   if (document.visibilityState !== "visible") return;
   syncAttachmentHistory({ full: false }).catch(() => {});
 }, 300000);
+
+// --- WhatsApp typing indicator (poll while a WhatsApp thread is open and visible) ---
+const waTyping = { timer: null, conversationId: "", node: null, ownState: "paused", ownSentAt: 0, ownIdle: null };
+
+function waTypingNode() {
+  if (waTyping.node?.isConnected) return waTyping.node;
+  const wrap = document.querySelector(".composer-wrap");
+  if (!wrap) return null;
+  const node = document.createElement("div");
+  node.className = "typing-indicator";
+  node.setAttribute("aria-live", "polite");
+  node.hidden = true;
+  wrap.prepend(node);
+  waTyping.node = node;
+  return node;
+}
+
+function renderWaTyping(payload) {
+  const node = waTypingNode();
+  if (!node) return;
+  if (!payload?.typing) {
+    node.hidden = true;
+    return;
+  }
+  const who = String(payload.sender_name || "").trim();
+  node.textContent = who ? `${who} is typing…` : "typing…";
+  node.hidden = false;
+}
+
+async function pollWaTyping() {
+  const conversation = state.selected;
+  const conversationId = conversation?.conversation_id || "";
+  if (
+    !conversationId
+    || providerKey(conversation.source_provider) !== "whatsapp"
+    || document.visibilityState !== "visible"
+  ) {
+    renderWaTyping(null);
+    return;
+  }
+  try {
+    const payload = await api(
+      `/penguin-connect/conversations/${encodeURIComponent(conversationId)}/typing`,
+    );
+    if (state.selected?.conversation_id === conversationId) renderWaTyping(payload);
+  } catch (_error) {
+    renderWaTyping(null);
+  }
+}
+
+function startWaTypingPoll() {
+  if (waTyping.timer) return;
+  waTyping.timer = window.setInterval(pollWaTyping, 2000);
+}
+startWaTypingPoll();
+
+// Opt-in (localStorage penguin.sendTyping = "1"): send our own composing/paused presence.
+function sendWaOwnTyping(composing) {
+  const conversation = state.selected;
+  if (
+    !conversation
+    || providerKey(conversation.source_provider) !== "whatsapp"
+    || localStorage.getItem("penguin.sendTyping") !== "1"
+  ) return;
+  const next = composing ? "composing" : "paused";
+  const now = Date.now();
+  if (composing && waTyping.ownState === "composing" && now - waTyping.ownSentAt < 4000) return;
+  if (!composing && waTyping.ownState === "paused") return;
+  waTyping.ownState = next;
+  waTyping.ownSentAt = now;
+  api(
+    `/penguin-connect/conversations/${encodeURIComponent(conversation.conversation_id)}/typing`,
+    { method: "POST", body: JSON.stringify({ composing }) },
+  ).catch(() => {});
+}
+
+el.messageComposer.addEventListener("input", () => {
+  const hasText = Boolean(el.messageComposer.value.trim());
+  sendWaOwnTyping(hasText);
+  window.clearTimeout(waTyping.ownIdle);
+  if (hasText) waTyping.ownIdle = window.setTimeout(() => sendWaOwnTyping(false), 5000);
+});
