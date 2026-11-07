@@ -37,6 +37,56 @@ def live_sync_interval_seconds() -> float:
     return max(0.25, min(value, 60.0))
 
 
+def slack_live_enabled() -> bool:
+    raw = (os.environ.get("PENGUIN_CONNECT_SLACK_LIVE") or "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _env_seconds(name: str, default: float, low: float, high: float) -> float:
+    raw = (os.environ.get(name) or "").strip()
+    try:
+        value = float(raw) if raw else default
+    except ValueError:
+        value = default
+    return max(low, min(value, high))
+
+
+def slack_live_interval_seconds() -> float:
+    """Cross-channel activity probe cadence (search.messages is Tier 2, ~20 req/min)."""
+    return _env_seconds("PENGUIN_CONNECT_SLACK_LIVE_INTERVAL", 4.0, 3.0, 120.0)
+
+
+def slack_live_hot_interval_seconds() -> float:
+    """Cadence for probing the conversation(s) currently open in the UI."""
+    return _env_seconds("PENGUIN_CONNECT_SLACK_LIVE_HOT_INTERVAL", 2.0, 1.0, 60.0)
+
+
+_hot_chats: dict[tuple[str, str], float] = {}
+_hot_chats_lock = threading.Lock()
+HOT_CHAT_TTL_SECONDS = 45.0
+MAX_HOT_CHATS = 2
+
+
+def note_hot_chat(provider: str, chat_id: str) -> None:
+    """Record that the UI is looking at this chat, so live sync probes it more often."""
+    if not chat_id:
+        return
+    with _hot_chats_lock:
+        _hot_chats[(provider, chat_id)] = time.monotonic()
+
+
+def hot_chats(provider: str, ttl: float = HOT_CHAT_TTL_SECONDS) -> list[str]:
+    now = time.monotonic()
+    with _hot_chats_lock:
+        for key in [k for k, seen in _hot_chats.items() if now - seen > ttl]:
+            del _hot_chats[key]
+        live = sorted(
+            ((seen, key[1]) for key, seen in _hot_chats.items() if key[0] == provider),
+            reverse=True,
+        )
+    return [chat_id for _, chat_id in live[:MAX_HOT_CHATS]]
+
+
 def file_token(paths: Iterable[str | Path]) -> tuple:
     """Cheap change token: mtime and size of a database and its journal files."""
     token = []
@@ -209,6 +259,112 @@ class SourceWatcher:
         return chats
 
 
+class SlackActivityWatcher:
+    """Polling change detector for Slack (a user token has no push channel).
+
+    Two cheap probes, in different Slack rate-limit buckets:
+      * search(): one cross-channel search.messages call (newest first) every `interval`
+        seconds; any (channel, ts) newer than the watermark marks that channel changed.
+      * probe(chat): conversations.history limit=1 for the chat(s) open in the UI every
+        `hot_interval` seconds, which also covers search-index lag.
+    Honors Retry-After on 429 and backs off exponentially on other failures. All inputs are
+    injected callables so this is testable without Slack.
+    """
+
+    name = "slack"
+    MAX_BACKOFF_SECONDS = 60.0
+    MAX_RETRY_AFTER_SECONDS = 120.0
+
+    def __init__(
+        self,
+        search: Callable[[], dict],
+        probe: Callable[[str], dict],
+        hot_chats_fn: Callable[[], list[str]],
+        invalidate: Callable[[list[str]], None],
+        interval: Callable[[], float] = slack_live_interval_seconds,
+        hot_interval: Callable[[], float] = slack_live_hot_interval_seconds,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._search = search
+        self._probe = probe
+        self._hot_chats = hot_chats_fn
+        self._invalidate = invalidate
+        self._interval = interval
+        self._hot_interval = hot_interval
+        self._clock = clock
+        self._watermark: float | None = None
+        self._last_ts: dict[str, float] = {}
+        self._next_search = 0.0
+        self._next_hot = 0.0
+        self._backoff_until = 0.0
+        self._failures = 0
+        self.changed = False
+        self.last_error = ""
+
+    def _handle_failure(self, result: dict, now: float) -> None:
+        self.last_error = str(result.get("error") or "slack_unavailable")
+        retry_after = result.get("retry_after")
+        if retry_after is not None:
+            try:
+                delay = min(max(float(retry_after), 1.0), self.MAX_RETRY_AFTER_SECONDS)
+            except (TypeError, ValueError):
+                delay = self.MAX_BACKOFF_SECONDS
+        else:
+            self._failures += 1
+            delay = min(self._interval() * (2 ** self._failures), self.MAX_BACKOFF_SECONDS)
+        self._backoff_until = now + delay
+
+    def _record(self, chat_id: str, ts: float) -> bool:
+        """Remember the newest ts per chat; True if it advanced past what we knew."""
+        if ts > self._last_ts.get(chat_id, 0.0):
+            self._last_ts[chat_id] = ts
+            return True
+        return False
+
+    def poll(self) -> list[str]:
+        now = self._clock()
+        self.changed = False
+        if now < self._backoff_until:
+            return []
+        changed: list[str] = []
+        if now >= self._next_search:
+            self._next_search = now + self._interval()
+            result = self._search()
+            if not result.get("ok"):
+                self._handle_failure(result, now)
+                return []
+            self._failures = 0
+            self.last_error = ""
+            items = sorted(result.get("items") or [], key=lambda item: item[1], reverse=True)
+            if self._watermark is None:
+                # First successful poll only establishes the baseline.
+                for chat_id, ts in items:
+                    self._record(chat_id, ts)
+                self._watermark = max((ts for _, ts in items), default=0.0)
+            else:
+                watermark = self._watermark
+                for chat_id, ts in items:
+                    if ts > watermark and self._record(chat_id, ts) and chat_id not in changed:
+                        changed.append(chat_id)
+                self._watermark = max([watermark, *(ts for _, ts in items)])
+        if now >= self._next_hot and self._watermark is not None:
+            self._next_hot = now + self._hot_interval()
+            for chat_id in self._hot_chats():
+                result = self._probe(chat_id)
+                if not result.get("ok"):
+                    self._handle_failure(result, now)
+                    break
+                ts = float(result.get("ts") or 0.0)
+                if chat_id not in self._last_ts:
+                    self._last_ts[chat_id] = ts  # baseline
+                elif self._record(chat_id, ts) and chat_id not in changed:
+                    changed.append(chat_id)
+        changed = changed[:MAX_CHATS_PER_TICK]
+        if changed:
+            self._invalidate(changed)
+        return changed
+
+
 class LiveSyncWorker:
     def __init__(
         self,
@@ -216,7 +372,9 @@ class LiveSyncWorker:
         refresh: Callable[[str, list[str]], int],
         log: Callable[..., None],
         interval: Callable[[], float] = live_sync_interval_seconds,
+        name: str = "penguinconnect-live-sync",
     ) -> None:
+        self._name = name
         self._watchers = watchers
         self._refresh = refresh
         self._log = log
@@ -256,7 +414,7 @@ class LiveSyncWorker:
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True, name="penguinconnect-live-sync")
+        self._thread = threading.Thread(target=self._run, daemon=True, name=self._name)
         self._thread.start()
 
     def stop(self) -> None:

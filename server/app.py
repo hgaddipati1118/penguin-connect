@@ -73,7 +73,19 @@ from search_index import (
 from watcher import get_sync_status, refresh_contacts_now, start_watchers, stop_watchers
 import link_preview as link_preview_module
 from link_preview import get_link_preview, prefetch_previews_for_text
-from live_sync import LiveSyncWorker, SourceWatcher, WhatsAppChangeDetector, imessage_changes, live_sync_enabled, whatsapp_changes, workspace_changed
+from live_sync import (
+    LiveSyncWorker,
+    SlackActivityWatcher,
+    SourceWatcher,
+    WhatsAppChangeDetector,
+    hot_chats as live_sync_hot_chats,
+    imessage_changes,
+    live_sync_enabled,
+    note_hot_chat,
+    slack_live_enabled,
+    whatsapp_changes,
+    workspace_changed,
+)
 
 
 def _startup_catchup_batch_pause_seconds() -> float:
@@ -908,9 +920,11 @@ def start_history_index_worker() -> None:
 _LIVE_SYNC_PROVIDERS = {
     "imessage": ("apple_messages", "imessage", "sms", "rcs"),
     "whatsapp": ("whatsapp",),
+    "slack": ("slack",),
 }
 _live_sync_last_discovery: dict[str, float] = {}
 _live_sync_worker: LiveSyncWorker | None = None
+_slack_live_worker: LiveSyncWorker | None = None
 
 
 def _live_sync_conversation_ids(conn: sqlite3.Connection, source: str, chat_ids: list[str]) -> list[str]:
@@ -942,12 +956,16 @@ def _live_sync_refresh(source: str, chat_ids: list[str]) -> int:
         if set(chat_ids) - known and now - _live_sync_last_discovery.get(source, 0.0) >= 30.0:
             # A brand-new chat: discover it so it appears in the inbox.
             _live_sync_last_discovery[source] = now
-            discover = (
-                penguinconnect_ensure_conversations_discovered
-                if source == "imessage"
-                else penguinconnect_ensure_whatsapp_conversations_discovered
-            )
-            discover(conn, LOCAL_MESSAGES_ACCOUNT_EMAIL, provision_aliases=False)
+            if source == "slack":
+                get_channel_adapter("slack").invalidate_chat_cache(conversations=True)
+                penguinconnect_ensure_slack_conversations_discovered(conn, LOCAL_MESSAGES_ACCOUNT_EMAIL)
+            else:
+                discover = (
+                    penguinconnect_ensure_conversations_discovered
+                    if source == "imessage"
+                    else penguinconnect_ensure_whatsapp_conversations_discovered
+                )
+                discover(conn, LOCAL_MESSAGES_ACCOUNT_EMAIL, provision_aliases=False)
             conn.commit()
             conversation_ids = _live_sync_conversation_ids(conn, source, chat_ids)
         for conversation_id in conversation_ids:
@@ -998,11 +1016,39 @@ def start_live_sync_worker() -> None:
             log=log_action,
         )
     _live_sync_worker.start()
+    start_slack_live_worker()
+
+
+def start_slack_live_worker() -> None:
+    """Near-real-time Slack: poll cheap activity probes, refresh only changed channels."""
+    global _slack_live_worker
+    if not slack_live_enabled():
+        return
+    if _slack_live_worker is None:
+        adapter = get_channel_adapter("slack")
+        _slack_live_worker = LiveSyncWorker(
+            [
+                SlackActivityWatcher(
+                    search=adapter.poll_recent_activity,
+                    probe=adapter.probe_latest_message,
+                    hot_chats_fn=lambda: live_sync_hot_chats("slack"),
+                    invalidate=lambda chat_ids: adapter.invalidate_chat_cache(chat_ids),
+                )
+            ],
+            refresh=_live_sync_refresh,
+            log=log_action,
+            # The watcher throttles itself; this is just the scheduling granularity.
+            interval=lambda: 0.5,
+            name="penguinconnect-slack-live",
+        )
+    _slack_live_worker.start()
 
 
 def stop_live_sync_worker() -> None:
     if _live_sync_worker is not None:
         _live_sync_worker.stop()
+    if _slack_live_worker is not None:
+        _slack_live_worker.stop()
 
 
 def start_scheduled_send_worker() -> None:
@@ -6493,6 +6539,14 @@ def get_penguinconnect_conversation_messages(
 ):
     conn = get_connection()
     try:
+        hot_row = conn.execute(
+            "SELECT source_chat_id FROM penguin_connect_conversations "
+            "WHERE conversation_id = ? AND source_provider = 'slack'",
+            (conversation_id,),
+        ).fetchone()
+        if hot_row and hot_row["source_chat_id"]:
+            # The UI re-requests the open conversation periodically; that's our "open chat" hint.
+            note_hot_chat("slack", str(hot_row["source_chat_id"]))
         result = penguinconnect_get_conversation_messages(
             conn,
             conversation_id,

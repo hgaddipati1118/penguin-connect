@@ -289,8 +289,20 @@ class SlackChannelAdapter:
             ) as client:
                 if json_body is not None:
                     response = client.post(f"/{method}", json=json_body)
+                    if response.status_code == 429:
+                        try:
+                            retry_after = float(response.headers.get("Retry-After") or 30)
+                        except ValueError:
+                            retry_after = 30.0
+                        return {"ok": False, "error": "ratelimited", "retry_after": retry_after}
                 else:
                     response = client.get(f"/{method}", params=params or {})
+                if response.status_code == 429:
+                    try:
+                        retry_after = float(response.headers.get("Retry-After") or 30)
+                    except ValueError:
+                        retry_after = 30.0
+                    return {"ok": False, "error": "ratelimited", "retry_after": retry_after}
                 response.raise_for_status()
                 payload = response.json()
         except (httpx.HTTPError, ValueError) as exc:
@@ -713,6 +725,77 @@ class SlackChannelAdapter:
             result = {"available": True, "chats": rows, "workspace": self._workspace_name}
             self._conversation_cache[cache_key] = (time.monotonic(), copy.deepcopy(result))
             return result
+
+    def poll_recent_activity(self, count: int = 20) -> dict[str, Any]:
+        """Cheap cross-channel activity probe: one search.messages call, newest first.
+
+        Returns {"ok", "error", "retry_after", "items": [(channel_id, ts_float)]}. Contains
+        only ids and timestamps; never message text.
+        """
+        after = (datetime.now(timezone.utc) - timedelta(days=2)).date().isoformat()
+        payload = self._api(
+            "search.messages",
+            params={
+                "query": f"after:{after}",
+                "count": max(1, min(int(count), 100)),
+                "sort": "timestamp",
+                "sort_dir": "desc",
+                "highlight": "false",
+            },
+        )
+        if not payload.get("ok"):
+            return {
+                "ok": False,
+                "error": str(payload.get("error") or "slack_unavailable"),
+                "retry_after": payload.get("retry_after"),
+                "items": [],
+            }
+        items: list[tuple[str, float]] = []
+        for match in ((payload.get("messages") or {}).get("matches") or []):
+            if not isinstance(match, dict):
+                continue
+            channel = match.get("channel") if isinstance(match.get("channel"), dict) else {}
+            channel_id = str(channel.get("id") or match.get("channel_id") or "").strip()
+            try:
+                ts = float(match.get("ts"))
+            except (TypeError, ValueError):
+                continue
+            if channel_id:
+                items.append((channel_id, ts))
+        return {"ok": True, "error": "", "retry_after": None, "items": items}
+
+    def probe_latest_message(self, chat_id: str) -> dict[str, Any]:
+        """Timestamp of the newest top-level message in one channel (conversations.history limit=1)."""
+        payload = self._api("conversations.history", params={"channel": chat_id, "limit": 1})
+        if not payload.get("ok"):
+            return {
+                "ok": False,
+                "error": str(payload.get("error") or "slack_unavailable"),
+                "retry_after": payload.get("retry_after"),
+                "ts": None,
+            }
+        messages = [m for m in payload.get("messages") or [] if isinstance(m, dict)]
+        try:
+            ts = float(messages[0].get("ts")) if messages else 0.0
+        except (TypeError, ValueError):
+            ts = 0.0
+        return {"ok": True, "error": "", "retry_after": None, "ts": ts}
+
+    def invalidate_chat_cache(
+        self,
+        chat_ids: list[str] | None = None,
+        *,
+        conversations: bool = False,
+    ) -> None:
+        """Drop short-lived history/conversation caches so the next read hits Slack."""
+        with self._lock:
+            wanted = set(chat_ids or [])
+            self._history_cache = {
+                key: value for key, value in self._history_cache.items()
+                if wanted and key[0] not in wanted
+            }
+            if conversations:
+                self._conversation_cache.clear()
 
     def list_recent_activity(self, since: str, limit: int = 500) -> dict[str, Any]:
         discovered = self.list_conversations(limit=limit)

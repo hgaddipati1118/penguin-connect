@@ -31,6 +31,56 @@ class SlackChannelAdapterTests(unittest.TestCase):
         self.env.stop()
         self.tmpdir.cleanup()
 
+    def test_poll_recent_activity_returns_only_ids_and_timestamps(self):
+        adapter = SlackChannelAdapter()
+        payload = {
+            "ok": True,
+            "messages": {"matches": [
+                {"ts": "1700000002.000100", "text": "secret", "channel": {"id": "C1"}},
+                {"ts": "bad", "channel": {"id": "C2"}},
+                {"ts": "1700000001.000100", "channel": {"id": "D3"}},
+            ]},
+        }
+        with mock.patch.object(adapter, "_api", return_value=payload) as api:
+            result = adapter.poll_recent_activity()
+        self.assertEqual(api.call_args.args[0], "search.messages")
+        self.assertEqual(result["items"], [("C1", 1700000002.0001), ("D3", 1700000001.0001)])
+        self.assertNotIn("secret", repr(result))
+
+    def test_poll_and_probe_surface_rate_limit(self):
+        adapter = SlackChannelAdapter()
+        limited = {"ok": False, "error": "ratelimited", "retry_after": 12.0}
+        with mock.patch.object(adapter, "_api", return_value=limited):
+            self.assertEqual(adapter.poll_recent_activity()["retry_after"], 12.0)
+            result = adapter.probe_latest_message("C1")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["retry_after"], 12.0)
+
+    def test_api_maps_http_429_to_retry_after(self):
+        import httpx
+
+        def handler(request):
+            return httpx.Response(429, headers={"Retry-After": "17"})
+
+        real_client = httpx.Client
+        with mock.patch(
+            "channels.slack.httpx.Client",
+            lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw),
+        ):
+            result = SlackChannelAdapter()._api("search.messages", params={})
+        self.assertEqual(result, {"ok": False, "error": "ratelimited", "retry_after": 17.0})
+
+    def test_invalidate_chat_cache_only_drops_named_channels(self):
+        adapter = SlackChannelAdapter()
+        adapter._history_cache = {("C1", "", ""): (1.0, []), ("C2", "", ""): (1.0, [])}
+        adapter._conversation_cache = {("", 100): (1.0, {})}
+        adapter.invalidate_chat_cache(["C1"])
+        self.assertEqual(list(adapter._history_cache), [("C2", "", "")])
+        self.assertTrue(adapter._conversation_cache)
+        adapter.invalidate_chat_cache(conversations=True)
+        self.assertFalse(adapter._history_cache)
+        self.assertFalse(adapter._conversation_cache)
+
     def test_lists_channels_with_recent_message_seed(self):
         adapter = SlackChannelAdapter()
 
