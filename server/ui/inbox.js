@@ -1430,7 +1430,10 @@ function visibleConversationIndex(conversationId) {
 }
 
 function initials(value) {
-  const parts = String(value || "?").trim().split(/\s+/).filter(Boolean);
+  // Skip words that start with punctuation, e.g. "Jason (R-M)" -> "JR", not "J(".
+  const parts = String(value || "?").trim().split(/\s+/)
+    .map((part) => part.replace(/^[^\p{L}\p{N}]+/u, ""))
+    .filter(Boolean);
   if (!parts.length) return "?";
   return parts.slice(0, 2).map((part) => part[0] || "").join("").toUpperCase();
 }
