@@ -97,6 +97,59 @@ def whatsapp_changes(db_path: str | Path, after_rowid: int) -> tuple[int, list[s
         conn.close()
 
 
+class WhatsAppChangeDetector:
+    """whatsapp_changes plus reaction/edit UPDATE detection.
+
+    Reactions and edits mutate existing rows (reactions_json / edited_at) without
+    advancing ROWID, so a ROWID cursor alone never notices them. This keeps a hash of
+    each reacted/edited row and reports chats whose hash changed or disappeared.
+    The startup probe (after_rowid >= 2**61) only snapshots; it never reports.
+    """
+
+    def __init__(self) -> None:
+        self._seen: dict[tuple[str, str], str] | None = None
+
+    def _snapshot(self, db_path: str | Path) -> dict[tuple[str, str], str]:
+        conn = _read_only(db_path)
+        try:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+            parts = []
+            conditions = []
+            if "reactions_json" in columns:
+                parts.append("COALESCE(reactions_json, '')")
+                conditions.append("(reactions_json IS NOT NULL AND reactions_json NOT IN ('', '[]'))")
+            if "edited_at" in columns:
+                parts.append("COALESCE(CAST(edited_at AS TEXT), '')")
+                conditions.append("edited_at IS NOT NULL")
+            if not parts:
+                return {}
+            fingerprint = " || '|' || ".join(parts)
+            rows = conn.execute(
+                f"SELECT chat_jid, id, {fingerprint} FROM messages WHERE {' OR '.join(conditions)}"
+            ).fetchall()
+            return {(str(r[0]), str(r[1])): str(r[2]) for r in rows}
+        finally:
+            conn.close()
+
+    def __call__(self, db_path: str | Path, after_rowid: int) -> tuple[int, list[str]]:
+        max_rowid, chats = whatsapp_changes(db_path, after_rowid)
+        try:
+            current = self._snapshot(db_path)
+        except sqlite3.OperationalError:
+            return max_rowid, chats
+        previous, self._seen = self._seen, current
+        if after_rowid >= 1 << 61 or previous is None:
+            return max_rowid, chats
+        touched = {
+            key[0]
+            for key in current.keys() | previous.keys()
+            if current.get(key) != previous.get(key)
+        }
+        merged = list(chats)
+        merged.extend(chat for chat in sorted(touched) if chat not in merged)
+        return max_rowid, merged[:MAX_CHATS_PER_TICK]
+
+
 class ChangeSignal:
     """Monotonic counter that push listeners (SSE) can wait on without busy work."""
 

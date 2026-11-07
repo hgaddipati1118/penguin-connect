@@ -73,7 +73,7 @@ from search_index import (
 from watcher import get_sync_status, refresh_contacts_now, start_watchers, stop_watchers
 import link_preview as link_preview_module
 from link_preview import get_link_preview, prefetch_previews_for_text
-from live_sync import LiveSyncWorker, SourceWatcher, imessage_changes, live_sync_enabled, whatsapp_changes, workspace_changed
+from live_sync import LiveSyncWorker, SourceWatcher, WhatsAppChangeDetector, imessage_changes, live_sync_enabled, whatsapp_changes, workspace_changed
 
 
 def _startup_catchup_batch_pause_seconds() -> float:
@@ -140,6 +140,9 @@ class PenguinConnectReactionRequest(BaseModel):
     message_id: str = ""
     emoji: str = ""
     remove: bool = False
+
+class PenguinConnectTypingRequest(BaseModel):
+    composing: bool = True
 
 class PenguinConnectMessageEditRequest(BaseModel):
     message: str = ""
@@ -989,7 +992,7 @@ def start_live_sync_worker() -> None:
         _live_sync_worker = LiveSyncWorker(
             [
                 SourceWatcher("imessage", lambda: IMESSAGE_DB, imessage_changes),
-                SourceWatcher("whatsapp", _whatsapp_messages_db, whatsapp_changes),
+                SourceWatcher("whatsapp", _whatsapp_messages_db, WhatsAppChangeDetector()),
             ],
             refresh=_live_sync_refresh,
             log=log_action,
@@ -7250,6 +7253,51 @@ def set_penguinconnect_message_reaction(
         }
     finally:
         conn.close()
+
+def _whatsapp_typing_conversation(conn: sqlite3.Connection, conversation_id: str) -> str | None:
+    """source_chat_id for a WhatsApp conversation, or None for any other provider."""
+    row = conn.execute(
+        "SELECT source_provider, source_chat_id FROM penguin_connect_conversations WHERE conversation_id = ?",
+        (conversation_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="conversation_not_found")
+    if str(row["source_provider"] or "").strip().lower() != "whatsapp":
+        return None
+    return str(row["source_chat_id"] or "").strip() or None
+
+
+@app.get("/api/penguin-connect/conversations/{conversation_id}/typing")
+@app.get("/penguin-connect/conversations/{conversation_id}/typing")
+def get_penguinconnect_conversation_typing(conversation_id: str):
+    conn = get_connection()
+    try:
+        chat_id = _whatsapp_typing_conversation(conn, conversation_id)
+    finally:
+        conn.close()
+    if not chat_id:
+        return {"typing": False, "sender_name": ""}
+    return get_channel_adapter("whatsapp").get_typing(chat_id)
+
+
+@app.post("/api/penguin-connect/conversations/{conversation_id}/typing")
+@app.post("/penguin-connect/conversations/{conversation_id}/typing")
+def set_penguinconnect_conversation_typing(
+    conversation_id: str,
+    req: PenguinConnectTypingRequest,
+):
+    conn = get_connection()
+    try:
+        chat_id = _whatsapp_typing_conversation(conn, conversation_id)
+    finally:
+        conn.close()
+    if not chat_id:
+        return {"success": False, "skipped": True}
+    success, error = get_channel_adapter("whatsapp").send_typing(chat_id, req.composing)
+    if not success:
+        raise HTTPException(status_code=502, detail=error or "whatsapp_typing_failed")
+    return {"success": True}
+
 
 @app.post("/api/penguin-connect/conversations/{conversation_id}/send")
 @app.post("/penguin-connect/conversations/{conversation_id}/send")

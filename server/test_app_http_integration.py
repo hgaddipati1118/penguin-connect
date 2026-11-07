@@ -6040,6 +6040,82 @@ class AppHttpIntegrationTests(unittest.TestCase):
             remove=False,
         )
 
+    def _make_amc_test_whatsapp(self, with_message=False):
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                """UPDATE penguin_connect_conversations
+                   SET source_provider = 'whatsapp', source_chat_id = '14155550100@s.whatsapp.net'
+                   WHERE conversation_id = 'amc_test'"""
+            )
+            if with_message:
+                conn.execute(
+                    """INSERT INTO penguin_connect_messages
+                       (conversation_id, provider, provider_message_id, direction, sender_name, subject,
+                        body_text, message_timestamp, is_read, metadata)
+                       VALUES ('amc_test', 'whatsapp', 'whatsapp:WAMSG1', 'whatsapp_local', 'Friend', 'WhatsApp',
+                               'Synthetic message', '2026-03-11T11:00:00+00:00', 1, '{"native_message_id":"WAMSG1"}')"""
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_reaction_endpoint_routes_existing_whatsapp_message_to_adapter(self):
+        self._make_amc_test_whatsapp(with_message=True)
+        adapter = mock.Mock()
+        adapter.set_reaction.return_value = (True, None)
+        with mock.patch("app.get_channel_adapter", return_value=adapter), TestClient(app_module.app) as client:
+            response = client.post(
+                "/penguin-connect/conversations/amc_test/messages/reaction",
+                json={"message_id": "whatsapp:WAMSG1", "emoji": "❤️", "remove": True},
+            )
+        self.assertEqual(response.status_code, 200)
+        adapter.set_reaction.assert_called_once_with(
+            "14155550100@s.whatsapp.net", "WAMSG1", "❤️", remove=True
+        )
+
+    def test_typing_endpoint_asks_whatsapp_bridge_and_ignores_other_providers(self):
+        self._make_amc_test_whatsapp()
+        adapter = mock.Mock()
+        adapter.get_typing.return_value = {"typing": True, "sender_name": ""}
+        adapter.send_typing.return_value = (True, None)
+        with mock.patch("app.get_channel_adapter", return_value=adapter), TestClient(app_module.app) as client:
+            got = client.get("/penguin-connect/conversations/amc_test/typing")
+            sent = client.post(
+                "/penguin-connect/conversations/amc_test/typing", json={"composing": False}
+            )
+            missing = client.get("/penguin-connect/conversations/nope/typing")
+        self.assertEqual(got.json(), {"typing": True, "sender_name": ""})
+        adapter.get_typing.assert_called_once_with("14155550100@s.whatsapp.net")
+        self.assertEqual(sent.json(), {"success": True})
+        adapter.send_typing.assert_called_once_with("14155550100@s.whatsapp.net", False)
+        self.assertEqual(missing.status_code, 404)
+
+        conn = self._get_connection()
+        try:
+            conn.execute(
+                "UPDATE penguin_connect_conversations SET source_provider = 'imessage' WHERE conversation_id = 'amc_test'"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        adapter.reset_mock()
+        with mock.patch("app.get_channel_adapter", return_value=adapter), TestClient(app_module.app) as client:
+            other = client.get("/penguin-connect/conversations/amc_test/typing")
+            other_post = client.post("/penguin-connect/conversations/amc_test/typing", json={})
+        self.assertEqual(other.json(), {"typing": False, "sender_name": ""})
+        self.assertEqual(other_post.json()["skipped"], True)
+        adapter.get_typing.assert_not_called()
+        adapter.send_typing.assert_not_called()
+
+    def test_typing_endpoint_surfaces_bridge_failure_as_502(self):
+        self._make_amc_test_whatsapp()
+        adapter = mock.Mock()
+        adapter.send_typing.return_value = (False, "whatsapp_typing_failed")
+        with mock.patch("app.get_channel_adapter", return_value=adapter), TestClient(app_module.app) as client:
+            response = client.post("/penguin-connect/conversations/amc_test/typing", json={"composing": True})
+        self.assertEqual(response.status_code, 502)
+
     def test_reaction_endpoint_rejects_message_outside_conversation(self):
         conn = self._get_connection()
         try:

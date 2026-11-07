@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 import live_sync
-from live_sync import LiveSyncWorker, SourceWatcher, imessage_changes, whatsapp_changes
+from live_sync import LiveSyncWorker, SourceWatcher, WhatsAppChangeDetector, imessage_changes, whatsapp_changes
 
 
 def _make_chat_db(path: Path) -> sqlite3.Connection:
@@ -84,6 +84,37 @@ class LiveSyncChangeTests(unittest.TestCase):
         )
         conn.commit()
         self.assertEqual(whatsapp_changes(path, 1), (3, ["b@g.us"]))
+
+    def test_whatsapp_detector_reports_reaction_updates_without_new_rows(self):
+        path = Path(self.tmp.name) / "messages.db"
+        conn = sqlite3.connect(path)
+        self.addCleanup(conn.close)
+        conn.execute(
+            "CREATE TABLE messages (id TEXT, chat_jid TEXT, content TEXT, reactions_json TEXT DEFAULT '[]',"
+            " edited_at TEXT, PRIMARY KEY (id, chat_jid))"
+        )
+        conn.executemany(
+            "INSERT INTO messages (id, chat_jid, content) VALUES (?, ?, ?)",
+            [("1", "a@s.whatsapp.net", "x"), ("2", "b@g.us", "y")],
+        )
+        conn.commit()
+        detector = WhatsAppChangeDetector()
+        # Startup probe snapshots without reporting.
+        self.assertEqual(detector(path, 1 << 62), (2, []))
+        self.assertEqual(detector(path, 2), (2, []))
+        # A reaction is an UPDATE: ROWID unchanged, chat still reported.
+        conn.execute("UPDATE messages SET reactions_json = '[{\"emoji\":\"x\"}]' WHERE id = '1'")
+        conn.commit()
+        self.assertEqual(detector(path, 2), (2, ["a@s.whatsapp.net"]))
+        self.assertEqual(detector(path, 2), (2, []))
+        # Removing the reaction is also a change.
+        conn.execute("UPDATE messages SET reactions_json = '[]' WHERE id = '1'")
+        conn.commit()
+        self.assertEqual(detector(path, 2), (2, ["a@s.whatsapp.net"]))
+        # Edits count too.
+        conn.execute("UPDATE messages SET edited_at = 't' WHERE id = '2'")
+        conn.commit()
+        self.assertEqual(detector(path, 2), (2, ["b@g.us"]))
 
     def test_worker_tick_refreshes_and_survives_errors(self):
         calls = []
