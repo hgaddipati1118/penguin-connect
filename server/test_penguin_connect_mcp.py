@@ -26,6 +26,16 @@ def remote_wire_token() -> str:
 
 
 class PenguinConnectMcpTests(unittest.TestCase):
+    def test_cached_route_lookup_is_fast_and_excludes_groups(self):
+        rows = [
+            {"conversation_id": "dm", "source_provider": "imessage", "chat_type": "dm", "participants": ["+15555550123"]},
+            {"conversation_id": "group", "source_provider": "imessage", "chat_type": "group", "participants": ["+15555550123", "+15555550456"]},
+        ]
+        with mock.patch.object(penguin_connect_mcp, "_api_json", return_value={"conversations": rows}) as api:
+            result = penguin_connect_mcp._matching_cached_conversations("+15555550123", "imessage")
+        self.assertEqual([row["conversation_id"] for row in result], ["dm"])
+        api.assert_called_once_with("GET", "/penguin-connect/conversations?fast=true&compact=true")
+
     def test_existing_conversation_send_requires_confirmation(self):
         conversation = {
             "conversation_id": "conversation-1",

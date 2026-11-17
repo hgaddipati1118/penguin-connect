@@ -637,9 +637,12 @@ def _recipient_handle(recipient: str) -> tuple[str, list[dict[str, Any]]]:
 
 def _matching_cached_conversations(recipient: str, provider: str) -> list[dict[str, Any]]:
     normalized = re.sub(r"\D+", "", recipient)
-    payload = _api_json("GET", "/penguin-connect/conversations?include_whatsapp=true")
+    # Route lookup must not synchronously discover providers or hydrate contacts.
+    payload = _api_json("GET", "/penguin-connect/conversations?fast=true&compact=true")
     matches = []
     for conversation in payload.get("conversations") or []:
+        if conversation.get("chat_type") != "dm":
+            continue
         if provider != "auto" and _provider_key(str(conversation.get("source_provider") or "")) != provider:
             continue
         participants = [str(value or "").strip() for value in conversation.get("participants") or []]
