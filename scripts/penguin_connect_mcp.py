@@ -757,6 +757,8 @@ def send_message_data(
 
     if normalized_provider == "whatsapp":
         digits = re.sub(r"\D+", "", resolved_recipient.split("@", 1)[0])
+        if not resolved_recipient.endswith(("@s.whatsapp.net", "@g.us")) and len(digits) < 7:
+            return {"success": False, "error": "whatsapp_phone_or_jid_required"}
         whatsapp_recipient = (
             resolved_recipient
             if resolved_recipient.endswith(("@s.whatsapp.net", "@g.us"))

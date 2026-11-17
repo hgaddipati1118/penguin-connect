@@ -75,8 +75,25 @@ class IMessageChannelAdapter:
         safe_guid = _escape_applescript(guid)
         script_lines = [
             'tell application "Messages"',
-            f'    set targetChat to chat id "{safe_guid}"',
         ]
+        # Newer Messages databases use an `any;-;` GUID for a unified DM,
+        # while the scripting API may expose a service-specific ID. Resolve
+        # exactly one matching live chat; never fall back to a buddy/new route.
+        if guid.startswith("any;-;") and route.get("service_name") == "iMessage":
+            suffix = _escape_applescript(guid[len("any"):])
+            script_lines.extend([
+                '    set routeMatches to {}',
+                '    repeat with candidateChat in chats',
+                '        set candidateId to id of candidateChat',
+                f'        if candidateId is "{safe_guid}" or (candidateId starts with "iMessage" and candidateId ends with "{suffix}") then',
+                '            set end of routeMatches to contents of candidateChat',
+                '        end if',
+                '    end repeat',
+                '    if (count of routeMatches) is not 1 then error "unsafe_live_chat_route_unresolved_or_ambiguous"',
+                '    set targetChat to item 1 of routeMatches',
+            ])
+        else:
+            script_lines.append(f'    set targetChat to chat id "{safe_guid}"')
         for path in valid_attachments:
             safe_path = _escape_applescript(path)
             script_lines.append(f'    send (POSIX file "{safe_path}") to targetChat')

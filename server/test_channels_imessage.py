@@ -6,6 +6,15 @@ from channels import get_channel_adapter
 
 
 class IMessageChannelAdapterTests(unittest.TestCase):
+    def test_unified_dm_guid_requires_exactly_one_live_service_route(self):
+        adapter = get_channel_adapter("imessage")
+        with mock.patch("channels.imessage.resolve_apple_messages_chat", return_value={"guid":"any;-;+15555550123","service_name":"iMessage"}), mock.patch("channels.imessage.subprocess.run", return_value=mock.Mock(returncode=0)) as run:
+            self.assertEqual(adapter.send_message("any;-;+15555550123", "hello"), (True, None))
+        script=run.call_args.args[0][2]
+        self.assertIn('candidateId ends with ";-;+15555550123"', script)
+        self.assertIn('(count of routeMatches) is not 1', script)
+        self.assertNotIn('buddy', script)
+
     def setUp(self):
         self.subprocess_patcher = mock.patch(
             "channels.imessage.subprocess.run",

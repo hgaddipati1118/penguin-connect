@@ -26,6 +26,11 @@ def remote_wire_token() -> str:
 
 
 class PenguinConnectMcpTests(unittest.TestCase):
+    def test_whatsapp_email_is_not_converted_to_empty_jid(self):
+        with mock.patch.object(penguin_connect_mcp, "_matching_cached_conversations", return_value=[]):
+            result = penguin_connect_mcp.send_message_data("person@example.test", "hello", provider="whatsapp")
+        self.assertEqual(result["error"], "whatsapp_phone_or_jid_required")
+
     def test_cached_route_lookup_is_fast_and_excludes_groups(self):
         rows = [
             {"conversation_id": "dm", "source_provider": "imessage", "chat_type": "dm", "participants": ["+15555550123"]},

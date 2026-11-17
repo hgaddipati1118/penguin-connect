@@ -140,6 +140,7 @@ PenguinConnect includes a local stdio MCP server with tools for:
 - optional hybrid semantic search using SQLite FTS5, `sqlite-vec`, and a local Ollama embedding model
 - previewing and confirming sends through existing iMessage or WhatsApp routes
 - recipient-based sends resolve cached direct-message routes without blocking on provider discovery; group conversations are excluded from individual recipient matching
+- unified Apple Messages DM IDs must resolve to exactly one live scripting route before sending; missing/ambiguous routes stay blocked. WhatsApp new destinations require a phone number or provider JID, not an email address.
 - sending WhatsApp messages to a new phone/JID, or staging a new addressed Apple Messages draft for human review
 
 Register it with Codex after installing the backend dependencies:
